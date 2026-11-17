@@ -25,9 +25,12 @@ describe('buildCallSystemPrompt (.prd/30 D5)', () => {
     expect(p).toContain('AI 비서라고 사실대로');
     // Measured in the service harness: after "네 맞아요 … 감사합니다" the agent asked to confirm again and never hung up.
     expect(p).toContain('이미 답한 확인은 다시 묻지 않는다');
-    // … but a confirmation alone is no reason to hang up: only a met purpose and a closing caller are.
+    // A confirmation alone never ends a call; a met purpose with a closing caller does, and so does a caller who wants
+    // to end the call even when the purpose is not met (no rule may contradict that one).
+    expect(p).toContain('확인에 "네"라고 답한 것만으로는 끊지 않는다');
     expect(p).toContain('목적을 이뤘고 상대가');
-    expect(p).toContain('목적이 남았으면 끊지 않는다');
+    expect(p).toContain('상대가 통화를 끝내려 하면, 짧게 인사한 뒤 hang_up');
+    expect(p).not.toContain('목적이 남았으면 끊지 않는다');
     expect(p).toContain('통화 시간 한도: 5분');
     expect(p).toContain('2026년 11월 17일');
   });
