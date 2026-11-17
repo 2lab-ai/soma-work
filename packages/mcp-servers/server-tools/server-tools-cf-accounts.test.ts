@@ -992,3 +992,99 @@ describe('cf_api — review-of-legends R7', () => {
     expect(ledger()).toEqual([]);
   });
 });
+
+// review-of-legends R8 (9143ff1a): a huge answer is read only so far, deep JSON, credential aliases anywhere, a proof
+// still pending when a second call arrives, and Analytics Engine out of the defaults.
+describe('cf_api — review-of-legends R8', () => {
+  const kv = `/accounts/${DEV}/storage/kv/namespaces/n1/values/k`;
+
+  it('reads a huge answer only up to 8 MiB, then stops and says it was cut', async () => {
+    let pulled = 0;
+    let cancelled = false;
+    const chunk = new Uint8Array(1024 * 1024).fill(0x61);
+    const fetch: CfFetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+      body: new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulled += chunk.length;
+          controller.enqueue(chunk);
+        },
+        cancel() {
+          cancelled = true;
+        },
+      }),
+    });
+    const out = text(
+      await cf({ account: 'iq-dev', method: 'GET', path: `/accounts/${DEV}/r2/buckets/b/objects/big` }, fetch),
+    );
+    expect(cancelled).toBe(true);
+    expect(pulled).toBeLessThanOrEqual(10 * 1024 * 1024);
+    expect(out.truncated).toBe(true);
+    expect(out.body).toHaveLength(200_000);
+  });
+
+  it('marks a cut answer truncated even when what is handed back is short', async () => {
+    const big = Buffer.alloc(8 * 1024 * 1024 + 10, 0xff);
+    const fetch: CfFetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array(big));
+          controller.close();
+        },
+      }),
+    });
+    const out = text(await cf({ account: 'iq-dev', method: 'GET', path: kv }, fetch));
+    expect(out).toMatchObject({ truncated: true, encoding: 'base64' });
+  });
+
+  it('hides JSON nested deeper than it walks, and credential fields under any parent', async () => {
+    let deep: Record<string, unknown> = { secret: 's' };
+    for (let i = 0; i < 70; i++) deep = { d: deep };
+    const { fetch } = cloudflare({
+      json: { success: true, result: { deep, list: [{ meta: { Token: 't' } }, { API_TOKEN: 'a' }] } },
+    });
+    const out = text(await cf({ account: 'iq-dev', method: 'GET', path: `/accounts/${DEV}/workers/scripts` }, fetch));
+    expect(JSON.stringify(out.body)).not.toMatch(/"s"|"t"|"a"/);
+    expect(JSON.stringify(out.body)).toContain('[redacted: nested too deep]');
+    expect(out.body.result.list).toEqual([{ meta: { Token: '[redacted]' } }, { API_TOKEN: '[redacted]' }]);
+  });
+
+  it('lets a second call wait on the proof still pending, and asks Cloudflare once', async () => {
+    writeConfig(accounts({ 'iq-hq': { token: { $secret: 'cf-hq' }, id: HQ, reach: 'account' } }));
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const urls: string[] = [];
+    const fetch: CfFetch = async (url) => {
+      urls.push(url.replace(API, ''));
+      if (url.endsWith(`/zones/${HQ_ZONE}`)) {
+        await gate;
+        const body = JSON.stringify({ success: true, result: { account: { id: HQ } } });
+        return { ok: true, status: 200, json: async () => JSON.parse(body) };
+      }
+      return { ok: true, status: 200, json: async () => ({ success: true, result: [] }) };
+    };
+    const first = cf({ account: 'iq-hq', method: 'GET', path: `/zones/${HQ_ZONE}/dns_records` }, fetch);
+    const second = cf({ account: 'iq-hq', method: 'GET', path: `/zones/${HQ_ZONE}/settings` }, fetch);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(urls).toEqual([`/zones/${HQ_ZONE}`]);
+    release();
+    await Promise.all([first, second]);
+    expect(urls.filter((u) => u === `/zones/${HQ_ZONE}`)).toHaveLength(1);
+    expect(urls).toHaveLength(3);
+  });
+
+  it('leaves Analytics Engine out of the default parts (its SQL takes a raw text body)', async () => {
+    const { fetch, calls } = cloudflare();
+    await expect(
+      cf({ account: 'iq-dev', method: 'POST', path: `/accounts/${DEV}/analytics_engine/sql`, body: {} }, fetch),
+    ).rejects.toThrow(/is not an account part cf_api reaches/);
+    expect(calls).toEqual([]);
+  });
+});

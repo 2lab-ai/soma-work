@@ -1585,7 +1585,7 @@ class ServerToolsMCPServer extends BaseMcpServer {
           '(never shown). An account with reach "zones" reaches /zones/<one of its zones>/… (dns_records, settings, ' +
           'purge_cache, …); one with reach "account" reaches that account: /accounts/<its id>/<part>/… (by default ' +
           'workers, d1, storage (KV), r2, pages, queues, hyperdrive, vectorize, ai, ai-gateway, workflows, ' +
-          'analytics_engine, images, rules, browser-rendering; other parts when the account lists them), /zones (its ' +
+          'images, rules, browser-rendering; other parts when the account lists them), /zones (its ' +
           'zones) and /zones/<its zone>/…. GET, or POST/PUT/PATCH/DELETE when the account allows writes (audited). A JSON body goes in ' +
           'body; a multipart upload (a Worker: a metadata field and its module files) goes in form. Paths that hand ' +
           'out a credential (tokens, members, service tokens, tunnel tokens, R2 access keys, signing keys), user ' +

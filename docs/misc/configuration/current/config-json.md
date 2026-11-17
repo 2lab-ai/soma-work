@@ -415,7 +415,7 @@ An account entry with `"reach": "account"` needs its 32-hex account `id`. It rea
   hold this account.
 - `/accounts/<id>/<part>/…` for these parts by default: `workers` (scripts, versions, deployments, secrets, routes,
   domains, Durable Objects), `d1`, `storage` (KV), `r2`, `pages`, `queues`, `hyperdrive`, `vectorize`, `ai`,
-  `ai-gateway`, `workflows`, `analytics_engine`, `images`, `rules` (lists), `browser-rendering`. Any other part only
+  `ai-gateway`, `workflows`, `images`, `rules` (lists), `browser-rendering`. Any other part only
   when the entry lists it in `parts`; there is no "every part" switch. Listing a part is the operator's decision that
   the environment may see what it answers, which for some parts (logpush destinations, monitor headers in
   `load_balancers`, alerting) can include another system's credential. One `parts` list serves both levels: listing
@@ -447,7 +447,7 @@ to use outside server-tools, or change who is a member:
 As a second line, a JSON answer's credential fields are replaced with `[redacted]` before it is handed back: `token`,
 `api_token`, `secret`, `client_secret`, `tunnel_secret`, `credentials_file`, `private_key`, `custom_key`,
 `streamKey`, `passphrase`, `secret_access_key`, and bearer URLs `uploadURL`, `upload_url`, `signed_url`,
-`exchange_url` (any case, at any depth). Path segments may hold `@` for Workers AI model names
+`exchange_url` (any case, at any depth; JSON nested deeper than 64 levels is replaced as a whole). Path segments may hold `@` for Workers AI model names
 (`/ai/run/@cf/meta/…`).
 
 Writes need the entry's `write: true` and go to the audit ledger as above. The ledger line also records `account`.
@@ -458,7 +458,8 @@ end). A form may hold
 up to 50 parts and 10 MiB. The ledger keeps one SHA-256 of the whole form (`formSha256`), not its content. A read whose
 answer is not JSON (a Worker's source, a KV value) comes back as text, token scrubbed, at most 200,000 characters
 (`truncated: true` when cut); an answer whose bytes are not UTF-8 (a binary KV value, an image) comes back as base64
-with `encoding: "base64"`, the token's bytes scrubbed and the bytes cut to 150,000 before encoding;
+with `encoding: "base64"`, the token's bytes scrubbed and the bytes cut to 150,000 before encoding. An answer is
+read up to 8 MiB and no further (a large R2 object is cut there and marked `truncated`);
 an empty successful read comes back as `""`. A zone the entry does not list is refused when Cloudflare says it is
 another account's, and also, with "could not confirm", when the lookup fails (no answer, a non-2xx status, an
 unreadable answer); nothing is sent and nothing is written to the ledger, and the next call asks again. A

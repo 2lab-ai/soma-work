@@ -73,7 +73,7 @@ export const DEFAULT_PARTS: readonly string[] = [
 /**
  * The account parts `reach: "account"` reaches by default: what deploying and running an app on Cloudflare takes —
  * Workers (scripts, versions, deployments, secrets, routes, domains, Durable Objects), D1, KV (`storage`), R2, Pages,
- * Queues, Hyperdrive, Vectorize, Workers AI and AI Gateway, Workflows, Analytics Engine, Images, Lists (`rules`),
+ * Queues, Hyperdrive, Vectorize, Workers AI and AI Gateway, Workflows, Images, Lists (`rules`),
  * Browser Rendering. Anything else only when the operator lists it in `parts`: listing a part is the operator's
  * decision that the environment may see what it answers, which for some parts (logpush destinations, monitor headers
  * in `load_balancers`, alerting) can include another system's credential. Parts that issue credentials are never
@@ -91,7 +91,6 @@ export const DEFAULT_ACCOUNT_PARTS: readonly string[] = [
   'ai',
   'ai-gateway',
   'workflows',
-  'analytics_engine',
   'images',
   'rules',
   'browser-rendering',
@@ -155,6 +154,8 @@ export interface CfResponse {
   text?(): Promise<string>;
   /** The raw bytes; when present they are read first, so an answer that is not UTF-8 comes back as base64. */
   arrayBuffer?(): Promise<ArrayBuffer>;
+  /** The body as a stream; when present it is read up to `MAX_READ_BYTES` and no further. */
+  body?: ReadableStream<Uint8Array> | null;
 }
 export type CfFetch = (
   url: string,
@@ -209,6 +210,8 @@ const MAX_BODY = 64 * 1024;
 const MAX_FORM = 10 * 1024 * 1024;
 const MAX_FORM_PARTS = 50;
 const MAX_ANSWER_CHARS = 200_000;
+/** Bytes of an answer read at most: a larger one (an R2 object) is cut there instead of filling this process's memory. */
+const MAX_READ_BYTES = 8 * 1024 * 1024;
 
 export function cfMethod(value: unknown): CfMethod {
   if (typeof value !== 'string' || !(METHODS as readonly string[]).includes(value)) {
@@ -313,7 +316,9 @@ const CREDENTIAL_FIELDS = new Set([
 ]);
 
 function redactCredentials(value: unknown, depth = 0): unknown {
-  if (depth > 64 || !value || typeof value !== 'object') return value;
+  if (!value || typeof value !== 'object') return value;
+  // Deeper than this is not walked, so it is not handed back either.
+  if (depth > 64) return '[redacted: nested too deep]';
   if (Array.isArray(value)) return value.map((v) => redactCredentials(v, depth + 1));
   return Object.fromEntries(
     Object.entries(value as Record<string, unknown>).map(([k, v]) =>
@@ -589,17 +594,42 @@ function keepOwn(json: unknown, keep: CfRequest['keep'], id: string | undefined)
   return { ...(json as Record<string, unknown>), result: own };
 }
 
-/** The answer as UTF-8 text, or its bytes when they are not UTF-8. */
-async function readBody(res: CfResponse): Promise<{ text?: string; bytes?: Buffer }> {
-  if (typeof res.arrayBuffer === 'function') {
-    const bytes = Buffer.from(await res.arrayBuffer());
-    try {
-      return { text: new TextDecoder('utf-8', { fatal: true }).decode(bytes) };
-    } catch {
-      return { bytes };
+/** The body's bytes, at most `MAX_READ_BYTES` of them (`cut` when there were more). */
+async function readBytes(res: CfResponse): Promise<{ bytes: Buffer; cut: boolean } | undefined> {
+  const stream = res.body;
+  if (stream && typeof stream.getReader === 'function') {
+    const reader = stream.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return { bytes: Buffer.concat(chunks), cut: false };
+      chunks.push(value);
+      total += value.length;
+      if (total > MAX_READ_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        return { bytes: Buffer.concat(chunks).subarray(0, MAX_READ_BYTES), cut: true };
+      }
     }
   }
-  return { text: await (res.text as () => Promise<string>)() };
+  if (typeof res.arrayBuffer === 'function') return { bytes: Buffer.from(await res.arrayBuffer()), cut: false };
+  return undefined;
+}
+
+/** The answer as UTF-8 text, or its bytes when they are not UTF-8; `cut` when it was longer than was read. */
+async function readBody(res: CfResponse): Promise<{ text?: string; bytes?: Buffer; cut?: boolean }> {
+  const read = await readBytes(res);
+  if (!read) return { text: await (res.text as () => Promise<string>)() };
+  const decode = (b: Buffer) => new TextDecoder('utf-8', { fatal: true }).decode(b);
+  // A cut can split the last character: up to 3 trailing bytes may be dropped to decode the rest as text.
+  for (let drop = 0; drop <= (read.cut ? 3 : 0); drop++) {
+    try {
+      return { text: decode(read.bytes.subarray(0, read.bytes.length - drop)), cut: read.cut };
+    } catch {
+      // not UTF-8 (yet)
+    }
+  }
+  return { bytes: read.bytes, cut: read.cut };
 }
 
 /** `scrub` for bytes: the token's UTF-8 bytes never leave in a binary answer either. */
@@ -665,9 +695,12 @@ export async function cfCall(
   let raw: string | undefined;
   /** An answer that is not UTF-8 (a binary KV value, an image): a read hands it back as base64. */
   let binary: Buffer | undefined;
-  if (typeof res.arrayBuffer === 'function' || typeof res.text === 'function') {
+  /** The answer was longer than `MAX_READ_BYTES`: what is handed back is marked truncated. */
+  let cut = false;
+  if (res.body || typeof res.arrayBuffer === 'function' || typeof res.text === 'function') {
     try {
       const answer = await readBody(res);
+      cut = answer.cut === true;
       if (answer.bytes !== undefined) {
         binary = answer.bytes;
         readable = false;
@@ -697,7 +730,7 @@ export async function cfCall(
   if (res.ok && request.method === 'GET' && binary !== undefined) {
     // The token is scrubbed from the bytes before they are cut and encoded: base64 would only hide it.
     const clean = scrubBytes(binary, account.token);
-    const truncated = clean.length > MAX_ANSWER_BYTES;
+    const truncated = cut || clean.length > MAX_ANSWER_BYTES;
     const body = (truncated ? clean.subarray(0, MAX_ANSWER_BYTES) : clean).toString('base64');
     return { status: res.status, truncated, body, encoding: 'base64' };
   }
@@ -705,7 +738,7 @@ export async function cfCall(
     const text = scrub(raw, account.token);
     return text.length > MAX_ANSWER_CHARS
       ? { status: res.status, truncated: true, body: text.slice(0, MAX_ANSWER_CHARS) }
-      : { status: res.status, truncated: false, body: text };
+      : { status: res.status, truncated: cut, body: text };
   }
   // An empty 204 is an answer; any other 2xx needs a body it can read.
   if (res.ok && !readable && res.status !== 204 && request.method === 'GET') {
