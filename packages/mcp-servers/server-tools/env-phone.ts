@@ -32,11 +32,7 @@ const RESULT_WAIT_MS = 20_000;
 const POLL_MS = 200;
 const MAX_WAIT_S = 300;
 
-export interface PhoneContext {
-  channel?: string;
-  threadTs?: string;
-  conversationId?: string;
-}
+export type PhoneContext = NonNullable<PhoneCallRequest['context']>;
 
 /** `SOMA_PHONE_CONTEXT` as the bot set it — where the call's card goes. Anything malformed is ignored. */
 export function phoneContextFromEnv(raw: string | undefined): PhoneContext {
@@ -161,11 +157,15 @@ function parseRecord(file: string): CallRecordLike | null {
   }
 }
 
+/** A call record that exists but cannot be read, live file and backup both. */
+const UNREADABLE = Symbol('unreadable');
+
 /**
  * One call record, as the daemon's store reads it: the live file, else its last good copy (`.bak`, kept by the
- * store's atomic writes) with a warning — a torn file must not make a call vanish from `phone_calls`.
+ * store's atomic writes) with a warning — a torn file must not make a call vanish from `phone_calls`. `null` = no
+ * such call; {@link UNREADABLE} = the call exists but neither copy can be read.
  */
-function readRecord(phoneDir: string, id: string): CallRecordLike | null {
+function readRecord(phoneDir: string, id: string): CallRecordLike | null | typeof UNREADABLE {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) return null;
   const file = path.join(phoneCallsDir(phoneDir), `${id}.json`);
   const live = parseRecord(file);
@@ -174,7 +174,7 @@ function readRecord(phoneDir: string, id: string): CallRecordLike | null {
   process.stderr.write(
     `[server-tools] phone call record ${id} is unreadable — ${backup ? 'read from its .bak' : 'and so is its .bak'}\n`,
   );
-  return backup;
+  return backup ?? UNREADABLE;
 }
 
 /** One call as the model reads it: no work log (it is for people), the transcript as lines. */
@@ -204,10 +204,15 @@ export async function readCalls(
     const id = args.call_id;
     const wait = typeof args.wait_seconds === 'number' ? Math.max(0, Math.min(args.wait_seconds, MAX_WAIT_S)) : 0;
     const deadline = Date.now() + wait * 1000;
-    let rec = readRecord(phoneDir, id);
+    const read = () => {
+      const r = readRecord(phoneDir, id);
+      if (r === UNREADABLE) throw new PhoneToolError(`phone_calls: call ${id} exists but its record is unreadable`);
+      return r;
+    };
+    let rec = read();
     while (rec && visible(rec) && rec.status !== 'ended' && Date.now() < deadline) {
       await sleep(1000);
-      rec = readRecord(phoneDir, id) ?? rec;
+      rec = read() ?? rec;
     }
     if (!rec || !visible(rec)) throw new PhoneToolError(`Server ${server} has no call ${id}`);
     return callView(rec);
@@ -220,14 +225,16 @@ export async function readCalls(
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { calls: [] };
     throw new PhoneToolError(`phone_calls: the call records are unreadable (${(err as NodeJS.ErrnoException).code})`);
   }
-  const calls = names
-    .map((n) => readRecord(phoneDir, n.slice(0, -5)))
-    .filter((r): r is CallRecordLike => !!r && visible(r))
+  const read = names.map((n) => readRecord(phoneDir, n.slice(0, -5)));
+  // An unreadable record's owner cannot be known: it is counted, never listed or hidden as if absent.
+  const unreadable = read.filter((r) => r === UNREADABLE).length;
+  const calls = read
+    .filter((r): r is CallRecordLike => !!r && r !== UNREADABLE && visible(r))
     .sort((a, b) => b.createdAt - a.createdAt)
     .slice(0, 20)
     .map((r) => {
       const { work: _w, transcript, ...rest } = r;
       return { ...rest, lines: transcript?.length ?? 0 };
     });
-  return { calls };
+  return unreadable ? { calls, unreadable } : { calls };
 }

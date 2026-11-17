@@ -179,6 +179,8 @@ export function openVoiceDialog(opts: VoiceDialogOptions): VoiceDialog {
         yield { type: 'closed' };
       } catch (err) {
         yield { type: 'closed', message: (err as Error).message };
+      } finally {
+        input.close(); // the stream is over (the CLI ended or died): nothing more is sent into it
       }
     },
   };
