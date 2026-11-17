@@ -21,7 +21,6 @@ export const MAX_SOURCE_FILE = 25 * 1024 * 1024;
 /** All files of one call at most, and how many. */
 export const MAX_SOURCE_TOTAL = 64 * 1024 * 1024;
 export const MAX_SOURCE_FILES = 2000;
-const MAX_DIR_DEPTH = 16;
 
 /** Repositories and branches an account entry may deploy from: `owner/name` → branch names. */
 export type CfSources = Record<string, string[]>;
@@ -103,40 +102,71 @@ async function json(res: CfResponse): Promise<unknown> {
   }
 }
 
-/** The branch's head commit now: every file of the call is read at this commit. */
+/**
+ * The branch's head commit now: every file of the call is read at this commit. Resolved through the branches
+ * endpoint, which takes branch names only — a tag or a commit with the same name never stands in for the branch.
+ */
 export async function sourceCommit(fetch: CfFetch, token: string, repo: string, ref: string): Promise<string> {
   const res = await github(
     fetch,
     token,
-    `/repos/${repo}/commits/${encodeURIComponent(ref)}`,
+    `/repos/${repo}/branches/${encodeURIComponent(ref)}`,
     'application/vnd.github+json',
   );
-  const sha = ((await json(res)) as { sha?: unknown } | null)?.sha;
-  if (typeof sha !== 'string' || !SHA.test(sha)) throw new CfError(`GitHub named no commit for ${repo}@${ref}`);
+  const branch = (await json(res)) as { name?: unknown; commit?: { sha?: unknown } } | null;
+  const sha = branch?.commit?.sha;
+  if (branch?.name !== ref || typeof sha !== 'string' || !SHA.test(sha)) {
+    throw new CfError(`GitHub named no head commit for branch ${ref} of ${repo}`);
+  }
   return sha;
 }
 
 const contentsPath = (repo: string, commit: string, path: string) =>
   `/repos/${repo}/contents/${path.split('/').map(encodeURIComponent).join('/')}?ref=${commit}`;
 
-/** One file's bytes at the commit. */
+/** A body read up to `limit` bytes and no further: a larger file fails without filling this process's memory. */
+async function boundedBytes(res: CfResponse, limit: number, path: string): Promise<Buffer> {
+  const tooLarge = () => new CfError(`${path} is larger than the ${limit} bytes left for this call`);
+  const stream = res.body;
+  if (stream && typeof stream.getReader === 'function') {
+    const reader = stream.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return Buffer.concat(chunks);
+      total += value.length;
+      if (total > limit) {
+        await reader.cancel().catch(() => undefined);
+        throw tooLarge();
+      }
+      chunks.push(value);
+    }
+  }
+  if (typeof res.arrayBuffer !== 'function') throw new CfError(`GitHub answered ${path} without its bytes`);
+  const bytes = Buffer.from(await res.arrayBuffer());
+  if (bytes.length > limit) throw tooLarge();
+  return bytes;
+}
+
+/** One file's bytes at the commit, at most `limit` of them (and never more than `MAX_SOURCE_FILE`). */
 export async function sourceFile(
   fetch: CfFetch,
   token: string,
   repo: string,
   commit: string,
   path: string,
+  limit = MAX_SOURCE_FILE,
 ): Promise<Buffer> {
   const res = await github(fetch, token, contentsPath(repo, commit, path), 'application/vnd.github.raw');
-  if (typeof res.arrayBuffer !== 'function') throw new CfError(`GitHub answered ${path} without its bytes`);
-  const bytes = Buffer.from(await res.arrayBuffer());
-  if (bytes.length > MAX_SOURCE_FILE) throw new CfError(`${path} is larger than ${MAX_SOURCE_FILE} bytes`);
-  return bytes;
+  return boundedBytes(res, Math.min(limit, MAX_SOURCE_FILE), path);
 }
 
 /**
- * Every file below a directory at the commit, its path relative to the directory. Symbolic links and submodules are
- * refused: they point outside what the branch holds.
+ * Every file below a directory at the commit, its path relative to the directory. Listed from the commit's whole Git
+ * tree (a contents listing stops at 1,000 entries, which would deploy with files missing); a tree GitHub truncated is
+ * refused. Symbolic links (mode 120000) and submodules are refused by their Git metadata: they point outside what the
+ * branch holds. The count and sizes are checked from the tree before anything is read.
  */
 export async function sourceDir(
   fetch: CfFetch,
@@ -145,32 +175,33 @@ export async function sourceDir(
   commit: string,
   dir: string,
 ): Promise<SourceFile[]> {
+  const tree = (await json(
+    await github(fetch, token, `/repos/${repo}/git/trees/${commit}?recursive=1`, 'application/vnd.github+json'),
+  )) as { tree?: unknown; truncated?: unknown } | null;
+  if (!tree || !Array.isArray(tree.tree) || tree.truncated !== false) {
+    throw new CfError(`GitHub could not list the whole tree of ${repo} at ${commit}; nothing was uploaded`);
+  }
+  const below: { path: string; size: number }[] = [];
+  for (const entry of tree.tree as { path?: unknown; mode?: unknown; type?: unknown; size?: unknown }[]) {
+    if (typeof entry?.path !== 'string' || !entry.path.startsWith(`${dir}/`)) continue;
+    const path = sourcePath(entry.path);
+    if (entry.type === 'tree') continue;
+    if (entry.type === 'commit') throw new CfError(`${path} is a submodule, not a file`);
+    if (entry.type !== 'blob' || entry.mode === '120000') throw new CfError(`${path} is a symbolic link, not a file`);
+    if (typeof entry.size !== 'number' || entry.size < 0) throw new CfError(`GitHub gave no size for ${path}`);
+    if (entry.size > MAX_SOURCE_FILE) throw new CfError(`${path} is larger than ${MAX_SOURCE_FILE} bytes`);
+    below.push({ path, size: entry.size });
+  }
+  if (below.length === 0) throw new CfError(`${dir} holds no files`);
+  if (below.length > MAX_SOURCE_FILES) throw new CfError(`${dir} holds more than ${MAX_SOURCE_FILES} files`);
+  if (below.reduce((n, f) => n + f.size, 0) > MAX_SOURCE_TOTAL) {
+    throw new CfError(`${dir} holds more than ${MAX_SOURCE_TOTAL} bytes`);
+  }
   const files: SourceFile[] = [];
-  let total = 0;
-  const walk = async (path: string, depth: number): Promise<void> => {
-    if (depth > MAX_DIR_DEPTH) throw new CfError(`${path} is nested deeper than ${MAX_DIR_DEPTH} directories`);
-    const listing = await json(
-      await github(fetch, token, contentsPath(repo, commit, path), 'application/vnd.github+json'),
-    );
-    if (!Array.isArray(listing)) throw new CfError(`${path} is not a directory`);
-    for (const entry of listing as { type?: unknown; path?: unknown; size?: unknown }[]) {
-      const entryPath = sourcePath(entry?.path);
-      if (!entryPath.startsWith(`${dir}/`)) throw new CfError(`GitHub listed ${entryPath} outside ${dir}`);
-      if (entry.type === 'dir') {
-        await walk(entryPath, depth + 1);
-      } else if (entry.type === 'file') {
-        if (files.length >= MAX_SOURCE_FILES) throw new CfError(`${dir} holds more than ${MAX_SOURCE_FILES} files`);
-        const bytes = await sourceFile(fetch, token, repo, commit, entryPath);
-        total += bytes.length;
-        if (total > MAX_SOURCE_TOTAL) throw new CfError(`${dir} holds more than ${MAX_SOURCE_TOTAL} bytes`);
-        files.push({ path: entryPath.slice(dir.length + 1), bytes });
-      } else {
-        throw new CfError(`${entryPath} is a ${String(entry?.type)}, not a file or directory`);
-      }
-    }
-  };
-  await walk(dir, 0);
-  if (files.length === 0) throw new CfError(`${dir} holds no files`);
+  for (const { path, size } of below) {
+    const bytes = await sourceFile(fetch, token, repo, commit, path, size);
+    files.push({ path: path.slice(dir.length + 1), bytes });
+  }
   return files;
 }
 

@@ -113,9 +113,12 @@ interface Call {
 
 function world(
   opts: {
-    buckets?: string[][] | 'all';
+    buckets?: string[][] | 'all' | 'each';
     uploadStatus?: number;
-    listing?: Record<string, { type: string; path: string }[]>;
+    tree?: { path: string; mode: string; type: string; size?: number }[];
+    truncated?: boolean;
+    files?: Record<string, Buffer>;
+    onSession?: () => void;
   } = {},
 ) {
   const calls: Call[] = [];
@@ -125,14 +128,21 @@ function world(
     json: async () => json,
     text: async () => JSON.stringify(json),
   });
-  const listing = opts.listing ?? {
-    static: [
-      { type: 'file', path: 'static/index.html' },
-      { type: 'dir', path: 'static/media' },
-    ],
-    'static/media': [{ type: 'file', path: 'static/media/sound.mp3' }],
-  };
+  const files = opts.files ?? REPO;
+  const dirs = new Set(
+    Object.keys(files).flatMap((p) =>
+      p
+        .split('/')
+        .slice(0, -1)
+        .map((_, i, a) => a.slice(0, i + 1).join('/')),
+    ),
+  );
+  const tree = opts.tree ?? [
+    ...[...dirs].map((p) => ({ path: p, mode: '040000', type: 'tree' })),
+    ...Object.entries(files).map(([p, b]) => ({ path: p, mode: '100644', type: 'blob', size: b.length })),
+  ];
   let uploads = 0;
+  let total = 0;
   const fetch: CfFetch = async (url, init) => {
     calls.push({
       url,
@@ -141,13 +151,15 @@ function world(
       accept: init.headers.Accept,
       body: init.body,
     });
-    if (url === `${GH}/repos/acme/site/commits/main`) return ok({ sha: COMMIT });
+    if (url === `${GH}/repos/acme/site/branches/main`) return ok({ name: 'main', commit: { sha: COMMIT } });
+    if (url === `${GH}/repos/acme/site/git/trees/${COMMIT}?recursive=1`)
+      return ok({ sha: COMMIT, tree, truncated: opts.truncated ?? false });
     const content = /^https:\/\/api\.github\.com\/repos\/acme\/site\/contents\/(.+)\?ref=([0-9a-f]{40})$/.exec(url);
     if (content) {
       const p = decodeURIComponent(content[1]);
       if (init.headers.Accept === 'application/vnd.github.raw') {
-        const bytes = REPO[p];
-        if (!bytes) return ok({ message: 'Not Found' }, 404);
+        const bytes = files[p];
+        if (!bytes) return ok({ message: `Not Found for ${GH_TOKEN}` }, 404);
         return {
           ok: true,
           status: 200,
@@ -156,12 +168,19 @@ function world(
             bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
         };
       }
-      return listing[p] ? ok(listing[p]) : ok({ message: 'Not Found' }, 404);
+      return ok({ message: 'Not Found' }, 404);
     }
     if (url === `${CF}${SCRIPT}/assets-upload-session`) {
+      opts.onSession?.();
       const manifest = JSON.parse(String(init.body)).manifest as Record<string, { hash: string }>;
       const hashes = Object.values(manifest).map((m) => m.hash);
-      const buckets = opts.buckets === 'all' || opts.buckets === undefined ? [hashes] : opts.buckets;
+      const buckets =
+        opts.buckets === 'each'
+          ? hashes.map((h) => [h])
+          : opts.buckets === 'all' || opts.buckets === undefined
+            ? [hashes]
+            : opts.buckets;
+      total = buckets.length;
       return ok({ success: true, result: { jwt: 'JWT-SESSION-1', buckets } });
     }
     if (url === `${CF}/accounts/${HQ}/workers/assets/upload?base64=true`) {
@@ -169,7 +188,10 @@ function world(
       if (opts.uploadStatus && opts.uploadStatus >= 300) {
         return ok({ success: false, errors: [{ code: 1, message: 'boom JWT-SESSION-1' }] }, opts.uploadStatus);
       }
-      return ok({ success: true, result: { jwt: 'JWT-DONE-2' } }, 201);
+      // Only the last bucket's answer carries the completion token.
+      return uploads === total
+        ? ok({ success: true, result: { jwt: 'JWT-DONE-2' } }, 201)
+        : ok({ success: true, result: {} }, 202);
     }
     if (url === `${CF}${SCRIPT}`) return ok({ success: true, result: { id: 'site' } });
     return ok({ success: false, errors: [{ code: 404, message: `unexpected ${url}` }] }, 404);
@@ -214,7 +236,7 @@ describe('cf_api sources — Worker modules from a repository branch', () => {
     await deploy(fetch);
     const github = calls.filter((c) => c.url.startsWith(GH));
     expect(github.map((c) => c.url)).toEqual([
-      `${GH}/repos/acme/site/commits/main`,
+      `${GH}/repos/acme/site/branches/main`,
       `${GH}/repos/acme/site/contents/cloud/src/worker.mjs?ref=${COMMIT}`,
       `${GH}/repos/acme/site/contents/cloud/src/a.mjs?ref=${COMMIT}`,
     ]);
@@ -377,9 +399,69 @@ describe('cf_api sources — static assets', () => {
       await expect(deploy(fetch, { assets, ...extra })).rejects.toThrow(error);
       expect(calls).toEqual([]);
     }
-    const linked = world({ listing: { static: [{ type: 'symlink', path: 'static/link' }] } });
-    await expect(deploy(linked.fetch, { assets })).rejects.toThrow(/is a symlink, not a file or directory/);
+    const linked = world({ tree: [{ path: 'static/link', mode: '120000', type: 'blob', size: 5 }] });
+    await expect(deploy(linked.fetch, { assets })).rejects.toThrow(/static\/link is a symbolic link/);
+    const sub = world({ tree: [{ path: 'static/vendor', mode: '160000', type: 'commit' }] });
+    await expect(deploy(sub.fetch, { assets })).rejects.toThrow(/static\/vendor is a submodule/);
+    expect(sub.calls.filter((c) => c.url.startsWith(CF))).toEqual([]);
     expect(linked.calls.filter((c) => c.url.startsWith(CF))).toEqual([]);
     expect(ledger()).toEqual([]);
+  });
+});
+
+// review-of-legends R1 (d165d7e7): a truncated listing, branch-only resolution, the module budget while reading, an
+// explicit assets ref, several buckets, and the intent before the first asset write.
+describe('cf_api sources — review R1', () => {
+  const assets = { dir: 'static' };
+
+  it('refuses a tree GitHub truncated, so assets never deploy with files missing', async () => {
+    const { fetch, calls } = world({ truncated: true });
+    await expect(deploy(fetch, { assets })).rejects.toThrow(/could not list the whole tree/);
+    expect(calls.filter((c) => c.url.startsWith(CF))).toEqual([]);
+  });
+
+  it('resolves a source only as a branch: a tag of the same name never stands in', async () => {
+    writeConfig({ sources: { 'acme/site': ['v1'] } });
+    const { fetch, calls } = world();
+    await expect(
+      deploy(fetch, { form: { repo: { repo: 'acme/site', ref: 'v1' }, fields: { metadata }, files: modules } }),
+    ).rejects.toThrow(/branches\/v1 answered 404/);
+    expect(calls.map((c) => c.url)).toEqual([`${GH}/repos/acme/site/branches/v1`]);
+  });
+
+  it('stops reading modules once the 10 MiB form budget is spent', async () => {
+    const big = Buffer.alloc(6 * 1024 * 1024, 0x61);
+    const { fetch, calls } = world({ files: { 'a.mjs': big, 'b.mjs': big } });
+    const file = (n: string) => ({ name: n, filename: n, type: 'application/javascript+module', source: n });
+    await expect(
+      deploy(fetch, {
+        form: { repo: { repo: 'acme/site', ref: 'main' }, fields: { metadata }, files: [file('a.mjs'), file('b.mjs')] },
+      }),
+    ).rejects.toThrow(/b\.mjs is larger than the \d+ bytes left for this call/);
+    expect(calls.filter((c) => c.url.startsWith(CF))).toEqual([]);
+  });
+
+  it('checks an assets ref given without its repository instead of defaulting it', async () => {
+    const { fetch, calls } = world();
+    await expect(deploy(fetch, { assets: { ref: 'dev', dir: 'static' } })).rejects.toThrow(/a source is/);
+    expect(calls).toEqual([]);
+  });
+
+  it('uploads bucket by bucket and attaches with the token from the last answer', async () => {
+    const { fetch, calls, uploads } = world({ buckets: 'each' });
+    await deploy(fetch, { assets });
+    expect(uploads()).toBe(2);
+    expect(
+      calls.filter((c) => c.url.includes('/workers/assets/upload')).every((c) => c.auth === 'Bearer JWT-SESSION-1'),
+    ).toBe(true);
+    const put = calls.find((c) => c.url === `${CF}${SCRIPT}`) as Call;
+    expect(JSON.parse(String((put.body as FormData).get('metadata'))).assets.jwt).toBe('JWT-DONE-2');
+  });
+
+  it('writes the intent line before the first asset is sent', async () => {
+    let phases: string[] = [];
+    const { fetch } = world({ onSession: () => (phases = ledger().map((r) => r.phase)) });
+    await deploy(fetch, { assets });
+    expect(phases).toEqual(['intent']);
   });
 });

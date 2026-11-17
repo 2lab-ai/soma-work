@@ -482,11 +482,14 @@ repository branches it deploys from, and `cf_api` reads the files from GitHub it
 - `sources` maps `owner/name` to the branches the account deploys from. Files are read with the same server's
   `github.token` (the server needs a `github` section); `github.repos` does not have to list the repository.
 - `form.repo: {"repo", "ref"}` names one source; a form file then gives `source: "<path in the repository>"` instead
-  of `text` or `base64`. The branch is resolved to its current commit first and every file is read at that commit;
-  the intent line records `source: {repo, ref, commit}`.
+  of `text` or `base64`. The branch is resolved to its current commit first, through GitHub's branches endpoint (a
+  tag or a commit of the same name never stands in), and every file is read at that commit; the intent line records
+  `source: {repo, ref, commit}`. Module files stop being read once the form's 10 MiB is spent.
 - `assets: {"dir": "static", "config": {...}}` goes only with `PUT /accounts/<id>/workers/scripts/<name>` and a form
-  whose `metadata` field is JSON without `assets` or `keep_assets`. Every file below `dir` (symbolic links and
-  submodules refused; up to 2000 files, 25 MiB each, 64 MiB in all) is hashed as Cloudflare expects, uploaded
+  whose `metadata` field is JSON without `assets` or `keep_assets`. `assets` names its own `repo` and `ref`, or
+  neither (then `form.repo`'s). Every file below `dir` is listed from the commit's whole Git tree (a tree GitHub
+  truncated is refused, so a deploy never goes out with files missing; symbolic links and submodules are refused by
+  their Git mode; up to 2000 files, 25 MiB each, 64 MiB in all, checked before reading), hashed as Cloudflare expects, uploaded
   through an assets upload session, and attached to the script with the completion token. Neither the session nor
   the completion token is handed back; the intent line records the file count, bytes and a SHA-256 of the manifest.
   When an upload fails the script is not sent and the write is recorded `failed`.

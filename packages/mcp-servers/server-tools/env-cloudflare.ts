@@ -742,7 +742,7 @@ async function resultOf(res: CfResponse, what: string, secrets: string[]): Promi
 async function uploadAssets(fetch: CfFetch, account: CfAccountConfig, scriptPath: string, files: StaticAsset[]) {
   const manifest = Object.fromEntries(files.map((f) => [f.path, { hash: f.hash, size: f.size }]));
   const byHash = new Map(files.map((f) => [f.hash, f]));
-  const call = async (url: string, init: Parameters<CfFetch>[1], what: string, secrets: string[]) => {
+  const call = async (url: string, init: Parameters<CfFetch>[1], what: string) => {
     try {
       return await fetch(url, { ...init, signal: AbortSignal.timeout(CALL_TIMEOUT_MS), redirect: 'manual' });
     } catch (err) {
@@ -756,7 +756,6 @@ async function uploadAssets(fetch: CfFetch, account: CfAccountConfig, scriptPath
       `${API}${scriptPath}/assets-upload-session`,
       { method: 'POST', headers: headers(account, true), body: JSON.stringify({ manifest }) },
       'assets upload session',
-      [account.token],
     ),
     'assets upload session',
     [account.token],
@@ -789,7 +788,6 @@ async function uploadAssets(fetch: CfFetch, account: CfAccountConfig, scriptPath
           body: data,
         },
         'assets upload',
-        [sessionJwt, account.token],
       ),
       'assets upload',
       [sessionJwt, account.token],

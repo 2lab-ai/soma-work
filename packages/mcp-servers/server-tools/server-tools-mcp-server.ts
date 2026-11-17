@@ -939,6 +939,9 @@ function envCloudflare(
  * from GitHub with the server's own token at one commit of the named branch. The form's files come back as base64
  * parts; the assets as Cloudflare's upload takes them. Nothing is read for a call that names no source.
  */
+/** Bytes of form files read from sources in one call: the multipart form's own cap. */
+const MAX_SOURCE_FORM = 10 * 1024 * 1024;
+
 async function readSources(
   fetchImpl: CfFetch,
   env: ReturnType<typeof envCloudflare>,
@@ -965,10 +968,11 @@ async function readSources(
   const formRef = form?.repo === undefined ? undefined : sourceRef(env.cloudflare.sources, form.repo, env.account);
   if (named && !formRef)
     throw new CfError('form.files[].source needs form.repo: {"repo": "owner/name", "ref": "<branch>"}');
+  // assets name their own repository and branch, or neither (then form.repo's); a ref alone is not defaulted.
   const assetsRef =
     assetsArg === undefined
       ? undefined
-      : assetsArg.repo === undefined && formRef
+      : assetsArg.repo === undefined && assetsArg.ref === undefined && formRef
         ? formRef
         : sourceRef(env.cloudflare.sources, assetsArg, env.account);
   if (formRef && assetsRef && (formRef.repo !== assetsRef.repo || formRef.ref !== assetsRef.ref)) {
@@ -979,6 +983,8 @@ async function readSources(
   const out = { ...args };
   if (form) {
     const read: Record<string, unknown>[] = [];
+    // The form's budget is kept while reading: a file past it stops the read, not the final form check.
+    let left = MAX_SOURCE_FORM;
     for (const file of files) {
       if (!file || typeof file !== 'object' || !('source' in file)) {
         read.push(file);
@@ -987,7 +993,8 @@ async function readSources(
       if ('text' in file || 'base64' in file)
         throw new CfError('a form file gives source, text or base64, one of them');
       const { source, ...rest } = file;
-      const bytes = await sourceFile(fetchImpl, token, ref.repo, commit, sourcePath(source));
+      const bytes = await sourceFile(fetchImpl, token, ref.repo, commit, sourcePath(source), left);
+      left -= bytes.length;
       read.push({ ...rest, base64: bytes.toString('base64') });
     }
     const { repo: _repo, ...formRest } = form;
