@@ -315,14 +315,31 @@ const CREDENTIAL_FIELDS = new Set([
   'api_token',
 ]);
 
-/** The same fields as JSON text (`"secret": "…"`), for an answer handed back as text: a KV value that holds JSON. */
-const CREDENTIAL_TEXT = new RegExp(`("(?:${[...CREDENTIAL_FIELDS].join('|')})"\\s*:\\s*)"(?:[^"\\\\]|\\\\.)*"`, 'gi');
+/**
+ * The same fields as JSON text (`"secret": "…"`), for text that holds JSON: an answer handed back as text, or a string
+ * value inside a JSON answer (a KV value). The pattern only finds the key; the value is walked by hand, so a long value
+ * cannot exhaust the regex stack, and a value with no closing quote is redacted to the end.
+ */
+const CREDENTIAL_KEY = new RegExp(`"(?:${[...CREDENTIAL_FIELDS].join('|')})"\\s*:\\s*"`, 'gi');
 
 function redactCredentialText(text: string): string {
-  return text.replace(CREDENTIAL_TEXT, '$1"[redacted]"');
+  if (!text.includes('"')) return text;
+  const key = new RegExp(CREDENTIAL_KEY.source, 'gi');
+  let out = '';
+  let at = 0;
+  for (let m = key.exec(text); m; m = key.exec(text)) {
+    const start = m.index + m[0].length;
+    let end = start;
+    while (end < text.length && text[end] !== '"') end += text[end] === '\\' ? 2 : 1;
+    out += `${text.slice(at, start)}[redacted]`;
+    at = Math.min(end, text.length);
+    key.lastIndex = at;
+  }
+  return out + text.slice(at);
 }
 
 function redactCredentials(value: unknown, depth = 0): unknown {
+  if (typeof value === 'string') return redactCredentialText(value);
   if (!value || typeof value !== 'object') return value;
   // Deeper than this is not walked, so it is not handed back either.
   if (depth > 64) return '[redacted: nested too deep]';

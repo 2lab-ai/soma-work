@@ -1119,3 +1119,50 @@ describe('cf_api — review-of-legends R9', () => {
     expect(out.body).toBe('v1 {"Secret": "[redacted]", "api_token":"[redacted]", "name": "n"}');
   });
 });
+
+// review-of-legends R10 (c8fb2ab3, follow-up): credentials inside JSON string values, a stack-bounded text scan, and
+// a UTF-8 character split by the read limit.
+describe('cf_api — review-of-legends R10', () => {
+  const kv = `/accounts/${DEV}/storage/kv/namespaces/n1/values/k`;
+
+  it('redacts credential fields inside string values of a JSON answer (a KV bulk read)', async () => {
+    const { fetch } = cloudflare({
+      json: { success: true, result: { k1: { value: '{"secret":"s3","n":1}' }, k2: { value: 'plain' } } },
+    });
+    const out = text(
+      await cf({ account: 'iq-dev', method: 'GET', path: `/accounts/${DEV}/storage/kv/namespaces/n1/bulk` }, fetch),
+    );
+    expect(out.body.result).toEqual({ k1: { value: '{"secret":"[redacted]","n":1}' }, k2: { value: 'plain' } });
+  });
+
+  it('scans a long text answer without exhausting the regex stack, and redacts an unterminated value to the end', async () => {
+    const long = `x {"secret": "${'a'.repeat(190_000)}"} tail`;
+    const { fetch } = cloudflare({ text: long });
+    const out = text(await cf({ account: 'iq-dev', method: 'GET', path: kv }, fetch));
+    expect(out.body).toBe('x {"secret": "[redacted]"} tail');
+    const cutText = cloudflare({ text: 'v {"token": "abc\\"def' });
+    expect(text(await cf({ account: 'iq-dev', method: 'GET', path: kv }, cutText.fetch)).body).toBe(
+      'v {"token": "[redacted]',
+    );
+  });
+
+  it('decodes text whose last character the 8 MiB read limit split, as text marked truncated', async () => {
+    const head = Buffer.alloc(8 * 1024 * 1024 - 1, 0x61);
+    const bytes = Buffer.concat([head, Buffer.from('가나', 'utf8')]);
+    const fetch: CfFetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array(bytes));
+          controller.close();
+        },
+      }),
+    });
+    const out = text(await cf({ account: 'iq-dev', method: 'GET', path: kv }, fetch));
+    expect(out.encoding).toBeUndefined();
+    expect(out.truncated).toBe(true);
+    expect(out.body).toBe('a'.repeat(200_000));
+  });
+});
