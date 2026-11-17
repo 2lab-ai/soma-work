@@ -323,7 +323,7 @@ export interface KanbanSession {
   };
   /**
    * .prd/26 — when the session's code changes were last collected (epoch ms): an open 변경점 tab reads them again when
-   * this moves. A time only — the board goes to every signed-in viewer, the changes to the owner and admins.
+   * this moves. A time only: the changes come from their own route, which answers whoever may see this card.
    */
   codeChangesAt?: number;
   /**

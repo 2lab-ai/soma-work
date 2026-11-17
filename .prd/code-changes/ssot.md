@@ -23,6 +23,12 @@ Status: shipped (main `cda9d40a`, dev v0.3.56-dev) · 작성 2026-11-16 · 기�
 >
 > 이 내용을 자세히 리서치하고 작업 계획을 $local:using-dotprd 로 만든후 구현한다.
 
+### SSOT_6 — 2026-11-17 Slack, 같은 스레드 (원문 그대로)
+
+> 아 그리고 다른 사람의 작업도 변경점 읽을수 있게 해줘 왜 못읽게 함?
+
+(SSOT_2–SSOT_5는 상세 카드 탭 줄 · 뷰어 두 모드 · 이슈 트리 — [`../28-detail-card-user-tasks-and-viewer-panel-spec.md`](../28-detail-card-user-tasks-and-viewer-panel-spec.md), [`../issue-tree/ssot.md`](../issue-tree/ssot.md).)
+
 ## SSOT-TASK-TREE
 
 - **T1** — PR별 소스 변경점을 파일별로 GitHub PR처럼 본다 (SSOT_1 1-①)
@@ -34,13 +40,14 @@ Status: shipped (main `cda9d40a`, dev v0.3.56-dev) · 작성 2026-11-16 · 기�
 - **T7** — 통계의 코드 변경 데이터가 이 데이터로 모인다 (SSOT_1 2-①)
 - **T8** — 모델이 세션 데이터에서 이 데이터를 보고, 커밋하지 않은 변경을 안다 (SSOT_1 2-②)
 - **T9** — 리서치 → `.prd` 계획 → 구현 (SSOT_1 끝 문장)
+- **T10** — 다른 사람의 작업도 변경점을 읽는다: 그 작업 카드를 볼 수 있으면 변경점도 읽는다 (SSOT_6)
 
 ## INTENT-LIST
 
 - **I1** — 세션이 코드에 무엇을 했는지 한 곳에서 끝까지 확인한다: 아직 안 올린 것부터 머지된 것까지, 레포가 몇 개든 (SSOT_1 1 · 2)
 - **I2** — 그 결과가 숫자로도 맞게 남는다: 통계의 코드 변경이 실제 머지 · 커밋과 같은 값이 된다 (SSOT_1 2-①, 실측 근거는 26 §1)
 - **I3** — 모델이 "작업만 하고 안 올린" 상태로 턴을 끝내지 않는다 (SSOT_1 2-②)
-- **I4** — (추론) 소스 코드가 보이는 화면이므로 작업 로그와 같은 사람만 본다 — 보드는 로그인한 모든 사람에게 간다
+- **I4** — ~~(추론) 소스 코드가 보이는 화면이므로 작업 로그와 같은 사람만 본다~~ → SSOT_6이 뒤집음: 카드를 볼 수 있는 사람이 변경점도 읽는다 — 공개 채널의 작업은 로그인한 누구나, 비공개 작업(DM · 비공개 채널, #1315)은 소유자와 어드민만
 
 ## INTENT-TASK-TREE (판정 · 가역성)
 
@@ -55,7 +62,7 @@ Status: shipped (main `cda9d40a`, dev v0.3.56-dev) · 작성 2026-11-16 · 기�
 | I2.2 | 세션이 쉬는 사이 머지된 PR도 잡는 주기 확인 | T7 | glue | rev |
 | I3.1 | GET_SESSION에 `codeChanges` 요약 | T8 | glue | rev |
 | I3.2 | 턴 컨텍스트에 커밋 안 한 변경 한 줄 (있을 때만) | T8 | build | rev |
-| I4.1 | 라우트 권한 = 작업 로그와 같음(소유자 · 어드민) | (intent-derived) | reuse | rev |
+| I4.1 | ~~라우트 권한 = 작업 로그와 같음(소유자 · 어드민)~~ → 라우트 권한 = 카드 공개 규칙(`canViewTask`), 못 보는 작업은 404 | T10 | reuse | rev |
 | I5.1 | dev 배포 · 실측 | T9 | reuse | irrev(배포) |
 
 ## Diff: INTENT vs SSOT — 크기: 작음
