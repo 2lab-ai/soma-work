@@ -250,6 +250,18 @@ describe('cf_api — reach "account"', () => {
   });
 
   it('reads the account and the account list, but never writes the account itself', async () => {
+    // The token sees two accounts; the answer keeps this one.
+    const both = cloudflare({
+      json: {
+        success: true,
+        result: [
+          { id: DEV, name: 'IQ-dev' },
+          { id: HQ, name: 'IQ-hq' },
+        ],
+      },
+    });
+    const listed = await cf({ account: 'iq-dev', method: 'GET', path: '/accounts' }, both.fetch);
+    expect(text(listed).body.result).toEqual([{ id: DEV, name: 'IQ-dev' }]);
     const { fetch, calls } = cloudflare();
     await cf({ account: 'iq-dev', method: 'GET', path: '/accounts' }, fetch);
     await cf({ account: 'iq-dev', method: 'GET', path: `/accounts/${DEV}` }, fetch);
@@ -265,24 +277,40 @@ describe('cf_api — reach "account"', () => {
   it("lists the account's zones only, adding the account to the query", async () => {
     const { fetch, calls } = cloudflare();
     await cf({ account: 'iq-hq', method: 'GET', path: '/zones', query: { per_page: 50 } }, fetch);
-    expect(calls[0].url).toBe(`${API}/zones?per_page=50&account.id=${HQ}`);
+    expect(calls[0].url).toBe(`${API}/zones?per_page=50&account.id=${HQ}&match=all`);
     await expect(
       cf({ account: 'iq-hq', method: 'GET', path: '/zones', query: { 'account.id': DEV } }, fetch),
-    ).rejects.toThrow(/account.id must be this account/);
+    ).rejects.toThrow(/account.id must be bbbb/);
+    // review: `match=any` would make the account one filter among alternatives.
+    await expect(
+      cf({ account: 'iq-hq', method: 'GET', path: '/zones', query: { match: 'any', status: 'active' } }, fetch),
+    ).rejects.toThrow(/match must be all/);
     await expect(cf({ account: 'iq-dev', method: 'POST', path: '/zones', body: { name: 'x' } }, fetch)).rejects.toThrow(
       /zone itself is never written/,
     );
     expect(calls).toHaveLength(1);
+    // A token that sees another account's zones: the answer keeps this account's.
+    const mixed = cloudflare({
+      json: {
+        success: true,
+        result: [
+          { id: HQ_ZONE, account: { id: HQ } },
+          { id: DEV_ZONE, account: { id: DEV } },
+        ],
+      },
+    });
+    const out = await cf({ account: 'iq-hq', method: 'GET', path: '/zones' }, mixed.fetch);
+    expect(text(out).body.result).toEqual([{ id: HQ_ZONE, account: { id: HQ } }]);
   });
 
   it('reaches a zone it does not list once Cloudflare says the zone is this account’s, and remembers it', async () => {
     const { fetch, calls } = cloudflare();
-    await cf({ account: 'iq-hq', method: 'GET', path: `/zones/${HQ_ZONE}/rulesets` }, fetch);
-    await cf({ account: 'iq-hq', method: 'GET', path: `/zones/${HQ_ZONE}/custom_hostnames` }, fetch);
+    await cf({ account: 'iq-hq', method: 'GET', path: `/zones/${HQ_ZONE}/dns_records` }, fetch);
+    await cf({ account: 'iq-hq', method: 'GET', path: `/zones/${HQ_ZONE}/settings` }, fetch);
     expect(calls.map((c) => c.url)).toEqual([
       `${API}/zones/${HQ_ZONE}`,
-      `${API}/zones/${HQ_ZONE}/rulesets`,
-      `${API}/zones/${HQ_ZONE}/custom_hostnames`,
+      `${API}/zones/${HQ_ZONE}/dns_records`,
+      `${API}/zones/${HQ_ZONE}/settings`,
     ]);
     expect(calls.every((c) => c.auth === `Bearer ${HQ_TOKEN}`)).toBe(true);
   });
@@ -297,10 +325,29 @@ describe('cf_api — reach "account"', () => {
     expect(ledger()).toEqual([]);
   });
 
-  it('reaches a listed zone without asking, and every part of it', async () => {
+  it('reaches a listed zone without asking, its default parts, and a part the entry lists', async () => {
     const { fetch, calls } = cloudflare({ json: { success: true, result: [] } });
+    await cf({ account: 'iq-dev', method: 'GET', path: `/zones/${LISTED_ZONE}/workers/routes` }, fetch);
+    expect(calls.map((c) => c.url)).toEqual([`${API}/zones/${LISTED_ZONE}/workers/routes`]);
+    // review: a zone part that can carry another system's credential stays opt-in under reach "account" too.
+    for (const part of ['custom_hostnames', 'logpush', 'healthchecks', 'rulesets']) {
+      await expect(
+        cf({ account: 'iq-dev', method: 'GET', path: `/zones/${LISTED_ZONE}/${part}` }, fetch),
+      ).rejects.toThrow(new RegExp(`${part} is not a part cf_api reaches`));
+    }
+    writeConfig(
+      accounts({
+        'iq-dev': {
+          token: { $secret: 'cf-dev' },
+          id: DEV,
+          reach: 'account',
+          parts: ['logpush'],
+          zones: { 'dev.example': LISTED_ZONE },
+        },
+      }),
+    );
     await cf({ account: 'iq-dev', method: 'GET', path: `/zones/${LISTED_ZONE}/logpush/jobs` }, fetch);
-    expect(calls.map((c) => c.url)).toEqual([`${API}/zones/${LISTED_ZONE}/logpush/jobs`]);
+    expect(calls).toHaveLength(2);
     await expect(cf({ account: 'iq-dev', method: 'DELETE', path: `/zones/${LISTED_ZONE}` }, fetch)).rejects.toThrow(
       /zone itself is never written/,
     );
@@ -318,6 +365,7 @@ describe('cf_api — reach "account"', () => {
       `/accounts/${DEV}/stream/keys`,
       `/accounts/${DEV}/images/v1/keys`,
       `/accounts/${DEV}/Tokens`,
+      `/accounts/${DEV}/workers/scripts/api/tails`,
       `/zones/${LISTED_ZONE}/access/apps/x/tokens`,
     ]) {
       await expect(cf({ account: 'iq-dev', method: 'GET', path: p }, fetch)).rejects.toThrow(/never reachable/);
@@ -330,6 +378,40 @@ describe('cf_api — reach "account"', () => {
     await cf({ account: 'iq-dev', method: 'GET', path: `/accounts/${DEV}/workers/scripts/token-refresher` }, fetch);
     await cf({ account: 'iq-dev', method: 'GET', path: `/accounts/${DEV}/storage/kv/namespaces/n1/keys` }, fetch);
     expect(calls).toHaveLength(2);
+  });
+
+  // review: an account part whose answer can carry another system's credential is opt-in, like a zone part.
+  it('reaches the deploy parts of an account by default, and the rest only when the entry lists them', async () => {
+    const { fetch, calls } = cloudflare();
+    for (const part of ['workers', 'd1', 'storage', 'r2', 'pages', 'queues', 'hyperdrive', 'ai']) {
+      await cf({ account: 'iq-dev', method: 'GET', path: `/accounts/${DEV}/${part}` }, fetch);
+    }
+    expect(calls).toHaveLength(8);
+    for (const p of [
+      `/accounts/${DEV}/secondary_dns/tsigs`,
+      `/accounts/${DEV}/stream/live_inputs`,
+      `/accounts/${DEV}/challenges/widgets`,
+      `/accounts/${DEV}/calls/apps`,
+      `/accounts/${DEV}/logpush/jobs`,
+      `/accounts/${DEV}/cfd_tunnel`,
+      `/accounts/${DEV}/load_balancers/monitors`,
+      `/accounts/${DEV}/access/apps`,
+    ]) {
+      await expect(cf({ account: 'iq-dev', method: 'GET', path: p }, fetch)).rejects.toThrow(
+        /is not an account part cf_api reaches/,
+      );
+    }
+    expect(calls).toHaveLength(8);
+    const entry = { token: { $secret: 'cf-dev' }, id: DEV, reach: 'account', write: true };
+    writeConfig(accounts({ 'iq-dev': { ...entry, parts: ['logpush'] } }));
+    await cf({ account: 'iq-dev', method: 'GET', path: `/accounts/${DEV}/logpush/jobs` }, fetch);
+    // "*" opens every part, and never a credential path.
+    writeConfig(accounts({ 'iq-dev': { ...entry, parts: ['*'] } }));
+    await cf({ account: 'iq-dev', method: 'GET', path: `/accounts/${DEV}/secondary_dns/tsigs` }, fetch);
+    await expect(cf({ account: 'iq-dev', method: 'GET', path: `/accounts/${DEV}/tokens` }, fetch)).rejects.toThrow(
+      /never reachable/,
+    );
+    expect(calls).toHaveLength(10);
   });
 });
 
@@ -378,6 +460,19 @@ describe('cf_api — uploads and answers that are not JSON', () => {
     await expect(cf({ account: 'iq-dev', method: 'GET', path: path_, form: worker }, fetch)).rejects.toThrow(
       /only sent with POST, PUT or PATCH/,
     );
+    // review: a module may sit in a folder (`chunks/x.js`), never above it.
+    await cf(
+      {
+        account: 'iq-dev',
+        method: 'PUT',
+        path: path_,
+        form: {
+          files: [{ name: 'chunks/x.js', filename: 'chunks/x.js', type: 'application/javascript+module', text: '' }],
+        },
+      },
+      fetch,
+    );
+    expect(((calls[1].body as FormData).get('chunks/x.js') as File).name).toBe('chunks/x.js');
     await expect(
       cf(
         { account: 'iq-dev', method: 'PUT', path: path_, form: { files: [{ name: 'a', filename: '../x', text: '' }] } },
@@ -395,7 +490,7 @@ describe('cf_api — uploads and answers that are not JSON', () => {
         fetch,
       ),
     ).rejects.toThrow(/text or base64/);
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
   });
 
   it('returns a read whose answer is not JSON as text, without the token', async () => {

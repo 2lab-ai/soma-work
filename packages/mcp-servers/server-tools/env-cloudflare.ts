@@ -55,8 +55,8 @@ export function cloudflareAccounts(section: unknown): Record<string, unknown> {
  * load balancers, analytics. Anything else only when the operator lists it in `parts`, because an answer there may
  * carry another system's credentials: health checks (request headers), rulesets, firewall rules, filters and page
  * rules (static header values and expressions can hold an origin's key, a forwarding URL its basic auth), custom
- * hostnames (`ssl.custom_key`, an uploaded TLS private key), logpush destinations, access. `reach: "account"` is the
- * operator saying the whole account is the environment's: every part.
+ * hostnames (`ssl.custom_key`, an uploaded TLS private key), logpush destinations, access. `reach: "account"` uses the
+ * same zone parts.
  */
 export const DEFAULT_PARTS: readonly string[] = [
   'dns_records',
@@ -71,9 +71,38 @@ export const DEFAULT_PARTS: readonly string[] = [
 ];
 
 /**
+ * The account parts `reach: "account"` reaches by default: what deploying and running an app on Cloudflare takes —
+ * Workers (scripts, versions, deployments, secrets, routes, domains, Durable Objects), D1, KV (`storage`), R2, Pages,
+ * Queues, Hyperdrive, Vectorize, Workers AI and AI Gateway, Workflows, Analytics Engine, Images, Lists (`rules`),
+ * Browser Rendering. Anything else only when the operator lists it in `parts` (or `"*"` for every part), because an
+ * answer there can carry another system's credential: Secondary DNS TSIG secrets, Stream live-input keys, Turnstile
+ * widget secrets (`challenges`), Realtime TURN keys and app secrets (`calls`), logpush destinations, a tunnel created
+ * with a chosen secret (`cfd_tunnel`), Zero Trust (`access`, `gateway`, `devices`), monitor headers
+ * (`load_balancers`), mTLS certificates, billing and registrar.
+ */
+export const DEFAULT_ACCOUNT_PARTS: readonly string[] = [
+  'workers',
+  'd1',
+  'storage',
+  'r2',
+  'pages',
+  'queues',
+  'hyperdrive',
+  'vectorize',
+  'ai',
+  'ai-gateway',
+  'workflows',
+  'analytics_engine',
+  'images',
+  'rules',
+  'browser-rendering',
+];
+
+/**
  * Path segments that make a credential or change who is a member, under any account or zone: API tokens (and their
  * verify and permission groups), members and memberships, Access service tokens, a tunnel's connector token, R2
- * temporary access keys. Matched as whole segments, so a Worker named `token-refresher` stays reachable.
+ * temporary access keys, a Worker's live tail (a URL that streams its logs). Matched as whole segments, so a Worker
+ * named `token-refresher` stays reachable. Even `parts: ["*"]` does not open them.
  */
 const NEVER_SEGMENTS = new Set([
   'tokens',
@@ -82,6 +111,7 @@ const NEVER_SEGMENTS = new Set([
   'members',
   'memberships',
   'temp-access-credentials',
+  'tails',
 ]);
 
 export interface CfResponse {
@@ -125,7 +155,10 @@ const SEGMENT = /^[A-Za-z0-9._~-]+$/;
 const HEX32 = /^[0-9a-f]{32}$/;
 const QUERY_KEY = /^[A-Za-z0-9_.[\]-]{1,100}$/;
 const FORM_NAME = /^[A-Za-z0-9_.[\]-]{1,100}$/;
-const FILENAME = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,199}$/;
+/** A module name or file name; may hold `/` (`chunks/x.js`), never a dot segment, a leading or doubled `/`. */
+const MODULE_NAME = /^[A-Za-z0-9_][A-Za-z0-9_./-]{0,199}$/;
+const moduleName = (v: unknown): v is string =>
+  typeof v === 'string' && MODULE_NAME.test(v) && v.split('/').every((s) => s !== '' && s !== '.' && s !== '..');
 const MEDIA_TYPE = /^[a-z]+\/[A-Za-z0-9.+-]{1,100}$/;
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 const CALL_TIMEOUT_MS = 30_000;
@@ -159,11 +192,21 @@ function pathSegments(value: unknown): string[] {
   return segments;
 }
 
-/** Where a checked path goes: the zone it is on (its name when listed), a zone to prove first, a query to add. */
+/**
+ * Where a checked path goes: the zone it is on (its name when listed), a zone to prove first, a query to add, and a
+ * list answer to cut down to this account (`accounts`: the account itself; `zones`: its zones).
+ */
 interface CfTarget {
   zone?: string;
   prove?: string;
   addQuery?: Record<string, string>;
+  keep?: 'accounts' | 'zones';
+}
+
+/** A part the entry reaches: a default one, one it lists, or any when it lists `"*"`. */
+function reachesPart(account: CfAccountConfig, defaults: readonly string[], part: string): boolean {
+  const listed = account.parts ?? [];
+  return defaults.includes(part) || listed.includes(part) || listed.includes('*');
 }
 
 /**
@@ -210,21 +253,29 @@ function accountTarget(name: string, account: CfAccountConfig, segments: string[
   if (handsOutCredential(segments)) {
     throw new CfError('tokens, members, service tokens and other credentials are never reachable');
   }
+  const part = segments[2];
   if (segments[0] === 'accounts') {
     if (segments.length === 1) {
       if (method !== 'GET') throw new CfError('the account list is read only');
-      return {};
+      return { keep: 'accounts' };
     }
     if (segments[1] !== account.id) throw new CfError(`${segments[1]} is not account ${name}`);
     if (method !== 'GET' && segments.length === 2) throw new CfError('the account itself is never written');
+    if (part !== undefined && !reachesPart(account, DEFAULT_ACCOUNT_PARTS, part)) {
+      throw new CfError(`${part} is not an account part cf_api reaches (an operator can add it to the entry's parts)`);
+    }
     return {};
   }
   if (segments.length === 1) {
     if (method !== 'GET') throw new CfError('the zone itself is never written here');
-    return { addQuery: { 'account.id': account.id as string } };
+    // `match=any` would turn the account filter into "this account OR …": the filters always all hold.
+    return { addQuery: { 'account.id': account.id as string, match: 'all' }, keep: 'zones' };
   }
   if (!HEX32.test(segments[1])) throw new CfError(`${segments[1]} is not a zone ID (32 hex)`);
   if (method !== 'GET' && segments.length === 2) throw new CfError('the zone itself is never written');
+  if (part !== undefined && !reachesPart(account, DEFAULT_PARTS, part)) {
+    throw new CfError(`${part} is not a part cf_api reaches (an operator can add it to the entry's parts)`);
+  }
   const listed = Object.entries(account.zones ?? {}).find(([, id]) => id === segments[1]);
   return listed ? { zone: listed[0] } : { zone: segments[1], prove: segments[1] };
 }
@@ -239,8 +290,9 @@ function queryString(value: unknown, add: Record<string, string> = {}): string {
     if (!QUERY_KEY.test(key) || !['string', 'number', 'boolean'].includes(typeof v)) {
       throw new CfError(`query ${key} must be a string, number or boolean`);
     }
-    if (key in add && String(v) !== add[key]) throw new CfError(`query ${key} must be this account (${add[key]})`);
-    if (!(key in add)) params.append(key, String(v));
+    const fixed = Object.hasOwn(add, key);
+    if (fixed && String(v) !== add[key]) throw new CfError(`query ${key} must be ${add[key]} here`);
+    if (!fixed) params.append(key, String(v));
   }
   for (const [key, v] of Object.entries(add)) params.append(key, v);
   const s = params.toString();
@@ -295,10 +347,8 @@ function formBody(method: CfMethod, form: unknown): { data: FormData; sha256: st
   }
   for (const file of files) {
     const { name, filename, type, text, base64 } = (file ?? {}) as Record<string, unknown>;
-    if (typeof name !== 'string' || !FORM_NAME.test(name)) throw new CfError('form file name must be a plain name');
-    if (typeof filename !== 'string' || !FILENAME.test(filename)) {
-      throw new CfError(`form file ${name}: filename must be a plain file name`);
-    }
+    if (!moduleName(name)) throw new CfError('form file name must be a plain module name');
+    if (!moduleName(filename)) throw new CfError(`form file ${name}: filename must be a plain file name`);
     const mediaType = type === undefined ? 'application/octet-stream' : type;
     if (typeof mediaType !== 'string' || !MEDIA_TYPE.test(mediaType)) {
       throw new CfError(`form file ${name}: type must be a media type`);
@@ -350,6 +400,8 @@ export interface CfRequest {
   zone?: string;
   /** A zone not listed: Cloudflare must say it is this account's before the call. */
   prove?: string;
+  /** A list answer cut down to this account before it is handed back. */
+  keep?: 'accounts' | 'zones';
   query: string;
   body?: string;
   form?: FormData;
@@ -374,6 +426,7 @@ export function cfRequest(name: string, account: CfAccountConfig, args: Record<s
     account: name,
     ...(target.zone ? { zone: target.zone } : {}),
     ...(target.prove ? { prove: target.prove } : {}),
+    ...(target.keep ? { keep: target.keep } : {}),
     query: queryString(args.query, target.addQuery),
     body: bodyText(method, args.body),
     ...(form ? { form: form.data, formSha256: form.sha256 } : {}),
@@ -428,6 +481,21 @@ export async function cfProve(fetch: CfFetch, account: CfAccountConfig, request:
     );
   }
   seen.add(key);
+}
+
+/**
+ * A list of accounts or zones cut down to this account's: one token can see several accounts, and `GET /accounts` or
+ * `GET /zones` answers with all it sees.
+ */
+function keepOwn(json: unknown, keep: CfRequest['keep'], id: string | undefined): unknown {
+  const result = (json as { result?: unknown } | null)?.result;
+  if (!keep || !Array.isArray(result)) return json;
+  const own = result.filter((r) =>
+    keep === 'accounts'
+      ? (r as { id?: unknown } | null)?.id === id
+      : (r as { account?: { id?: unknown } } | null)?.account?.id === id,
+  );
+  return { ...(json as Record<string, unknown>), result: own };
 }
 
 /** Make a checked call. A write that gets no answer throws `CfOutcomeUnknownError`. */
@@ -536,7 +604,7 @@ export async function cfCall(
       `Cloudflare ${request.method} ${request.path} answered ${res.status}: ${errorsOf(json, account.token)}`,
     );
   }
-  const text = scrub(JSON.stringify(json ?? null), account.token);
+  const text = scrub(JSON.stringify(keepOwn(json, request.keep, account.id) ?? null), account.token);
   return text.length > MAX_ANSWER_CHARS
     ? { status: res.status, truncated: true, body: text.slice(0, MAX_ANSWER_CHARS) }
     : { status: res.status, truncated: false, body: JSON.parse(text) };

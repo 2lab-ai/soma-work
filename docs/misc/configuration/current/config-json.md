@@ -410,26 +410,35 @@ repositories and its web login names — never a token.
 
 An account entry with `"reach": "account"` needs its 32-hex account `id`. It reaches:
 
-- `GET /accounts` (the accounts the token sees) and `GET /accounts/<id>`.
-- Everything below `/accounts/<id>/` — Workers, D1, KV, R2, Pages, Queues, and so on.
-- `GET /zones`. The tool adds `account.id=<id>`, and a different `account.id` in `query` is refused.
+- `GET /accounts` (cut down to this account, even when the token sees more) and `GET /accounts/<id>`.
+- `/accounts/<id>/<part>/…` for these parts by default: `workers` (scripts, versions, deployments, secrets, routes,
+  domains, Durable Objects), `d1`, `storage` (KV), `r2`, `pages`, `queues`, `hyperdrive`, `vectorize`, `ai`,
+  `ai-gateway`, `workflows`, `analytics_engine`, `images`, `rules` (lists), `browser-rendering`. Any other part only
+  when the entry lists it in `parts`, or `"*"` for every part. They are opt-in because an answer there can carry
+  another system's credential: Secondary DNS TSIG secrets, Stream live-input keys, Turnstile secrets (`challenges`),
+  Realtime keys (`calls`), logpush destinations, tunnels (`cfd_tunnel`), Zero Trust (`access`, `gateway`, `devices`),
+  monitor headers (`load_balancers`).
+- `GET /zones`. The tool adds `account.id=<id>` and `match=all`, refuses another value for either in `query`, and
+  cuts the answer down to this account's zones.
 - `/zones/<zone>/…` for a zone the entry lists, or one Cloudflare says belongs to this account. The tool asks
   `GET /zones/<zone>` with the entry's token once per process before the first call. This keeps one token that sees
-  several accounts from acting on another account through this entry. Every zone part is reachable; `parts` does not
-  apply.
+  several accounts from acting on another account through this entry. Zone parts follow the same rule as
+  `reach: "zones"`: the default list above plus what `parts` lists.
 
 Whatever the reach, these paths are never reachable, because they would hand a model a credential to use outside
 server-tools, or change who is a member:
 
-- Any segment `tokens`, `token`, `service_tokens`, `members`, `memberships` or `temp-access-credentials`, in any
-  case. A whole segment must match, so a Worker named `token-refresher` stays reachable.
+- Any segment `tokens`, `token`, `service_tokens`, `members`, `memberships`, `temp-access-credentials` or `tails`
+  (a Worker's live log stream), in any case, even with `parts: ["*"]`. A whole segment must match, so a Worker named
+  `token-refresher` stays reachable.
 - Stream and Images signing keys (`stream/keys`, `images/v1/keys`).
 - `/user…`, `/memberships`, `/graphql` and any path outside `/accounts` and `/zones`.
 - Writes to the account or a zone itself: creating, deleting, pausing or renaming them.
 
 Writes need the entry's `write: true` and go to the audit ledger as above. The ledger line also records `account`.
 `form` sends a multipart body instead of `body`, for example a Worker upload:
-`{"fields": {"metadata": "<JSON text>"}, "files": [{"name", "filename", "type", "text" | "base64"}]}`. A form may hold
+`{"fields": {"metadata": "<JSON text>"}, "files": [{"name", "filename", "type", "text" | "base64"}]}`. A module name
+may sit in a folder (`chunks/x.js`), never above it. A form may hold
 up to 50 parts and 10 MiB. The ledger keeps one SHA-256 of the whole form (`formSha256`), not its content. A read whose
 answer is not JSON (a Worker's source, a KV value) comes back as text, token scrubbed, at most 200,000 characters. A
 write whose answer is not JSON stays `unknown`.
@@ -437,7 +446,8 @@ write whose answer is not JSON stays `unknown`.
 Each account's token is resolved on its own. An account whose token is not a `{"$secret": …}`, or whose secret file is
 missing, is left out alone; the server, its other accounts and its other tools stay. Give each token only what the
 environment should do: Cloudflare enforces the token's permissions on every call. Leave out API Tokens, Members,
-Billing and Registrar.
+Billing and Registrar. An entry with `write` that can deploy a Worker can also deploy code that reads that Worker's
+secrets: give `write` only to an account the environment may run code on.
 
 ### Environment repository reads (`gh_read`, env-access WU5, #1213)
 
