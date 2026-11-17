@@ -1,6 +1,6 @@
 # SSOT — issue-tree (세션 이슈 트리: 변경점의 PR 목록을 이슈 · PR 트리로)
 
-Status: in-progress (라운드 2: T29–T32) · T20–T28 done → https://github.com/2lab-ai/soma-work/pull/1321 (머지 `5069eafe`, dev 실측 29 §9) · 작성 2026-11-16 · 기준 커밋 main `5fe1f0cf`
+Status: done (T20–T28 → https://github.com/2lab-ai/soma-work/pull/1321 `5069eafe`; T29–T32 → https://github.com/2lab-ai/soma-work/pull/1324 `74a89fa3`; dev 실측 29 §9) · 작성 2026-11-16 · 기준 커밋 main `5fe1f0cf`
 스펙 = [`../29-session-issue-tree-spec.md`](../29-session-issue-tree-spec.md) · 드라이버 = [`loop.md`](loop.md) ·
 앞선 워크스트림 = [`../code-changes/ssot.md`](../code-changes/ssot.md)(SSOT_1), [`../detail-card/ssot.md`](../detail-card/ssot.md)(SSOT_2 · SSOT_3) — 같은 스레드
 

@@ -473,6 +473,10 @@ describe('issue tree — .prd/29 §3', () => {
     const loaded = sanitizeIssueTree(JSON.parse(JSON.stringify(t)));
     expect(loaded?.nodes.find((n) => n.id === issueTreeNodeId(pr(10)))?.statusReadAt).toBe(5_000);
     expect(issueTreeView(t).nodes.find((n) => n.id === issueTreeNodeId(pr(10)))).not.toHaveProperty('statusReadAt');
+    // Two reads that began in the same millisecond: the one that lands later is taken (no newer read beat it).
+    upsertIssueTreeLink(t, { kind: 'pr', url: pr(12), status: 'closed', statusReadAt: 400 }, now());
+    upsertIssueTreeLink(t, { kind: 'pr', url: pr(12), status: 'open', statusReadAt: 400 }, now());
+    expect(t.nodes.find((n) => n.id === issueTreeNodeId(pr(12)))?.status).toBe('open');
     // A merge cannot be undone: a read that saw it merged is taken even when it began before the last state read.
     upsertIssueTreeLink(t, { kind: 'pr', url: pr(11), status: 'open', statusReadAt: 200 }, now());
     upsertIssueTreeLink(t, { kind: 'pr', url: pr(11), status: 'merged', statusReadAt: 100 }, now());
