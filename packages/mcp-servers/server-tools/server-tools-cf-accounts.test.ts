@@ -366,6 +366,8 @@ describe('cf_api — reach "account"', () => {
       `/accounts/${DEV}/images/v1/keys`,
       `/accounts/${DEV}/Tokens`,
       `/accounts/${DEV}/workers/scripts/api/tails`,
+      `/accounts/${DEV}/workers/scripts/api/assets-upload-session`,
+      `/accounts/${DEV}/pages/projects/site/upload-token`,
       `/zones/${LISTED_ZONE}/access/apps/x/tokens`,
     ]) {
       await expect(cf({ account: 'iq-dev', method: 'GET', path: p }, fetch)).rejects.toThrow(/never reachable/);

@@ -101,7 +101,9 @@ export const DEFAULT_ACCOUNT_PARTS: readonly string[] = [
 /**
  * Path segments that make a credential or change who is a member, under any account or zone: API tokens (and their
  * verify and permission groups), members and memberships, Access service tokens, a tunnel's connector token, R2
- * temporary access keys, a Worker's live tail (a URL that streams its logs). Matched as whole segments, so a Worker
+ * temporary access keys, a Worker's live tail (a URL that streams its logs), Pages and Workers asset upload tokens
+ * (short-lived JWTs that work outside the tool; cf_api always sends the account token, so it cannot use them itself).
+ * Matched as whole segments, so a Worker
  * named `token-refresher` stays reachable. Even `parts: ["*"]` does not open them.
  */
 const NEVER_SEGMENTS = new Set([
@@ -112,6 +114,8 @@ const NEVER_SEGMENTS = new Set([
   'memberships',
   'temp-access-credentials',
   'tails',
+  'upload-token',
+  'assets-upload-session',
 ]);
 
 export interface CfResponse {

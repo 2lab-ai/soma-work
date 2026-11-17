@@ -414,7 +414,8 @@ An account entry with `"reach": "account"` needs its 32-hex account `id`. It rea
 - `/accounts/<id>/<part>/…` for these parts by default: `workers` (scripts, versions, deployments, secrets, routes,
   domains, Durable Objects), `d1`, `storage` (KV), `r2`, `pages`, `queues`, `hyperdrive`, `vectorize`, `ai`,
   `ai-gateway`, `workflows`, `analytics_engine`, `images`, `rules` (lists), `browser-rendering`. Any other part only
-  when the entry lists it in `parts`, or `"*"` for every part. They are opt-in because an answer there can carry
+  when the entry lists it in `parts`, or `"*"` for every part. One `parts` list serves both levels: listing
+  `logpush` opens both the account's and its zones' logpush. They are opt-in because an answer there can carry
   another system's credential: Secondary DNS TSIG secrets, Stream live-input keys, Turnstile secrets (`challenges`),
   Realtime keys (`calls`), logpush destinations, tunnels (`cfd_tunnel`), Zero Trust (`access`, `gateway`, `devices`),
   monitor headers (`load_balancers`).
@@ -428,8 +429,9 @@ An account entry with `"reach": "account"` needs its 32-hex account `id`. It rea
 Whatever the reach, these paths are never reachable, because they would hand a model a credential to use outside
 server-tools, or change who is a member:
 
-- Any segment `tokens`, `token`, `service_tokens`, `members`, `memberships`, `temp-access-credentials` or `tails`
-  (a Worker's live log stream), in any case, even with `parts: ["*"]`. A whole segment must match, so a Worker named
+- Any segment `tokens`, `token`, `service_tokens`, `members`, `memberships`, `temp-access-credentials`, `tails`
+  (a Worker's live log stream), `upload-token` or `assets-upload-session` (Pages and Workers asset upload JWTs), in
+  any case, even with `parts: ["*"]`. A whole segment must match, so a Worker named
   `token-refresher` stays reachable.
 - Stream and Images signing keys (`stream/keys`, `images/v1/keys`).
 - `/user…`, `/memberships`, `/graphql` and any path outside `/accounts` and `/zones`.
