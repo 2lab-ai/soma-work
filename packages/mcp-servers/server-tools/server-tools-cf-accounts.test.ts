@@ -867,3 +867,80 @@ describe('cf_api — review-of-legends R5', () => {
     expect(text(out)).toEqual({ status: 200, truncated: false, body: value });
   });
 });
+
+// review-of-legends R6 (f92c8d17): binary answers, Pub/Sub broker credentials, the text cap, service tokens below
+// an opened zone part.
+describe('cf_api — review-of-legends R6', () => {
+  const bytesAnswer =
+    (bytes: Uint8Array): CfFetch =>
+    async () => {
+      let used = false;
+      const read = async () => {
+        if (used) throw new TypeError('Body is unusable');
+        used = true;
+        return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+      };
+      return {
+        ok: true,
+        status: 200,
+        arrayBuffer: read,
+        json: async () => JSON.parse(Buffer.from(await read()).toString()),
+        text: async () => Buffer.from(await read()).toString(),
+      };
+    };
+  const kv = `/accounts/${DEV}/storage/kv/namespaces/n1/values/k`;
+
+  it('hands back an answer that is not UTF-8 as base64, and UTF-8 bytes as text', async () => {
+    const out = await cf(
+      { account: 'iq-dev', method: 'GET', path: kv },
+      bytesAnswer(new Uint8Array([0xff, 0xfe, 0x00])),
+    );
+    expect(text(out)).toEqual({ status: 200, truncated: false, body: '//4A', encoding: 'base64' });
+    const utf8 = await cf(
+      { account: 'iq-dev', method: 'GET', path: kv },
+      bytesAnswer(Buffer.from('가나 value', 'utf8')),
+    );
+    expect(text(utf8)).toEqual({ status: 200, truncated: false, body: '가나 value' });
+    const json = await cf({ account: 'iq-dev', method: 'GET', path: kv }, bytesAnswer(Buffer.from('{"a":1}', 'utf8')));
+    expect(text(json).body).toEqual({ a: 1 });
+  });
+
+  it('cuts a long text answer at 200,000 characters and says so', async () => {
+    const { fetch } = cloudflare({ text: 'x'.repeat(200_001) });
+    const out = text(await cf({ account: 'iq-dev', method: 'GET', path: kv }, fetch));
+    expect(out.truncated).toBe(true);
+    expect(out.body).toHaveLength(200_000);
+  });
+
+  it('never reaches Pub/Sub, even listed', async () => {
+    writeConfig(accounts({ 'iq-dev': { token: { $secret: 'cf-dev' }, id: DEV, reach: 'account', parts: ['pubsub'] } }));
+    const { fetch, calls } = cloudflare();
+    await expect(
+      cf(
+        { account: 'iq-dev', method: 'GET', path: `/accounts/${DEV}/pubsub/namespaces/n/brokers/b/credentials` },
+        fetch,
+      ),
+    ).rejects.toThrow(/never reachable/);
+    expect(calls).toEqual([]);
+  });
+
+  it('never reaches service tokens below a zone part the entry opened', async () => {
+    writeConfig(
+      accounts({
+        'iq-dev': {
+          token: { $secret: 'cf-dev' },
+          id: DEV,
+          reach: 'account',
+          parts: ['access'],
+          zones: { d: LISTED_ZONE },
+        },
+      }),
+    );
+    const { fetch, calls } = cloudflare();
+    await cf({ account: 'iq-dev', method: 'GET', path: `/zones/${LISTED_ZONE}/access/apps` }, fetch);
+    await expect(
+      cf({ account: 'iq-dev', method: 'GET', path: `/zones/${LISTED_ZONE}/access/service_tokens` }, fetch),
+    ).rejects.toThrow(/never reachable/);
+    expect(calls).toHaveLength(1);
+  });
+});

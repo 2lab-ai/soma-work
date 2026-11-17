@@ -434,7 +434,7 @@ to use outside server-tools, or change who is a member:
   `warp_connector` (a tunnel's token, and a secret the caller can set), `secondary_dns` (TSIG secrets), `challenges`
   (Turnstile secrets), `stream` (live-input and signing keys), `access`, `gateway`, `devices`, `zerotrust`, `teamnet`
   (Zero Trust service tokens and device secrets), `mtls_certificates`, `magic` (IPsec pre-shared keys), `iam` (who
-  holds which permission).
+  holds which permission), `pubsub` (broker credentials).
 - Any segment `tokens`, `token`, `service_tokens`, `members`, `memberships`, `temp-access-credentials`, `tails`
   (a Worker's live log stream), `upload-token` or `assets-upload-session` (Pages and Workers asset upload JWTs),
   `direct_upload` (Images upload URLs), `deploy_hooks` (a Pages hook ID alone triggers a deployment) or
@@ -455,7 +455,9 @@ Writes need the entry's `write: true` and go to the audit ledger as above. The l
 may sit in a folder (`chunks/x.js`), never above it. `base64` must be whole (4-character groups, padding only at the
 end). A form may hold
 up to 50 parts and 10 MiB. The ledger keeps one SHA-256 of the whole form (`formSha256`), not its content. A read whose
-answer is not JSON (a Worker's source, a KV value) comes back as text, token scrubbed, at most 200,000 characters;
+answer is not JSON (a Worker's source, a KV value) comes back as text, token scrubbed, at most 200,000 characters
+(`truncated: true` when cut); an answer whose bytes are not UTF-8 (a binary KV value, an image) comes back as base64
+with `encoding: "base64"`;
 an empty successful read comes back as `""`. A zone the entry does not list is refused when Cloudflare says it is
 another account's, and also, with "could not confirm", when the lookup fails (no answer, a non-2xx status, an
 unreadable answer); nothing is sent and nothing is written to the ledger, and the next call asks again. A

@@ -102,7 +102,7 @@ export const DEFAULT_ACCOUNT_PARTS: readonly string[] = [
  * secrets (`calls`), tunnels and WARP connectors (a tunnel's secret can be set by the caller and its token read),
  * Secondary DNS TSIG secrets, Turnstile widget secrets (`challenges`), Stream live-input keys and signing keys, Zero
  * Trust service tokens and device secrets (`access`, `gateway`, `devices`, `zerotrust`, `teamnet`), mTLS certificates,
- * Magic IPsec pre-shared keys, and IAM user groups (who holds which permission).
+ * Magic IPsec pre-shared keys, IAM user groups (who holds which permission), and Pub/Sub broker credentials.
  */
 const NEVER_PARTS = new Set([
   'calls',
@@ -120,6 +120,7 @@ const NEVER_PARTS = new Set([
   'mtls_certificates',
   'magic',
   'iam',
+  'pubsub',
 ]);
 
 /**
@@ -152,6 +153,8 @@ export interface CfResponse {
   json(): Promise<unknown>;
   /** The raw answer; when present it is read instead of `json()`, so an answer that is not JSON comes back as text. */
   text?(): Promise<string>;
+  /** The raw bytes; when present they are read first, so an answer that is not UTF-8 comes back as base64. */
+  arrayBuffer?(): Promise<ArrayBuffer>;
 }
 export type CfFetch = (
   url: string,
@@ -576,12 +579,25 @@ function keepOwn(json: unknown, keep: CfRequest['keep'], id: string | undefined)
   return { ...(json as Record<string, unknown>), result: own };
 }
 
+/** The answer as UTF-8 text, or as base64 when its bytes are not UTF-8. */
+async function readBody(res: CfResponse): Promise<{ text?: string; base64?: string }> {
+  if (typeof res.arrayBuffer === 'function') {
+    const bytes = Buffer.from(await res.arrayBuffer());
+    try {
+      return { text: new TextDecoder('utf-8', { fatal: true }).decode(bytes) };
+    } catch {
+      return { base64: bytes.toString('base64') };
+    }
+  }
+  return { text: await (res.text as () => Promise<string>)() };
+}
+
 /** Make a checked call. A write that gets no answer throws `CfOutcomeUnknownError`. */
 export async function cfCall(
   fetch: CfFetch,
   account: CfAccountConfig,
   request: CfRequest,
-): Promise<{ status: number; truncated: boolean; body: unknown }> {
+): Promise<{ status: number; truncated: boolean; body: unknown; encoding?: 'base64' }> {
   // Proven before the audit by the caller; asked again only if it was not (a proven zone is remembered).
   await cfProve(fetch, account, request);
   const sent = request.form ?? request.body;
@@ -618,18 +634,23 @@ export async function cfCall(
   let readable = true;
   /** The raw answer when it is not JSON (a Worker's source, a log line): a read hands it back as text. */
   let raw: string | undefined;
-  if (typeof res.text === 'function') {
+  /** An answer that is not UTF-8 (a binary KV value, an image): a read hands it back as base64. */
+  let binary: string | undefined;
+  if (typeof res.arrayBuffer === 'function' || typeof res.text === 'function') {
     try {
-      const answer = await res.text();
-      if (answer === '') {
+      const answer = await readBody(res);
+      if (answer.base64 !== undefined) {
+        binary = answer.base64;
+        readable = false;
+      } else if (answer.text === '') {
         readable = false;
         // An empty 2xx read is an answer (a zero-length KV value); an empty write answer stays as before.
         if (request.method === 'GET' && res.ok && res.status !== 204) raw = '';
       } else {
         try {
-          json = JSON.parse(answer);
+          json = JSON.parse(answer.text as string);
         } catch {
-          raw = answer;
+          raw = answer.text;
           readable = false;
         }
       }
@@ -643,6 +664,12 @@ export async function cfCall(
       json = undefined;
       readable = false;
     }
+  }
+  if (res.ok && request.method === 'GET' && binary !== undefined) {
+    const cut = MAX_ANSWER_CHARS - (MAX_ANSWER_CHARS % 4);
+    return binary.length > cut
+      ? { status: res.status, truncated: true, body: binary.slice(0, cut), encoding: 'base64' }
+      : { status: res.status, truncated: false, body: binary, encoding: 'base64' };
   }
   if (res.ok && request.method === 'GET' && raw !== undefined) {
     const text = scrub(raw, account.token);
