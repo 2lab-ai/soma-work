@@ -17,6 +17,7 @@
   "dependencies": {
     "@clickhouse/client": "^1.18.2",
     "@modelcontextprotocol/sdk": "^1.27.0",
+    "@soma/common": "*",
     "@soma/process-shared": "*",
     "ioredis": "^5.10.1",
     "mongodb": "^7.1.1",

@@ -1,0 +1,590 @@
+/**
+ * The phone call's voice: listen → transcribe → think → speak, for one call at a time
+ * (.prd/31-phone-calls-architecture.md §3).
+ *
+ * The SDK gives every call the same session object, so {@link PhoneVoiceSession} is a thin switch that routes the
+ * line's audio to the {@link CallRun} of the call in progress. A `CallRun` owns one call's state: the voice
+ * activity detector, the dialog (`query()` through llmux), the queue of sentences to speak, and the call record.
+ */
+
+import type { VoiceDialog, VoiceDialogTool } from '../agent-runtime/voice-dialog';
+import { EnergyVad, LINE_SAMPLE_RATE, pcm16ToWav, StreamResampler } from './audio';
+import type { PhoneCallRecord, PhoneWorkEvent } from './call-store';
+import type { CallSessionLike, SessionLike } from './koreaaitel';
+import {
+  dtmfCue,
+  HANG_UP_TOOL,
+  INBOUND_CUE,
+  isBareGreeting,
+  OPENING_CUE,
+  SEND_DTMF_TOOL,
+  SILENCE_CUE,
+  TIME_UP_CUE,
+} from './phone-prompt';
+import { hasSpeech, SentenceSplitter, toSpeakable } from './speech-text';
+import type { VoiceClient } from './voice-client';
+
+const FRAME_BYTES = 160; // 20 ms of μ-law at 8 kHz
+const FRAME_MS = 20;
+/** After the other side picks up and says nothing for this long, the agent opens. */
+const OPEN_AFTER_SILENCE_MS = 1200;
+/** Quiet line after the agent finished speaking → one nudge to the dialog; twice as long → hang up. */
+const SILENCE_NUDGE_MS = 15_000;
+/** After `hang_up`, the line is held this long past the estimated end of playback, so the goodbye is heard. */
+const HANGUP_TAIL_MS = 600;
+/** After the time-up cue the agent gets this long to say goodbye before the line is cut. */
+const TIME_UP_GRACE_MS = 25_000;
+
+export interface CallRunDeps {
+  ulawToPcm16(ulaw: Buffer): Buffer;
+  pcm16ToUlaw(pcm: Buffer): Buffer;
+  voice: VoiceClient;
+  /** Opens the call's dialog with the tools the run supplies (auth and model are the caller's). */
+  openDialog(tools: VoiceDialogTool[]): VoiceDialog;
+  /** Mutate the call record (persisted and pushed by the store). */
+  update(mutate: (record: PhoneCallRecord) => void): void;
+  log(level: 'info' | 'warn' | 'error', message: string, data?: Record<string, unknown>): void;
+  now?: () => number;
+  /** Timers (tests drive them). */
+  setTimer?: (fn: () => void, ms: number) => unknown;
+  clearTimer?: (handle: unknown) => void;
+}
+
+export interface CallRunPlan {
+  callId: string;
+  direction: 'outbound' | 'inbound';
+  maxMinutes: number;
+  /** Inbound: the greeting already synthesized (μ-law frames) and its words. */
+  greeting?: { text: string; frames: Buffer[] };
+  model?: string;
+}
+
+interface Buffered {
+  text: string;
+  frames: Buffer[];
+}
+
+export class CallRun {
+  readonly callId: string;
+  private readonly deps: CallRunDeps;
+  private readonly plan: CallRunPlan;
+  private readonly now: () => number;
+  private readonly setTimer: (fn: () => void, ms: number) => unknown;
+  private readonly clearTimer: (handle: unknown) => void;
+
+  private call: CallSessionLike | null = null;
+  private readonly vad = new EnergyVad();
+  private dialog: VoiceDialog | null = null;
+  private readonly splitter = new SentenceSplitter();
+
+  private queue: string[] = [];
+  private speaking = false;
+  private playEndAt = 0;
+  private synthAbort: AbortController | null = null;
+  private lastAgentLine: { text: string; at: number; role: 'agent'; interrupted?: boolean } | null = null;
+
+  /** Outbound: the opening is held until the other side has picked up and said hello (or stayed quiet). */
+  private released: boolean;
+  private held: Buffered[] = [];
+  private peerUtterances = 0;
+  private heldPeer: string[] = [];
+  private answered = false;
+
+  private generating = false;
+  private dropTurn = false;
+  private turnText = '';
+  private turnStartAt = 0;
+  private firstTokenAt = 0;
+  private turnModel: string | undefined;
+
+  private hangupRequested = false;
+  private ended = false;
+  private readonly timers = new Set<unknown>();
+  private silenceTimer: unknown = null;
+  private silenceNudged = false;
+
+  constructor(plan: CallRunPlan, deps: CallRunDeps) {
+    this.callId = plan.callId;
+    this.plan = plan;
+    this.deps = deps;
+    this.now = deps.now ?? Date.now;
+    this.setTimer = deps.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
+    this.clearTimer = deps.clearTimer ?? ((h) => clearTimeout(h as NodeJS.Timeout));
+    this.released = plan.direction === 'inbound';
+  }
+
+  /** Open the dialog. Outbound: ask for the opening line now, while the phone rings. */
+  begin(): void {
+    this.dialog = this.deps.openDialog(this.tools());
+    void this.pump(this.dialog);
+    if (this.plan.direction === 'outbound') this.sendToDialog(OPENING_CUE);
+  }
+
+  /** The other side answered: the call's media is up. */
+  attach(call: CallSessionLike): void {
+    if (this.ended) return;
+    this.call = call;
+    this.answered = true;
+    const at = this.now();
+    this.deps.update((r) => {
+      r.status = 'active';
+      r.answeredAt = at;
+    });
+    this.work({ kind: 'event', at, text: '상대가 전화를 받음' });
+    if (this.plan.direction === 'inbound') {
+      if (this.plan.greeting) {
+        this.addAgentLine(this.plan.greeting.text);
+        for (const f of this.plan.greeting.frames) this.sendFrame(f);
+      } else {
+        this.sendToDialog(INBOUND_CUE);
+      }
+    }
+    if (this.plan.direction === 'outbound') {
+      this.later(() => {
+        if (!this.released && !this.vad.speaking) this.release('상대가 조용해서 첫 마디 시작');
+      }, OPEN_AFTER_SILENCE_MS);
+    }
+    this.later(() => this.timeUp(), this.plan.maxMinutes * 60_000);
+  }
+
+  feedAudio(ulaw: Buffer): void {
+    if (this.ended || !this.answered) return;
+    const pcm = this.deps.ulawToPcm16(ulaw);
+    for (const ev of this.vad.push(pcm, this.agentSpeaking())) {
+      if (ev.type === 'speech_start') {
+        this.clearSilence();
+        if (this.released && this.agentSpeaking()) this.bargeIn();
+      } else if (ev.type === 'utterance') {
+        const first = this.peerUtterances++ === 0;
+        if (!this.released) this.release('상대의 첫 말이 끝남');
+        void this.transcribe(ev.pcm, ev.totalMs, first);
+      } else if (ev.type === 'noise' && !this.released) {
+        this.release('상대가 조용해서 첫 마디 시작');
+      }
+    }
+  }
+
+  feedDtmf(digits: string): void {
+    this.sendToDialog(dtmfCue(digits));
+  }
+
+  /** The call is over (any reason): stop speaking, close the dialog, drop timers. */
+  stop(): void {
+    if (this.ended) return;
+    this.ended = true;
+    this.synthAbort?.abort('call-ended');
+    this.queue = [];
+    for (const t of this.timers) this.clearTimer(t);
+    this.timers.clear();
+    this.vad.reset();
+    this.dialog?.close();
+  }
+
+  // ── speaking ────────────────────────────────────────────────
+
+  private agentSpeaking(): boolean {
+    return this.speaking || this.queue.length > 0 || this.now() < this.playEndAt;
+  }
+
+  private enqueue(sentence: string): void {
+    if (this.ended || this.hangupRequestedAndDropping()) return;
+    const spoken = toSpeakable(sentence);
+    if (!hasSpeech(spoken)) return;
+    this.queue.push(spoken);
+    void this.speakQueue();
+  }
+
+  private hangupRequestedAndDropping(): boolean {
+    return this.hangupRequested && this.dropAfterHangup;
+  }
+
+  /** Text the model writes after it called `hang_up` is not spoken. */
+  private dropAfterHangup = false;
+
+  private async speakQueue(): Promise<void> {
+    if (this.speaking) return;
+    this.speaking = true;
+    try {
+      while (this.queue.length && !this.ended) {
+        const text = this.queue.shift() as string;
+        await this.speakOne(text);
+      }
+    } finally {
+      this.speaking = false;
+    }
+    if (!this.ended) {
+      if (this.hangupRequested) this.finishWhenQuiet();
+      else this.armSilence();
+    }
+  }
+
+  private async speakOne(text: string): Promise<void> {
+    const abort = new AbortController();
+    this.synthAbort = abort;
+    const started = this.now();
+    let firstByteMs = -1;
+    let frames = 0;
+    const resampler = new StreamResampler(44100, LINE_SAMPLE_RATE);
+    let carry = Buffer.alloc(0);
+    const buffered: Buffered | null = this.released ? null : { text, frames: [] };
+    if (this.released) this.addAgentLine(text);
+    try {
+      const stream = await this.deps.voice.speak(text, abort.signal);
+      const rs = stream.sampleRate === 44100 ? resampler : new StreamResampler(stream.sampleRate, LINE_SAMPLE_RATE);
+      for await (const chunk of stream.chunks) {
+        if (abort.signal.aborted || this.ended) break;
+        if (firstByteMs < 0) firstByteMs = this.now() - started;
+        const ulaw = this.deps.pcm16ToUlaw(rs.push(chunk));
+        let data = carry.length ? Buffer.concat([carry, ulaw]) : ulaw;
+        while (data.length >= FRAME_BYTES) {
+          const frame = Buffer.from(data.subarray(0, FRAME_BYTES));
+          data = data.subarray(FRAME_BYTES);
+          frames++;
+          if (buffered) buffered.frames.push(frame);
+          else this.sendFrame(frame);
+        }
+        carry = Buffer.from(data);
+      }
+      if (carry.length && !abort.signal.aborted) {
+        const frame = Buffer.concat([carry, Buffer.alloc(FRAME_BYTES - carry.length, 0xff)]);
+        frames++;
+        if (buffered) buffered.frames.push(frame);
+        else this.sendFrame(frame);
+      }
+    } catch (err) {
+      if (!abort.signal.aborted) this.fail('tts', err);
+    } finally {
+      if (this.synthAbort === abort) this.synthAbort = null;
+    }
+    if (buffered && !this.released) this.held.push(buffered);
+    else if (buffered && this.released && !abort.signal.aborted && !this.ended) {
+      // Released while this sentence was being made: it goes out whole, after the ones released before it.
+      this.addAgentLine(buffered.text);
+      for (const f of buffered.frames) this.sendFrame(f);
+    }
+    this.work({ kind: 'tts', at: started, text, firstByteMs: Math.max(0, firstByteMs), audioMs: frames * FRAME_MS });
+  }
+
+  private sendFrame(frame: Buffer): void {
+    if (!this.call || this.ended) return;
+    this.call.sendAudio(frame);
+    const now = this.now();
+    this.playEndAt = Math.max(this.playEndAt, now) + FRAME_MS;
+  }
+
+  private addAgentLine(text: string): void {
+    const line = { role: 'agent' as const, text, at: this.now() };
+    this.lastAgentLine = line;
+    this.deps.update((r) => {
+      r.transcript.push(line);
+    });
+    this.call?._emit?.('transcript', 'assistant', text);
+  }
+
+  /** Outbound opening: send what was made while ringing. */
+  private release(why: string): void {
+    if (this.released || this.ended) return;
+    this.released = true;
+    this.work({ kind: 'event', at: this.now(), text: why });
+    for (const b of this.held) {
+      this.addAgentLine(b.text);
+      for (const f of b.frames) this.sendFrame(f);
+    }
+    this.held = [];
+    const peer = this.heldPeer.filter((t) => !isBareGreeting(t));
+    this.heldPeer = [];
+    if (peer.length) this.sendToDialog(peer.join(' '));
+  }
+
+  private bargeIn(): void {
+    this.call?.clearAudio();
+    this.synthAbort?.abort('barge-in');
+    this.queue = [];
+    this.playEndAt = this.now();
+    if (this.lastAgentLine && !this.lastAgentLine.interrupted) {
+      const line = this.lastAgentLine;
+      this.deps.update((r) => {
+        const hit = r.transcript.find((l) => l.at === line.at && l.role === 'agent' && l.text === line.text);
+        if (hit) hit.interrupted = true;
+      });
+      line.interrupted = true;
+    }
+    this.work({ kind: 'event', at: this.now(), text: '상대가 끼어듦 — 말하기 멈춤' });
+    if (this.generating && !this.hangupRequested) {
+      this.dropTurn = true;
+      void this.dialog?.interrupt();
+    }
+  }
+
+  // ── hearing ─────────────────────────────────────────────────
+
+  private async transcribe(pcm: Buffer, audioMs: number, first = false): Promise<void> {
+    const at = this.now();
+    let text = '';
+    let ms = 0;
+    try {
+      const t = await this.deps.voice.transcribe(pcm16ToWav(pcm, LINE_SAMPLE_RATE));
+      text = t.text;
+      ms = t.ms;
+    } catch (err) {
+      this.fail('stt', err);
+      return;
+    }
+    if (this.ended) return;
+    this.work({ kind: 'stt', at, text, ms, audioMs });
+    if (!text) return;
+    this.deps.update((r) => {
+      r.transcript.push({ role: 'peer', text, at });
+    });
+    this.call?._emit?.('transcript', 'user', text);
+    if (!this.released) {
+      this.heldPeer.push(text);
+      return;
+    }
+    if (this.hangupRequested) return;
+    // The other side's "여보세요" as it picks up is heard and logged, but it is not a turn: the opening answers it.
+    if (first && this.plan.direction === 'outbound' && isBareGreeting(text)) return;
+    this.sendToDialog(text);
+  }
+
+  // ── thinking ────────────────────────────────────────────────
+
+  private sendToDialog(text: string): void {
+    if (!this.dialog || this.ended) return;
+    if (!this.generating) {
+      this.turnStartAt = this.now();
+      this.firstTokenAt = 0;
+      this.turnText = '';
+    }
+    this.generating = true;
+    this.dialog.send(text);
+  }
+
+  private async pump(dialog: VoiceDialog): Promise<void> {
+    for await (const ev of dialog.events) {
+      if (this.ended && ev.type !== 'closed') continue;
+      switch (ev.type) {
+        case 'text_delta':
+          if (this.dropTurn || this.dropAfterHangup) break;
+          if (!this.firstTokenAt) this.firstTokenAt = this.now();
+          this.turnText += ev.text;
+          for (const s of this.splitter.push(ev.text)) this.enqueue(s);
+          break;
+        case 'assistant':
+          this.turnModel = ev.model ?? this.turnModel;
+          break;
+        case 'tool_use':
+          // The tool's work is recorded by its handler. `hang_up` is acted on here, at its place in the stream:
+          // every word written before it is queued (the goodbye), every word after it is dropped. The handler may
+          // run before this event is read, so it must not decide that.
+          if (ev.name === 'hang_up' || ev.name.endsWith('__hang_up')) {
+            this.hangupRequested = true;
+            if (!this.dropTurn && !this.dropAfterHangup) for (const s of this.splitter.flush()) this.enqueue(s);
+            this.dropAfterHangup = true;
+            this.finishWhenQuiet();
+          }
+          break;
+        case 'turn_end': {
+          if (!this.dropTurn && !this.dropAfterHangup) for (const s of this.splitter.flush()) this.enqueue(s);
+          else this.splitter.flush();
+          const at = this.now();
+          if (this.turnText.trim()) {
+            this.work({
+              kind: 'reply',
+              at: this.turnStartAt || at,
+              text: this.turnText.trim(),
+              model: this.turnModel ?? this.plan.model,
+              firstTokenMs: this.firstTokenAt ? this.firstTokenAt - this.turnStartAt : undefined,
+              ms: at - (this.turnStartAt || at),
+            });
+          }
+          if (ev.isError && ev.message && !this.dropTurn)
+            this.work({ kind: 'error', at, stage: 'dialog', message: ev.message });
+          this.generating = false;
+          this.dropTurn = false;
+          this.turnText = '';
+          if (this.hangupRequested) {
+            this.dropAfterHangup = true;
+            this.finishWhenQuiet();
+          }
+          break;
+        }
+        case 'closed':
+          if (ev.message && !this.ended) this.fail('dialog', new Error(ev.message));
+          return;
+      }
+    }
+  }
+
+  private tools(): VoiceDialogTool[] {
+    return [
+      {
+        name: 'hang_up',
+        description: HANG_UP_TOOL.description,
+        params: { reason: { description: HANG_UP_TOOL.reason, optional: true } },
+        handler: async (args) => {
+          this.hangupRequested = true;
+          this.work({ kind: 'tool', at: this.now(), name: 'hang_up', input: args, result: '말을 마치면 끊음' });
+          return HANG_UP_TOOL.result;
+        },
+      },
+      {
+        name: 'send_dtmf',
+        description: SEND_DTMF_TOOL.description,
+        params: { digits: { description: SEND_DTMF_TOOL.digits } },
+        handler: async (args) => {
+          const digits = (args.digits ?? '').replace(/[^0-9*#wW]/g, '');
+          if (!digits || !this.call?.sendDtmfSequence) {
+            this.work({ kind: 'tool', at: this.now(), name: 'send_dtmf', input: args, result: '보낼 수 없음' });
+            return SEND_DTMF_TOOL.failed;
+          }
+          await this.call.sendDtmfSequence(digits);
+          this.work({ kind: 'tool', at: this.now(), name: 'send_dtmf', input: args, result: 'sent' });
+          return SEND_DTMF_TOOL.sent(digits);
+        },
+      },
+    ];
+  }
+
+  // ── ending ──────────────────────────────────────────────────
+
+  /** After `hang_up`: wait for the queue and the playback, then put the phone down. */
+  private finishWhenQuiet(): void {
+    if (this.ended || !this.hangupRequested) return;
+    if (this.speaking || this.queue.length) return; // speakQueue calls back when done
+    const wait = Math.max(0, this.playEndAt - this.now()) + HANGUP_TAIL_MS;
+    this.later(() => {
+      if (this.ended) return;
+      if (this.speaking || this.queue.length) return;
+      void this.call?.hangup().catch((err) => this.fail('hangup', err));
+    }, wait);
+  }
+
+  private timeUp(): void {
+    if (this.ended) return;
+    this.work({ kind: 'event', at: this.now(), text: `통화 시간 한도(${this.plan.maxMinutes}분) 도달` });
+    this.sendToDialog(TIME_UP_CUE);
+    this.later(() => {
+      if (!this.ended) void this.call?.hangup().catch((err) => this.fail('hangup', err));
+    }, TIME_UP_GRACE_MS);
+  }
+
+  private armSilence(): void {
+    this.clearSilence();
+    if (!this.released || this.hangupRequested) return;
+    const wait = Math.max(0, this.playEndAt - this.now()) + SILENCE_NUDGE_MS * (this.silenceNudged ? 2 : 1);
+    this.silenceTimer = this.later(() => {
+      if (this.ended || this.vad.speaking || this.generating) return;
+      if (this.silenceNudged) {
+        this.work({ kind: 'event', at: this.now(), text: '상대가 오래 말이 없어 통화를 끝냄' });
+        void this.call?.hangup().catch((err) => this.fail('hangup', err));
+        return;
+      }
+      this.silenceNudged = true;
+      this.sendToDialog(SILENCE_CUE);
+    }, wait);
+  }
+
+  private clearSilence(): void {
+    if (this.silenceTimer !== null) {
+      this.clearTimer(this.silenceTimer);
+      this.timers.delete(this.silenceTimer);
+      this.silenceTimer = null;
+    }
+    this.silenceNudged = false;
+  }
+
+  // ── bookkeeping ─────────────────────────────────────────────
+
+  private later(fn: () => void, ms: number): unknown {
+    const handle = this.setTimer(() => {
+      this.timers.delete(handle);
+      fn();
+    }, ms);
+    this.timers.add(handle);
+    return handle;
+  }
+
+  private work(event: PhoneWorkEvent): void {
+    this.deps.update((r) => {
+      r.work.push(event);
+    });
+  }
+
+  private fail(stage: string, err: unknown): void {
+    const message = err instanceof Error ? err.message : String(err);
+    this.deps.log('warn', `phone ${stage} failed`, { callId: this.callId, message });
+    this.work({ kind: 'error', at: this.now(), stage, message });
+  }
+}
+
+/**
+ * The object the SDK holds as its `session`. One call at a time: the phone service registers a run before (or as)
+ * the call starts, and this routes the SDK's calls to it.
+ */
+export class PhoneVoiceSession implements SessionLike {
+  private readonly runs = new Map<string, CallRun>();
+  private current: CallRun | null = null;
+
+  constructor(private readonly fallback: (call: CallSessionLike) => Promise<CallRun | null>) {}
+
+  register(run: CallRun): void {
+    this.runs.set(run.callId, run);
+  }
+
+  runOf(callId: string): CallRun | undefined {
+    return this.runs.get(callId);
+  }
+
+  /** True while a call is up or being set up — the phone takes one call at a time. */
+  get busy(): boolean {
+    return this.current !== null || this.runs.size > 0;
+  }
+
+  end(callId: string): void {
+    const run = this.runs.get(callId);
+    if (!run) return;
+    run.stop();
+    this.runs.delete(callId);
+    if (this.current === run) this.current = null;
+  }
+
+  async prewarm(): Promise<void> {
+    // Not used: the agent runs with `prewarmEnabled: false`; the outbound opening is prepared by the run itself.
+  }
+
+  async attach(call: CallSessionLike): Promise<void> {
+    await this.start(call);
+  }
+
+  async start(call: CallSessionLike): Promise<void> {
+    let run = this.runs.get(call.callId);
+    if (!run) {
+      const made = await this.fallback(call);
+      if (!made) {
+        await call.hangup().catch(() => undefined);
+        return;
+      }
+      run = made;
+      this.runs.set(call.callId, run);
+    }
+    this.current = run;
+    run.attach(call);
+  }
+
+  feedAudio(audio: Buffer): void {
+    this.current?.feedAudio(audio);
+  }
+
+  async feedDtmf(digits: string): Promise<void> {
+    this.current?.feedDtmf(digits);
+  }
+
+  async stop(): Promise<void> {
+    // The SDK calls stop() when a call's media closes; the run is ended by the service's call_end / call_failed.
+    if (this.current) {
+      const id = this.current.callId;
+      this.end(id);
+    }
+  }
+}

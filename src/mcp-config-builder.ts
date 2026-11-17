@@ -738,6 +738,19 @@ export class McpConfigBuilder {
         // Where an environment user's writes (gh_pr approve/merge) are audited (env-access WU3, #1211). Under
         // DATA_DIR, which no model session writes.
         SOMA_AUDIT_DIR: path.join(DATA_DIR, 'env-audit'),
+        // The phone line's request and call files (.prd/31-phone-calls-architecture.md §4.2) — the daemon holds
+        // the line; `phone_call` hands it a request here. Under DATA_DIR, which no model session writes.
+        SOMA_PHONE_DIR: path.join(DATA_DIR, 'phone'),
+        // Where a call's card goes: this session's thread and conversation.
+        ...(slackContext
+          ? {
+              SOMA_PHONE_CONTEXT: JSON.stringify({
+                channel: slackContext.channel,
+                ...(slackContext.threadTs ? { threadTs: slackContext.threadTs } : {}),
+                ...(slackContext.conversationId ? { conversationId: slackContext.conversationId } : {}),
+              }),
+            }
+          : {}),
         ...(requester ? { SOMA_REQUESTER: requester } : {}),
       },
     };

@@ -1067,6 +1067,10 @@ const ADMIN_ONLY_SERVER_TOOLS: ReadonlyMap<string, string> = new Map([
   ['mcp__server-tools__login', "login signs in with an environment's own account and is for admins only."],
   ['mcp__server-tools__gh_read', "gh_read reads a repository with an environment's own token and is for admins only."],
   ['mcp__server-tools__cf_api', "cf_api calls Cloudflare with an environment's own token and is for admins only."],
+  [
+    'mcp__server-tools__phone_call',
+    "phone_call dials a real number from an environment's own line and is for admins only.",
+  ],
 ]);
 
 /**

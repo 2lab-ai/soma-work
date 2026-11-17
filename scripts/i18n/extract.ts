@@ -45,6 +45,8 @@ const TEXT_EXCLUDE = [
   /^src\/local\//,
   // Task plan mode: the notice, the approval instruction and the tool result all go to the model.
   /^src\/task-turn\/(task-plan|plan-server)\.ts$/,
+  // Phone calls (.prd/30): the call agent's instructions, cues and tool texts go to the model.
+  /^src\/phone\/phone-prompt\.ts$/,
 ];
 
 const LOG_METHODS = new Set(['debug', 'info', 'warn', 'error', 'trace', 'fatal', 'log']);

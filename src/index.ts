@@ -74,6 +74,7 @@ import { loadConfig } from './config-loader';
 import {
   broadcastArtifactUpdate,
   broadcastConversationUpdate,
+  broadcastPhoneCallUpdate,
   broadcastSessionUpdate,
   broadcastSummaryTitleChanged,
   broadcastTaskUpdate,
@@ -121,6 +122,7 @@ import { setCodeChangesRefresher } from './conversation/code-changes-routes';
 import type { NewTaskAttachment } from './conversation/new-task';
 import { createNewTaskProvider, createSlackSteerUploader } from './conversation/new-task-provider';
 import { setProjectRepoSource } from './conversation/project-memory-routes';
+import { effectiveViewerUrl } from './conversation/public-url';
 import { createSessionWorkLogAppender } from './conversation/session-work-log';
 import { setSettingsRegistry } from './conversation/settings-routes';
 import { setSkillsEnvRegistrySource } from './conversation/skills-routes';
@@ -165,6 +167,10 @@ import {
   type UsageRefreshScheduler,
 } from './oauth';
 import { answerPermissionPrompt } from './permission-prompt-response';
+import { startPhoneService } from './phone';
+import { summarizeCall } from './phone/call-store';
+import type { PhoneService } from './phone/phone-service';
+import { getPhoneCallStore } from './phone/store-instance';
 import { acquirePidLock, releasePidLock } from './pid-lock';
 import { BUNDLED_PLUGINS } from './plugin/bundled';
 import { PluginManager } from './plugin/plugin-manager';
@@ -253,6 +259,9 @@ const logger = new Logger('Main');
 const PLAN_WAITING_NOTE =
   '📋 작업 계획이 올라왔어요 — 대시보드에서 확인하고 시작·취소하거나, 고칠 점을 이 스레드에 보내세요';
 const PLAN_WAITING_LINK = '카드 열기';
+
+/** The phone lines (.prd/30-phone-calls-spec.md) — set at boot when an environment has one; stopped on shutdown. */
+let phoneService: PhoneService | null = null;
 
 async function start() {
   const startTime = Date.now();
@@ -1888,6 +1897,23 @@ async function start() {
       logger.warn('Failed to start conversation viewer (non-critical)', error);
     }
 
+    // Phone (.prd/30-phone-calls-spec.md): one line per server-tools environment with a `phone` section. Every
+    // change of a call reaches the dashboards that may see it (its card, live); none configured → nothing starts.
+    getPhoneCallStore().onChange((record) => broadcastPhoneCallUpdate(summarizeCall(record)));
+    try {
+      phoneService = await startPhoneService({
+        notifyOwner: async (userId, text) => {
+          const dm = await app.client.conversations.open({ users: userId });
+          const channel = dm.channel?.id;
+          if (channel) await app.client.chat.postMessage({ channel, text });
+        },
+        dashboardUrl: () => effectiveViewerUrl() || undefined,
+      });
+      if (phoneService.environments.length) timing('Phone lines connected');
+    } catch (error) {
+      logger.warn('Phone service not started (non-critical)', error);
+    }
+
     // E4 ⑥ (D7) — boot scan, with the dashboard up: an epic left with pending events wakes.
     for (const [key, session] of claudeHandler.getAllSessions()) {
       if (session.kind === 'epic' && !session.parentTaskId) slackEpicWaker.wake(key);
@@ -2558,6 +2584,13 @@ async function start() {
       if (githubAuth) {
         githubAuth.stopAutoRefresh();
         logger.info('GitHub App auto-refresh stopped');
+      }
+
+      // Hang up the phone lines (calls in progress end; records are flushed).
+      try {
+        await phoneService?.stop();
+      } catch (error) {
+        logger.error('Error stopping phone lines:', error);
       }
 
       // Stop conversation viewer
