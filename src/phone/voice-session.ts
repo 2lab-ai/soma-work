@@ -362,6 +362,8 @@ export class CallRun {
 
   private sendToDialog(text: string): void {
     if (!this.dialog || this.ended) return;
+    // A turn is coming: the line is not quiet. Whoever ends that turn arms the timer again.
+    this.clearSilence();
     if (!this.generating) {
       this.turnStartAt = this.now();
       this.firstTokenAt = 0;
@@ -497,7 +499,8 @@ export class CallRun {
     if (!this.released || this.hangupRequested || this.ended) return;
     const wait = Math.max(0, this.playEndAt - this.now()) + SILENCE_NUDGE_MS * (this.silenceNudged ? 2 : 1);
     this.silenceTimer = this.later(() => {
-      if (this.ended || this.vad.speaking || this.generating) return;
+      // Still talking (either side) or thinking: not a quiet line. The end of that speech arms the timer again.
+      if (this.ended || this.vad.speaking || this.generating || this.speaking || this.agentSpeaking()) return;
       if (this.silenceNudged) {
         this.work({ kind: 'event', at: this.now(), text: '상대가 오래 말이 없어 통화를 끝냄' });
         void this.call?.hangup().catch((err) => this.fail('hangup', err));

@@ -130,7 +130,7 @@ function fakeCall() {
   return call;
 }
 
-function setup(plan: Partial<CallRunPlan> = {}, stt: string[] = []) {
+function setup(plan: Partial<CallRunPlan> = {}, stt: string[] = [], opts: { speakGate?: () => Promise<void> } = {}) {
   const clock = new Clock();
   const record: PhoneCallRecord = {
     id: 'CA1',
@@ -152,6 +152,7 @@ function setup(plan: Partial<CallRunPlan> = {}, stt: string[] = []) {
     },
     async speak(text) {
       spoken.push(text);
+      await opts.speakGate?.();
       const pcm = tone(400, 0.2); // 400 ms of speech per sentence = 20 frames of 160 B (identity codec)
       return {
         sampleRate: RATE,
@@ -334,6 +335,32 @@ describe('CallRun — a quiet line', () => {
     clock.advance(31_000);
     await settleAll();
     expect(call.hungUp).toBe(1);
+  });
+
+  it('never nudges while the agent is still speaking a reply (the timer armed before that reply)', async () => {
+    let slow = false;
+    let letGo!: () => void;
+    const { run, clock, dialog } = setup({ direction: 'inbound' }, [], {
+      speakGate: () =>
+        slow
+          ? new Promise<void>((r) => {
+              letGo = r;
+            })
+          : Promise.resolve(),
+    });
+    run.begin();
+    run.attach(fakeCall() as unknown as CallSessionLike);
+    dialog().reply('네, 말씀하세요.');
+    await settleAll(); // spoken: the silence timer is armed
+    clock.advance(5_000);
+    slow = true; // the next sentence takes long to synthesize, as a long recap does
+    run.feedDtmf('1'); // a new turn that no speech of the caller started
+    dialog().reply('정리해 드릴게요. 연락처와 용건을 담당자에게 전하겠습니다.');
+    await settleAll();
+    clock.advance(12_000); // past the timer armed before this reply
+    expect(dialog().sent.filter((t) => t === SILENCE_CUE)).toEqual([]);
+    letGo();
+    await settleAll();
   });
 
   it('after the inbound greeting, a silent caller is nudged', async () => {

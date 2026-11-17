@@ -23,6 +23,8 @@ describe('buildCallSystemPrompt (.prd/30 D5)', () => {
     expect(p).toContain('우리가 건 전화 (우리 번호 070-1234-5678 → 상대 010-1234-5678)');
     expect(p).toContain('hang_up');
     expect(p).toContain('AI 비서라고 사실대로');
+    // Measured in the service harness: after "네 맞아요 … 감사합니다" the agent asked to confirm again and never hung up.
+    expect(p).toContain('같은 확인을 다시 묻지 않고');
     expect(p).toContain('통화 시간 한도: 5분');
     expect(p).toContain('2026년 11월 17일');
   });
