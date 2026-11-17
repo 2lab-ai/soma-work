@@ -461,7 +461,7 @@ answer is not JSON (a Worker's source, a KV value) comes back as text, token scr
 with `encoding: "base64"`, the token's bytes scrubbed and the bytes cut to 150,000 before encoding. An answer is
 read up to 8 MiB and no further (a large R2 object is cut there and marked `truncated`; JSON cut there is refused,
 since its fields could not be redacted — narrow it with `per_page`, a cursor or a smaller object); credential fields
-inside a text answer (`"secret": "…"`) are redacted as well;
+inside a text answer, and inside a JSON answer's string values (`"secret": "…"` in a KV value), are redacted as well;
 an empty successful read comes back as `""`. A zone the entry does not list is refused when Cloudflare says it is
 another account's, and also, with "could not confirm", when the lookup fails (no answer, a non-2xx status, an
 unreadable answer); nothing is sent and nothing is written to the ledger, and the next call asks again. A
