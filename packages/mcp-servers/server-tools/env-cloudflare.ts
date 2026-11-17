@@ -315,6 +315,13 @@ const CREDENTIAL_FIELDS = new Set([
   'api_token',
 ]);
 
+/** The same fields as JSON text (`"secret": "…"`), for an answer handed back as text: a KV value that holds JSON. */
+const CREDENTIAL_TEXT = new RegExp(`("(?:${[...CREDENTIAL_FIELDS].join('|')})"\\s*:\\s*)"(?:[^"\\\\]|\\\\.)*"`, 'gi');
+
+function redactCredentialText(text: string): string {
+  return text.replace(CREDENTIAL_TEXT, '$1"[redacted]"');
+}
+
 function redactCredentials(value: unknown, depth = 0): unknown {
   if (!value || typeof value !== 'object') return value;
   // Deeper than this is not walked, so it is not handed back either.
@@ -735,7 +742,13 @@ export async function cfCall(
     return { status: res.status, truncated, body, encoding: 'base64' };
   }
   if (res.ok && request.method === 'GET' && raw !== undefined) {
-    const text = scrub(raw, account.token);
+    // JSON cut at the read limit cannot be parsed, so its fields could not be redacted: it is not handed back.
+    if (cut && /^\s*[[{]/.test(raw)) {
+      throw new CfError(
+        `Cloudflare GET ${request.path} answered more than ${MAX_READ_BYTES} bytes of JSON: not handed back; narrow it (per_page, a cursor, a smaller object)`,
+      );
+    }
+    const text = redactCredentialText(scrub(raw, account.token));
     return text.length > MAX_ANSWER_CHARS
       ? { status: res.status, truncated: true, body: text.slice(0, MAX_ANSWER_CHARS) }
       : { status: res.status, truncated: cut, body: text };
@@ -778,5 +791,5 @@ export async function cfCall(
   const text = scrub(JSON.stringify(redactCredentials(keepOwn(json, request.keep, account.id)) ?? null), account.token);
   return text.length > MAX_ANSWER_CHARS
     ? { status: res.status, truncated: true, body: text.slice(0, MAX_ANSWER_CHARS) }
-    : { status: res.status, truncated: false, body: JSON.parse(text) };
+    : { status: res.status, truncated: cut, body: JSON.parse(text) };
 }

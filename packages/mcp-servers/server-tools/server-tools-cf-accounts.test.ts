@@ -1088,3 +1088,34 @@ describe('cf_api — review-of-legends R8', () => {
     expect(calls).toEqual([]);
   });
 });
+
+// review-of-legends R9 (1556c658): JSON cut at the read limit, and credential fields inside a text answer.
+describe('cf_api — review-of-legends R9', () => {
+  const kv = `/accounts/${DEV}/storage/kv/namespaces/n1/values/k`;
+  const streamed =
+    (bytes: Uint8Array): CfFetch =>
+    async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(bytes);
+          controller.close();
+        },
+      }),
+    });
+
+  it('never hands back JSON cut at the 8 MiB read limit, where its fields could not be redacted', async () => {
+    const json = Buffer.from(`{"secret":"s3","pad":"${'x'.repeat(8 * 1024 * 1024)}"}`, 'utf8');
+    await expect(cf({ account: 'iq-dev', method: 'GET', path: kv }, streamed(new Uint8Array(json)))).rejects.toThrow(
+      /more than 8388608 bytes of JSON: not handed back/,
+    );
+  });
+
+  it('redacts credential fields inside an answer handed back as text', async () => {
+    const { fetch } = cloudflare({ text: 'v1 {"Secret": "s3", "api_token":"a\\"b", "name": "n"}' });
+    const out = text(await cf({ account: 'iq-dev', method: 'GET', path: kv }, fetch));
+    expect(out.body).toBe('v1 {"Secret": "[redacted]", "api_token":"[redacted]", "name": "n"}');
+  });
+});
