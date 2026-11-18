@@ -10897,11 +10897,15 @@ function _applyUserPill(data) {
   const isAdminCapable = !!(data && (data.isAdmin || (data.user && data.user.name && data.isAdmin)));
   _viewerIsAdmin = isAdminCapable;
   if (typeof paintUsageBreakdown === 'function') paintUsageBreakdown(); // the by-user view is an admin's
+  var viewerWas = _viewerUserId;
   _viewerUserId = (data && data.user && data.user.slackUserId) || '';
   syncBoardScope();
   // 내 카드만 needs the viewer (SSOT 2026-11-05): the bar shows it now (and a filter another account stored drops its users).
   if (boardFilterViewerKnown(_viewerUserId) && _lastBoardData) renderBoard(_lastBoardData);
   else paintBoardTools(_lastBoardData);
+  // .prd/34 D13: someone else's cards drawn before the viewer was known start on one line now — once per viewer, not on
+  // every /auth/me (a CSRF refresh answers it again).
+  if (_viewerUserId && _viewerUserId !== viewerWas) boardFoldOthers();
   // Plan mode: the viewer is known now — their cards that wait on a decision open (autoOpenDecisions).
   autoOpenDecisions();
   const lifecycleBtn = document.getElementById('lifecycle-btn');
@@ -11991,8 +11995,14 @@ function cardStarDefaultFolded(s, col, now) {
   var last = Date.parse(String(s.lastActivity));
   return Number.isFinite(last) && now - last >= STAR_FOLD_MS;
 }
+// SSOT_3 (.prd/34 D13): someone else's card starts on one line, in any state. Someone else = the signed-in viewer is
+// known (/auth/me) and the card names another owner; a viewer token, the page before /auth/me, or a card with no
+// owner: nobody else's.
+function cardOthersDefaultFolded(s) {
+  return !!_viewerUserId && !!(s && s.ownerId) && s.ownerId !== _viewerUserId;
+}
 // What an element starts on one line (it reads each card once while the card is on it): the reader's folds, and the
-// starred cards a day old the reader has not brought back with +.
+// default ones — starred cards a day old, someone else's cards — the reader has not brought back with +.
 function cardMinSeeds(cols) {
   var out = cardMinList();
   var open = cardUnfoldList();
@@ -12000,7 +12010,9 @@ function cardMinSeeds(cols) {
   function add(keys) {
     for (var i = 0; i < keys.length; i++) {
       var k = keys[i];
-      if (out.indexOf(k) < 0 && open.indexOf(k) < 0 && cardStarDefaultFolded(_sessionCache[k], _cardCol[k], now)) out.push(k);
+      if (out.indexOf(k) >= 0 || open.indexOf(k) >= 0) continue;
+      var s = _sessionCache[k];
+      if (cardStarDefaultFolded(s, _cardCol[k], now) || cardOthersDefaultFolded(s)) out.push(k);
     }
   }
   (cols || []).forEach(function(c) {
@@ -12067,6 +12079,23 @@ function boardUnfoldForDecision(key) {
 }
 function cardMinForget(key) {
   cardPrefPut(_cardPrefs.min, key, false);
+}
+// The viewer became known after the board drew (/auth/me answers on its own, D13): an element reads a card's starting
+// fold only the first time it draws it, so someone else's cards already drawn fold now — a default, no event, not
+// saved. Left alone: the reader's saved +, and a card they opened in place meanwhile. A card in the deck drops its
+// detail mark, so closing its detail card leaves it on its default line.
+function boardFoldOthers() {
+  var open = cardUnfoldList();
+  for (var k in _cardHost) {
+    var host = _cardHost[k];
+    if (!host || typeof host.setMinimized !== 'function' || typeof host.isMinimized !== 'function') continue;
+    if (!cardOthersDefaultFolded(_sessionCache[k]) || open.indexOf(k) >= 0 || _expanded.has(k)) continue;
+    if (host.isMinimized(k)) {
+      if (_deck.indexOf(k) < 0) continue;
+      host.setMinimized(k, false);
+    }
+    host.setMinimized(k, true);
+  }
 }
 // The title of a card on its element (in the element's open shadow root), or null: where focus goes back after its
 // detail card closes when the control that opened it is gone.
