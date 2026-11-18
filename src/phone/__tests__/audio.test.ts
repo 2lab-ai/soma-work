@@ -200,6 +200,11 @@ describe('TimeStretcher', () => {
     return Buffer.concat(out);
   }
 
+  it('refuses a sample rate it cannot work at, instead of looping forever', () => {
+    expect(() => new TimeStretcher(1, 1.5)).toThrow(RangeError);
+    expect(() => new TimeStretcher(44100, 0)).toThrow(RangeError);
+  });
+
   it('passes audio through untouched at speed 1', () => {
     const input = voiced(300);
     expect(stretch(input, 1).equals(input)).toBe(true);

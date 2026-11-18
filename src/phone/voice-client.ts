@@ -7,7 +7,7 @@
  *                               (`x-soma-voice-sample-rate`, 44 100 Hz for Drama 3)
  */
 
-import { TimeStretcher } from './audio';
+import { MAX_STRETCH_RATE, MIN_STRETCH_RATE, TimeStretcher } from './audio';
 
 export interface VoiceConfig {
   /** Base URL of the voice service, e.g. `http://voice-host:9999`. */
@@ -181,7 +181,9 @@ export function createVoiceClient(cfg: VoiceConfig, fetchImpl: FetchLike = fetch
     const rate = Number(res.headers.get('x-soma-voice-sample-rate') ?? '44100');
     const reader = res.body.getReader();
     const sampleRate = Number.isFinite(rate) && rate > 0 ? rate : 44100;
-    const stretch = cfg.speed && cfg.speed !== 1 ? new TimeStretcher(sampleRate, cfg.speed) : null;
+    // A rate the stretcher cannot work at (a malformed header) plays at the service's own speed.
+    const stretchable = sampleRate >= MIN_STRETCH_RATE && sampleRate <= MAX_STRETCH_RATE;
+    const stretch = cfg.speed && cfg.speed !== 1 && stretchable ? new TimeStretcher(sampleRate, cfg.speed) : null;
     const chunks: AsyncIterable<Buffer> = {
       async *[Symbol.asyncIterator]() {
         try {

@@ -239,6 +239,10 @@ export class StreamResampler {
   }
 }
 
+/** Sample rates a {@link TimeStretcher} accepts (a 20 ms window then holds at least 160 samples). */
+export const MIN_STRETCH_RATE = 8000;
+export const MAX_STRETCH_RATE = 192000;
+
 /**
  * Faster speech at the same pitch, for mono PCM16 LE (WSOLA: overlap-add of 20 ms windows taken `speed` times
  * further apart than they are laid down, each nudged by up to 10 ms to the spot that best continues the last one).
@@ -267,6 +271,13 @@ export class TimeStretcher {
     sampleRate: number,
     private readonly speed: number,
   ) {
+    // A window must hold samples, or no frame ever advances (a malformed rate header must not hang the process).
+    if (!(Number.isFinite(sampleRate) && sampleRate >= MIN_STRETCH_RATE && sampleRate <= MAX_STRETCH_RATE)) {
+      throw new RangeError(
+        `TimeStretcher: sample rate ${sampleRate} is outside ${MIN_STRETCH_RATE}–${MAX_STRETCH_RATE}`,
+      );
+    }
+    if (!(Number.isFinite(speed) && speed > 0)) throw new RangeError(`TimeStretcher: speed ${speed} is not positive`);
     this.n = 2 * Math.round(sampleRate * 0.01); // 20 ms, even
     this.hop = this.n / 2;
     this.tolerance = Math.round(sampleRate * 0.01);
@@ -296,8 +307,7 @@ export class TimeStretcher {
   }
 
   private at(abs: number): number {
-    const i = abs - this.base;
-    return i >= 0 && i < this.input.length ? this.input[i] : 0;
+    return this.input[abs - this.base] ?? 0;
   }
 
   private makeFrames(final: boolean): void {

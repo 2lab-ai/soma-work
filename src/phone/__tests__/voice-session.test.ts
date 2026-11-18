@@ -323,32 +323,59 @@ describe('CallRun — conversation', () => {
     expect(s.record.work.some((w) => w.kind === 'error')).toBe(false);
   });
 
-  it('the goodbye of a reply that answered out-of-date words is not said, and the call goes on', async () => {
-    const s = setup({ direction: 'inbound' }, ['네 감사합니다', '아 잠깐만요, 하나 더 있어요']);
+  for (const order of ['handler first', 'event first'] as const) {
+    it(`the goodbye of a reply that answered out-of-date words is not said, and the call goes on (${order})`, async () => {
+      const s = setup({ direction: 'inbound' }, ['네 감사합니다', '아 잠깐만요, 하나 더 있어요']);
+      s.run.begin();
+      const call = fakeCall();
+      s.run.attach(call as unknown as CallSessionLike);
+      s.dialog().reply('네, 말씀하세요.');
+      await settleAll();
+      s.clock.advance(3000);
+      s.run.feedAudio(tone(600, 0.3));
+      s.run.feedAudio(quiet(800)); // "네 감사합니다"
+      await settleAll();
+      s.run.feedAudio(tone(600, 0.3));
+      s.run.feedAudio(quiet(800)); // "… 하나 더 있어요" while the model is still on the first part
+      await settleAll();
+      // The model, still answering the first part, says goodbye and hangs up — the handler and the stream's
+      // tool_use event may come in either order.
+      s.dialog().emit({ type: 'text_delta', text: '네, 좋은 하루 보내세요.' });
+      let result = '';
+      if (order === 'handler first') result = String(await s.dialog().tool('hang_up').handler({ reason: '마무리' }));
+      s.dialog().emit({ type: 'tool_use', name: 'hang_up', input: {} });
+      await settleAll();
+      if (order === 'event first') result = String(await s.dialog().tool('hang_up').handler({ reason: '마무리' }));
+      s.dialog().emit({ type: 'turn_end', isError: false });
+      await settleAll();
+      s.clock.advance(5000);
+      await settleAll();
+      expect(call.hungUp).toBe(0);
+      expect(result).toContain('끊지 않았다');
+      expect(s.spoken).not.toContain('네, 좋은 하루 보내세요.');
+      expect(s.dialog().sent[s.dialog().sent.length - 1]).toBe('아 잠깐만요, 하나 더 있어요');
+    });
+  }
+
+  it('words heard while a dropped reply is still ending are all sent together, once, after it', async () => {
+    const s = setup({ direction: 'inbound' }, ['내일 회의', '시간이랑', '장소 알려 주세요']);
     s.run.begin();
-    const call = fakeCall();
-    s.run.attach(call as unknown as CallSessionLike);
+    s.run.attach(fakeCall() as unknown as CallSessionLike);
     s.dialog().reply('네, 말씀하세요.');
     await settleAll();
     s.clock.advance(3000);
-    s.run.feedAudio(tone(600, 0.3));
-    s.run.feedAudio(quiet(800)); // "네 감사합니다"
+    for (let i = 0; i < 3; i++) {
+      s.run.feedAudio(tone(400, 0.3));
+      s.run.feedAudio(quiet(800));
+      await settleAll();
+      if (i === 0) s.dialog().emit({ type: 'text_delta', text: '네, ' }); // it starts on "내일 회의"
+      await settleAll();
+    }
+    expect(s.dialog().interrupted).toBe(1);
+    const before = s.dialog().sent.length;
+    s.dialog().emit({ type: 'turn_end', isError: true, message: 'interrupted' });
     await settleAll();
-    s.run.feedAudio(tone(600, 0.3));
-    s.run.feedAudio(quiet(800)); // "… 하나 더 있어요" while the model is still on the first part
-    await settleAll();
-    // The model, still answering the first part, says goodbye and hangs up.
-    s.dialog().emit({ type: 'text_delta', text: '네, 좋은 하루 보내세요.' });
-    await s.dialog().tool('hang_up').handler({ reason: '마무리' });
-    s.dialog().emit({ type: 'tool_use', name: 'hang_up', input: {} });
-    s.dialog().emit({ type: 'turn_end', isError: false });
-    await settleAll();
-    s.clock.advance(5000);
-    await settleAll();
-    expect(call.hungUp).toBe(0);
-    expect(s.spoken).not.toContain('네, 좋은 하루 보내세요.');
-    expect(s.dialog().sent[s.dialog().sent.length - 1]).toBe('아 잠깐만요, 하나 더 있어요');
-    expect(s.record.work.some((w) => w.kind === 'event' && w.text.includes('끊기 취소'))).toBe(true);
+    expect(s.dialog().sent.slice(before)).toEqual(['시간이랑 장소 알려 주세요']);
   });
 
   it('newer words stop a reply that started playing while the caller was still talking', async () => {

@@ -399,11 +399,7 @@ export class CallRun {
       this.heldPeer.push(text);
       return;
     }
-    if (this.hangupRequested) {
-      // The hang-up of a reply being dropped is not carried out (see pump): these words then still count.
-      if (this.dropTurn) this.pendingPeer.push(text);
-      return;
-    }
+    if (this.hangupRequested) return;
     // The reply's first sentence reaches the speech engine in ~1 s (first tokens). Wake it now — not earlier: on the
     // voice host the wake-up would compete with this transcription (measured: STT 0.9 s → 2.5 s).
     this.warmEngine();
@@ -450,7 +446,7 @@ export class CallRun {
           if (ev.name === 'hang_up' || ev.name.endsWith('__hang_up')) {
             if (this.dropTurn) {
               // The goodbye of a reply that answered out-of-date words (the caller went on talking): not said,
-              // and the call goes on.
+              // and the call goes on. The handler refuses it too, if it runs after this event.
               this.hangupRequested = false;
               this.work({ kind: 'event', at: this.now(), text: '끊기 취소 — 상대가 말을 이어감' });
               break;
@@ -507,6 +503,18 @@ export class CallRun {
         description: HANG_UP_TOOL.description,
         params: { reason: { description: HANG_UP_TOOL.reason, optional: true } },
         handler: async (args) => {
+          // A reply being dropped (the caller went on talking) does not end the call — whichever of this handler
+          // and the stream's tool_use event comes first (see pump).
+          if (this.dropTurn) {
+            this.work({
+              kind: 'tool',
+              at: this.now(),
+              name: 'hang_up',
+              input: args,
+              result: '끊지 않음 — 상대가 말을 이어감',
+            });
+            return HANG_UP_TOOL.cancelled;
+          }
           this.hangupRequested = true;
           this.work({ kind: 'tool', at: this.now(), name: 'hang_up', input: args, result: '말을 마치면 끊음' });
           return HANG_UP_TOOL.result;
