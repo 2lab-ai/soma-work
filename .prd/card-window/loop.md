@@ -8,7 +8,7 @@ AS-IS(실측, main `0a2476cf`): 남의 카드도 내 카드와 같이 보통 크
 
 | ID | 단위 | Status | 브랜치 · 워크트리 | 스코프 · 끝상태 확인 |
 |---|---|---|---|---|
-| WU5 | 남의 카드 기본 한 줄 + 저장(D13) | 🟡 | `feat/card-window-others-fold` · `soma-work_20261118_card-window-others` | `dashboard.ts` `cardOthersDefaultFolded` · `cardMinSeeds` · `boardFoldOthers` · `_applyUserPill`, 시험 하네스 seam. 단위 RED → GREEN, 리시트 S15(시드 · + 저장 · 새로 고침 · − · 늦은 `/auth/me`) |
+| WU5 | 남의 카드 기본 한 줄 + 저장(D13) | 🟡 | `feat/card-window-others-fold` · `soma-work_20261118_card-window-others` | `dashboard.ts` `cardOthersDefaultFolded` · `cardMinSeeds` · `boardOwnerDefaults`(양쪽, 리뷰) · `_applyUserPill`, 시험 하네스 seam. 단위 RED → GREEN, 리시트 S15(시드 · + 저장 · 새로 고침 · − · 늦은 `/auth/me`) |
 | WU6 | dev 배포 · 배포 빌드 실측 | 🟡 | WU5 머지 뒤 | dev 호스트 한 대 배포 → 배포 번들로 리시트 전부 |
 
 ## 열린 gap

@@ -191,7 +191,7 @@ describe('someone else\u2019s card starts on one line; the reader\u2019s \u2212 
     cardOthersDefaultFolded(s: unknown): boolean;
     cardMinSeeds(cols: unknown): string[];
     cardMinSave(k: string, on: boolean): void;
-    boardFoldOthers(): void;
+    boardOwnerDefaults(): void;
   };
   const FNS = [
     'cardPrefList',
@@ -202,7 +202,7 @@ describe('someone else\u2019s card starts on one line; the reader\u2019s \u2212 
     'cardStarDefaultFolded',
     'cardOthersDefaultFolded',
     'cardMinSeeds',
-    'boardFoldOthers',
+    'boardOwnerDefaults',
   ];
   const cache: Record<string, unknown> = {
     MINE: { ownerId: 'U001', activityState: 'working' },
@@ -212,7 +212,7 @@ describe('someone else\u2019s card starts on one line; the reader\u2019s \u2212 
   };
   const col = { MINE: 'working', THEIRS: 'working', THEIRS_WAITING: 'waiting', NOBODY: 'idle' };
   const page = (ls: ReturnType<typeof storage>, viewer: string, extra: Record<string, unknown> = {}) =>
-    load<Others>(FNS, ['CARD_MIN_MAX', '_cardPrefs', 'STAR_FOLD_MS'], {
+    load<Others>(FNS, ['CARD_MIN_MAX', '_cardPrefs', 'STAR_FOLD_MS', '_ownerFolded'], {
       localStorage: ls,
       _sessionCache: cache,
       _cardCol: col,
@@ -275,7 +275,7 @@ describe('someone else\u2019s card starts on one line; the reader\u2019s \u2212 
       _expanded: new Set(['OPENED']),
       _deck: ['DECK'],
     });
-    p.boardFoldOthers();
+    p.boardOwnerDefaults();
     expect(calls).toEqual([
       ['THEIRS', true, undefined],
       // In the deck (folded for its detail card): plain one line now, so closing the detail card leaves the default.
@@ -290,13 +290,84 @@ describe('someone else\u2019s card starts on one line; the reader\u2019s \u2212 
       _cardHost: { THEIRS: el },
       _expanded: new Set(),
       _deck: [],
-    }).boardFoldOthers();
+    }).boardOwnerDefaults();
     expect(calls).toEqual([]);
   });
 });
 
+describe('a viewer change on a drawn board reconciles the ownership default both ways (SSOT_3 review)', () => {
+  it('the old default lifts from the new viewer\u2019s cards and the new one folds; a saved \u2212, a starred day-old card and a deck card keep their reasons', () => {
+    const H = 60 * 60 * 1000;
+    const NOW = Date.UTC(2026, 10, 18, 9, 0, 0);
+    const calls: unknown[][] = [];
+    const folded = new Set<string>();
+    const el = {
+      isMinimized: (k: string) => folded.has(k),
+      setMinimized: (k: string, on: boolean, opts?: unknown) => {
+        calls.push([k, on, opts]);
+        if (on) folded.add(k);
+        else folded.delete(k);
+      },
+    };
+    const cache: Record<string, unknown> = {
+      A: { ownerId: 'U001', activityState: 'idle' }, // mine as U001, someone else's as U002
+      B: { ownerId: 'U002', activityState: 'idle' }, // folded as someone else's for U001; mine for U002
+      C: { ownerId: 'U002', activityState: 'idle' }, // the reader folded it (saved \u2212)
+      D: { ownerId: 'U002', activityState: 'idle', starred: true, lastActivity: new Date(NOW - 30 * H).toISOString() },
+      E: { ownerId: 'U002', activityState: 'idle' }, // its detail card is in the deck
+    };
+    const m = load<{
+      cardMinSeeds(cols: unknown): string[];
+      boardOwnerDefaults(): void;
+      setViewer(v: string): void;
+    }>(
+      [
+        'cardPrefList',
+        'cardPrefPut',
+        'cardMinList',
+        'cardUnfoldList',
+        'cardStarDefaultFolded',
+        'cardOthersDefaultFolded',
+        'cardMinSeeds',
+        'boardOwnerDefaults',
+      ],
+      ['CARD_MIN_MAX', '_cardPrefs', 'STAR_FOLD_MS', '_ownerFolded'],
+      {
+        localStorage: storage({ 'soma-card-min': '["C"]' }),
+        _sessionCache: cache,
+        _cardCol: { A: 'idle', B: 'idle', C: 'idle', D: 'idle', E: 'idle' },
+        _cardHost: { A: el, B: el, C: el, D: el, E: el },
+        _expanded: new Set(),
+        _deck: ['E'],
+        Date: { now: () => NOW, parse: Date.parse },
+      },
+      { prelude: "var _viewerUserId = 'U001';", exports: 'setViewer: function (v) { _viewerUserId = v; }' },
+    );
+    // First paint as U001: the element starts these on one line.
+    const seeds = m.cardMinSeeds([{ keys: ['A', 'B', 'C', 'D', 'E'] }]);
+    expect(seeds.sort()).toEqual(['B', 'C', 'D', 'E']);
+    for (const k of seeds) folded.add(k);
+    // Another account (U002) on the same mounted board.
+    m.setViewer('U002');
+    m.boardOwnerDefaults();
+    expect(calls).toEqual([
+      ['A', true, undefined], // someone else's now
+      ['B', false, undefined], // the old default lifts
+      // E's detail card is in the deck: it stays on one line until that closes, then comes back (restore()).
+      ['E', false, undefined],
+      ['E', true, { untilRestore: true }],
+    ]);
+    expect([...folded].sort()).toEqual(['A', 'C', 'D', 'E']);
+    // Back to no viewer (a viewer token): nobody is someone else \u2014 A's default lifts too.
+    calls.length = 0;
+    m.setViewer('');
+    m.boardOwnerDefaults();
+    expect(calls).toEqual([['A', false, undefined]]);
+  });
+});
+
 describe('the viewer known: someone else\u2019s drawn cards fold once per viewer (SSOT_3 wiring, _applyUserPill)', () => {
-  it('runs boardFoldOthers when the viewer first becomes known or changes \u2014 not on every /auth/me, not without one', () => {
+  it('runs boardOwnerDefaults when the viewer becomes known or changes \u2014 not on every /auth/me', () => {
     const folds: string[] = [];
     const m = load<{ _applyUserPill(data: unknown): void }>(
       ['_applyUserPill'],
@@ -316,7 +387,7 @@ describe('the viewer known: someone else\u2019s drawn cards fold once per viewer
         repaintViewerControls: () => {},
         adminInboxLoad: () => {},
         _renderAdminModeButton: () => {},
-        boardFoldOthers: () => folds.push('fold'),
+        boardOwnerDefaults: () => folds.push('fold'),
       },
       { prelude: "var _viewerUserId = ''; var _viewerIsAdmin = false; var _appBarAccount = null;" },
     );
@@ -326,8 +397,10 @@ describe('the viewer known: someone else\u2019s drawn cards fold once per viewer
     expect(folds).toHaveLength(1);
     m._applyUserPill({ user: { name: 'Kate', slackUserId: 'U002' } }); // another account signed in
     expect(folds).toHaveLength(2);
-    m._applyUserPill({ isAdmin: true }); // a viewer token: nobody is the viewer
-    expect(folds).toHaveLength(2);
+    m._applyUserPill({ isAdmin: true }); // a viewer token now: nobody is the viewer \u2014 the defaults lift
+    expect(folds).toHaveLength(3);
+    m._applyUserPill({ isAdmin: true }); // the same again: nothing changed
+    expect(folds).toHaveLength(3);
   });
 });
 

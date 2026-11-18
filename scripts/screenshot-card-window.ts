@@ -21,7 +21,7 @@
  *   S13 a deck card hidden by the search and shown again keeps its detail fold; the reader's + stays
  *   S14 keyboard: Enter on a title → its detail card; Esc → focus back on that title
  *   S15 someone else's card starts on one line, mine does not; + and − are saved and survive a reload; the viewer
- *       known late (/auth/me after the board drew): the card folds then, nothing saved (SSOT_3, .prd/34 D13)
+ *       known late (/auth/me held until the board is observed): the card folds then, nothing saved (SSOT_3, D13)
  *
  * Run from the repo root (keeps state out of the checkout):
  *   SOMA_CONFIG_DIR=$TMP/cfg SOMA_INSTANCE_DIR=$TMP/inst CONVERSATION_VIEWER_TOKEN=t npx tsx scripts/screenshot-card-window.ts [outDir]
@@ -127,12 +127,12 @@ const PAGE_HELPERS = [
   'window.__name = function (f) { return f; };',
 ].join('\n');
 
-// authDelayMs: /auth/me answers that late — the board draws before the viewer is known (S15).
-async function installMocks(page: Page, view: 'board' | 'list' = 'board', authDelayMs = 0) {
+// authGate: /auth/me answers only once it settles — the board draws before the viewer is known (S15).
+async function installMocks(page: Page, view: 'board' | 'list' = 'board', authGate?: Promise<void>) {
   await page.addInitScript({ content: PAGE_HELPERS });
   await page.addInitScript({ content: `localStorage.setItem("soma-board-view", "${view}");` });
   await page.route('**/auth/me', async (r) => {
-    if (authDelayMs) await sleep(authDelayMs);
+    if (authGate) await authGate;
     await r.fulfill({ json: { user: { name: 'Zhuge', slackUserId: 'U001' }, csrfToken: 'x' } });
   });
   await page.route('**/api/dashboard/users', (r) =>
@@ -230,14 +230,14 @@ async function press(page: Page, key: string, what: 'min' | 'detail' | 'expand')
 async function shot(page: Page, name: string) {
   await page.screenshot({ path: path.join(OUT, name) });
 }
-async function boot(page: Page, view: 'board' | 'list' = 'board', authDelayMs = 0) {
+async function boot(page: Page, view: 'board' | 'list' = 'board', authGate?: Promise<void>) {
   // The viewer token (CONVERSATION_VIEWER_TOKEN) as the dashboard's bearer cookie.
   const tok = process.env.CONVERSATION_VIEWER_TOKEN;
   if (tok)
     await page
       .context()
       .addCookies([{ name: 'soma_dash_token', value: encodeURIComponent(`bearer:${tok}`), url: BASE_URL }]);
-  await installMocks(page, view, authDelayMs);
+  await installMocks(page, view, authGate);
   await page.goto(`${BASE_URL}/dashboard/U001`);
   await page.waitForSelector(`li.ib-card[data-card="${KEY_A}"] [data-win="detail"]`, { timeout: 20_000 });
   await sleep(500);
@@ -717,10 +717,19 @@ async function othersLateRun(browser: import('playwright').Browser) {
   const page = await ctx.newPage();
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(String(e)));
-  await boot(page, 'board', 2500);
+  // /auth/me is held until the drawn board is observed (review: no race on a fixed delay).
+  let release = () => {};
+  const gate = new Promise<void>((res) => {
+    release = res;
+  });
+  await boot(page, 'board', gate);
   log('\n── 1440 /auth/me late ──');
   const before = await cardState(page, KEY_E);
-  await sleep(2600);
+  release();
+  await page
+    .waitForFunction((k) => !!(window as any).__card(k)?.classList.contains('is-min'), KEY_E, { timeout: 5000 })
+    .catch(() => {});
+  await sleep(450);
   const after = await cardState(page, KEY_E);
   const mine = await cardState(page, KEY_A);
   const prefs = await page.evaluate(() => ({
