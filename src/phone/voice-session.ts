@@ -40,13 +40,6 @@ const TIME_UP_GRACE_MS = 25_000;
  */
 const BARGE_IN_MS = 600;
 
-/** How an utterance came, for {@link CallRun.hear}. */
-interface Heard {
-  /** Short, and the agent was talking when it began: a backchannel, not a new thought. */
-  backchannel: boolean;
-  /** Its end released the opening: the opening is the answer to it. */
-  releasedOpening: boolean;
-}
 /**
  * The speech engine is woken at most this often. It slows down after a few idle seconds (VoiceClient.warm), so the
  * wake-up goes out once the other side's words are transcribed — ~1 s before the reply's first sentence arrives.
@@ -112,9 +105,8 @@ export class CallRun {
   private dropTurn = false;
   /** Words that wait for the reply being written to end (dropped or not): sent together once it has. */
   private pendingPeer: string[] = [];
-  /** Speech began over the agent: it interrupts once it has lasted {@link BARGE_IN_MS}. */
+  /** Speech began over the agent: it interrupts once it has said {@link BARGE_IN_MS} worth (pauses not counted). */
   private bargeArmed = false;
-  private overAgentMs = 0;
   /** The agent was talking when the current utterance began. */
   private startedOverAgent = false;
   private turnText = '';
@@ -186,27 +178,26 @@ export class CallRun {
         this.silenceNudged = false;
         this.startedOverAgent = this.released && this.agentSpeaking();
         this.bargeArmed = this.startedOverAgent;
-        this.overAgentMs = 0;
       } else if (ev.type === 'utterance') {
         this.bargeArmed = false;
         const first = this.peerUtterances++ === 0;
         const releasedOpening = !this.released;
         if (releasedOpening) this.release('상대의 첫 말이 끝남');
-        const backchannel = this.startedOverAgent && ev.speechMs < BARGE_IN_MS;
-        void this.transcribe(ev.pcm, ev.totalMs, first, { backchannel, releasedOpening });
+        // A backchannel (short, begun over the agent) and the hello that released the opening leave what is being
+        // said alone.
+        const keepReply = releasedOpening || (this.startedOverAgent && ev.speechMs < BARGE_IN_MS);
+        void this.transcribe(ev.pcm, ev.totalMs, first, keepReply);
       } else if (ev.type === 'noise') {
         this.bargeArmed = false;
         if (!this.released) this.release('상대가 조용해서 첫 마디 시작');
         else this.armSilenceIfIdle(); // the start of it cleared the quiet-line timer; nothing else would set it again
       }
     }
-    // Speech over the agent interrupts it once it has gone on long enough to be meant.
-    if (this.bargeArmed && this.vad.speaking) {
-      this.overAgentMs += (pcm.length / 2 / LINE_SAMPLE_RATE) * 1000;
-      if (this.overAgentMs >= BARGE_IN_MS) {
-        this.bargeArmed = false;
-        if (this.agentSpeaking()) this.bargeIn();
-      }
+    // Speech over the agent interrupts it once it has said enough to be meant — loud time only: the quiet the
+    // recogniser waits through at the end of a short "네" does not make it longer.
+    if (this.bargeArmed && this.vad.speechMsSoFar >= BARGE_IN_MS) {
+      this.bargeArmed = false;
+      if (this.agentSpeaking()) this.bargeIn();
     }
   }
 
@@ -383,8 +374,8 @@ export class CallRun {
    * talked) and the hello whose end released the opening leave what is being said alone; they reach the model
    * after the current reply.
    */
-  private hear(text: string, how: Heard = { backchannel: false, releasedOpening: false }): void {
-    if (how.backchannel || how.releasedOpening) {
+  private hear(text: string, keepReply = false): void {
+    if (keepReply) {
       // Not a correction or a new thought: what is being said goes on, and the words reach the model after it.
       if (this.generating) this.pendingPeer.push(text);
       else this.sendToDialog(text);
@@ -414,12 +405,7 @@ export class CallRun {
 
   // ── hearing ─────────────────────────────────────────────────
 
-  private async transcribe(
-    pcm: Buffer,
-    audioMs: number,
-    first = false,
-    how: Heard = { backchannel: false, releasedOpening: false },
-  ): Promise<void> {
+  private async transcribe(pcm: Buffer, audioMs: number, first = false, keepReply = false): Promise<void> {
     const at = this.now();
     let text = '';
     let ms = 0;
@@ -455,7 +441,7 @@ export class CallRun {
       this.armSilenceIfIdle();
       return;
     }
-    this.hear(text, how);
+    this.hear(text, keepReply);
   }
 
   // ── thinking ────────────────────────────────────────────────

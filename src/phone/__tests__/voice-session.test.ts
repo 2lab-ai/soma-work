@@ -417,6 +417,51 @@ describe('CallRun — conversation', () => {
     expect(dialog().sent.slice(before)).toEqual(['잠깐만요']);
   });
 
+  /** Feed audio the way the line does: 20 ms frames. */
+  function frames(run: { feedAudio(b: Buffer): void }, pcm: Buffer) {
+    for (let off = 0; off < pcm.length; off += 320) run.feedAudio(pcm.subarray(off, off + 320));
+  }
+
+  it('in 20 ms frames, a 500 ms "네" and the quiet after it do not add up to an interruption', async () => {
+    const { run, dialog, call } = await talking();
+    frames(run, tone(600, 0.3));
+    frames(run, quiet(800));
+    await settleAll();
+    dialog().emit({ type: 'text_delta', text: '네, 회의 두 개 확인했어요. 시간도 알려 드릴게요. ' });
+    await settleAll();
+    frames(run, tone(500, 0.6)); // just under the bar …
+    frames(run, quiet(800)); // … and the recogniser's wait for the end: quiet, not speech
+    await settleAll();
+    expect(call.cleared).toBe(0);
+    expect(dialog().interrupted).toBe(0);
+  });
+
+  it('two short "네"s over the same reply do not add up to an interruption; both reach the model after it', async () => {
+    const s = setup({ direction: 'inbound' }, ['내일 회의는요?', '네', '네네']);
+    s.run.begin();
+    const call = fakeCall();
+    s.run.attach(call as unknown as CallSessionLike);
+    s.dialog().reply('네, 말씀하세요.');
+    await settleAll();
+    s.clock.advance(3000);
+    frames(s.run, tone(600, 0.3));
+    frames(s.run, quiet(800));
+    await settleAll();
+    s.dialog().emit({ type: 'text_delta', text: '내일 회의는 세 시예요. 장소는 삼 층 회의실이고요. ' });
+    await settleAll();
+    const before = s.dialog().sent.length;
+    for (let i = 0; i < 2; i++) {
+      frames(s.run, tone(400, 0.6)); // 400 + 400 ms: more than the bar together, not alone
+      frames(s.run, quiet(800));
+      await settleAll();
+    }
+    expect(call.cleared).toBe(0);
+    expect(s.dialog().interrupted).toBe(0);
+    s.dialog().emit({ type: 'turn_end', isError: false });
+    await settleAll();
+    expect(s.dialog().sent.slice(before)).toEqual(['네 네네']);
+  });
+
   it('a sound that interrupted nothing still leaves the line watched: the quiet-line nudge comes', async () => {
     const { run, clock, dialog } = await talking();
     clock.advance(3000); // the opening has played out; the agent waits
