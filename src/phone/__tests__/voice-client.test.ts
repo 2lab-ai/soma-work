@@ -238,15 +238,49 @@ describe('createVoiceClient().warm', () => {
     const reply = await lineA.speak('정리해 드릴게요.');
     const chunks = reply.chunks[Symbol.asyncIterator]();
     await chunks.next(); // line A's reply is streaming
-    vi.setSystemTime(Date.now() + 800);
-    await chunks.next(); // a chunk 0.8 s after the request …
-    vi.setSystemTime(Date.now() + 800); // … and 1.6 s after it, 0.8 s after the last chunk
-    await lineB.warm?.(); // the engine is busy and awake: no wake-up
+    vi.setSystemTime(Date.now() + 1_500);
+    await lineB.warm?.(); // the engine is busy with it: no wake-up
     expect(tts).toEqual(['정리해 드릴게요.']);
-    await chunks.next();
+    while (!(await chunks.next()).done) {
+      // line A's reply plays out
+    }
+    vi.setSystemTime(Date.now() + 500);
+    await lineB.warm?.(); // audio came out 0.5 s ago: still awake
+    expect(tts).toEqual(['정리해 드릴게요.']);
     vi.setSystemTime(Date.now() + 2_000); // then idle for a while
     await lineB.warm?.();
     expect(tts).toEqual(['정리해 드릴게요.', '네']);
+  });
+
+  it('skips the wake-up while another line waits for its first audio, and forgets a stream nobody reads', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const tts: string[] = [];
+    let headers!: () => void;
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      const text = JSON.parse(String(init.body)).text;
+      tts.push(text);
+      if (text === '오늘 일정을 정리해 드릴게요.')
+        await new Promise<void>((r) => {
+          headers = r;
+        }); // a cold engine: no first byte for a while
+      return new Response(lazyBody(1, init.signal, { reads: 0, eof: false }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const cfg = { url: 'http://cold-voice:9999', voice: 'cwon-phone', model: 'drama-3', language: 'ko' };
+    const lineA = createVoiceClient(cfg, fetchImpl);
+    const lineB = createVoiceClient({ ...cfg, voice: 'karina' }, fetchImpl);
+    const reply = lineA.speak('오늘 일정을 정리해 드릴게요.');
+    await new Promise((r) => setTimeout(r, 0));
+    vi.setSystemTime(Date.now() + 1_500); // 1.5 s and still no audio for line A
+    await lineB.warm?.(); // the engine is working on A's reply: no wake-up
+    expect(tts).toEqual(['오늘 일정을 정리해 드릴게요.']);
+    headers();
+    const left = await reply; // line A got its stream but never reads it
+    vi.setSystemTime(Date.now() + 31_000); // a synthesis open this long is not counted any more
+    await lineB.warm?.();
+    expect(tts).toEqual(['오늘 일정을 정리해 드릴게요.', '네']);
+    for await (const _ of left.chunks) {
+      // drain
+    }
   });
 });
 

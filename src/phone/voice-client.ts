@@ -49,19 +49,28 @@ type FetchLike = typeof fetch;
 const WARM_TIMEOUT_MS = 5_000;
 /** The engine synthesized for some line this recently: it is awake, a wake-up would only add work. */
 const ENGINE_AWAKE_MS = 1_000;
+/** A synthesis still open after this long is not counted any more (a stream nobody reads must not block wake-ups). */
+const SYNTHESIS_STALE_MS = 30_000;
 /**
  * Per voice host, across every line of this process:
  * - transcriptions in flight: a wake-up beside one slows it (measured: STT 0.9 s → 2.5 s), so none starts while one
  *   runs, and a transcription that starts cancels the running wake-up;
- * - when the engine last synthesized (a request sent or a chunk read), for any line;
+ * - syntheses in flight, from request to the end of their stream, and when audio last came out: the engine is busy
+ *   or awake then, a wake-up would only add work;
  * - the one wake-up running: a second line joins it.
  */
 interface VoiceHost {
   transcribing: number;
+  synthesizing: Set<{ at: number }>;
   synthesizedAt: number;
   wakeUp: { done: Promise<void>; abort: AbortController } | null;
 }
 const hosts = new Map<string, VoiceHost>();
+
+function engineBusy(host: VoiceHost, now: number): boolean {
+  for (const s of host.synthesizing) if (now - s.at > SYNTHESIS_STALE_MS) host.synthesizing.delete(s);
+  return host.synthesizing.size > 0 || now - host.synthesizedAt < ENGINE_AWAKE_MS;
+}
 
 export class VoiceServiceError extends Error {
   constructor(
@@ -76,7 +85,12 @@ export class VoiceServiceError extends Error {
 export function createVoiceClient(cfg: VoiceConfig, fetchImpl: FetchLike = fetch): VoiceClient {
   const base = cfg.url.replace(/\/+$/, '');
   const auth: Record<string, string> = cfg.token ? { authorization: `Bearer ${cfg.token}` } : {};
-  const host: VoiceHost = hosts.get(base) ?? { transcribing: 0, synthesizedAt: Number.NEGATIVE_INFINITY, wakeUp: null };
+  const host: VoiceHost = hosts.get(base) ?? {
+    transcribing: 0,
+    synthesizing: new Set(),
+    synthesizedAt: Number.NEGATIVE_INFINITY,
+    wakeUp: null,
+  };
   hosts.set(base, host);
 
   return {
@@ -108,7 +122,7 @@ export function createVoiceClient(cfg: VoiceConfig, fetchImpl: FetchLike = fetch
     warm(signal) {
       if (host.wakeUp) return host.wakeUp.done; // one per host: a stalled service never piles up wake-ups
       if (host.transcribing > 0) return; // this host is transcribing (any line): a wake-up would slow it
-      if (Date.now() - host.synthesizedAt < ENGINE_AWAKE_MS) return; // synthesizing for some line: already awake
+      if (engineBusy(host, Date.now())) return; // synthesizing for some line, or just did: already awake
       const own = new AbortController();
       const done = (async () => {
         const timer = setTimeout(() => own.abort('warm-up timed out'), WARM_TIMEOUT_MS);
@@ -132,7 +146,9 @@ export function createVoiceClient(cfg: VoiceConfig, fetchImpl: FetchLike = fetch
 
   async function speak(text: string, signal?: AbortSignal): Promise<SpeechStream> {
     const started = Date.now();
-    host.synthesizedAt = started;
+    const job = { at: started };
+    host.synthesizing.add(job);
+    const over = () => host.synthesizing.delete(job);
     let res: Response;
     try {
       res = await fetchImpl(`${base}/api/tts/stream`, {
@@ -142,9 +158,13 @@ export function createVoiceClient(cfg: VoiceConfig, fetchImpl: FetchLike = fetch
         signal,
       });
     } catch (err) {
+      over();
       throw new VoiceServiceError('tts', `text-to-speech unreachable: ${(err as Error).message}`);
     }
-    if (!res.ok || !res.body) throw new VoiceServiceError('tts', `text-to-speech answered ${res.status}`);
+    if (!res.ok || !res.body) {
+      over();
+      throw new VoiceServiceError('tts', `text-to-speech answered ${res.status}`);
+    }
     const rate = Number(res.headers.get('x-soma-voice-sample-rate') ?? '44100');
     const reader = res.body.getReader();
     const chunks: AsyncIterable<Buffer> = {
@@ -153,11 +173,12 @@ export function createVoiceClient(cfg: VoiceConfig, fetchImpl: FetchLike = fetch
           while (true) {
             const { done, value } = await reader.read();
             if (done) return;
-            host.synthesizedAt = Date.now();
+            host.synthesizedAt = Date.now(); // audio came out: the engine is awake
             if (value && value.byteLength) yield Buffer.from(value.buffer, value.byteOffset, value.byteLength);
           }
         } finally {
           reader.releaseLock();
+          over();
         }
       },
     };
