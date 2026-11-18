@@ -11,6 +11,7 @@ import { defaultTabCache } from '../commands/usage-carousel-cache';
 import { envSkillAdminApprovalAdapter } from '../env-skill-admin-approval';
 import { mcpGrantAdminApprovalAdapter } from '../mcp-grant-decision';
 import { newUserAdminApprovalAdapter } from '../new-user-decision';
+import { secretUseAdminApprovalAdapter } from '../secret-use-admin-approval';
 import { sessionQuestionAdminApprovalAdapter } from '../session-question-admin-approval';
 import { SourceThreadNewTask } from '../source-thread-new-task';
 import { buildDefaultTopicRegistry } from '../z/topics';
@@ -35,6 +36,7 @@ import { PermissionActionHandler } from './permission-action-handler';
 import { PluginUpdateActionHandler } from './plugin-update-action-handler';
 import { PRActionHandler } from './pr-action-handler';
 import { SafeguardActionHandler } from './safeguard-action-handler';
+import { SecretUseActionHandler } from './secret-use-action-handler';
 import { SessionActionHandler } from './session-action-handler';
 import { SkillPermissionActionHandler } from './skill-permission-action-handler';
 import { TurnDismissActionHandler } from './turn-dismiss-action-handler';
@@ -97,6 +99,12 @@ setActionHandlersProviders({
     });
     // The dashboard's admin approvals answer environment-skill requests through the same decision (#620).
     registerAdminApprovalAdapter(envSkillAdminApprovalAdapter(envSkillPermissionHandler));
+    // Secret-use cards (secret-access WU2): one decision for the DM buttons and the dashboard.
+    const secretUseHandler = new SecretUseActionHandler({
+      slackApi: ctx.slackApi as any,
+      messageHandler: ctx.messageHandler as any,
+    });
+    registerAdminApprovalAdapter(secretUseAdminApprovalAdapter(secretUseHandler));
     // MCP tool access requests: one decision for the DM buttons and the dashboard (#621).
     const updateMcpGrantDm = async (ref: { channel: string; ts: string }, text: string) =>
       ctx.slackApi.updateMessage(ref.channel, ref.ts, text, [{ type: 'section', text: { type: 'mrkdwn', text } }]);
@@ -182,6 +190,7 @@ setActionHandlersProviders({
         messageHandler: ctx.messageHandler as any,
       }),
       envSkillPermissionHandler,
+      secretUseHandler,
       userSkillEditSubmitHandler: new UserSkillEditViewSubmissionHandler({
         slackApi: ctx.slackApi as any,
       }),

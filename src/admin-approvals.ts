@@ -22,7 +22,9 @@ export type AdminApprovalKind =
   | 'new_user'
   | 'bot_delete'
   /** #1070 — a question the model asked for an admin (`ASK_USER_QUESTION` with `audience: 'admins'`). */
-  | 'session_question';
+  | 'session_question'
+  /** secret-access WU2 (#1338) — may a requester's tools use these secrets (수락 · 거부 · 앞으로 계속 자동 수락). */
+  | 'secret_use';
 
 export const ADMIN_APPROVAL_KINDS: readonly AdminApprovalKind[] = [
   'env_skill',
@@ -30,6 +32,7 @@ export const ADMIN_APPROVAL_KINDS: readonly AdminApprovalKind[] = [
   'new_user',
   'bot_delete',
   'session_question',
+  'secret_use',
 ];
 
 export interface AdminApprovalChoice {

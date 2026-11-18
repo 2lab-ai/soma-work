@@ -26,7 +26,11 @@ import type { HostWriteReceipt } from 'somalib/model-commands/host-receipt';
 import type { ModelCommandContext } from 'somalib/model-commands/types';
 import { type AgentRunOptions, type AgentStreamEvent, runAgentStream, runOneShotText } from './agent-runtime';
 import { liveAgentIds, liveNonAgentTaskIds, MAX_TIMER_DELAY_MS } from './agent-runtime/background-keepalive';
-import { buildStreamOptions, type EnvSkillDenial } from './agent-runtime/claude-code/build-stream-options';
+import {
+  buildStreamOptions,
+  type EnvSkillDenial,
+  type SecretUseDenial,
+} from './agent-runtime/claude-code/build-stream-options';
 import { ExecutionContextMissingError } from './agent-runtime/execution-context';
 import { pumpFrames } from './agent-runtime/frame-pump';
 import { permissionAdviceBoard, resolvePermissionAdvice } from './agent-runtime/policy/permission-advice';
@@ -683,6 +687,7 @@ export class ClaudeHandler implements TurnSteeringPort {
   // non-admin's `Skill` call is denied. Set by SlackHandler during bootstrap,
   // which owns the Slack API; undefined in unit tests (the denial still holds).
   private envSkillPermissionRequester?: (denial: EnvSkillDenial) => Promise<void>;
+  private secretUseRequester?: (denial: SecretUseDenial) => Promise<void>;
 
   constructor(mcpManager: McpManager) {
     this.mcpManager = mcpManager;
@@ -720,6 +725,11 @@ export class ClaudeHandler implements TurnSteeringPort {
   /** Register who asks the admins for an environment skill step 6b denied. Called once during bootstrap. */
   setEnvSkillPermissionRequester(requester: (denial: EnvSkillDenial) => Promise<void>): void {
     this.envSkillPermissionRequester = requester;
+  }
+
+  /** Register who asks the admins whether a requester's tools may use secrets (secret-access WU2). Bootstrap only. */
+  setSecretUseRequester(requester: (denial: SecretUseDenial) => Promise<void>): void {
+    this.secretUseRequester = requester;
   }
 
   /** Slack side of a safeguards halt seen outside the turn's stream (#904) — wired by `SlackHandler`. */
@@ -1480,6 +1490,7 @@ export class ClaudeHandler implements TurnSteeringPort {
           checkMcpToolPermission: (a, b, c, d) => this.checkMcpToolPermission(a, b, c, d),
           getEnvSkillRegistry: () => envSkillRegistry(this.mcpManager.getPluginManager()),
           onEnvSkillDenied: this.envSkillPermissionRequester,
+          onSecretUseDenied: this.secretUseRequester,
           safetyClassifier: this.getSafetyClassifier(),
           onSafeguardFlag: (key, flag) =>
             this.reportSafeguardFlag(key, flag, { source: 'guardian', stopRunningTurn: true }),

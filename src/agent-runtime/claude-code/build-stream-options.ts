@@ -69,6 +69,8 @@ import { extendSandboxWithGrant, loadDeploySandboxGrant } from '../../sandbox/de
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
 import { launchAllFrom, mcpLaunchDir, wrapPluginLaunchers } from '../../sandbox/mcp-launch-dir';
 import { projectConfigRoot } from '../../sandbox/project-config-root';
+import { checkSecretAccess } from '../../secrets/secret-access';
+import { loadServerToolsSection } from '../../secrets/secret-usage';
 import type { SessionRegistry } from '../../session-registry';
 import { isPlanPending } from '../../task-turn/task-plan';
 import type { ConversationSession, WorkflowType } from '../../types';
@@ -170,6 +172,11 @@ export interface BuildStreamOptionsDeps {
    */
   onEnvSkillDenied?: (denial: EnvSkillDenial) => Promise<void>;
   /**
+   * Enforcer of a secret-use denial (secret-access WU2, #1338): ask the admins whether this requester's tools may
+   * use the secrets (the 3-answer card). Fire-and-forget from the hook; the request store dedupes per thread.
+   */
+  onSecretUseDenied?: (denial: SecretUseDenial) => Promise<void>;
+  /**
    * Auto-mode safety classifier (guardian). Consulted only when the policy
    * returns the `classify` decision (a dangerous-rule hit in `auto` mode).
    * When absent, `classify` fails closed to `ask` — i.e. auto mode degrades to
@@ -211,6 +218,36 @@ export interface EnvSkillDenial {
 
 /** The reason prefix step 6b of `evaluateToolPolicy` denies with (`env-skill: <plugin:skill>`). */
 const ENV_SKILL_REASON_PREFIX = 'env-skill: ';
+
+/**
+ * A server-tools call step 4 denied because it uses secrets the requester holds no grant for (secret-access WU2,
+ * #1338): who asked, which secrets, through which tool and server, in which thread. Names only — never a value.
+ */
+export interface SecretUseDenial {
+  requesterId: string;
+  names: string[];
+  /** The server-tools tool, without the `mcp__server-tools__` prefix. */
+  tool: string;
+  server: string;
+  /** The tool is an admin's by default (`ADMIN_ONLY_SERVER_TOOLS`): the card warns the admin. */
+  adminOnlyTool: boolean;
+  channel: string;
+  threadTs?: string;
+}
+
+/** Step 4's reason (after `mcp-permission: `) for a call that waits on secret grants: `secret-use: a,b`. */
+const SECRET_USE_REASON = 'secret-use: ';
+const SECRET_USE_DENY_PREFIX = `mcp-permission: ${SECRET_USE_REASON}`;
+
+/** What the model is told of a secret-use denial: the names, that the admins were asked, and to wait. */
+function secretUseDenyMessage(names: readonly string[]): string {
+  return (
+    `Blocked: this call uses the secret${names.length > 1 ? 's' : ''} ${names.map((n) => `\`${n}\``).join(', ')}, which an admin has not ` +
+    'allowed your tools to use yet. An approval request has been sent to the admins; when one approves, this thread ' +
+    'receives a message to continue. Do not retry the call or work around it, and report that the step waits for ' +
+    "admin approval. No model ever sees a secret value — the bot's tools use it for you."
+  );
+}
 
 export interface BuildStreamOptionsInput {
   queryEnv: Record<string, string | undefined>;
@@ -430,7 +467,8 @@ export async function buildStreamOptions(
           : deps.sessionRegistry.getSessionByKey(execCtx.sessionKey)?.handoffContext,
         // Step 4 runs for non-admins only. Host commands (`ssh_exec`, env-access WU2 #1210) and an environment
         // user's PR approvals and merges (`gh_pr`, WU3 #1211) are an admin's, whatever the server-tools grants
-        // say; the other tools follow the grants.
+        // say; the other tools follow the grants. A secret grant (secret-access WU2) opens any server-tools call
+        // whose every secret it covers — never one that uses none.
         checkMcpToolPermission: (name, toolInput) => {
           // An environment's grant opens every tool on its servers, admin-only ones included (WU4, #1212).
           const environment = envSkillScope
@@ -439,11 +477,22 @@ export async function buildStreamOptions(
           if (environment === null) return null;
           // Without it, an admin-only tool stays shut (naming the environment, when it is one's server) …
           const adminOnly = ADMIN_ONLY_SERVER_TOOLS.get(name);
-          if (adminOnly !== undefined) return environment ?? adminOnly;
           // … and an ordinary tool keeps following the server-tools grants, on an environment's server too.
-          return gatedServerNames.length > 0
-            ? (deps.checkMcpToolPermission(name, policyUser, cachedPermConfig, gatedServerNames) ?? null)
-            : null;
+          const denied =
+            adminOnly !== undefined
+              ? (environment ?? adminOnly)
+              : gatedServerNames.length > 0
+                ? (deps.checkMcpToolPermission(name, policyUser, cachedPermConfig, gatedServerNames) ?? null)
+                : null;
+          if (denied === null) return null;
+          // One more way in (secret-access WU2, #1338): every secret the call uses is granted to the requester —
+          // always, or in this thread. A call that uses no secret (a host command) never opens this way.
+          if (name.startsWith('mcp__server-tools__')) {
+            const access = checkSecretAccess(name, toolInput, policyUser, envSkillScope, loadServerToolsSection());
+            if (access.kind === 'covered') return null;
+            if (access.kind === 'missing') return `${SECRET_USE_REASON}${access.names.join(',')}`;
+          }
+          return denied;
         },
         ...(nativeWriteRoots ? { checkNativeWrite: createNativeWriteCheck(nativeWriteRoots, hookCwd) } : {}),
         checkEnvSkillPermission: (tool, toolInput) =>
@@ -479,6 +528,37 @@ export async function buildStreamOptions(
                   err: err instanceof Error ? err.message : String(err),
                 }),
               );
+          }
+          // A server-tools call that waits on secret grants (secret-access WU2): ask the admins with the 3-answer
+          // card and tell the model which secrets wait. Never awaited — the denial must reach the model now.
+          if (result.reason.startsWith(SECRET_USE_DENY_PREFIX)) {
+            const names = result.reason.slice(SECRET_USE_DENY_PREFIX.length).split(',').filter(Boolean);
+            const server = typeof toolInput?.server === 'string' ? toolInput.server : '';
+            if (deps.onSecretUseDenied && slackContext && names.length > 0) {
+              void deps
+                .onSecretUseDenied({
+                  requesterId: policyUser,
+                  names,
+                  tool: toolName.slice('mcp__server-tools__'.length),
+                  server,
+                  adminOnlyTool: ADMIN_ONLY_SERVER_TOOLS.has(toolName),
+                  channel: slackContext.channel,
+                  threadTs: slackContext.threadTs,
+                })
+                .catch((err: unknown) =>
+                  logger.warn('Secret use permission request failed', {
+                    user: policyUser,
+                    err: err instanceof Error ? err.message : String(err),
+                  }),
+                );
+            }
+            return {
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse',
+                permissionDecision: 'deny',
+                permissionDecisionReason: secretUseDenyMessage(names),
+              },
+            };
           }
           return {
             hookSpecificOutput: {

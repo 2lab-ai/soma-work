@@ -31,6 +31,9 @@ import { isSafePathSegment } from './path-utils';
 
 const logger = new Logger('UserSkillGrantsStore');
 
+// biome-ignore lint/style/noCommonJs: @soma/process-shared sub-path types are not visible under moduleResolution node
+const { isSecretName } = require('@soma/process-shared/secret-ref.js') as { isSecretName(name: unknown): boolean };
+
 /** Default TTL for a one-time grant — long enough to cover a re-dispatch. */
 const ONE_TIME_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -54,6 +57,12 @@ export interface SkillGrants {
    * allowed every skill and every server-tools tool of that environment ("this environment, always").
    */
   perEnvironment?: Record<string, string[]>;
+  /**
+   * Environment-skill owner only (secret-access WU2, #1338): secret name → requester uids allowed to have their
+   * model's server-tools calls use that secret ("앞으로 계속 자동 수락"). The value stays in the secret store; this
+   * grants its use by the bot's tools, never a read.
+   */
+  perSecret?: Record<string, string[]>;
 }
 
 function emptyGrants(): SkillGrants {
@@ -88,6 +97,9 @@ export function loadGrants(ownerId: string): SkillGrants {
       perSkill: parsed.perSkill && typeof parsed.perSkill === 'object' ? parsed.perSkill : {},
       ...(parsed.perEnvironment && typeof parsed.perEnvironment === 'object'
         ? { perEnvironment: parsed.perEnvironment }
+        : {}),
+      ...(parsed.perSecret && typeof parsed.perSecret === 'object' && !Array.isArray(parsed.perSecret)
+        ? { perSecret: parsed.perSecret }
         : {}),
     };
   } catch {
@@ -489,4 +501,75 @@ export function isEnvPluginUseAllowed(
     if (skillKey.startsWith(prefix) && Array.isArray(requesters) && requesters.includes(requesterId)) return true;
   }
   return scope !== undefined && hasThreadGrantForPlugin(ENV_SKILL_GRANT_OWNER, pluginName, requesterId, scope);
+}
+
+// --- secret grants (secret-access WU2, #1338) ---
+
+/** The thread-grant key of secret `name` under the environment-skill owner: never a `plugin:skill` key. */
+function secretThreadKey(name: string): string {
+  return `secret\u0000${name}`;
+}
+
+function secretRequesters(grants: SkillGrants, name: string): string[] {
+  if (!isSecretName(name) || !grants.perSecret) return [];
+  // Own keys only (the name shape already rules out `__proto__`).
+  if (!Object.keys(grants.perSecret).includes(name)) return [];
+  const list = grants.perSecret[name];
+  return Array.isArray(list) ? list.filter((id) => typeof id === 'string') : [];
+}
+
+/** Who may always use secret `name` (the 비밀 tab lists them). */
+export function secretGrantees(name: string): string[] {
+  return [...secretRequesters(loadGrants(ENV_SKILL_GRANT_OWNER), name)];
+}
+
+/** The secret names some requester holds an "always" grant for — in the store or not (the tab lists them all). */
+export function secretGrantNames(): string[] {
+  const grants = loadGrants(ENV_SKILL_GRANT_OWNER);
+  return Object.keys(grants.perSecret ?? {})
+    .filter((name) => secretRequesters(grants, name).length > 0)
+    .sort();
+}
+
+/** Has an admin let the requester's tools use secret `name` always? */
+export function hasSecretGrant(name: string, requesterId: string): boolean {
+  return secretRequesters(loadGrants(ENV_SKILL_GRANT_OWNER), name).includes(requesterId);
+}
+
+/** Persist "앞으로 계속 자동 수락" — the requester's tools may use secret `name` (idempotent). */
+export function grantSecret(name: string, requesterId: string): void {
+  if (!isSecretName(name)) throw new Error('Invalid secret name');
+  const grants = loadGrants(ENV_SKILL_GRANT_OWNER);
+  const list = secretRequesters(grants, name);
+  if (list.includes(requesterId)) return;
+  saveGrants(ENV_SKILL_GRANT_OWNER, {
+    ...grants,
+    perSecret: { ...(grants.perSecret ?? {}), [name]: [...list, requesterId] },
+  });
+  logger.info('Granted secret use', { name, requesterId });
+}
+
+/** Take back a secret grant (idempotent). Returns whether one was removed. */
+export function revokeSecret(name: string, requesterId: string): boolean {
+  const grants = loadGrants(ENV_SKILL_GRANT_OWNER);
+  const list = secretRequesters(grants, name);
+  if (!list.includes(requesterId) || !grants.perSecret) return false;
+  const rest = list.filter((id) => id !== requesterId);
+  if (rest.length) grants.perSecret[name] = rest;
+  else delete grants.perSecret[name];
+  saveGrants(ENV_SKILL_GRANT_OWNER, grants);
+  logger.info('Revoked secret use', { name, requesterId });
+  return true;
+}
+
+/** "수락 (이 스레드)": the requester's tools may use secret `name` in `scope`'s thread until it expires (12 h). */
+export function addSecretThreadGrant(name: string, requesterId: string, scope: GrantScope): void {
+  if (!isSecretName(name)) throw new Error('Invalid secret name');
+  addThreadGrant(ENV_SKILL_GRANT_OWNER, secretThreadKey(name), requesterId, scope);
+}
+
+/** NON-MUTATING apart from dropping an expired entry: may the requester's tools use `name` — always, or here? */
+export function isSecretUseAllowed(name: string, requesterId: string, scope?: GrantScope): boolean {
+  if (hasSecretGrant(name, requesterId)) return true;
+  return scope !== undefined && hasThreadGrant(ENV_SKILL_GRANT_OWNER, secretThreadKey(name), requesterId, scope);
 }
