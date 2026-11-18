@@ -228,6 +228,21 @@ describe('CallRun — outbound opening', () => {
     expect(record.work.filter((w) => w.kind === 'tts')).toHaveLength(2);
   });
 
+  it('does not cut the opening for the words that released it (a hello the recogniser did not know as one)', async () => {
+    const s = setup({}, ['네, 여기서요']);
+    s.run.begin();
+    s.dialog().reply('안녕하세요, 홍길동님 맞으시죠? 김민수님이 보내서 전화드렸어요.');
+    await settleAll();
+    const call = fakeCall();
+    s.run.attach(call as unknown as CallSessionLike);
+    s.run.feedAudio(tone(700, 0.3)); // "네, 여보세요" as the phone is picked up
+    s.run.feedAudio(quiet(600)); // its end releases the opening
+    await settleAll(); // … and its transcript arrives while the opening plays
+    expect(call.cleared).toBe(0);
+    expect(s.record.transcript.filter((l) => l.role === 'agent').every((l) => !l.interrupted)).toBe(true);
+    expect(s.dialog().sent[s.dialog().sent.length - 1]).toBe('네, 여기서요'); // answered after the opening
+  });
+
   it('waits for the other side to finish its hello, and does not send a bare hello to the model', async () => {
     const { run, clock, record, dialog } = setup({}, ['여보세요?']);
     run.begin();
@@ -285,8 +300,12 @@ describe('CallRun — conversation', () => {
     dialog().emit({ type: 'text_delta', text: '네, 회의 두 개 확인했어요. 그리고' });
     await settleAll();
     expect(call.frames).toBeGreaterThan(40);
-    // The other side talks over it.
+    // A short sound over it ("네", "아, 예") is not an interruption …
     run.feedAudio(tone(300, 0.6));
+    await settleAll();
+    expect(call.cleared).toBe(0);
+    // … talking over it for more than half a second is.
+    run.feedAudio(tone(400, 0.6));
     await settleAll();
     expect(call.cleared).toBe(1);
     expect(dialog().interrupted).toBe(1);
@@ -376,6 +395,37 @@ describe('CallRun — conversation', () => {
     s.dialog().emit({ type: 'turn_end', isError: true, message: 'interrupted' });
     await settleAll();
     expect(s.dialog().sent.slice(before)).toEqual(['시간이랑 장소 알려 주세요']);
+  });
+
+  it('a short "네" while the agent talks does not stop it; the words reach the model after this reply', async () => {
+    const { run, dialog, call } = await talking();
+    run.feedAudio(tone(600, 0.3));
+    run.feedAudio(quiet(800));
+    await settleAll();
+    dialog().emit({ type: 'text_delta', text: '네, 회의 두 개 확인했어요. 시간도 알려 드릴게요. ' });
+    await settleAll();
+    expect(call.frames).toBeGreaterThan(0);
+    const before = dialog().sent.length;
+    run.feedAudio(tone(300, 0.6)); // "네" over the agent
+    run.feedAudio(quiet(800));
+    await settleAll();
+    expect(call.cleared).toBe(0);
+    expect(dialog().interrupted).toBe(0);
+    expect(dialog().sent.length).toBe(before); // the reply is still being written: the "네" waits for it
+    dialog().emit({ type: 'turn_end', isError: false });
+    await settleAll();
+    expect(dialog().sent.slice(before)).toEqual(['잠깐만요']);
+  });
+
+  it('a sound that interrupted nothing still leaves the line watched: the quiet-line nudge comes', async () => {
+    const { run, clock, dialog } = await talking();
+    clock.advance(3000); // the opening has played out; the agent waits
+    run.feedAudio(tone(100, 0.6)); // a click on the line: speech starts, then turns out to be noise
+    run.feedAudio(quiet(800));
+    await settleAll();
+    clock.advance(16_000);
+    await settleAll();
+    expect(dialog().sent[dialog().sent.length - 1]).toBe(SILENCE_CUE);
   });
 
   it('newer words stop a reply that is playing its first sentence while the rest is still being written', async () => {

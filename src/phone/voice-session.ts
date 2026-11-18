@@ -35,6 +35,19 @@ const HANGUP_TAIL_MS = 600;
 /** After the time-up cue the agent gets this long to say goodbye before the line is cut. */
 const TIME_UP_GRACE_MS = 25_000;
 /**
+ * Talking over the agent interrupts it only after this much speech. Shorter sounds over it — "네", "아, 예", a
+ * hello, a cough — are not an interruption (a real call cut the agent six times for them).
+ */
+const BARGE_IN_MS = 600;
+
+/** How an utterance came, for {@link CallRun.hear}. */
+interface Heard {
+  /** Short, and the agent was talking when it began: a backchannel, not a new thought. */
+  backchannel: boolean;
+  /** Its end released the opening: the opening is the answer to it. */
+  releasedOpening: boolean;
+}
+/**
  * The speech engine is woken at most this often. It slows down after a few idle seconds (VoiceClient.warm), so the
  * wake-up goes out once the other side's words are transcribed — ~1 s before the reply's first sentence arrives.
  */
@@ -97,8 +110,13 @@ export class CallRun {
 
   private generating = false;
   private dropTurn = false;
-  /** Words heard while a dropped reply was still ending: they go to the model together once it has ended. */
+  /** Words that wait for the reply being written to end (dropped or not): sent together once it has. */
   private pendingPeer: string[] = [];
+  /** Speech began over the agent: it interrupts once it has lasted {@link BARGE_IN_MS}. */
+  private bargeArmed = false;
+  private overAgentMs = 0;
+  /** The agent was talking when the current utterance began. */
+  private startedOverAgent = false;
   private turnText = '';
   private turnStartAt = 0;
   private firstTokenAt = 0;
@@ -166,13 +184,28 @@ export class CallRun {
         // The other side is talking: no silence timer, and the next quiet spell starts with a fresh nudge.
         this.clearSilence();
         this.silenceNudged = false;
-        if (this.released && this.agentSpeaking()) this.bargeIn();
+        this.startedOverAgent = this.released && this.agentSpeaking();
+        this.bargeArmed = this.startedOverAgent;
+        this.overAgentMs = 0;
       } else if (ev.type === 'utterance') {
+        this.bargeArmed = false;
         const first = this.peerUtterances++ === 0;
-        if (!this.released) this.release('상대의 첫 말이 끝남');
-        void this.transcribe(ev.pcm, ev.totalMs, first);
-      } else if (ev.type === 'noise' && !this.released) {
-        this.release('상대가 조용해서 첫 마디 시작');
+        const releasedOpening = !this.released;
+        if (releasedOpening) this.release('상대의 첫 말이 끝남');
+        const backchannel = this.startedOverAgent && ev.speechMs < BARGE_IN_MS;
+        void this.transcribe(ev.pcm, ev.totalMs, first, { backchannel, releasedOpening });
+      } else if (ev.type === 'noise') {
+        this.bargeArmed = false;
+        if (!this.released) this.release('상대가 조용해서 첫 마디 시작');
+        else this.armSilenceIfIdle(); // the start of it cleared the quiet-line timer; nothing else would set it again
+      }
+    }
+    // Speech over the agent interrupts it once it has gone on long enough to be meant.
+    if (this.bargeArmed && this.vad.speaking) {
+      this.overAgentMs += (pcm.length / 2 / LINE_SAMPLE_RATE) * 1000;
+      if (this.overAgentMs >= BARGE_IN_MS) {
+        this.bargeArmed = false;
+        if (this.agentSpeaking()) this.bargeIn();
       }
     }
   }
@@ -346,8 +379,17 @@ export class CallRun {
    * - a reply still being written is dropped (interrupted), and the words go to the model once that turn has
    *   ended, so they are answered together with what came before;
    * - a reply already playing is cut.
+   * Not every sound over the agent is a new thought: a backchannel ("네", "아, 예" — short, begun while the agent
+   * talked) and the hello whose end released the opening leave what is being said alone; they reach the model
+   * after the current reply.
    */
-  private hear(text: string): void {
+  private hear(text: string, how: Heard = { backchannel: false, releasedOpening: false }): void {
+    if (how.backchannel || how.releasedOpening) {
+      // Not a correction or a new thought: what is being said goes on, and the words reach the model after it.
+      if (this.generating) this.pendingPeer.push(text);
+      else this.sendToDialog(text);
+      return;
+    }
     if (this.generating) {
       this.pendingPeer.push(text);
       if (!this.dropTurn) {
@@ -372,7 +414,12 @@ export class CallRun {
 
   // ── hearing ─────────────────────────────────────────────────
 
-  private async transcribe(pcm: Buffer, audioMs: number, first = false): Promise<void> {
+  private async transcribe(
+    pcm: Buffer,
+    audioMs: number,
+    first = false,
+    how: Heard = { backchannel: false, releasedOpening: false },
+  ): Promise<void> {
     const at = this.now();
     let text = '';
     let ms = 0;
@@ -408,7 +455,7 @@ export class CallRun {
       this.armSilenceIfIdle();
       return;
     }
-    this.hear(text);
+    this.hear(text, how);
   }
 
   // ── thinking ────────────────────────────────────────────────
