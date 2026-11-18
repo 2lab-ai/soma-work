@@ -4,6 +4,7 @@
  *
  * SSOT-TASK-TREE mapping (session 2026-09-30, "llm mcp 완전히 삭제"):
  *   T2 — trinity panel roster = astra-zhuge / grok-elon / fable-zhuge
+ *   T3 — no runtime source, script or zworkflow asset calls the removed tool or a retired agent
  *   T3b — the subagent dispatch path is one tool name, wired end to end
  */
 import fs from 'node:fs';
@@ -68,6 +69,27 @@ describe('T2 — trinity panel roster is astra-zhuge / grok-elon / fable-zhuge',
     for (const agent of ['astra-zhuge', 'grok-elon', 'fable-zhuge']) {
       expect(skill).toMatch(new RegExp(`^\\|[^\\n]*\`${agent}\`[^\\n]*\\|$`, 'm'));
     }
+  });
+});
+
+describe('T3 — nothing tells the model to call the removed llm MCP tool or a retired agent', () => {
+  it('leaves no llm-mcp reference in runtime source, scripts, or the system prompt', () => {
+    // The CI guard script legitimately spells the forbidden pattern out.
+    const files = [
+      ...walk(path.join(repoRoot, 'src')).filter((f) => !f.startsWith(pluginRoot)),
+      ...walk(path.join(repoRoot, 'scripts')).filter((f) => path.basename(f) !== 'verify-no-removed-tools.sh'),
+      ...walk(path.join(repoRoot, 'packages')),
+    ];
+    const offenders = grepFiles(files, /mcp__llm|llm_chat|llm-mcp-server|mcp-server-llm|buildLlmServer/);
+    expect(offenders.map((f) => path.relative(repoRoot, f))).toEqual([]);
+  });
+
+  it('has zero references across src/local', () => {
+    const offenders = grepFiles(
+      walk(pluginRoot),
+      /mcp__llm__|llm_chat\(|llm_chat\b|gpt56-zhuge|grok45-elon|gpt56-elon|codex-fallback|codex exec|model:\s*"codex"/,
+    );
+    expect(offenders.map((f) => path.relative(repoRoot, f))).toEqual([]);
   });
 });
 

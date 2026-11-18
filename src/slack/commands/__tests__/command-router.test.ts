@@ -478,6 +478,21 @@ describe('CommandRouter — non-canonical bare input falls through to the model 
   it('bare "verbosity set detail" (not parser-supported) falls through', async () => {
     await assertFallsThrough('verbosity set detail');
   });
+
+  // Aliases retired in #506 read like chat. If one came back, the router would swallow the user's
+  // message — and for the session and plugin ones, act on it.
+  it.each([
+    'commands',
+    'servers',
+    'credentials',
+    '플러그인 업데이트',
+    'help?',
+    'end session',
+    'kill session-123',
+    'nextcct',
+  ])('retired alias "%s" (#506) falls through to the model', async (text) => {
+    await assertFallsThrough(text);
+  });
 });
 
 /**

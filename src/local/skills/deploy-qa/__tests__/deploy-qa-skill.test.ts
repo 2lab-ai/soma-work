@@ -571,6 +571,19 @@ describe('deploy-qa computes a refused compare from the commits list', () => {
   });
 });
 
+describe('no git recipe remains in the QA skills', () => {
+  for (const skill of ['deploy-qa', 'qa-issue']) {
+    it(skill, () => {
+      const md = read(skill);
+      expect(md).not.toMatch(
+        /git init|merge-base|rev-list|--filter=blob:none|GIT_TERMINAL_PROMPT|credential\.interactive/,
+      );
+      expect(md).not.toContain('compare via git');
+      expect(md).not.toMatch(/`(?:[A-Z_]+=\S*\s+)*git\s/);
+    });
+  }
+});
+
 /**
  * The Range rule run against real histories. GitHub's commits list comes in `git log`'s default order, newest
  * commit date first (this repo's list matched `git log` on 2026-11-09). A small page size stands in for pages of 100.

@@ -5226,6 +5226,21 @@ describe('stream-executor — epoch guard wiring (issue #688)', () => {
       expect(params.abortController.signal.reason).toBe('ghost-session');
       expect(deps.toolEventProcessor.handleToolUse).not.toHaveBeenCalled();
     });
+
+    it('B-1: a session closed during the tool-result status write stops the turn with the ghost-session reason', async () => {
+      const deps = createDeps(() => toolFlowStream('Read'));
+      const params = createParams(vi.fn().mockResolvedValue({ ts: 'msg_ts' }));
+      deps.threadPanel.setStatus.mockImplementation(async (_s: unknown, _k: string, patch: { agentPhase?: string }) => {
+        if (patch?.agentPhase === '결과 반영 중') params.session.terminated = true;
+      });
+      const executor = new StreamExecutor(deps);
+
+      await executor.execute(params).catch(() => undefined);
+
+      expect(params.abortController.signal.aborted).toBe(true);
+      expect(params.abortController.signal.reason).toBe('ghost-session');
+      expect(deps.toolEventProcessor.handleToolResult).not.toHaveBeenCalled();
+    });
   });
 });
 
