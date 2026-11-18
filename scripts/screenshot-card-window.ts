@@ -14,9 +14,10 @@
  *       moves, and the first card comes back as it was before its title (SSOT_4: open again if it was open)
  *   S6  ✕ → the front leaves and its card comes back as it was; the card now in front goes to one line; the last closes
  *       the panel
- *   S7  a card the reader folded stays one line after its detail card closes
+ *   S7  a one-line card's title with no detail card shown opens its detail card in front (SSOT_1: "표시 중이지 않을때라도");
+ *       a card the reader folded stays one line after its detail card closes
  *   S8  a press on the face's text opens nothing
- *   S9  reduced motion: ▽ turns without the hop
+ *   S9  reduced motion: ▽ turns without the hop; △ closes it in place — back to normal, no detail card
  *   S10 the list view (1280) and a phone (390): −, title → detail card (a full-screen sheet on the phone), ✕
  *   S11 a starred card a day old starts on one line with its TL;DR; the TL;DR's × → one line; + is kept (SSOT_2)
  *   S12 ▽ on a one-line card whose detail card is open: open in place through a repaint, the detail card stays
@@ -466,9 +467,18 @@ async function motionRun(browser: import('playwright').Browser) {
   // S7
   await press(page, KEY_C, 'min');
   await sleep(400);
+  const p7before = await panel(page);
   await press(page, KEY_C, 'detail');
   await page.waitForSelector('#slide-panel[open]');
   await sleep(500);
+  const p7 = await panel(page);
+  const c7open = await cardState(page, KEY_C);
+  check(
+    !p7before.open && p7.open && p7.key === KEY_C && c7open.min && c7open.current,
+    'S7 a one-line card’s title with no detail card shown → its detail card opens in front; the card stays one line',
+    { before: { open: p7before.open, deck: p7before.deck }, card: c7open.rect, panel: p7 },
+  );
+  await shot(page, '07-one-line-title.png');
   await page.click('#slide-panel .panel-close');
   await sleep(600);
   const c7 = await cardState(page, KEY_C);
@@ -622,6 +632,7 @@ async function reducedRun(browser: import('playwright').Browser) {
   const page = await ctx.newPage();
   await boot(page);
   log('\n── 1440 dark · reduced motion ──');
+  const bBefore = await cardState(page, KEY_B);
   await press(page, KEY_B, 'expand');
   await sleep(60);
   const s = await page.evaluate((k) => {
@@ -633,6 +644,27 @@ async function reducedRun(browser: import('playwright').Browser) {
     ...s,
     caret: b.caret,
   });
+  // △ again: closed in place — back to its normal height, ▽ again, and still no detail card.
+  await press(page, KEY_B, 'expand');
+  await sleep(300);
+  const bBack = await cardState(page, KEY_B);
+  const pBack = await panel(page);
+  check(
+    !bBack.open &&
+      bBack.expanded === 'false' &&
+      !bBack.min &&
+      bBack.rect.h === bBefore.rect.h &&
+      bBack.caret === bBefore.caret &&
+      !pBack.open,
+    'S9 △ → back to normal in place (▽ again), no detail card',
+    {
+      before: bBefore.rect,
+      open: b.rect,
+      after: bBack.rect,
+      caret: { before: bBefore.caret, open: b.caret, after: bBack.caret },
+      panelOpen: pBack.open,
+    },
+  );
   await press(page, KEY_A, 'detail');
   await page.waitForSelector('#slide-panel[open]');
   await sleep(400);
