@@ -130,7 +130,15 @@ function fakeCall() {
   return call;
 }
 
-function setup(plan: Partial<CallRunPlan> = {}, stt: string[] = [], opts: { speakGate?: () => Promise<void> } = {}) {
+function setup(
+  plan: Partial<CallRunPlan> = {},
+  stt: string[] = [],
+  opts: {
+    speakGate?: () => Promise<void>;
+    warm?: (signal?: AbortSignal) => Promise<void>;
+    sttGate?: () => Promise<void>;
+  } = {},
+) {
   const clock = new Clock();
   const record: PhoneCallRecord = {
     id: 'CA1',
@@ -146,8 +154,14 @@ function setup(plan: Partial<CallRunPlan> = {}, stt: string[] = [], opts: { spea
   };
   let dialog: FakeDialog | undefined;
   const spoken: string[] = [];
+  const warmed: number[] = [];
   const voice: VoiceClient = {
+    warm(signal) {
+      warmed.push(clock.t);
+      return opts.warm?.(signal);
+    },
     async transcribe() {
+      await opts.sttGate?.();
       return { text: stt.shift() ?? '', ms: 5 };
     },
     async speak(text) {
@@ -180,7 +194,7 @@ function setup(plan: Partial<CallRunPlan> = {}, stt: string[] = [], opts: { spea
       clearTimer: clock.clear,
     },
   );
-  return { run, clock, record, spoken, dialog: () => dialog as FakeDialog };
+  return { run, clock, record, spoken, warmed, dialog: () => dialog as FakeDialog };
 }
 
 const settle = () => new Promise((r) => setTimeout(r, 0));
@@ -390,6 +404,101 @@ describe('CallRun — a quiet line', () => {
     await settleAll();
     clock.advance(16_000);
     expect(dialog().sent[dialog().sent.length - 1]).toBe(SILENCE_CUE);
+  });
+});
+
+describe('CallRun — a warm voice engine', () => {
+  it('wakes the speech engine once the other side is transcribed (not during it), at most once every few seconds', async () => {
+    const { run, clock, warmed, dialog } = setup({ direction: 'inbound' }, ['네', '그리고요', '하나 더요']);
+    run.begin();
+    run.attach(fakeCall() as unknown as CallSessionLike);
+    dialog().reply('네, 말씀하세요.');
+    await settleAll();
+    clock.advance(2_000); // the agent has finished speaking
+    run.feedAudio(quiet(300));
+    run.feedAudio(tone(400, 0.3)); // the caller talks: the engine sat idle meanwhile
+    expect(warmed).toHaveLength(0);
+    run.feedAudio(quiet(800)); // … and stops: transcription runs first (a wake-up now would slow it down)
+    expect(warmed).toHaveLength(0);
+    await settleAll(); // transcribed: the reply reaches the engine in ~1 s, wake it now
+    expect(warmed).toHaveLength(1);
+    clock.advance(2_900);
+    run.feedAudio(tone(400, 0.3));
+    run.feedAudio(quiet(800)); // a second utterance 2.9 s later: still within the 3 s window, no second ping
+    await settleAll();
+    expect(warmed).toHaveLength(1);
+    clock.advance(200);
+    run.feedAudio(tone(400, 0.3));
+    run.feedAudio(quiet(800)); // 3.1 s after the first: wakes it again
+    await settleAll();
+    expect(warmed).toHaveLength(2);
+  });
+
+  it('wakes the engine only after a slow transcription has finished, then hands its words to the dialog', async () => {
+    let heard!: () => void;
+    const { run, clock, warmed, dialog } = setup({ direction: 'inbound' }, ['예약 확인하려고요'], {
+      sttGate: () =>
+        new Promise<void>((r) => {
+          heard = r;
+        }),
+    });
+    run.begin();
+    run.attach(fakeCall() as unknown as CallSessionLike);
+    dialog().reply('네, 말씀하세요.');
+    await settleAll();
+    clock.advance(2_000);
+    run.feedAudio(tone(400, 0.3));
+    run.feedAudio(quiet(800)); // the caller stops: transcription starts and takes a while
+    await settleAll();
+    expect(warmed).toEqual([]); // nothing beside the transcription
+    expect(dialog().sent).not.toContain('예약 확인하려고요');
+    heard();
+    await settleAll();
+    expect(warmed).toHaveLength(1);
+    expect(dialog().sent).toContain('예약 확인하려고요');
+  });
+
+  it('skips the wake-up while the agent is still synthesizing (the engine is awake)', async () => {
+    let letGo!: () => void;
+    const { run, warmed, dialog } = setup({}, ['여보세요?'], {
+      speakGate: () =>
+        new Promise<void>((r) => {
+          letGo = r;
+        }),
+    });
+    run.begin();
+    dialog().reply('안녕하세요, 소마예요. 잠깐 통화 괜찮으세요?');
+    await settleAll(); // the opening is being synthesized while it rings
+    run.attach(fakeCall() as unknown as CallSessionLike);
+    run.feedAudio(tone(400, 0.3));
+    run.feedAudio(quiet(800)); // "여보세요?" ends while the opening is still in synthesis
+    await settleAll();
+    expect(warmed).toEqual([]);
+    letGo();
+    await settleAll();
+  });
+
+  it('does not wait for the wake-up: the words reach the dialog while it runs, and it is cancelled with the call', async () => {
+    let warmSignal: AbortSignal | undefined;
+    const { run, clock, warmed, dialog } = setup({ direction: 'inbound' }, ['예약 확인하려고요'], {
+      warm: (signal) => {
+        warmSignal = signal;
+        return new Promise<void>(() => undefined); // a voice service that never answers
+      },
+    });
+    run.begin();
+    run.attach(fakeCall() as unknown as CallSessionLike);
+    dialog().reply('네, 말씀하세요.');
+    await settleAll();
+    clock.advance(2_000);
+    run.feedAudio(tone(400, 0.3));
+    run.feedAudio(quiet(800));
+    await settleAll();
+    expect(warmed).toHaveLength(1);
+    expect(dialog().sent).toContain('예약 확인하려고요');
+    expect(warmSignal?.aborted).toBe(false);
+    run.stop();
+    expect(warmSignal?.aborted).toBe(true);
   });
 });
 

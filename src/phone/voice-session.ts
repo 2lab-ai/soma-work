@@ -34,6 +34,11 @@ const SILENCE_NUDGE_MS = 15_000;
 const HANGUP_TAIL_MS = 600;
 /** After the time-up cue the agent gets this long to say goodbye before the line is cut. */
 const TIME_UP_GRACE_MS = 25_000;
+/**
+ * The speech engine is woken at most this often. It slows down after a few idle seconds (VoiceClient.warm), so the
+ * wake-up goes out once the other side's words are transcribed — ~1 s before the reply's first sentence arrives.
+ */
+const WARM_EVERY_MS = 3_000;
 
 export interface CallRunDeps {
   ulawToPcm16(ulaw: Buffer): Buffer;
@@ -102,6 +107,9 @@ export class CallRun {
   private readonly timers = new Set<unknown>();
   private silenceTimer: unknown = null;
   private silenceNudged = false;
+  private lastWarmAt = Number.NEGATIVE_INFINITY;
+  /** Cancels a warm-up still running when the call ends. */
+  private readonly warmAbort = new AbortController();
 
   constructor(plan: CallRunPlan, deps: CallRunDeps) {
     this.callId = plan.callId;
@@ -176,6 +184,7 @@ export class CallRun {
     if (this.ended) return;
     this.ended = true;
     this.synthAbort?.abort('call-ended');
+    this.warmAbort.abort('call-ended');
     this.queue = [];
     for (const t of this.timers) this.clearTimer(t);
     this.timers.clear();
@@ -320,6 +329,15 @@ export class CallRun {
     }
   }
 
+  private warmEngine(): void {
+    if (!this.deps.voice.warm || this.speaking) return; // synthesizing: the engine is awake
+    const now = this.now();
+    if (now - this.lastWarmAt < WARM_EVERY_MS) return;
+    this.lastWarmAt = now;
+    // Not awaited: the transcript goes to the dialog now, the wake-up runs beside it.
+    void Promise.resolve(this.deps.voice.warm(this.warmAbort.signal)).catch(() => undefined);
+  }
+
   // ── hearing ─────────────────────────────────────────────────
 
   private async transcribe(pcm: Buffer, audioMs: number, first = false): Promise<void> {
@@ -350,6 +368,9 @@ export class CallRun {
       return;
     }
     if (this.hangupRequested) return;
+    // The reply's first sentence reaches the speech engine in ~1 s (first tokens). Wake it now — not earlier: on the
+    // voice host the wake-up would compete with this transcription (measured: STT 0.9 s → 2.5 s).
+    this.warmEngine();
     // The other side's "여보세요" as it picks up is heard and logged, but it is not a turn: the opening answers it.
     if (first && this.plan.direction === 'outbound' && isBareGreeting(text)) {
       this.armSilenceIfIdle();

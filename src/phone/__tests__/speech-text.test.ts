@@ -23,6 +23,41 @@ describe('SentenceSplitter', () => {
     expect(s.flush()).toEqual(['나머지']);
   });
 
+  it('starts a turn sooner: its first chunk may end at a comma once it has a clause, later ones may not', () => {
+    const s = new SentenceSplitter();
+    expect(s.push('오늘 오후 두 시에 디자인 회의가 있고, 저녁에는')).toEqual(['오늘 오후 두 시에 디자인 회의가 있고,']);
+    expect(s.push(' 코드 리뷰가 있고, 내일은 쉬어요. 그리고')).toEqual(['저녁에는 코드 리뷰가 있고, 내일은 쉬어요.']);
+    expect(s.flush()).toEqual(['그리고']);
+    // A short opener ("네,") is not a clause: it waits for the sentence.
+    expect(s.push('네, 알겠습니다. ')).toEqual(['네, 알겠습니다.']);
+    s.flush();
+    // The next turn may start at a comma again.
+    expect(s.push('말씀하신 내용은 담당자에게, ')).toEqual(['말씀하신 내용은 담당자에게,']);
+  });
+
+  it('waits for the character after a comma when the comma ends a piece', () => {
+    const s = new SentenceSplitter();
+    expect(s.push('말씀하신 내용은 담당자에게,')).toEqual([]);
+    expect(s.push(' 그대로 전하')).toEqual(['말씀하신 내용은 담당자에게,']);
+    expect(s.flush()).toEqual(['그대로 전하']);
+  });
+
+  it('releases only one early clause per turn, even when one piece holds several', () => {
+    const s = new SentenceSplitter();
+    expect(s.push('오늘 오후 두 시에 디자인 회의가 있고, 저녁에는 코드 리뷰가 있고, 내일은')).toEqual([
+      '오늘 오후 두 시에 디자인 회의가 있고,',
+    ]);
+    expect(s.flush()).toEqual(['저녁에는 코드 리뷰가 있고, 내일은']);
+  });
+
+  it('never cuts a number at its thousands comma, even when the digits after it arrive in the next piece', () => {
+    const s = new SentenceSplitter();
+    expect(s.push('총 결제 예정 금액은 123,')).toEqual([]); // the next character decides
+    expect(s.push('456원입니다. ')).toEqual(['총 결제 예정 금액은 123,456원입니다.']);
+    s.flush();
+    expect(s.push('이번 달 사용량은 1,250,000원이고, 다음')).toEqual(['이번 달 사용량은 1,250,000원이고,']);
+  });
+
   it('splits at a newline', () => {
     const s = new SentenceSplitter();
     expect(s.push('첫째 줄 끝\n둘째')).toEqual(['첫째 줄 끝']);
