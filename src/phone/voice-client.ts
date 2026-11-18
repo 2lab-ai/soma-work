@@ -49,6 +49,9 @@ export interface VoiceClient {
 
 type FetchLike = typeof fetch;
 
+/** One transcription attempt is given up after this long (a 6 s utterance takes ~0.8 s), and tried once more. */
+const STT_ATTEMPT_MS = 4_000;
+const STT_ATTEMPTS = 2;
 /** A warm-up the engine has not finished in this long is dropped (the word takes ~0.6 s). */
 const WARM_TIMEOUT_MS = 5_000;
 /** The engine synthesized for some line this recently: it is awake, a wake-up would only add work. */
@@ -107,11 +110,22 @@ export function createVoiceClient(cfg: VoiceConfig, fetchImpl: FetchLike = fetch
         const form = new FormData();
         form.append('file', new Blob([new Uint8Array(wav)], { type: 'audio/wav' }), 'utterance.wav');
         form.append('language', cfg.language);
-        let res: Response;
-        try {
-          res = await fetchImpl(`${base}/api/stt`, { method: 'POST', body: form, headers: auth, signal });
-        } catch (err) {
-          throw new VoiceServiceError('stt', `speech-to-text unreachable: ${(err as Error).message}`);
+        let res: Response | undefined;
+        // A request that hangs (seen: a connection that took 10 s to fail) loses the caller's words: each attempt is
+        // bounded, and one more is made.
+        for (let attempt = 1; !res; attempt++) {
+          const bound = AbortSignal.timeout(STT_ATTEMPT_MS);
+          try {
+            res = await fetchImpl(`${base}/api/stt`, {
+              method: 'POST',
+              body: form,
+              headers: auth,
+              signal: signal ? AbortSignal.any([signal, bound]) : bound,
+            });
+          } catch (err) {
+            if (signal?.aborted || attempt >= STT_ATTEMPTS)
+              throw new VoiceServiceError('stt', `speech-to-text unreachable: ${(err as Error).message}`);
+          }
         }
         if (!res.ok) throw new VoiceServiceError('stt', `speech-to-text answered ${res.status}`);
         const body = (await res.json()) as { text?: unknown; ms?: unknown };

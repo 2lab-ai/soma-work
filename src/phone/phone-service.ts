@@ -28,6 +28,8 @@ import { buildCallSystemPrompt, formatPhoneNumber, greetedNote } from './phone-p
 import { createVoiceClient, type VoiceClient } from './voice-client';
 import { CallRun, PhoneVoiceSession } from './voice-session';
 
+/** Synthesized when a line opens; see CallRunPlan.phrases. */
+const PHRASES = ['네.'];
 const REQUEST_POLL_MS = 1000;
 /** How often the configuration is read again (a line added, changed, removed, or its secret put in place). */
 export const CONFIG_SYNC_MS = 30_000;
@@ -90,6 +92,8 @@ interface PhoneLine {
   session: PhoneVoiceSession;
   voice: VoiceClient;
   greeting?: { text: string; frames: Buffer[] };
+  /** Phrases synthesized when the line opens (the reply opener "네."), said without waiting for the engine. */
+  phrases: Map<string, Buffer[]>;
   /** Lease of each call's dialog, released when the call ends. */
   auths: Map<string, DialogAuth>;
   /**
@@ -260,6 +264,7 @@ export class PhoneService {
       watchdogs: new Map(),
       session: undefined as unknown as PhoneVoiceSession,
       agent: undefined as unknown as AgentLike,
+      phrases: new Map(),
     };
     line.session = new PhoneVoiceSession((call) => this.inboundRun(line, call));
     line.agent = this.deps.sdk.createAgent({
@@ -278,7 +283,10 @@ export class PhoneService {
     await this.connect(line);
     this.lines.set(env, line);
     this.deps.log('info', `phone: ${env} connected`, { number: formatPhoneNumber(cfg.number) });
-    if (cfg.inbound.enabled) void this.prepareGreeting(line);
+    void (async () => {
+      if (cfg.inbound.enabled) await this.prepareGreeting(line);
+      await this.preparePhrases(line);
+    })();
   }
 
   /** connect(), bounded: past the limit the attempt is dropped (its reconnect loop stopped) and sync() retries. */
@@ -429,7 +437,7 @@ export class PhoneService {
     greeting?: { text: string; frames: Buffer[] },
   ): CallRun {
     return new CallRun(
-      { callId, direction, maxMinutes, greeting, model: auth.model },
+      { callId, direction, maxMinutes, greeting, phrases: line.phrases, model: auth.model },
       {
         ulawToPcm16: (b) => this.deps.sdk.ulawToPcm16(b),
         pcm16ToUlaw: (b) => this.deps.sdk.pcm16ToUlaw(b),
@@ -540,21 +548,37 @@ export class PhoneService {
     return run;
   }
 
+  /** Synthesize `text` whole, as μ-law frames for the line. */
+  private async synthFrames(line: PhoneLine, text: string): Promise<Buffer[]> {
+    const stream = await line.voice.speak(text);
+    const rs = new StreamResampler(stream.sampleRate, LINE_SAMPLE_RATE);
+    const parts: Buffer[] = [];
+    for await (const chunk of stream.chunks) parts.push(this.deps.sdk.pcm16ToUlaw(rs.push(chunk)));
+    const ulaw = Buffer.concat(parts);
+    const frames: Buffer[] = [];
+    for (let off = 0; off < ulaw.length; off += 160) {
+      const f = ulaw.subarray(off, off + 160);
+      frames.push(f.length === 160 ? Buffer.from(f) : Buffer.concat([f, Buffer.alloc(160 - f.length, 0xff)]));
+    }
+    return frames;
+  }
+
+  /** The reply opener, made once per line: a reply that starts with "네," is heard ~0.8 s sooner. Best effort. */
+  private async preparePhrases(line: PhoneLine): Promise<void> {
+    for (const text of PHRASES) {
+      try {
+        line.phrases.set(text, await this.synthFrames(line, text));
+      } catch (err) {
+        this.deps.log('warn', 'phone: phrase not synthesized', { env: line.env, text, error: (err as Error).message });
+      }
+    }
+  }
+
   /** Synthesize the inbound greeting once (μ-law frames), so a caller hears it the moment the line opens. */
   private async prepareGreeting(line: PhoneLine): Promise<{ text: string; frames: Buffer[] } | undefined> {
     const text = line.cfg.inbound.greeting;
     try {
-      const stream = await line.voice.speak(text);
-      const rs = new StreamResampler(stream.sampleRate, LINE_SAMPLE_RATE);
-      const parts: Buffer[] = [];
-      for await (const chunk of stream.chunks) parts.push(this.deps.sdk.pcm16ToUlaw(rs.push(chunk)));
-      const ulaw = Buffer.concat(parts);
-      const frames: Buffer[] = [];
-      for (let off = 0; off < ulaw.length; off += 160) {
-        const f = ulaw.subarray(off, off + 160);
-        frames.push(f.length === 160 ? Buffer.from(f) : Buffer.concat([f, Buffer.alloc(160 - f.length, 0xff)]));
-      }
-      line.greeting = { text, frames };
+      line.greeting = { text, frames: await this.synthFrames(line, text) };
       return line.greeting;
     } catch (err) {
       this.deps.log('warn', 'phone: inbound greeting not synthesized', {
