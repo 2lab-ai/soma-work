@@ -353,16 +353,12 @@ async function motionRun(browser: import('playwright').Browser) {
           a.pause();
           a.currentTime = Number(t);
         }
-        // matrix(a, b, c, d, e, f) of translateY · scale · rotate: f = the lift, the scales and the turn from a..d.
-        const m = (tf: string) => {
-          const v = /matrix\(([^)]+)\)/.exec(tf);
-          return v ? v[1].split(',').map(Number) : [1, 0, 0, 1, 0, 0];
-        };
-        const [a, b, cc, d, , f] = m(getComputedStyle(lift).transform);
+        // The matrix of translateY · scale · rotate: f = the lift, the scales and the turn from a..d ('none' = identity).
+        const { a, b, c: cc, d, f } = new DOMMatrixReadOnly(getComputedStyle(lift).transform);
         const sx = Math.hypot(a, cc);
         const sy = Math.hypot(b, d);
         const turn = (Math.atan2(b / sy, a / sx) * 180) / Math.PI;
-        const [sa, , sc] = m(getComputedStyle(shadow).transform);
+        const { a: sa, c: sc } = new DOMMatrixReadOnly(getComputedStyle(shadow).transform);
         const lr = lift.getBoundingClientRect();
         const cr = caret.getBoundingClientRect();
         const r1 = (n: number) => Math.round(n * 100) / 100;
@@ -453,12 +449,13 @@ async function motionRun(browser: import('playwright').Browser) {
     { dx: 12, dy: -1 },
   ];
   check(
-    before.dust.every((o) => Number(o) === 0) &&
+    [before, start, gone].every((f) => f.dust.length === wantSpread.length && f.grains.length === wantSpread.length) &&
+      before.dust.every((o) => Number(o) === 0) &&
       start.dust.every((o) => Number(o) > 0.5) &&
       gone.dust.every((o) => Number(o) === 0) &&
       spread.every((s, i) => near(s.dx, wantSpread[i].dx, 1) && near(s.dy, wantSpread[i].dy, 1)),
     'S4 dust: none until the landing (391 ms), 5 grains at 410 ms that fly out 12px left and right and fade by 712 ms',
-    { before: before.dust, at410: start.dust, at712: gone.dust, spread, want: wantSpread },
+    { grains: start.grains.length, before: before.dust, at410: start.dust, at712: gone.dust, spread, want: wantSpread },
   );
   // The earlier receipts, kept by name.
   const early = at(157);
