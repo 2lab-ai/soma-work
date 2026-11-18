@@ -365,7 +365,7 @@ export class CallRun {
     }
     if (this.hangupRequested) return;
     // The reply's first sentence reaches the speech engine in ~1 s (first tokens). Wake it now — not earlier: on the
-    // voice host the wake-up would compete with this transcription for the CPU (measured: STT 0.9 s → 2.5 s).
+    // voice host the wake-up would compete with this transcription (measured: STT 0.9 s → 2.5 s).
     this.warmEngine();
     // The other side's "여보세요" as it picks up is heard and logged, but it is not a turn: the opening answers it.
     if (first && this.plan.direction === 'outbound' && isBareGreeting(text)) {
