@@ -48,10 +48,19 @@ type FetchLike = typeof fetch;
 /** A warm-up the engine has not finished in this long is dropped (the word takes ~0.6 s). */
 const WARM_TIMEOUT_MS = 5_000;
 /**
- * Transcriptions in flight per voice host, across every line of this process. A wake-up while one runs would slow
- * it (measured: STT 0.9 s → 2.5 s), so it is skipped then.
+ * Per voice host, across every line of this process: transcriptions in flight and the wake-ups running. A wake-up
+ * beside a transcription slows it (measured: STT 0.9 s → 2.5 s), so none starts while one runs, and a transcription
+ * that starts cancels the running ones.
  */
-const transcribing = new Map<string, number>();
+const hosts = new Map<string, { transcribing: number; wakeUps: Set<AbortController> }>();
+function hostOf(base: string): { transcribing: number; wakeUps: Set<AbortController> } {
+  let host = hosts.get(base);
+  if (!host) {
+    host = { transcribing: 0, wakeUps: new Set() };
+    hosts.set(base, host);
+  }
+  return host;
+}
 
 export class VoiceServiceError extends Error {
   constructor(
@@ -70,25 +79,41 @@ export function createVoiceClient(cfg: VoiceConfig, fetchImpl: FetchLike = fetch
 
   return {
     async transcribe(wav, signal) {
-      transcribing.set(base, (transcribing.get(base) ?? 0) + 1);
+      const host = hostOf(base);
+      for (const wakeUp of host.wakeUps) wakeUp.abort('transcription first');
+      host.transcribing++;
       try {
-        return await transcribeNow(wav, signal);
+        const started = Date.now();
+        const form = new FormData();
+        form.append('file', new Blob([new Uint8Array(wav)], { type: 'audio/wav' }), 'utterance.wav');
+        form.append('language', cfg.language);
+        let res: Response;
+        try {
+          res = await fetchImpl(`${base}/api/stt`, { method: 'POST', body: form, headers: auth, signal });
+        } catch (err) {
+          throw new VoiceServiceError('stt', `speech-to-text unreachable: ${(err as Error).message}`);
+        }
+        if (!res.ok) throw new VoiceServiceError('stt', `speech-to-text answered ${res.status}`);
+        const body = (await res.json()) as { text?: unknown; ms?: unknown };
+        const text = typeof body.text === 'string' ? body.text.trim() : '';
+        const ms = typeof body.ms === 'number' ? body.ms : Date.now() - started;
+        return { text, ms };
       } finally {
-        const left = (transcribing.get(base) ?? 1) - 1;
-        if (left > 0) transcribing.set(base, left);
-        else transcribing.delete(base);
+        host.transcribing--;
       }
     },
 
     speak,
     warm(signal) {
-      if (transcribing.has(base)) return; // this host is transcribing (any line): a wake-up would slow it
+      const host = hostOf(base);
+      if (host.transcribing > 0) return; // this host is transcribing (any line): a wake-up would slow it
       // One in flight: a stalled service never piles up wake-ups.
       warming ??= (async () => {
-        const deadline = new AbortController();
-        const timer = setTimeout(() => deadline.abort('warm-up timed out'), WARM_TIMEOUT_MS);
+        const own = new AbortController();
+        host.wakeUps.add(own);
+        const timer = setTimeout(() => own.abort('warm-up timed out'), WARM_TIMEOUT_MS);
         try {
-          const s = await speak('네', signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal);
+          const s = await speak('네', signal ? AbortSignal.any([signal, own.signal]) : own.signal);
           for await (const _ of s.chunks) {
             // dropped: the request only wakes the engine
           }
@@ -96,30 +121,14 @@ export function createVoiceClient(cfg: VoiceConfig, fetchImpl: FetchLike = fetch
           // best effort: the next real sentence pays the cold start instead
         } finally {
           clearTimeout(timer);
+          own.abort('warm-up over'); // an error answer's body is not left open
+          host.wakeUps.delete(own);
           warming = null;
         }
       })();
       return warming;
     },
   };
-
-  async function transcribeNow(wav: Buffer, signal?: AbortSignal): Promise<Transcription> {
-    const started = Date.now();
-    const form = new FormData();
-    form.append('file', new Blob([new Uint8Array(wav)], { type: 'audio/wav' }), 'utterance.wav');
-    form.append('language', cfg.language);
-    let res: Response;
-    try {
-      res = await fetchImpl(`${base}/api/stt`, { method: 'POST', body: form, headers: auth, signal });
-    } catch (err) {
-      throw new VoiceServiceError('stt', `speech-to-text unreachable: ${(err as Error).message}`);
-    }
-    if (!res.ok) throw new VoiceServiceError('stt', `speech-to-text answered ${res.status}`);
-    const body = (await res.json()) as { text?: unknown; ms?: unknown };
-    const text = typeof body.text === 'string' ? body.text.trim() : '';
-    const ms = typeof body.ms === 'number' ? body.ms : Date.now() - started;
-    return { text, ms };
-  }
 
   async function speak(text: string, signal?: AbortSignal): Promise<SpeechStream> {
     const started = Date.now();
