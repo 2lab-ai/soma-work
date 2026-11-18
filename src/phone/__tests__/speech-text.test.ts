@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hasSpeech, SentenceSplitter, toSpeakable } from '../speech-text';
+import { hasSpeech, SentenceSplitter, stripAcknowledgment, toSpeakable } from '../speech-text';
 
 describe('SentenceSplitter', () => {
   it('releases each sentence as soon as its mark arrives', () => {
@@ -83,5 +83,24 @@ describe('toSpeakable', () => {
   it('knows when nothing is left to say', () => {
     expect(hasSpeech(toSpeakable('😊 ...'))).toBe(false);
     expect(hasSpeech('네')).toBe(true);
+  });
+});
+
+describe('stripAcknowledgment', () => {
+  it('takes an opening "네," off a reply (the phone already said one), and nothing else', () => {
+    expect(stripAcknowledgment('네, 내일 회의는 세 시예요.')).toBe('내일 회의는 세 시예요.');
+    expect(stripAcknowledgment('네네. 알겠습니다.')).toBe('알겠습니다.');
+    expect(stripAcknowledgment('아, 네. 그렇게 할게요.')).toBe('그렇게 할게요.');
+    expect(stripAcknowledgment('음… 잠시만요.')).toBe('잠시만요.');
+    expect(stripAcknowledgment('네.')).toBe('');
+    expect(stripAcknowledgment('네이버에서 확인했어요.')).toBe('네이버에서 확인했어요.');
+    expect(stripAcknowledgment('내일 뵐게요.')).toBe('내일 뵐게요.');
+  });
+
+  it('leaves "네" as the number four: only a "네" set off by a mark is an acknowledgment', () => {
+    expect(stripAcknowledgment('네 시에 시작해요.')).toBe('네 시에 시작해요.');
+    expect(stripAcknowledgment('네 가지가 있어요.')).toBe('네 가지가 있어요.');
+    expect(stripAcknowledgment('네 명이에요.')).toBe('네 명이에요.');
+    expect(stripAcknowledgment('네, 네 시예요.')).toBe('네 시예요.');
   });
 });
