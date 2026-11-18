@@ -15,6 +15,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { nextActionSeams } from '../__fixtures__/viewer-scope';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
@@ -32,6 +33,7 @@ function clientFn(name: string): string {
 }
 /** The functions, sharing one scope with the page globals they read (given as values, `let` so they can change). */
 function loadWith<T>(fns: string[], globals: Record<string, unknown>): T & { __peek(k: string): any } {
+  globals = { ...nextActionSeams(fns, globals), ...globals };
   const names = Object.keys(globals);
   const body = `${names.map((n) => `let ${n} = __g.${n};`).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')}, __peek: function (k) { return eval(k); }, __set: function (k, __v) { eval(k + ' = __v'); } };`;
   return new Function('__g', body)(globals) as T & { __peek(k: string): any };
@@ -965,10 +967,10 @@ describe('T2 — 카드 열기 opens the launch’s card on the board, never Sla
     };
   }
 
-  it('its card on the board: the card opens there with its detail card', () => {
+  it('its card on the board: its detail card opens, the card comes into view (one line — .prd/34)', () => {
     const p = page({ onBoard: true });
     p.api.ntOpenLaunch(p.launch);
-    expect(p.revealed).toEqual([[p.key, undefined]]);
+    expect(p.revealed).toEqual([[p.key, { open: false }]]);
     expect(p.opened).toEqual([p.key]);
     expect(p.winOpen).not.toHaveBeenCalled();
     expect(p.api.__peek('_ntOpening')).toEqual([]);
@@ -989,7 +991,7 @@ describe('T2 — 카드 열기 opens the launch’s card on the board, never Sla
     // The card arrives (a poll / push renders the board, which ends in ntOpenArrivals).
     p.arrive();
     p.api.ntOpenArrivals();
-    expect(p.revealed[p.revealed.length - 1]).toEqual([p.key, undefined]);
+    expect(p.revealed[p.revealed.length - 1]).toEqual([p.key, { open: false }]);
     expect(p.opened).toEqual([p.key]);
     expect(p.api.__peek('_ntOpening')).toEqual([]);
     expect(p.winOpen).not.toHaveBeenCalled();

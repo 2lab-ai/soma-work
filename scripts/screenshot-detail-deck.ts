@@ -11,7 +11,7 @@
  * Asserts (exit 1 on any failure), and writes screenshots, for 1280 light /
  * dark and 390 light:
  *   T1  an opened card's first row is Stop · Slack, right under its face
- *   T2  no 작업 로그 button; opening a card opens its detail card on the right;
+ *   T2  no 작업 로그 button; a card's title (.prd/34) opens its detail card on the right;
  *       a second open card stacks the deck (‹ 2 / 2 ›, edges behind); ‹ goes
  *       back; folding a card takes its detail card out; ✕ folds the card
  *   T3  the top bar stays on screen while the board scrolls
@@ -317,9 +317,11 @@ async function scenario(
     `${tag} T4 no completed task on the face`,
   );
 
-  // T1/T2 — open card A: actions first, no 작업 로그, its detail card on the right.
-  await page.click(`li.ib-card[data-card="${KEY_A}"] .ib-face`);
-  await page.waitForSelector('#slide-panel.open');
+  // T1/T2 — open card A in place (▽): actions first, no 작업 로그; its title: its detail card on the right (.prd/34).
+  await page.click(`li.ib-card[data-card="${KEY_A}"] [data-win="expand"]`);
+  await sleep(400);
+  await page.click(`li.ib-card[data-card="${KEY_A}"] [data-win="detail"]`);
+  await page.waitForSelector('#slide-panel[open]');
   await sleep(400);
   const opened = await page.evaluate((k) => {
     const card = (window as any).__card(k) as HTMLElement;
@@ -327,6 +329,7 @@ async function scenario(
     const body = slot.querySelector('.card-body') as HTMLElement;
     const first = body.firstElementChild as HTMLElement;
     const faceR = (card.querySelector('.ib-face') as HTMLElement).getBoundingClientRect();
+    // The title folded the card to one line for its detail card: its open body waits under the fold.
     const bar = body.querySelector('.card-actions-bar') as HTMLElement | null;
     const barR = bar ? bar.getBoundingClientRect() : null;
     const labels = Array.from(body.querySelectorAll('button, a')).map((b) => (b as HTMLElement).innerText.trim());
@@ -356,7 +359,7 @@ async function scenario(
   check(!opened.hasWorklogBtn, `${tag} T2 no 작업 로그 button`);
   check(
     opened.panelTitle === 'dev 로그 문제 확인',
-    `${tag} T2 opening the card opened its detail card`,
+    `${tag} T2 the card's title opened its detail card`,
     opened.panelTitle,
   );
   check(opened.deckHidden, `${tag} T2 one card: no deck controls`);
@@ -450,12 +453,16 @@ async function scenario(
     await sleep(300);
     const phone = await page.evaluate(
       (k) => ({
-        open: document.getElementById('slide-panel')?.classList.contains('open'),
+        open: document.getElementById('slide-panel')?.hasAttribute('open'),
         aOpen: ((window as any).__card(k) as HTMLElement).classList.contains('is-open'),
       }),
       KEY_A,
     );
-    check(phone.open === false && phone.aOpen === false, `${tag} T2 ✕ closes the sheet and folds the card`, phone);
+    check(
+      phone.open === false && phone.aOpen === true,
+      `${tag} T2 ✕ closes the sheet; the card is back as it was (open)`,
+      phone,
+    );
     await page.evaluate(() => window.scrollTo(0, 900));
     await sleep(200);
     const top = await page.evaluate(() =>
@@ -469,8 +476,8 @@ async function scenario(
     await ctx.close();
     return;
   }
-  // T2 — a second open card stacks the deck.
-  await page.click(`li.ib-card[data-card="${KEY_B}"] .ib-face`);
+  // T2 — a second card's title stacks the deck.
+  await page.click(`li.ib-card[data-card="${KEY_B}"] [data-win="detail"]`);
   await sleep(400);
   const deck2 = await page.evaluate(() => ({
     title: (document.getElementById('panel-title') as HTMLElement).textContent,
@@ -509,7 +516,7 @@ async function scenario(
   await page.screenshot({ path: path.join(OUT, `${tag}-4-scrolled.png`) });
   await page.evaluate(() => window.scrollTo(0, 0));
 
-  // T2 — ✕ closes the front detail card and folds its card; the other comes to the front.
+  // T2 — ✕ closes the front detail card; its card comes back as it was (open); the other comes to the front.
   await page.click('.panel-close');
   await sleep(300);
   const closed = await page.evaluate(
@@ -521,15 +528,15 @@ async function scenario(
     KEY_A,
   );
   check(
-    !closed.aOpen && closed.title === '대시보드 카드 개선' && closed.deckHidden,
-    `${tag} T2 ✕ folds the card; the other detail card comes forward`,
+    closed.aOpen && closed.title === '대시보드 카드 개선' && closed.deckHidden,
+    `${tag} T2 ✕ brings the card back as it was; the other detail card comes forward`,
     closed,
   );
-  // Folding the last open card closes the panel.
-  await page.click(`li.ib-card[data-card="${KEY_B}"] .ib-face`);
+  // ✕ on the last detail card closes the panel.
+  await page.click('.panel-close');
   await sleep(300);
-  const none = await page.evaluate(() => document.getElementById('slide-panel')?.classList.contains('open'));
-  check(none === false, `${tag} T2 folding the last open card closes the detail`);
+  const none = await page.evaluate(() => document.getElementById('slide-panel')?.hasAttribute('open'));
+  check(none === false, `${tag} T2 ✕ on the last detail card closes it`);
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   check(overflow <= 0, `${tag} no horizontal overflow`, overflow);
   check(errors.length === 0, `${tag} no page errors`, errors);

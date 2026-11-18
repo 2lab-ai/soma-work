@@ -26,6 +26,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { nextActionSeams } from '../__fixtures__/viewer-scope';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
@@ -74,6 +75,7 @@ function clientListener(ev: string): string {
 function load<T>(fns: string[], vars: string[], given: Record<string, unknown> = {}): T {
   // The card header config and the token formatter the tree reads (spec 13), unless a test sets its own.
   const inject: Record<string, unknown> = { dhShow: () => true, formatTokens: (n: number) => String(n), ...given };
+  Object.assign(inject, nextActionSeams(fns, inject));
   const names = Object.keys(inject);
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
@@ -994,7 +996,7 @@ describe('a collapsed card builds no body — the agent tree is painted only whi
         'refreshCard',
         'wireInbox',
       ],
-      ['_quietOpen'],
+      [],
       env,
     );
     fns.wireInbox(host);
@@ -1046,10 +1048,10 @@ describe('a collapsed card builds no body — the agent tree is painted only whi
     expect(b.calls.io).toEqual([[KEY, true]]);
     // The slot is the one the card's ui-select listener answers (data-at-ns c|<key> → openPanel(key, 'agent', …)).
     expect(clientListener('ui-select')).toContain("openPanel(ns.slice(2), 'agent', agentId, _atKeyed);");
-    // SSOT 2026-10-29 T2: the card's detail card opened with it — once its body was built.
-    expect(b.calls.deck).toEqual([`open ${KEY}`]);
+    // .prd/34: opening in place (▽) opens no detail card, closing (△) drops none — the detail card is the title's.
+    expect(b.calls.deck).toEqual([]);
     b.toggle(false);
-    expect(b.calls.deck).toEqual([`open ${KEY}`, `drop ${KEY}`]);
+    expect(b.calls.deck).toEqual([]);
   });
 
   it('a live push on an open card repaints its tree only when the tree changed — same element, same markup', () => {

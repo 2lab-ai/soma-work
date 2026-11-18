@@ -27,7 +27,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { viewerScope } from '../__fixtures__/viewer-scope';
+import { nextActionSeams, viewerScope } from '../__fixtures__/viewer-scope';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
@@ -347,7 +347,7 @@ describe('the board’s wording (lang="ko" + data.strings, D2 group 6)', () => {
 
 // load() returns only the named functions: the state seam is a shipped-scope function compiled in the same body.
 function loadWithState<T>(fns: string[], vars: string[], inject: Record<string, unknown>, seam: string): T {
-  inject = { STRINGS: PAGE_STRINGS, ...inject };
+  inject = { STRINGS: PAGE_STRINGS, ...nextActionSeams(fns, inject), ...inject };
   const names = Object.keys(inject);
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\n${seam}\nreturn { ${[...fns, /^function (\w+)/.exec(seam)?.[1]].join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
@@ -957,10 +957,14 @@ describe('the element’s events (wireInbox): open / close, a DONE day, a file c
       openArtifactViewer: (...a: unknown[]) => calls.modal.push(a),
       openPanel: (...a: unknown[]) => calls.order.push(`openPanel(${a.join(',')})`),
       deckDrop: (...a: unknown[]) => calls.order.push(`deckDrop(${a.join(',')})`),
+      // .prd/34: the reader's one-line fold is kept; a 시작 중 card has no session to show.
+      cardMinSave: (...a: unknown[]) => calls.order.push(`cardMinSave(${a.join(',')})`),
+      ntPendingOf: () => null,
+      ntOpenLaunch: () => {},
     };
     const { wireInbox } = load<{ wireInbox(h: unknown): void }>(
       ['placeCard', 'viewCardOf', 'inboxPaint', 'inboxChipOf', 'syncHasCards', 'wireInbox'],
-      ['_quietOpen'],
+      [],
       env,
     );
     wireInbox(host);
@@ -979,24 +983,37 @@ describe('the element’s events (wireInbox): open / close, a DONE day, a file c
     expect(w.calls.released).toEqual(['c1']);
   });
 
-  // SSOT 2026-10-29 T2: an open card always has its detail card beside the board. The element's
-  // ui-toggle is the one place a card opens or folds (click, Enter, Escape, reveal), so it is
-  // where the detail card follows: opened → openPanel(key) (in front of the deck, with the key
-  // alone — Chat, not the 작업 로그 landing); folded → deckDrop(key) (the next one comes forward,
-  // or the panel closes). There is no bring-to-front: a click on an open card folds it.
-  it('ui-toggle opens the card’s detail card (openPanel, key alone) after its body; folding it drops that from the deck (SSOT 2026-10-29 T2)', () => {
+  // .prd/34 (replaces SSOT 2026-10-29 T2): each window control does one thing. ▽ / △ (ui-toggle, also Esc and
+  // reveal) open the card in place and never touch the detail deck; the title (ui-detail) opens the detail card
+  // with the key alone (Chat, not the 작업 로그 landing); − / ▢ (ui-minimize) keep the reader's fold.
+  it('ui-toggle opens the card in place only; the title (ui-detail) opens its detail card; ui-minimize keeps the fold (.prd/34)', () => {
     const w = wired();
     w.handlers['ui-toggle']({ target: w.host, detail: { cardId: 'k1', expanded: true } });
-    expect(w.calls.order).toEqual(['openPanel(k1)']);
-    // The body and the 지시/응답 come first: the detail card opens on a card that is already drawn.
     expect(w.calls.bodies).toEqual(['k1']);
     expect(w.calls.io).toEqual([['k1', true]]);
     w.handlers['ui-toggle']({ target: w.host, detail: { cardId: 'k1', expanded: false } });
-    expect(w.calls.order).toEqual(['openPanel(k1)', 'deckDrop(k1)']);
-    // Each card by its own key — a card with no conversation (no 지시/응답, no files) too.
-    w.handlers['ui-toggle']({ target: w.host, detail: { cardId: 'd1', expanded: true } });
-    w.handlers['ui-toggle']({ target: w.host, detail: { cardId: 'd1', expanded: false } });
-    expect(w.calls.order.slice(2)).toEqual(['openPanel(d1)', 'deckDrop(d1)']);
+    // No detail card opened or dropped by opening or closing in place.
+    expect(w.calls.order).toEqual([]);
+    const detail = (cardId: string) => {
+      const e = {
+        target: w.host,
+        detail: { cardId },
+        prevented: false,
+        preventDefault() {
+          this.prevented = true;
+        },
+      };
+      w.handlers['ui-detail'](e);
+      return e.prevented;
+    };
+    expect(detail('k1')).toBe(false);
+    expect(w.calls.order).toEqual(['openPanel(k1)']);
+    // A card whose session left the cache (or a 시작 중 card) has nothing to show: refused, the card stays as it is.
+    expect(detail('gone')).toBe(true);
+    expect(w.calls.order).toEqual(['openPanel(k1)']);
+    w.handlers['ui-minimize']({ target: w.host, detail: { cardId: 'd1', minimized: true } });
+    w.handlers['ui-minimize']({ target: w.host, detail: { cardId: 'd1', minimized: false } });
+    expect(w.calls.order.slice(1)).toEqual(['cardMinSave(d1,true)', 'cardMinSave(d1,false)']);
   });
 
   it('the agent tree’s own ui-toggle inside an open body passes through untouched', () => {

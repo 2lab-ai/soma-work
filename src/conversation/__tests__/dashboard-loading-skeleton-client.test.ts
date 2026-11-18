@@ -164,6 +164,7 @@ function serve(kanban: FakeEl, wired: unknown[] = []): void {
     STRINGS: PAGE_STRINGS,
     ...paintEnv(),
   };
+  Object.assign(env, nextActionSeams(['inboxPaint'], env));
   const names = Object.keys(env);
   new Function(...names, `${clientVar('BOARD_LABELS')}\n${clientFn('inboxPaint')}\n${INIT_BOARD}`)(
     ...names.map((n) => env[n]),

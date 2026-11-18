@@ -7962,7 +7962,7 @@ ${CARD_FINISH_CSS}
       <span id="panel-owner" class="ui-owner-badge panel-owner" hidden></span>
       <!-- Detail deck (SSOT 2026-10-29 T2, D3 E-05): every open card has its detail card here; <ui-deck-nav>'s ‹ n / m › (and ←/→ on it) go through them, round the end. -->
       <ui-deck-nav class="panel-deck" id="panel-deck" lang="ko" wrap hidden></ui-deck-nav>
-      <button type="button" class="ui-icon-btn is-bordered panel-close" aria-label="작업 카드 닫기" title="작업 카드 닫기 (카드도 접힘)" onclick="closeDetailCard()"><i data-ui-icon="close"></i></button>
+      <button type="button" class="ui-icon-btn is-bordered panel-close" aria-label="작업 카드 닫기" title="작업 카드 닫기" onclick="closeDetailCard()"><i data-ui-icon="close"></i></button>
       <!-- Session head (spec 13, D3 E-08): <ui-status-bar> — status · this turn's time · Slack · the session's actions; an armed resume in its slot. -->
       <ui-status-bar class="panel-status" id="panel-status" lang="ko"></ui-status-bar>
     </div>
@@ -11943,8 +11943,146 @@ function inboxPaint(host) {
     if (c.groups) col.groups = c.groups.map(function(g) { return { id: g.id, label: g.label, open: g.open, cards: cards(g.keys) }; });
     return col;
   });
-  host.data = { columns: columns, load: p.load, announce: p.announce, expanded: open, strings: BOARD_STRINGS, openLabel: false };
+  // .prd/34: window controls — − one line, the title opens the detail card, ▽ opens the card in place.
+  host.data = {
+    columns: columns, load: p.load, announce: p.announce, expanded: open, strings: BOARD_STRINGS, openLabel: false,
+    controls: 'window', minimized: cardMinSeeds(p.cols), current: boardCurrentKey(),
+  };
+  boardFoldDeck(host);
   if (typeof syncCardFinish === 'function') syncCardFinish();
+}
+
+// ── Task card window controls (.prd/34) ──
+// A card the reader folded to one line (−) stays folded in this browser; the fold that comes with a detail card
+// (the title, any openPanel) is the element's own and is not kept. Newest last, at most CARD_MIN_MAX.
+// Read fresh from storage each time — another dashboard tab may have written since (review); the page's own copy
+// stands in only while storage is behind it (a write that failed) or cannot be read.
+var CARD_MIN_MAX = 300;
+var _cardPrefs = { min: { key: 'soma-card-min', list: null, behind: false }, unfold: { key: 'soma-card-unfold', list: null, behind: false } };
+function cardPrefList(p) {
+  if (!p.behind) {
+    try {
+      var raw = JSON.parse(localStorage.getItem(p.key) || '[]');
+      p.list = Array.isArray(raw) ? raw.filter(function(k) { return typeof k === 'string' && k; }).slice(-CARD_MIN_MAX) : [];
+    } catch (e) { if (!p.list) p.list = []; }
+  }
+  return (p.list || []).slice();
+}
+function cardPrefPut(p, key, on) {
+  var list = cardPrefList(p).filter(function(k) { return k !== key; });
+  if (on) list.push(key);
+  p.list = list.slice(-CARD_MIN_MAX);
+  try { localStorage.setItem(p.key, JSON.stringify(p.list)); p.behind = false; } catch (e) { p.behind = true; }
+}
+function cardMinList() { return cardPrefList(_cardPrefs.min); }
+// The reader's + is kept too: a card that starts on one line by default (a starred card a day old) stays open.
+function cardUnfoldList() { return cardPrefList(_cardPrefs.unfold); }
+function cardMinSave(key, on) {
+  // The entry that goes is removed first: at the storage quota the space it frees lets the other be written (review).
+  cardPrefPut(on ? _cardPrefs.unfold : _cardPrefs.min, key, false);
+  cardPrefPut(on ? _cardPrefs.min : _cardPrefs.unfold, key, true);
+}
+// SSOT_2 T11: a starred card is never put to sleep or archived, so it would stay at full size for ever. A day after
+// it last moved it starts on one line (its TL;DR still shows) — not while it works or waits on someone.
+var STAR_FOLD_MS = 24 * 60 * 60 * 1000;
+function cardStarDefaultFolded(s, col, now) {
+  if (!s || s.starred !== true || col === 'waiting') return false;
+  if (s.activityState === 'working' || s.activityState === 'waiting') return false;
+  var last = Date.parse(String(s.lastActivity));
+  return Number.isFinite(last) && now - last >= STAR_FOLD_MS;
+}
+// What an element starts on one line (it reads each card once while the card is on it): the reader's folds, and the
+// starred cards a day old the reader has not brought back with +.
+function cardMinSeeds(cols) {
+  var out = cardMinList();
+  var open = cardUnfoldList();
+  var now = Date.now();
+  function add(keys) {
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      if (out.indexOf(k) < 0 && open.indexOf(k) < 0 && cardStarDefaultFolded(_sessionCache[k], _cardCol[k], now)) out.push(k);
+    }
+  }
+  (cols || []).forEach(function(c) {
+    add(c.keys || []);
+    (c.groups || []).forEach(function(g) { add(g.keys || []); });
+  });
+  return out;
+}
+// The card whose detail card is in front (its board card wears the ring), or ''.
+function boardCurrentKey() {
+  return panelOpen && panelSessionKey ? String(panelSessionKey) : '';
+}
+// Every board element (the board, each CRON job's lane) learns which card is in front — no column is rebuilt.
+function syncBoardCurrent() {
+  var cur = boardCurrentKey();
+  var hosts = document.querySelectorAll ? document.querySelectorAll('ui-agent-inbox') : [];
+  for (var i = 0; i < hosts.length; i++) {
+    var h = hosts[i];
+    if (h._ibPlan && h.data && h.data.current !== cur) h.data = Object.assign({}, h.data, { current: cur });
+  }
+}
+// A detail card opened: its board card folds to one line until the detail card leaves the deck (the element
+// keeps the fold as its own — restore() undoes only that one, never a fold the reader made).
+function boardFoldForDetail(key) {
+  var host = _cardHost[key];
+  if (host && typeof host.setMinimized === 'function') host.setMinimized(key, true, { untilRestore: true });
+}
+function boardRestoreFromDetail(key) {
+  delete _detailUnfolded[key];
+  var host = _cardHost[key];
+  if (host && typeof host.restore === 'function') host.restore(key);
+}
+// Cards in the deck the reader brought back with + (.prd/34 review): left as they are until they leave the deck.
+var _detailUnfolded = Object.create(null);
+function boardNoteReaderFold(key, minimized) {
+  if (_deck.indexOf(key) < 0) return;
+  if (minimized) delete _detailUnfolded[key];
+  else _detailUnfolded[key] = 1;
+}
+// An element's cards in the deck keep their detail fold through a repaint that drew them anew (a filter hid and
+// showed a card, a card moved between the board and a CRON lane — the element forgets a card that leaves it).
+function boardFoldDeck(host) {
+  for (var i = 0; i < _deck.length; i++) {
+    var k = _deck[i];
+    if (_cardHost[k] === host && !_detailUnfolded[k]) boardFoldForDetail(k);
+  }
+}
+// This card's detail card is the one in front of the panel.
+function boardDetailInFront(key) {
+  return !!panelOpen && panelSessionKey === key;
+}
+// A decision on this card is out of sight: the card is on one line and its detail card is not the one in front —
+// the reader folded it, or its detail card waits behind another (review P1).
+function boardDecisionHidden(key) {
+  var host = _cardHost[key];
+  if (!host || typeof host.isMinimized !== 'function' || !host.isMinimized(key)) return false;
+  return !boardDetailInFront(key);
+}
+// A new decision unfolds it (.prd/34 D9): the fold was for what the card said before. A saved fold of the reader's
+// goes too — else the next element that draws the card (a filter, a CRON lane) seeds it folded again (review P1); a
+// card whose detail card waits in the deck stays open through repaints until it leaves the deck.
+function boardUnfoldForDecision(key) {
+  var host = _cardHost[key];
+  if (host && typeof host.setMinimized === 'function') host.setMinimized(key, false);
+  if (_deck.indexOf(key) >= 0) _detailUnfolded[key] = 1;
+  // Only the saved fold goes: this is not the reader's +, so a starred card's day-old default still applies later.
+  cardMinForget(key);
+}
+function cardMinForget(key) {
+  cardPrefPut(_cardPrefs.min, key, false);
+}
+// The title of a card on its element (in the element's open shadow root), or null: where focus goes back after its
+// detail card closes when the control that opened it is gone.
+function cardTitleOf(key) {
+  var host = _cardHost[key];
+  var root = host && host.shadowRoot;
+  if (!root) return null;
+  var cards = root.querySelectorAll('li.ib-card[data-card]');
+  for (var i = 0; i < cards.length; i++) {
+    if (cards[i].getAttribute('data-card') === key) return cards[i].querySelector('[data-win="detail"]');
+  }
+  return null;
 }
 
 // The task card's finish by model (SSOT 2026-11-17, card-finish-client.ts): each element — the board, each CRON lane
@@ -12045,6 +12183,7 @@ function wireInbox(host) {
   // Open / close: the body follows (built before the row grows, let go after
   // it has collapsed), then the open card's 지시/응답 and artifacts are fetched.
   // The agent tree in an open body sends its own ui-toggle through here: not ours.
+  // .prd/34: ▽ / △ (and Esc) open the card in place only — the detail card is the title's (ui-detail).
   host.addEventListener('ui-toggle', function(e) {
     if (e.target !== host || !e.detail) return;
     var key = String(e.detail.cardId);
@@ -12066,15 +12205,32 @@ function wireInbox(host) {
     if (open) {
       ensureCardIo(key, true);
       if (s && s.conversationId && s.artifacts && !isSiblingSession(s)) ensureArtifacts(s.conversationId);
-      // SSOT 2026-10-29 T2: its detail card opens beside the board, in front of the deck (focus stays on the card).
-      // A card the page opened by itself for a decision (autoOpenDecisions) leaves the panel alone.
-      if (_quietOpen.key !== key) openPanel(key);
-    } else {
-      // Folded: its detail card leaves the deck (the next one comes forward, or the panel closes).
-      deckDrop(key);
     }
     // The cards below ride the growing (or shrinking) card: measured again once it has.
     scheduleLayoutRefresh(Math.max(MOTION.expand, MOTION.move) + 60);
+  });
+  // The title (.prd/34 D4): its detail card opens beside the board, in front of the deck; the element folds the
+  // card to one line (openPanel folds it too — every way a detail card opens does) until it leaves the deck.
+  host.addEventListener('ui-detail', function(e) {
+    if (e.target !== host || !e.detail) return;
+    var key = String(e.detail.cardId);
+    if (!_sessionCache[key]) {
+      // A 시작 중 card (SSOT 2026-11-02 T2) has no session yet: nothing to show, it stays as it is.
+      e.preventDefault();
+      var launch = ntPendingOf(key);
+      if (launch) ntOpenLaunch(launch);
+      return;
+    }
+    // The title folds the card again for its detail card: a + the reader pressed while it waited in the deck is over.
+    boardNoteReaderFold(key, true);
+    openPanel(key);
+  });
+  // − / + (.prd/34 D8): the reader's fold is kept in this browser.
+  host.addEventListener('ui-minimize', function(e) {
+    if (e.target !== host || !e.detail) return;
+    cardMinSave(String(e.detail.cardId), !!e.detail.minimized);
+    boardNoteReaderFold(String(e.detail.cardId), !!e.detail.minimized);
+    scheduleLayoutRefresh(MOTION.expand + 60);
   });
   // A DONE day opened or closed (a click, or reveal for a deep link): the
   // reader's choice for the page; the day's cards get their faces (or stubs)
@@ -16123,7 +16279,6 @@ var TASK_PLAN_STATE_LABEL = { drafting: '계획 작성 중', awaiting: '승인 �
 var TASK_PLAN_TONE = { drafting: 'run', awaiting: 'wait', approved: 'done', cancelled: 'idle' };
 var _planDocs = Object.create(null); // card key → { revision, state, html | error, loading } (GET …/plan)
 var _autoOpened = Object.create(null); // card key → the decision autoOpenDecisions opened it for
-var _quietOpen = { key: '' }; // the card autoOpenDecisions opens right now: its ui-toggle opens no panel
 // Who may decide here: whoever may instruct the task (the server's requireInstructAccess), on this instance.
 // decide — 시작 · 취소, on every surface (the card, the top, the bottom): not while the turn that wrote the plan
 // is still finishing either; the server answers a decision 409 until it ends (review R2). 직접 입력 asks
@@ -16583,8 +16738,16 @@ function autoOpenDecisions() {
       continue;
     }
     if (_autoOpened[key] === sig) continue;
-    // Open already: nothing to do for this decision.
-    if (_expanded.has(key)) {
+    // Its detail card is in front: the decision shows there — the board card is left as it is (review P1: a card
+    // opened by its title is not in _expanded, and opening it here would change what it comes back as).
+    if (boardDetailInFront(key)) {
+      _autoOpened[key] = sig;
+      continue;
+    }
+    // .prd/34 D9: a card on one line hides the decision even when it is open.
+    var folded = boardDecisionHidden(key);
+    // Open already (and on view): nothing to do for this decision.
+    if (_expanded.has(key) && !folded) {
       _autoOpened[key] = sig;
       continue;
     }
@@ -16599,12 +16762,9 @@ function autoOpenDecisions() {
       continue;
     }
     _autoOpened[key] = sig;
-    _quietOpen.key = key;
-    try {
-      host.reveal(key, { open: true, scroll: false });
-    } finally {
-      _quietOpen.key = '';
-    }
+    // A new decision unfolds the reader's one line; in place only — an opened card never opens a detail card (.prd/34).
+    if (folded) boardUnfoldForDecision(key);
+    host.reveal(key, { open: true, scroll: false });
   }
 }
 
@@ -18463,10 +18623,10 @@ function openDeepLinkedSession() {
   _deepLinkSession = null;
   // The revealed older cron run only had to be on screen for the link.
   _cronRevealKey = null;
-  // On its element — in a closed DONE day too (T12): the day opens, the card
-  // opens without a transition and scrolls to the centre — and its detail card
-  // with it (ui-toggle → openPanel); a card already open lands on Chat too (T6).
-  host.reveal(key);
+  // On its element — in a closed DONE day too (T12): the day opens and the card
+  // scrolls to the centre; its detail card opens beside the board and the card
+  // goes to one line, as its title does (.prd/34). A card already open lands on Chat too (T6).
+  host.reveal(key, { open: false });
   if (!panelOpen || panelSessionKey !== key) openPanel(key);
 }
 
@@ -20742,7 +20902,11 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   // (or comes to the front); a switch between cards slides in from its side.
   var deckDir = panelOpen && panelSessionKey && panelSessionKey !== sessionKey
     ? (_deck.indexOf(sessionKey) < 0 || _deck.indexOf(sessionKey) > _deck.indexOf(panelSessionKey) ? 1 : -1) : 0;
+  // .prd/34 D7: a card whose detail card joins the deck goes to one line on its board (until it leaves the deck). A
+  // card already in the deck coming to the front (‹ ›, its title again) keeps what the reader made of it since.
+  var joining = _deck.indexOf(sessionKey) < 0;
   deckAdd(sessionKey);
+  if (joining) boardFoldForDetail(sessionKey);
   // The intent of this opening: true is the 작업 로그 landing, as before.
   _panelLand = focusWorkLog === true ? 'worklog' : (focusWorkLog || '');
   _panelLanded = false;
@@ -20754,7 +20918,12 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   _treeMaxN = null;
   // The control that opened it gets focus back on close (not a control inside the panel).
   var opener = document.activeElement;
-  if (opener && opener !== document.body && !(opener.closest && opener.closest('#slide-panel'))) _panelReturnFocus = document.activeElement;
+  // Not a control in the panel (checked on the outer element: closest() does not leave a shadow root). A board card's
+  // title is in its element's shadow root: the deepest focused control is the one to come back to.
+  if (opener && opener !== document.body && !(opener.closest && opener.closest('#slide-panel'))) {
+    while (opener.shadowRoot && opener.shadowRoot.activeElement) opener = opener.shadowRoot.activeElement;
+    _panelReturnFocus = opener;
+  }
   // Spec 12 §4.3: the agent whose tasks and work log the panel shows ('' = main).
   _panelAgent = agentId ? String(agentId) : '';
   // A layout without the 에이전트 tab shows one agent, the main one — it has no strip to lead back from another (a
@@ -20857,6 +21026,8 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   layoutBeforeChange();
   panel.show();
   panelOpen = true;
+  // .prd/34 D5: the card in front wears the ring on its board — now that the panel is open.
+  syncBoardCurrent();
   paintDefaultsScope();
   panel.setAttribute('label', document.getElementById('panel-title').textContent);
   syncPanelWidth();
@@ -20896,6 +21067,8 @@ function deckAdd(key) {
 function deckRemove(key) {
   var i = _deck.indexOf(key);
   if (i >= 0) _deck.splice(i, 1);
+  // .prd/34 D7: out of the deck, the card the detail card folded comes back as it was.
+  boardRestoreFromDetail(key);
 }
 // Pure: the card that comes to the front when key leaves the deck — the
 // next one, else the one before (null: the deck is empty after it).
@@ -20917,27 +21090,14 @@ function deckDrop(key) {
   if (next) openPanel(next);
   else closePanel();
 }
-// ✕ / Escape / the sheet's backdrop: this detail card closes — and its card on
-// the board folds with it (an open card always has its detail card). The card
-// folds as a press on its face would (its <ui-agent-inbox> has no fold method);
-// the element's ui-toggle then takes the detail card out of the deck.
+// ✕ / Escape / the sheet's backdrop: this detail card leaves the deck (the next one comes to the front, or the
+// panel closes). Its card on the board is not touched (.prd/34): the fold the detail card made comes undone
+// (deckRemove → restore), a card the reader folded or opened stays as they left it.
 function closeDetailCard() {
   var key = panelSessionKey;
   if (!key) { closePanel(); return; }
-  var face = _expanded.has(key) ? cardFaceOf(key) : null;
-  if (face) face.click();
   if (_deck.indexOf(key) >= 0) deckDrop(key);
-}
-// The face of a card on its element (in the element's open shadow root), or null.
-function cardFaceOf(key) {
-  var host = _cardHost[key];
-  var root = host && host.shadowRoot;
-  if (!root) return null;
-  var cards = root.querySelectorAll('li.ib-card[data-card]');
-  for (var i = 0; i < cards.length; i++) {
-    if (cards[i].getAttribute('data-card') === key) return cards[i].querySelector('.ib-face[role="button"]');
-  }
-  return null;
+  else closePanel();
 }
 // The deck's controls and the edges behind the panel; dir = the side a new front card came from.
 // <ui-deck-nav> (D3 E-05) takes the deck as data — how many, which is in front, their names
@@ -22277,6 +22437,7 @@ function closePanel() {
   panelOpen = false;
   panelSessionKey = null;
   panelConvId = null;
+  syncBoardCurrent();
   _rb = null;
   _rbPick = null;
   paintDefaultsScope();
@@ -22316,9 +22477,16 @@ function closePanel() {
   var wasInPanel = !a || a === document.body || !!(a.closest && a.closest('#slide-panel'));
   if (!wasInPanel) return;
   // An opener inside a card that has since folded (inert) cannot take focus: fall through.
-  if (back && document.body.contains(back) && back.focus) {
+  // isConnected, not document.body.contains: a card's title lives in its element's shadow root.
+  if (back && back.isConnected && back.focus) {
     back.focus({ preventScroll: true });
-    if (document.activeElement === back) return;
+    if (back.getRootNode().activeElement === back) return;
+  }
+  // .prd/34: else that card's title on the board (its face was drawn again since).
+  var title = closingKey ? cardTitleOf(closingKey) : null;
+  if (title) {
+    title.focus({ preventScroll: true });
+    if (title.getRootNode().activeElement === title) return;
   }
   var body = closingKey && _cardBodies[closingKey] ? _cardBodies[closingKey].el : null;
   var log = body && body.isConnected ? body.querySelector('[data-card-worklog]') : null;
@@ -27386,7 +27554,7 @@ function ntOpenArrived(launch) {
     host.reveal(key, { open: false });
     return true;
   }
-  host.reveal(key);
+  host.reveal(key, { open: false });
   if (!panelOpen || panelSessionKey !== key) openPanel(key);
   return true;
 }

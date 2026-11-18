@@ -44,6 +44,26 @@ export const NEXT_ACTION_SEAMS: Readonly<Record<string, unknown>> = {
   // SSOT 2026-11-16 (.prd/28 §3) — the plan is the 작업 계획 tab's: `renderPanelPlan` repaints the bar (`renderPanelMidbar`)
   // — nothing, unless the test loads the real one (pinned by dashboard-detail-zones-client.test.ts).
   renderPanelMidbar: () => {},
+  // .prd/34 — task card window controls: `inboxPaint` reads the cards that start on one line (`cardMinSeeds`) and the card
+  // in front (`boardCurrentKey`); `openPanel` folds its card (`boardFoldForDetail`) and rings it (`syncBoardCurrent`,
+  // also `closePanel`); `deckRemove` brings it back (`boardRestoreFromDetail`); `wireInbox` keeps a fold
+  // (`cardMinSave`, `boardNoteReaderFold`); repaints keep the deck's folds (`boardFoldDeck`); a decision unfolds the
+  // reader's one line (`boardDetailInFront`, `boardDecisionHidden`, `boardUnfoldForDecision`); focus comes back to a title (`cardTitleOf`).
+  // Nothing, unless the test loads the real one (pinned by dashboard-card-window-client.test.ts).
+  cardMinList: () => [],
+  cardMinSeeds: () => [],
+  cardMinSave: () => {},
+  cardMinForget: () => {},
+  boardCurrentKey: () => '',
+  syncBoardCurrent: () => {},
+  boardFoldForDetail: () => {},
+  boardRestoreFromDetail: () => {},
+  boardNoteReaderFold: () => {},
+  boardFoldDeck: () => {},
+  boardDecisionHidden: () => false,
+  boardDetailInFront: () => false,
+  boardUnfoldForDecision: () => {},
+  cardTitleOf: () => null,
 };
 export function nextActionSeams(fns: readonly string[], inject: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
