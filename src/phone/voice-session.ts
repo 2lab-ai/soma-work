@@ -97,6 +97,8 @@ export class CallRun {
 
   private generating = false;
   private dropTurn = false;
+  /** Words heard while a dropped reply was still ending: they go to the model together once it has ended. */
+  private pendingPeer: string[] = [];
   private turnText = '';
   private turnStartAt = 0;
   private firstTokenAt = 0;
@@ -310,6 +312,12 @@ export class CallRun {
   }
 
   private bargeIn(): void {
+    this.cutSpeech('상대가 끼어듦 — 말하기 멈춤');
+    if (this.generating && !this.hangupRequested) this.dropReply();
+  }
+
+  /** Stop what is playing and what is waiting to be said; the cut line is marked in the transcript. */
+  private cutSpeech(why: string): void {
     this.call?.clearAudio();
     this.synthAbort?.abort('barge-in');
     this.queue = [];
@@ -322,11 +330,35 @@ export class CallRun {
       });
       line.interrupted = true;
     }
-    this.work({ kind: 'event', at: this.now(), text: '상대가 끼어듦 — 말하기 멈춤' });
-    if (this.generating && !this.hangupRequested) {
-      this.dropTurn = true;
-      void this.dialog?.interrupt();
+    this.work({ kind: 'event', at: this.now(), text: why });
+  }
+
+  /** The reply being written answers words that are out of date: nothing more of it is said. */
+  private dropReply(): void {
+    if (this.dropTurn) return;
+    this.dropTurn = true;
+    void this.dialog?.interrupt();
+  }
+
+  /**
+   * The other side's words, for the model. Newer words supersede a reply to older ones — a caller who pauses in the
+   * middle of a thought gets one answer to all of it, not one per pause:
+   * - a reply still being written is dropped (interrupted), and the words go to the model once that turn has
+   *   ended, so they are answered together with what came before;
+   * - a reply already playing is cut.
+   */
+  private hear(text: string): void {
+    if (this.generating) {
+      this.pendingPeer.push(text);
+      if (!this.dropTurn) {
+        if (this.agentSpeaking()) this.cutSpeech('상대가 말을 이어감 — 말하기 멈춤');
+        else this.work({ kind: 'event', at: this.now(), text: '상대가 말을 이어감 — 쓰던 답을 버림' });
+        this.dropReply();
+      }
+      return;
     }
+    if (this.agentSpeaking()) this.cutSpeech('상대가 말을 이어감 — 말하기 멈춤');
+    this.sendToDialog(text);
   }
 
   private warmEngine(): void {
@@ -367,7 +399,11 @@ export class CallRun {
       this.heldPeer.push(text);
       return;
     }
-    if (this.hangupRequested) return;
+    if (this.hangupRequested) {
+      // The hang-up of a reply being dropped is not carried out (see pump): these words then still count.
+      if (this.dropTurn) this.pendingPeer.push(text);
+      return;
+    }
     // The reply's first sentence reaches the speech engine in ~1 s (first tokens). Wake it now — not earlier: on the
     // voice host the wake-up would compete with this transcription (measured: STT 0.9 s → 2.5 s).
     this.warmEngine();
@@ -376,7 +412,7 @@ export class CallRun {
       this.armSilenceIfIdle();
       return;
     }
-    this.sendToDialog(text);
+    this.hear(text);
   }
 
   // ── thinking ────────────────────────────────────────────────
@@ -412,6 +448,13 @@ export class CallRun {
           // every word written before it is queued (the goodbye), every word after it is dropped. The handler may
           // run before this event is read, so it must not decide that.
           if (ev.name === 'hang_up' || ev.name.endsWith('__hang_up')) {
+            if (this.dropTurn) {
+              // The goodbye of a reply that answered out-of-date words (the caller went on talking): not said,
+              // and the call goes on.
+              this.hangupRequested = false;
+              this.work({ kind: 'event', at: this.now(), text: '끊기 취소 — 상대가 말을 이어감' });
+              break;
+            }
             this.hangupRequested = true;
             if (!this.dropTurn && !this.dropAfterHangup) for (const s of this.splitter.flush()) this.enqueue(s);
             this.dropAfterHangup = true;
@@ -437,7 +480,12 @@ export class CallRun {
           this.generating = false;
           this.dropTurn = false;
           this.turnText = '';
-          if (this.hangupRequested) {
+          if (this.pendingPeer.length && !this.hangupRequested && !this.ended) {
+            // Words heard while that reply was being dropped: answered now, all together.
+            const words = this.pendingPeer.join(' ');
+            this.pendingPeer = [];
+            this.sendToDialog(words);
+          } else if (this.hangupRequested) {
             this.dropAfterHangup = true;
             this.finishWhenQuiet();
           } else {

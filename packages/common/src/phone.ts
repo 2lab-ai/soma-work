@@ -31,7 +31,12 @@ export interface PhoneVoiceSettings {
   voice: string;
   model: string;
   language: string;
+  /** Speech rate, 0.5–2 (1.5 = 1.5x faster, same pitch). Unset = as the voice service speaks. */
+  speed?: number;
 }
+
+export const MIN_VOICE_SPEED = 0.5;
+export const MAX_VOICE_SPEED = 2;
 
 export interface PhoneEnvConfig {
   provider: 'koreaaitel';
@@ -87,6 +92,13 @@ export function parsePhoneSection(name: string, raw: unknown): PhoneEnvConfig {
   const url = str(voiceRaw.url);
   if (!url || !/^https?:\/\/[^\s/]+/.test(url))
     throw new PhoneConfigError(`server ${name}: phone.voice.url must be an http(s) URL`);
+  const speed = voiceRaw.speed;
+  if (
+    speed !== undefined &&
+    !(typeof speed === 'number' && Number.isFinite(speed) && speed >= MIN_VOICE_SPEED && speed <= MAX_VOICE_SPEED)
+  ) {
+    throw new PhoneConfigError(`server ${name}: phone.voice.speed must be ${MIN_VOICE_SPEED}–${MAX_VOICE_SPEED}`);
+  }
   const out = (p.outbound ?? {}) as Record<string, unknown>;
   const maxRaw = out.maxMinutes;
   const maxMinutes =
@@ -119,6 +131,7 @@ export function parsePhoneSection(name: string, raw: unknown): PhoneEnvConfig {
       voice: str(voiceRaw.voice) ?? 'cwon',
       model: str(voiceRaw.model) ?? 'drama-3',
       language: str(voiceRaw.language) ?? 'ko',
+      ...(typeof speed === 'number' && speed !== 1 ? { speed } : {}),
     },
     ...(str(p.model) ? { model: str(p.model) } : {}),
     outbound: {

@@ -367,6 +367,38 @@ describe('createVoiceClient().warm', () => {
   });
 });
 
+describe('createVoiceClient().speak — speed', () => {
+  const pcm = (ms: number) => {
+    const n = Math.round((44100 * ms) / 1000);
+    const b = Buffer.alloc(n * 2);
+    for (let i = 0; i < n; i++) b.writeInt16LE(Math.round(Math.sin((2 * Math.PI * 180 * i) / 44100) * 9000), i * 2);
+    return b;
+  };
+  const fetchWith = (body: Buffer) =>
+    (async () =>
+      new Response(new Uint8Array(body), {
+        status: 200,
+        headers: { 'x-soma-voice-sample-rate': '44100' },
+      })) as unknown as typeof fetch;
+  async function all(s: { chunks: AsyncIterable<Buffer> }): Promise<Buffer> {
+    const parts: Buffer[] = [];
+    for await (const c of s.chunks) parts.push(c);
+    return Buffer.concat(parts);
+  }
+
+  it('speaks 1.5x faster when the line asks for it, and untouched without it', async () => {
+    const body = pcm(3000);
+    const cfg = { url: 'http://speed-voice:9999', voice: 'v', model: 'drama-3', language: 'ko' };
+    const plain = await all(await createVoiceClient(cfg, fetchWith(body)).speak('네'));
+    expect(plain.equals(body)).toBe(true);
+    const fast = await createVoiceClient({ ...cfg, speed: 1.5 }, fetchWith(body)).speak('네');
+    expect(fast.sampleRate).toBe(44100);
+    const out = await all(fast);
+    expect(out.length / 2 / 44100).toBeGreaterThan(2 * 0.97);
+    expect(out.length / 2 / 44100).toBeLessThan(2 * 1.03);
+  });
+});
+
 afterEach(() => {
   vi.useRealTimers();
 });

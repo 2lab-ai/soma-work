@@ -58,6 +58,16 @@ describe('SentenceSplitter', () => {
     expect(s.push('이번 달 사용량은 1,250,000원이고, 다음')).toEqual(['이번 달 사용량은 1,250,000원이고,']);
   });
 
+  it('never ends a sentence at a decimal point, even when the digits after it arrive in the next piece', () => {
+    const s = new SentenceSplitter();
+    expect(s.push('정리하면 말하는 속도를 1.')).toEqual([]); // the next character decides
+    expect(s.push('5배 정도로 빠르게 할게요. 다음')).toEqual(['정리하면 말하는 속도를 1.5배 정도로 빠르게 할게요.']);
+    s.flush();
+    expect(s.push('버전은 2.0.1로 올렸어요. ')).toEqual(['버전은 2.0.1로 올렸어요.']);
+    s.flush();
+    expect(s.push('목록은 모두 3. 그다음은')).toEqual(['목록은 모두 3.']); // a number that ends a sentence
+  });
+
   it('splits at a newline', () => {
     const s = new SentenceSplitter();
     expect(s.push('첫째 줄 끝\n둘째')).toEqual(['첫째 줄 끝']);

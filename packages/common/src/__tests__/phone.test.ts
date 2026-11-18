@@ -58,6 +58,14 @@ describe('parsePhoneSection', () => {
       expect((err as Error).message).not.toContain('sk_secret');
     }
     expect(() => parsePhoneSection('e', { ...SECTION, apiKey: '' })).toThrow(/phone\.apiKey/);
+    expect(
+      parsePhoneSection('e', { ...SECTION, voice: { url: 'http://voice-host:9999', speed: 1.5 } }).voice.speed,
+    ).toBe(1.5);
+    for (const speed of [0.3, 3, 'fast', 0]) {
+      expect(() => parsePhoneSection('e', { ...SECTION, voice: { url: 'http://voice-host:9999', speed } })).toThrow(
+        /phone\.voice\.speed/,
+      );
+    }
     expect(() => parsePhoneSection('e', { ...SECTION, voice: { url: 'ftp://x' } })).toThrow(/voice\.url/);
     expect(() => parsePhoneSection('e', { ...SECTION, outbound: { maxMinutes: 99 } })).toThrow(/maxMinutes/);
     expect(() => parsePhoneSection('e', { ...SECTION, owner: 'zhuge' })).toThrow(/owner/);
