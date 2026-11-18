@@ -1,15 +1,7 @@
 # loop — secret-access 구현 드라이브
 
-Status: in-progress (라운드 3 열림 2026-11-18) · ssot = [`ssot.md`](ssot.md) · 끝난 것 = [`loop.done.md`](loop.done.md) ·
-스펙 = [`../32-secret-access-spec.md`](../32-secret-access-spec.md) · 아키텍처 = [`../33-secret-access-architecture.md`](../33-secret-access-architecture.md)
-
-## 라운드 3 — dev 배포 · 실측 · 에픽 닫기
-
-계획: #1346 머지 → dev 배포(`$user:dev`, 로컬 dev 호스트만 — 고객 환경 금지) → 32 A12 실측 → 에픽 #1335 닫기.
-
-| ID | WU | Status | 이슈 | 브랜치 | 스코프 | 끝상태 확인 |
-|---|---|---|---|---|---|---|
-| WU4 | dev 배포 + 실측 + 문서 shipped | 🟡 진행 | #1340 | — | 33 §7 WU4 | 32 A12 |
+Status: done (2026-11-18) · ssot = [`ssot.md`](ssot.md) · 끝난 것 = [`loop.done.md`](loop.done.md) ·
+스펙 = [`../32-secret-access-spec.md`](../32-secret-access-spec.md) (출하 기록 §8) · 아키텍처 = [`../33-secret-access-architecture.md`](../33-secret-access-architecture.md)
 
 ## 열린 질문
 
@@ -25,4 +17,6 @@ Status: in-progress (라운드 3 열림 2026-11-18) · ssot = [`ssot.md`](ssot.m
 
 ## 다음 착수점
 
-WU4(#1340): #1346 머지 → dev 배포 → 실측(비밀 탭 · 서버 도구 탭 · 3버튼 카드). 남은 일감: #1347(config 파싱 오류 로그 전수 정리).
+- #1347 — config.json을 읽는 나머지 리더(env-skill-registry · phone · mcp-tool-permission-config …)의 파싱 오류 로그에서 설정 텍스트 빼기.
+- 비어드민 A1–A4 실측 — dev에 비어드민 계정과 안전한 비밀 서버가 생기면(Z 결정 `skip_live`로 이번엔 생략).
+- #1170 — 권한 표가 없을 때 server-tools 닫기(서버 도구 탭은 경고 · "표 만들기"까지만).

@@ -41,3 +41,23 @@ Loop: ./loop.md · 라운드를 닫을 때마다 맨 아래에 블록 하나를 
 - #1342(머지 뒤) 리뷰 P2 실결함 → #1346: 줄바꿈뿐인 값, config 파싱 오류 메시지가 설정 텍스트(자격증명)를 로그로 옮김,
   `null` 원장 줄이 비밀 탭 500, 필터 입력이 초안을 지움, 삭제 디렉터리 fsync, stat 실패 시 마지막 절 유지.
 - 핸드오프: #1347 — config.json을 읽는 나머지 리더의 파싱 오류 로그 전수 정리.
+
+## R3 — closed 2026-11-18
+
+- WU4 ✅ · result: 로컬 dev 호스트 0.3.76(main `14dd032e`, run 44230374961) · A7 · A10 · A11 dev 실측 · A1–A4 실측은 Z 결정 `skip_live`로 통합 테스트로 갈음(테스트 서버 절은 넣었다가 뺌) · 32 · 33 shipped · closed rows: WU4 · PR: 이 문서 PR
+
+### Closed rows
+
+| ID | WU | Status | 이슈 | 브랜치 | 스코프 | 끝상태 확인 |
+|---|---|---|---|---|---|---|
+| WU4 | dev 배포 + 실측 + 문서 shipped | ✅ dev 0.3.76 · A7 · A10 · A11 실측, A1–A4는 통합 테스트(Z `skip_live`) | #1340 | `docs/secret-access-shipped` | 33 §7 WU4 | 32 §8 |
+
+### Round section (as it was in loop.md)
+
+## 라운드 3 — dev 배포 · 실측 · 에픽 닫기
+
+계획: #1346 머지 → dev 배포(`$user:dev`, 로컬 dev 호스트만 — 고객 환경 금지) → 32 A12 실측 → 에픽 #1335 닫기.
+
+| ID | WU | Status | 이슈 | 브랜치 | 스코프 | 끝상태 확인 |
+|---|---|---|---|---|---|---|
+| WU4 | dev 배포 + 실측 + 문서 shipped | ✅ dev 0.3.76 · A7 · A10 · A11 실측, A1–A4는 통합 테스트(Z `skip_live`) | #1340 | `docs/secret-access-shipped` | 33 §7 WU4 | 32 §8 |
