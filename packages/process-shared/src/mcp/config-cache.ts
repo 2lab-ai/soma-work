@@ -66,7 +66,11 @@ export class ConfigCache<T> {
     } catch (error: unknown) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== 'ENOENT') {
-        this.logger.warn(`Failed to reload ${this.options.section} config, keeping previous values`, error);
+        // Never the error itself: a JSON parse error quotes the text around the fault, and this file holds secrets.
+        this.logger.warn(`Failed to reload ${this.options.section} config, keeping previous values`, {
+          error: (error as Error)?.name ?? 'Error',
+          code,
+        });
       }
     }
 

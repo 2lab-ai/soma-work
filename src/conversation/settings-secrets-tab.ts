@@ -131,6 +131,13 @@ function scAddForm() {
 function renderSecrets() {
   var el = document.getElementById('sc-body');
   if (!el || !_sc) return;
+  // What the admin is typing survives a repaint (the filter repaints on every keystroke).
+  var draftIds = ['sc-name', 'sc-value', 'sc-replace-value'];
+  var drafts = {};
+  for (var d = 0; d < draftIds.length; d++) {
+    var box = document.getElementById(draftIds[d]);
+    if (box && box.value) drafts[draftIds[d]] = box.value;
+  }
   var editable = adminModeOn();
   var q = scFilterText();
   var rows = '';
@@ -146,6 +153,10 @@ function renderSecrets() {
   html += '<div class="sc-box">' + (rows ? '<ul class="sc-rows">' + rows + '</ul>' : '<p class="lock">' + (_sc.secrets.length ? '맞는 비밀이 없습니다.' : '아직 비밀이 없습니다.') + '</p>') + '</div>';
   if (missing) html += '<div class="sc-box"><h3>없는 비밀</h3><ul class="sc-rows">' + missing + '</ul></div>';
   el.innerHTML = html;
+  for (var id in drafts) {
+    var again = document.getElementById(id);
+    if (again) again.value = drafts[id];
+  }
 }
 function scFindSecret(name) {
   var list = (_sc && _sc.secrets) || [];

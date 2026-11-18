@@ -67,8 +67,11 @@ export function loadServerToolsSection(configFile: string = CONFIG_FILE): Record
   let stat: fs.Stats;
   try {
     stat = fs.statSync(configFile);
-  } catch {
-    return null;
+  } catch (error) {
+    // Gone for a moment (an editor's rename): keep the last section read, as server-tools keeps its servers.
+    const code = (error as NodeJS.ErrnoException)?.code;
+    if (code !== 'ENOENT') logger.warn('config.json cannot be checked while listing secret usages', { code });
+    return cache && cache.file === configFile ? cache.section : null;
   }
   if (cache && cache.file === configFile && cache.mtimeMs === stat.mtimeMs && cache.size === stat.size) {
     return cache.section;
@@ -79,8 +82,10 @@ export function loadServerToolsSection(configFile: string = CONFIG_FILE): Record
     const value = raw?.['server-tools'];
     section = value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
   } catch (error) {
+    // Never the message: a JSON parse error quotes the text around the fault — a literal credential in a bad edit.
     logger.warn('config.json unreadable while listing secret usages — keeping the last section read', {
-      error: (error as Error)?.message ?? String(error),
+      error: (error as Error)?.name ?? 'Error',
+      code: (error as NodeJS.ErrnoException)?.code,
     });
     return cache && cache.file === configFile ? cache.section : null;
   }

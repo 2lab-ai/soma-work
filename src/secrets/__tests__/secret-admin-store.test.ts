@@ -32,6 +32,20 @@ describe('secret-admin-store', () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
+  it('refuses a value the reader would find empty (a lone newline), and keeps the old one', () => {
+    writeSecret('dev2-db-app', 'kept', { overwrite: false }, dir);
+    for (const value of ['\n', '\r\n']) {
+      expect(() => writeSecret('dev2-db-app', value, { overwrite: true }, dir)).toThrow(
+        expect.objectContaining({ statusCode: 400 }),
+      );
+      expect(() => writeSecret('fresh', value, { overwrite: false }, dir)).toThrow(
+        expect.objectContaining({ statusCode: 400 }),
+      );
+    }
+    expect(fs.readFileSync(path.join(dir, 'dev2-db-app'), 'utf-8')).toBe('kept');
+    expect(fs.existsSync(path.join(dir, 'fresh'))).toBe(false);
+  });
+
   it('writes a new secret 0600 in a 0700 store that readSecret resolves', () => {
     const { entry, created } = writeSecret('dev2-db-app', 'p@ss word\nline2', { overwrite: false }, dir);
     expect(created).toBe(true);

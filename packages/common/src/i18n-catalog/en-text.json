@@ -2224,5 +2224,6 @@
   "같은 이름의 항목이 일반 파일이 아닙니다 — 호스트에서 확인하세요": "The entry with this name is not a regular file — check it on the host",
   "같은 이름의 비밀이 이미 있습니다": "A secret with this name already exists",
   "비밀을 쓰지 못했습니다 ({0})": "Could not write the secret ({0})",
-  "그런 비밀이 없습니다": "No such secret"
+  "그런 비밀이 없습니다": "No such secret",
+  "값이 비어 있습니다 (줄바꿈뿐)": "The value is empty (only a line break)"
 }

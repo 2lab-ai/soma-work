@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { loadServerToolsSection, secretUsages } from '../secret-usage';
 
 /**
@@ -69,6 +69,34 @@ describe('loadServerToolsSection', () => {
 
     fs.writeFileSync(file, '{ "server-tools": ');
     expect(loadServerToolsSection(file)).toEqual({ one: { token: { $secret: 'n' } } });
+  });
+
+  it('a config that does not parse never puts its contents in the log', () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'secret-usage-'));
+    const file = path.join(root, 'config.json');
+    const seen: string[] = [];
+    const spies = (['log', 'info', 'warn', 'error', 'debug'] as const).map((m) =>
+      vi.spyOn(console, m).mockImplementation((...args: unknown[]) => {
+        seen.push(args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' '));
+      }),
+    );
+    try {
+      // Short on purpose: V8 quotes the whole of a short input in the parse error ("… is not valid JSON").
+      fs.writeFileSync(file, '{"pw": LEAK-MARKER}');
+      expect(loadServerToolsSection(file)).toBeNull();
+    } finally {
+      for (const s of spies) s.mockRestore();
+    }
+    expect(seen.join('\n')).not.toContain('LEAK-MARKER');
+  });
+
+  it('keeps the last section read when the file briefly cannot be found (as server-tools does)', () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'secret-usage-'));
+    const file = path.join(root, 'config.json');
+    fs.writeFileSync(file, JSON.stringify({ 'server-tools': SECTION }));
+    expect(loadServerToolsSection(file)).toEqual(SECTION);
+    fs.renameSync(file, `${file}.moved`);
+    expect(loadServerToolsSection(file)).toEqual(SECTION);
   });
 
   it('is null without a file or a section', () => {

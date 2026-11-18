@@ -60,6 +60,9 @@ function checkName(name: unknown): string {
 
 function checkValue(value: unknown): string {
   if (typeof value !== 'string' || value.length === 0) throw new SecretAdminError('값이 비어 있습니다', 400);
+  // readSecret drops one trailing newline and refuses what is left empty: a lone newline would be "saved" and then
+  // take its server out at the next read.
+  if (value === '\n' || value === '\r\n') throw new SecretAdminError('값이 비어 있습니다 (줄바꿈뿐)', 400);
   if (value.includes('\0')) throw new SecretAdminError('값에 NUL 문자를 넣을 수 없습니다', 400);
   if (Buffer.byteLength(value, 'utf-8') > SECRET_VALUE_MAX_BYTES) {
     throw new SecretAdminError(`값은 ${SECRET_VALUE_MAX_BYTES / 1024} KiB 이하여야 합니다`, 400);
@@ -157,4 +160,11 @@ export function deleteSecret(name: string, dir: string | undefined = SECRETS_DIR
   if (stat.isDirectory())
     throw new SecretAdminError('같은 이름의 항목이 일반 파일이 아닙니다 — 호스트에서 확인하세요', 409);
   fs.unlinkSync(target);
+  // The removal is durable before it is acknowledged and audited, as a write is (atomicWriteFile syncs too).
+  const fd = fs.openSync(store, 'r');
+  try {
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
 }
