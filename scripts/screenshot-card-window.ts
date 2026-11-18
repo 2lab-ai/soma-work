@@ -100,9 +100,9 @@ const PAGE_HELPERS = [
   'window.__name = function (f) { return f; };',
 ].join('\n');
 
-async function installMocks(page: Page) {
+async function installMocks(page: Page, view: 'board' | 'list' = 'board') {
   await page.addInitScript({ content: PAGE_HELPERS });
-  await page.addInitScript({ content: 'localStorage.setItem("soma-board-view", "board");' });
+  await page.addInitScript({ content: `localStorage.setItem("soma-board-view", "${view}");` });
   await page.route('**/auth/me', (r) =>
     r.fulfill({ json: { user: { name: 'Zhuge', slackUserId: 'U001' }, csrfToken: 'x' } }),
   );
@@ -188,6 +188,8 @@ async function press(page: Page, key: string, what: 'min' | 'detail' | 'expand')
   const box = await page.evaluate(
     ([k, w]) => {
       const b = ((window as any).__card(k) as HTMLElement).querySelector(`[data-win="${w}"]`) as HTMLElement;
+      // A phone's board scrolls its columns sideways: bring the control on screen first, as a reader would.
+      b.scrollIntoView({ block: 'center', inline: 'center' });
       const r = b.getBoundingClientRect();
       return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
     },
@@ -198,8 +200,8 @@ async function press(page: Page, key: string, what: 'min' | 'detail' | 'expand')
 async function shot(page: Page, name: string) {
   await page.screenshot({ path: path.join(OUT, name) });
 }
-async function boot(page: Page) {
-  await installMocks(page);
+async function boot(page: Page, view: 'board' | 'list' = 'board') {
+  await installMocks(page, view);
   await page.goto(`${BASE_URL}/dashboard/U001`);
   await page.waitForSelector(`li.ib-card[data-card="${KEY_A}"] [data-win="detail"]`, { timeout: 20_000 });
   await sleep(500);
@@ -486,12 +488,62 @@ async function reducedRun(browser: import('playwright').Browser) {
   await ctx.close();
 }
 
+// S10 — the list view and a phone (the detail card is a full-screen sheet there).
+async function narrowRun(browser: import('playwright').Browser, w: number, h: number, view: 'list' | 'board') {
+  {
+    const ctx = await browser.newContext({
+      viewport: { width: w, height: h },
+      colorScheme: 'light',
+      deviceScaleFactor: 2,
+    });
+    const tok = process.env.CONVERSATION_VIEWER_TOKEN;
+    if (tok)
+      await ctx.addCookies([{ name: 'soma_dash_token', value: encodeURIComponent(`bearer:${tok}`), url: BASE_URL }]);
+    const page = await ctx.newPage();
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    await boot(page, view);
+    const tag = `${w}-${view}`;
+    log(`\n── ${tag} ──`);
+    const a0 = await cardState(page, KEY_A);
+    await press(page, KEY_A, 'min');
+    await sleep(450);
+    const a1 = await cardState(page, KEY_A);
+    check(a1.min && a1.rect.h <= 44 && a1.rect.h < a0.rect.h, `S10 ${tag} − → one line`, {
+      before: a0.rect,
+      after: a1.rect,
+    });
+    await shot(page, `10-${tag}-one-line.png`);
+    await press(page, KEY_A, 'min');
+    await sleep(450);
+    await press(page, KEY_B, 'detail');
+    await page.waitForSelector('#slide-panel[open]');
+    await sleep(600);
+    const p = await panel(page);
+    check(p.open && p.key === KEY_B && !!p.rect, `S10 ${tag} title → its detail card`, { panel: p });
+    await shot(page, `10-${tag}-detail.png`);
+    await page.click('#slide-panel .panel-close');
+    await sleep(600);
+    const b = await cardState(page, KEY_B);
+    check(!b.min && !(await panel(page)).open, `S10 ${tag} ✕ → the card is back`, { b: b.rect });
+    check(errors.length === 0, `S10 ${tag} no page errors`, errors);
+    await ctx.close();
+  }
+}
+
 async function main() {
   const ws = await import('../src/conversation/web-server');
   await ws.startWebServer({ listen: true });
   log(`server ${BASE_URL}`);
   try {
-    for (const run of [motionRun, reducedRun]) {
+    // Single-process Chromium (a sandboxed agent shell cannot register its Mach port for child processes) holds one
+    // context per browser: a browser per run.
+    for (const run of [
+      motionRun,
+      reducedRun,
+      (b: import('playwright').Browser) => narrowRun(b, 1280, 860, 'list'),
+      (b: import('playwright').Browser) => narrowRun(b, 390, 844, 'board'),
+    ]) {
       const browser = await chromium.launch({ headless: true, args: ['--single-process', '--no-zygote'] });
       try {
         await run(browser);
