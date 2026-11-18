@@ -181,8 +181,9 @@ function setup(
       return opts.warm?.(signal);
     },
     async transcribe() {
+      const text = stt.shift() ?? ''; // the words of this utterance, whenever the recogniser answers
       await opts.sttGate?.();
-      return { text: stt.shift() ?? '', ms: 5 };
+      return { text, ms: 5 };
     },
     async speak(text) {
       spoken.push(text);
@@ -1356,6 +1357,80 @@ describe('CallRun — like a live call', () => {
       await settleAll();
       s.clock.advance(2000);
       expect(s.call.frames - before).toBeGreaterThanOrEqual(40);
+    });
+
+    it('two parts recognised out of order still reach the model in the order they were said', async () => {
+      let first: () => void = () => undefined;
+      const slow = new Promise<void>((r) => {
+        first = r;
+      });
+      let calls = 0;
+      const s = await answering(['내일 회의가', '몇 시인지 알려 주세요'], {
+        turnHoldMs: 500,
+        sttGate: () => (calls++ === 0 ? slow : Promise.resolve()), // the first part takes longer to recognise
+      });
+      const n = s.dialog().sent.length;
+      live(s, tone(800, 0.3));
+      live(s, quiet(600));
+      live(s, tone(800, 0.3));
+      live(s, quiet(1200));
+      await settleAll();
+      expect(s.dialog().sent.length).toBe(n); // the first part is not in yet
+      first();
+      await settleAll();
+      expect(s.dialog().sent.slice(n)).toEqual(['내일 회의가 몇 시인지 알려 주세요']);
+    });
+
+    it('words said while the goodbye is due do not keep it from playing, nor the phone from going down', async () => {
+      const s = await answering(['내일 회의 시간이요', '잠깐만요'], { turnHoldMs: 500 });
+      live(s, tone(800, 0.3));
+      live(s, quiet(1200));
+      await settleAll();
+      const before = s.call.frames;
+      s.dialog().emit({ type: 'text_delta', text: '네, 세 시예요. 좋은 하루 보내세요!' });
+      await s.dialog().tool('hang_up').handler({ reason: 'done' });
+      s.dialog().emit({ type: 'tool_use', name: 'mcp__phone__hang_up', input: { reason: 'done' } });
+      s.dialog().emit({ type: 'turn_end', isError: false });
+      live(s, tone(400, 0.3)); // the caller says something as it starts
+      await settleAll();
+      live(s, quiet(1200));
+      await settleAll();
+      s.clock.advance(10_000);
+      await settleAll();
+      expect(s.call.frames - before).toBeGreaterThanOrEqual(80); // the whole goodbye
+      expect(s.call.hungUp).toBe(1);
+    });
+
+    it('a recogniser that fails releases a held reply', async () => {
+      let fail = false;
+      const s = await answering(['내일 회의 시간이요', '?'], {
+        turnHoldMs: 500,
+        sttGate: () => (fail ? Promise.reject(new Error('stt down')) : Promise.resolve()),
+      });
+      live(s, tone(800, 0.3));
+      live(s, quiet(1200));
+      await settleAll();
+      fail = true;
+      live(s, tone(400, 0.3));
+      const before = s.call.frames;
+      s.dialog().reply('내일 회의는 세 시예요.');
+      await settleAll();
+      live(s, quiet(1200));
+      await settleAll();
+      s.clock.advance(2000);
+      expect(s.call.frames - before).toBeGreaterThanOrEqual(40);
+    });
+
+    it('with no hold, a turn whose words are in still ends when a click follows them', async () => {
+      const s = await answering(['내일 회의 몇 시예요?'], { turnHoldMs: 0 });
+      const n = s.dialog().sent.length;
+      s.run.feedAudio(tone(600, 0.3));
+      s.run.feedAudio(quiet(800)); // the utterance: being recognised …
+      s.run.feedAudio(tone(100, 0.3)); // … when a click starts
+      await settleAll(); // recognised while the click goes on
+      s.run.feedAudio(quiet(800)); // the click ends as noise
+      await settleAll();
+      expect(s.dialog().sent.slice(n)).toEqual(['내일 회의 몇 시예요?']);
     });
 
     it('while the words of a turn are still being recognised, the quiet line is not nudged', async () => {

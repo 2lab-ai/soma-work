@@ -113,6 +113,12 @@ interface SpokenPart {
   line?: { text: string; at: number; role: 'agent'; interrupted?: boolean };
 }
 
+/** Where an utterance's words go in the turn they belong to. */
+interface TurnSlot {
+  turn: { words: string[]; pending: number; over: boolean };
+  index: number;
+}
+
 interface Buffered {
   part: SpokenPart;
   frames: Buffer[];
@@ -611,12 +617,17 @@ export class CallRun {
   // ── hearing ─────────────────────────────────────────────────
 
   /** An utterance of the other side's turn has ended: the turn is open (or goes on) until the line stays quiet. */
-  private openTurn(): NonNullable<CallRun['turn']> {
+  /**
+   * An utterance of the other side's turn has ended: the turn is open (or goes on) until the line stays quiet. Its
+   * words get their place in the turn now — recognitions may answer out of order.
+   */
+  private openTurn(): TurnSlot {
     const turn = this.turn ?? { words: [], pending: 0, over: false };
     this.turn = turn;
     turn.pending++;
+    const index = turn.words.push('') - 1;
     this.armTurnEnd(turn);
-    return turn;
+    return { turn, index };
   }
 
   private armTurnEnd(turn: NonNullable<CallRun['turn']>): void {
@@ -624,6 +635,7 @@ export class CallRun {
     const hold = this.plan.turnHoldMs ?? TURN_HOLD_MS;
     if (hold <= 0) {
       turn.over = true;
+      this.endTurn(); // its words may all be in already (a click after them)
       return;
     }
     this.turnTimer = this.later(() => {
@@ -649,7 +661,7 @@ export class CallRun {
     const turn = this.turn;
     if (!turn?.over || turn.pending > 0) return;
     this.turn = null;
-    const text = turn.words.join(' ');
+    const text = turn.words.filter(Boolean).join(' ');
     if (this.ended || this.hangupRequested || !text) {
       this.out?.release();
       if (!text && !this.ended && !this.hangupRequested && !this.flushPending()) this.armSilenceIfIdle();
@@ -665,7 +677,7 @@ export class CallRun {
     audioMs: number,
     first = false,
     keepReply = false,
-    turn?: NonNullable<CallRun['turn']>,
+    slot?: TurnSlot,
   ): Promise<void> {
     const at = this.now();
     let text = '';
@@ -678,7 +690,7 @@ export class CallRun {
     } catch (err) {
       this.sttInFlight--;
       this.fail('stt', err);
-      if (turn) return this.doneRecognising(turn);
+      if (slot) return this.doneRecognising(slot);
       if (!this.flushPending()) this.armSilenceIfIdle();
       return;
     }
@@ -687,7 +699,7 @@ export class CallRun {
     this.work({ kind: 'stt', at, text, ms, audioMs });
     if (!text) {
       // A cough or line noise: nothing for the model, but the line is quiet again (or words waited for this).
-      if (turn) return this.doneRecognising(turn);
+      if (slot) return this.doneRecognising(slot);
       if (!this.flushPending()) this.armSilenceIfIdle();
       return;
     }
@@ -703,25 +715,26 @@ export class CallRun {
       this.heldPeer.push(text);
       return;
     }
-    if (this.hangupRequested) return;
+    if (this.hangupRequested) {
+      if (slot) this.doneRecognising(slot); // the turn still closes: it holds the line the goodbye goes out on
+      return;
+    }
     // The reply's first sentence reaches the speech engine in ~1 s (first tokens). Wake it now — not earlier: on the
     // voice host the wake-up would compete with this transcription (measured: STT 0.9 s → 2.5 s).
     this.warmEngine();
     // The other side's "여보세요" as it picks up is heard and logged, but it is not a turn: the opening answers it.
     if (first && this.plan.direction === 'outbound' && isBareGreeting(text)) {
-      if (turn) return this.doneRecognising(turn);
+      if (slot) return this.doneRecognising(slot);
       this.armSilenceIfIdle();
       return;
     }
-    if (turn) {
-      turn.words.push(text);
-      return this.doneRecognising(turn);
-    }
+    if (slot) return this.doneRecognising(slot, text);
     this.hear(text, keepReply);
   }
 
-  private doneRecognising(turn: NonNullable<CallRun['turn']>): void {
-    turn.pending--;
+  private doneRecognising(slot: TurnSlot, text = ''): void {
+    slot.turn.words[slot.index] = text;
+    slot.turn.pending--;
     this.endTurn();
   }
 
