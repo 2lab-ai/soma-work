@@ -322,11 +322,27 @@ async function motionRun(browser: import('playwright').Browser) {
   await shot(page, '03-title-hover.png');
   await page.mouse.move(5, 5);
 
-  // S4 — ▽ with its hop, frozen at points of its animation.
+  // S4 — ▽ with its hop, frozen at points of its animation (HOP 560 ms: 28% = 157, 68% = 381, 80% = 448; the dust
+  // starts at 392 and runs 320 ms). At a keyframe's own time the value is the keyframe's, whatever the easing.
   await press(page, KEY_B, 'expand');
-  const frames: Array<Record<string, unknown>> = [];
-  for (const at of [150, 330, 430]) {
-    const f = await page.evaluate(
+  type Frame = {
+    at: number;
+    hop: boolean;
+    caretBox: Rect;
+    lift: { y: number; w: number };
+    transform: string;
+    up: number;
+    sx: number;
+    sy: number;
+    turn: number;
+    filter: string;
+    shadow: { opacity: number; sx: number };
+    dust: string[];
+    grains: Array<{ x: number; y: number }>;
+  };
+  const frames: Frame[] = [];
+  for (const at of [0, 80, 157, 270, 381, 391, 410, 448, 560, 712]) {
+    const f = (await page.evaluate(
       ([k, t]) => {
         const c = (window as any).__card(k) as HTMLElement;
         const caret = c.querySelector('[data-win="expand"]') as HTMLElement;
@@ -337,45 +353,124 @@ async function motionRun(browser: import('playwright').Browser) {
           a.pause();
           a.currentTime = Number(t);
         }
+        // matrix(a, b, c, d, e, f) of translateY · scale · rotate: f = the lift, the scales and the turn from a..d.
+        const m = (tf: string) => {
+          const v = /matrix\(([^)]+)\)/.exec(tf);
+          return v ? v[1].split(',').map(Number) : [1, 0, 0, 1, 0, 0];
+        };
+        const [a, b, cc, d, , f] = m(getComputedStyle(lift).transform);
+        const sx = Math.hypot(a, cc);
+        const sy = Math.hypot(b, d);
+        const turn = (Math.atan2(b / sy, a / sx) * 180) / Math.PI;
+        const [sa, , sc] = m(getComputedStyle(shadow).transform);
         const lr = lift.getBoundingClientRect();
         const cr = caret.getBoundingClientRect();
+        const r1 = (n: number) => Math.round(n * 100) / 100;
         return {
-          at: t,
+          at: Number(t),
           hop: caret.classList.contains('is-hop'),
           caretBox: { x: Math.round(cr.x), y: Math.round(cr.y), w: Math.round(cr.width), h: Math.round(cr.height) },
           lift: { y: Math.round(lr.y * 10) / 10, w: Math.round(lr.width * 10) / 10 },
           transform: getComputedStyle(lift).transform,
-          shadow: getComputedStyle(shadow).opacity,
+          up: r1(f),
+          sx: r1(sx),
+          sy: r1(sy),
+          turn: Math.round(Math.abs(turn)),
+          filter: getComputedStyle(lift).filter,
+          shadow: { opacity: r1(Number(getComputedStyle(shadow).opacity)), sx: r1(Math.hypot(sa, sc)) },
           dust: grains.map((g) => Number(getComputedStyle(g).opacity).toFixed(2)),
+          grains: grains.map((g) => {
+            const r = g.getBoundingClientRect();
+            return { x: r1(r.x + r.width / 2), y: r1(r.y + r.height / 2) };
+          }),
         };
       },
       [KEY_B, String(at)],
-    );
+    )) as Frame;
     frames.push(f);
-    const r = f.caretBox as Rect;
+    const r = f.caretBox;
     await page.screenshot({
-      path: path.join(OUT, `04-hop-${at}ms.png`),
+      path: path.join(OUT, `04-hop-${String(at).padStart(3, '0')}ms.png`),
       clip: { x: r.x - 40, y: r.y - 24, width: r.w + 80, height: r.h + 40 },
     });
   }
-  log(`      hop frames — ${JSON.stringify(frames)}`);
-  const lifted = frames[0] as { lift: { y: number; w: number }; shadow: string };
+  log(`      hop frames — ${JSON.stringify(frames.map(({ caretBox, grains, ...rest }) => rest))}`);
+  const at = (t: number) => frames.find((f) => f.at === t) as Frame;
+  const near = (v: number, want: number, tol: number) => Math.abs(v - want) <= tol;
+  const peak = at(157);
   check(
-    lifted.lift.w > 16.5 && Number(lifted.shadow) > 0,
-    'S4 mid-air at 150 ms: bigger than 16px, a ground shadow',
-    lifted,
+    peak.hop && near(peak.up, -7, 0.3) && near(peak.sx, 1.35, 0.02) && peak.turn === 0 && peak.lift.w > 16.5,
+    'S4 jump: 7px up in place and 1.35× bigger at 157 ms, not turned yet',
+    { up: peak.up, scale: peak.sx, turn: peak.turn, liftW: peak.lift.w },
   );
-  const early = frames[0] as { dust: string[] };
+  check(
+    /drop-shadow/.test(peak.filter) && peak.shadow.opacity > 0 && at(0).shadow.opacity === 0,
+    'S4 shadow: the triangle casts a drop shadow in the air, and a ground shadow shows under it',
+    { filter: peak.filter, ground: frames.map((f) => [f.at, f.shadow.opacity, f.shadow.sx]) },
+  );
+  const mid = at(270);
+  const aloft = at(381);
+  check(
+    mid.turn > 10 && mid.turn < 170 && mid.up < -5 && aloft.turn === 180 && near(aloft.up, -6, 0.3),
+    'S4 turn: 180° in the air — part way at 270 ms, full at 381 ms while still up',
+    { mid: { turn: mid.turn, up: mid.up }, end: { turn: aloft.turn, up: aloft.up } },
+  );
+  const land = at(448);
+  const rest = at(560);
+  check(
+    near(land.sx, 1.18, 0.02) &&
+      near(land.sy, 0.82, 0.02) &&
+      land.turn === 180 &&
+      near(land.up, 1, 0.3) &&
+      near(rest.sx, 1, 0.01) &&
+      near(rest.sy, 1, 0.01) &&
+      rest.up === 0 &&
+      rest.turn === 180,
+    'S4 landing: squashed (1.18 × 0.82) as it lands at 448 ms, settles as △ at 560 ms',
+    {
+      land: { sx: land.sx, sy: land.sy, up: land.up },
+      rest: { sx: rest.sx, sy: rest.sy, up: rest.up, turn: rest.turn },
+    },
+  );
+  check(
+    at(410).shadow.sx > peak.shadow.sx,
+    'S4 ground shadow: narrow while the triangle is high, wide again as it comes down',
+    { high: peak.shadow.sx, landing: at(410).shadow.sx },
+  );
+  const before = at(391);
+  const start = at(410);
+  const gone = at(712);
+  // From where the grains sit before they move (391 ms) to where they end (712 ms): the keyframe's --dx / --dy.
+  const spread = gone.grains.map((g, i) => ({
+    dx: Math.round(g.x - before.grains[i].x),
+    dy: Math.round(g.y - before.grains[i].y),
+  }));
+  const wantSpread = [
+    { dx: -12, dy: -2 },
+    { dx: -7, dy: -6 },
+    { dx: 1, dy: -8 },
+    { dx: 7, dy: -6 },
+    { dx: 12, dy: -1 },
+  ];
+  check(
+    before.dust.every((o) => Number(o) === 0) &&
+      start.dust.every((o) => Number(o) > 0.5) &&
+      gone.dust.every((o) => Number(o) === 0) &&
+      spread.every((s, i) => near(s.dx, wantSpread[i].dx, 1) && near(s.dy, wantSpread[i].dy, 1)),
+    'S4 dust: none until the landing (391 ms), 5 grains at 410 ms that fly out 12px left and right and fade by 712 ms',
+    { before: before.dust, at410: start.dust, at712: gone.dust, spread, want: wantSpread },
+  );
+  // The earlier receipts, kept by name.
+  const early = at(157);
   check(
     early.dust.every((o) => Number(o) === 0),
-    'S4 no dust before the landing (150 ms)',
+    'S4 no dust before the landing (157 ms)',
     early.dust,
   );
-  const dusty = frames[2] as { dust: string[] };
   check(
-    dusty.dust.some((o) => Number(o) > 0.1),
-    'S4 dust after the landing (430 ms)',
-    dusty.dust,
+    start.dust.some((o) => Number(o) > 0.1),
+    'S4 dust after the landing (410 ms)',
+    start.dust,
   );
   await page.evaluate((k) => {
     const caret = ((window as any).__card(k) as HTMLElement).querySelector('[data-win="expand"]') as HTMLElement;
