@@ -1070,21 +1070,32 @@ describe('focus goes back to whatever opened the panel (executed)', () => {
   // closes it and returns focus to its face'); an opener that is gone hands focus to the session's open card —
   // its 작업 로그 button in the card's slot body — else the board heading.
   it('Escape / × from inside the panel → the opener; gone or inert → the open card’s 작업 로그, else the heading; focus elsewhere → untouched', () => {
-    const run = (o: { inPanel: boolean; present: boolean; inert?: boolean; cardOpen?: boolean }) => {
+    const run = (o: {
+      inPanel: boolean;
+      present: boolean;
+      inert?: boolean;
+      cardOpen?: boolean;
+      // .prd/34: the opener is a board card's title, in its element's shadow root.
+      shadow?: boolean;
+      // .prd/34: the card's face was drawn again since: its title now is another node.
+      title?: boolean;
+    }) => {
       const focused: string[] = [];
       const panel = { hide() {} };
-      // focus() moves document.activeElement, except into an inert (folded) card.
-      const el = (name: string, inert = false) => {
+      // A board element's open shadow root: focusing a node in it moves the root's activeElement, not the document's.
+      const shadowRoot: Record<string, unknown> = { activeElement: null };
+      // focus() moves the active element of the node's root, except into an inert (folded) card.
+      const el = (name: string, inert = false, root: Record<string, unknown> | null = null) => {
         const node: Record<string, unknown> = {
           focus: () => {
             focused.push(name);
-            if (!inert) doc.activeElement = node;
+            if (!inert) (root ?? doc).activeElement = node;
           },
           hasAttribute: () => true,
           setAttribute: () => {},
           isConnected: true,
-          // .prd/34: the page asks the node's own root (a board card's title is in a shadow root).
-          getRootNode: () => doc,
+          // The page asks the node's own root (a board card's title is in a shadow root).
+          getRootNode: () => root ?? doc,
         };
         return node;
       };
@@ -1093,8 +1104,9 @@ describe('focus goes back to whatever opened the panel (executed)', () => {
         getElementById: (id: string) => (id === 'slide-panel' ? panel : null),
         querySelector: (sel: string) => (sel === '.board-title, h1, h2' ? heading : null),
       };
-      const opener = el('opener', !!o.inert);
+      const opener = el('opener', !!o.inert, o.shadow ? shadowRoot : null);
       opener.isConnected = o.present;
+      const title = el('title', false, shadowRoot);
       const log = el('worklog');
       const body = {
         isConnected: true,
@@ -1123,6 +1135,8 @@ describe('focus goes back to whatever opened the panel (executed)', () => {
           // SSOT 2026-10-29: a closed panel holds no section nodes and no pill.
           psecClear: () => {},
           psecSetNew: () => {},
+          // .prd/34: the closing card's title on its board element (the fallback after a redrawn face).
+          cardTitleOf: (k: string) => (o.title && k === 'k' ? title : null),
         },
         [
           'var panelOpen = true, panelSessionKey = "k", panelConvId = null, _panelAgent = "", _panelAgentsHtml = "", _rawLoadedCache = {}, _panelGen = 0;',
@@ -1142,6 +1156,12 @@ describe('focus goes back to whatever opened the panel (executed)', () => {
     expect(run({ inPanel: true, present: true, inert: true })).toEqual(['opener', 'worklog']); // inside a folded card
     expect(run({ inPanel: true, present: false, cardOpen: false })).toEqual(['heading']); // the card is closed
     expect(run({ inPanel: false, present: true })).toEqual([]); // the reader already moved on
+    // .prd/34: a board card's title in its element's shadow root takes focus back (document.body.contains is false
+    // for it — isConnected and its own root's activeElement decide).
+    expect(run({ inPanel: true, present: true, shadow: true })).toEqual(['opener']);
+    // Its face was drawn again (the opener is gone): that card's title, before the 작업 로그 or the heading.
+    expect(run({ inPanel: true, present: false, title: true })).toEqual(['title']);
+    expect(run({ inPanel: true, present: false, title: true, cardOpen: false })).toEqual(['title']);
   });
 
   // D4 K-06: the 산출물 part is written through writePanelPart (a morph; nothing when the html is what it last

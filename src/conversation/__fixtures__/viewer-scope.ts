@@ -48,7 +48,7 @@ export const NEXT_ACTION_SEAMS: Readonly<Record<string, unknown>> = {
   // in front (`boardCurrentKey`); `openPanel` folds its card (`boardFoldForDetail`) and rings it (`syncBoardCurrent`,
   // also `closePanel`); `deckRemove` brings it back (`boardRestoreFromDetail`); `wireInbox` keeps a fold
   // (`cardMinSave`, `boardNoteReaderFold`); repaints keep the deck's folds (`boardFoldDeck`); a decision unfolds the
-  // reader's one line (`boardDecisionHidden`, `boardUnfoldForDecision`); focus comes back to a title (`cardTitleOf`).
+  // reader's one line (`boardDetailInFront`, `boardDecisionHidden`, `boardUnfoldForDecision`); focus comes back to a title (`cardTitleOf`).
   // Nothing, unless the test loads the real one (pinned by dashboard-card-window-client.test.ts).
   cardMinList: () => [],
   cardMinSeeds: () => [],
@@ -60,6 +60,7 @@ export const NEXT_ACTION_SEAMS: Readonly<Record<string, unknown>> = {
   boardNoteReaderFold: () => {},
   boardFoldDeck: () => {},
   boardDecisionHidden: () => false,
+  boardDetailInFront: () => false,
   boardUnfoldForDecision: () => {},
   cardTitleOf: () => null,
 };

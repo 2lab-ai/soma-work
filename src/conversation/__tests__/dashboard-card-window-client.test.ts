@@ -273,7 +273,7 @@ describe('a detail card folds its board card and undoes only that fold (D7)', ()
     };
     const cache: Record<string, unknown> = { A: { key: 'A', sig: 'q2' }, B: { key: 'B', sig: 'q1' } };
     const m = load<{ autoOpenDecisions(): void }>(
-      ['boardDecisionHidden', 'boardUnfoldForDecision', 'autoOpenDecisions'],
+      ['boardDetailInFront', 'boardDecisionHidden', 'boardUnfoldForDecision', 'autoOpenDecisions'],
       ['_detailUnfolded'],
       {
         _sessionCache: cache,
@@ -323,6 +323,12 @@ describe('a detail card folds its board card and undoes only that fold (D7)', ()
     // Its detail card shows the decision: the board card stays as it is.
     expect(front.calls.filter((c) => c[1] === 'A')).toEqual([]);
     expect(front.folded.has('A')).toBe(true);
+    // Opened by its title only (not open in place): still left as it is — no reveal under the fold (review P1).
+    const titleOnly = decisions({ folded: ['A'], expanded: [], deck: ['A'], front: 'A' });
+    titleOnly.m.autoOpenDecisions();
+    expect(titleOnly.calls.filter((c) => c[1] === 'A')).toEqual([]);
+    titleOnly.m.autoOpenDecisions(); // recorded: the next poll does nothing either
+    expect(titleOnly.calls.filter((c) => c[1] === 'A')).toEqual([]);
   });
 
   it('a deck card the reader had folded loses its saved fold when a decision unfolds it — a redraw seeds it open (review P1)', () => {
