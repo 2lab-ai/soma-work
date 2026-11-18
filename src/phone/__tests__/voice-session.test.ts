@@ -737,6 +737,9 @@ describe('CallRun — never over the caller, and a quick "네."', () => {
     await settleAll();
     expect(s.call.frames).toBe(s.before + 40); // one sentence: 400 ms = 40 frames (identity codec)
     expect(s.dialog().interrupted).toBe(0);
+    s.clock.advance(16_000); // and a quiet line after it still gets the nudge
+    await settleAll();
+    expect(s.dialog().sent[s.dialog().sent.length - 1]).toBe(SILENCE_CUE);
   });
 
   it('a reply that opens with "네," says the ready-made "네." at once and makes only the rest', async () => {

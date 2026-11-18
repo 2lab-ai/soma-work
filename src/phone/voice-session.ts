@@ -178,7 +178,8 @@ export class CallRun {
   feedAudio(ulaw: Buffer): void {
     if (this.ended || !this.answered) return;
     const pcm = this.deps.ulawToPcm16(ulaw);
-    for (const ev of this.vad.push(pcm, this.agentSpeaking())) {
+    // Held audio is not playing: nothing of the agent's can echo back while the other side has the floor.
+    for (const ev of this.vad.push(pcm, this.agentSpeaking() && !this.floorHeld.length)) {
       if (ev.type === 'speech_start') {
         // The other side is talking: no silence timer, and the next quiet spell starts with a fresh nudge.
         this.clearSilence();
