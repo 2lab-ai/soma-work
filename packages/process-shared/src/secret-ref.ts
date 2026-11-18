@@ -17,6 +17,11 @@ import * as path from 'node:path';
 /** One safe path segment: no separators, no leading dot, no `..`. */
 const SECRET_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
+/** Is `name` a name the store can hold — the rule {@link readSecret} applies, shared with the bot's store admin. */
+export function isSecretName(name: unknown): boolean {
+  return typeof name === 'string' && SECRET_NAME_RE.test(name) && !name.includes('..');
+}
+
 export class SecretRefError extends Error {
   constructor(message: string) {
     super(message);
@@ -39,7 +44,7 @@ export function isSecretRef(value: unknown): value is SecretRef {
  * `echo`'s). Throws {@link SecretRefError} instead of returning anything doubtful.
  */
 export function readSecret(name: string, secretsDir: string | undefined): string {
-  if (!SECRET_NAME_RE.test(name) || name.includes('..')) {
+  if (!isSecretName(name)) {
     // Not echoed: an operator may have pasted the value where the name goes.
     throw new SecretRefError(`invalid secret name (${name.length} characters)`);
   }

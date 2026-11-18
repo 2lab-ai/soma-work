@@ -339,6 +339,8 @@ describe('evaluateToolPolicy — approval records are not writable by a model', 
     path.join(DATA_DIR, 'admin-requests.json'),
     path.join(DATA_DIR, 'cron-run-requests.json'),
     path.join(DATA_DIR, 'instruction-approvals.json'),
+    // secret-access WU1 (#1337): the secret store's audit ledger — a forged line would fake who changed a secret.
+    path.join(DATA_DIR, 'secret-audit.jsonl'),
     path.join(DATA_DIR, 'U000OWNER', 'skill-grants.json'),
   ];
 

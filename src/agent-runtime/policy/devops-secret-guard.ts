@@ -49,6 +49,8 @@ const APPROVAL_RECORD_FILES: readonly string[] = [
   'admin-requests.json',
   'cron-run-requests.json',
   'instruction-approvals.json',
+  // The secret store's audit ledger (secret-access WU1, #1337): only the dashboard's secret routes append to it.
+  'secret-audit.jsonl',
 ];
 
 /**

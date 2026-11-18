@@ -79,6 +79,8 @@ describe('settings page shell', () => {
       { id: 'memory', label: '기억', icon: 'brain' },
       { id: 'project', label: '프로젝트 메모리', icon: 'file-text' },
       { id: 'skills', label: '스킬', icon: 'file-code' },
+      // listed for admins only — the page script filters it on /auth/me (secret-access WU1)
+      { id: 'secrets', label: '비밀', icon: 'lock', adminOnly: true },
       { id: 'layout', label: '대시보드 화면', icon: 'board' },
       { id: 'dictation', label: '받아쓰기', icon: 'mic' },
     ]);

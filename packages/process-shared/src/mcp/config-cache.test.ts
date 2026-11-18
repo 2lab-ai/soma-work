@@ -122,3 +122,42 @@ describe('ConfigCache', () => {
     expect(cache.get()).toEqual({ safe: true });
   });
 });
+
+// secret-access WU1 (#1337): a loader that resolves {"$secret"} references must re-run when the secret store
+// changes, not only when config.json does — the dashboard adds a secret without touching the config.
+describe('ConfigCache — watched directory', () => {
+  const originalEnv = process.env;
+  beforeEach(() => {
+    process.env = { ...originalEnv, SOMA_CONFIG_FILE: '/cfg/config.json' };
+    vi.mocked(fs.statSync).mockReset();
+    vi.mocked(fs.readFileSync).mockReset();
+  });
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  it('reloads when the watched directory changes while the file stays the same', () => {
+    let dirMtime = 100;
+    vi.mocked(fs.statSync).mockImplementation(((p: string) =>
+      p === '/cfg/secrets' ? { mtimeMs: dirMtime, size: 0 } : { mtimeMs: 1, size: 10 }) as never);
+    vi.mocked(fs.readFileSync).mockReturnValue('{"s":{"v":1}}');
+    const loader = vi.fn((raw: any) => raw);
+    const cache = new ConfigCache({}, { section: 's', loader, watchDir: () => '/cfg/secrets' });
+    cache.get();
+    cache.get();
+    expect(loader).toHaveBeenCalledTimes(1);
+    dirMtime = 200;
+    cache.get();
+    expect(loader).toHaveBeenCalledTimes(2);
+  });
+
+  it('a watched directory that does not exist does not stop the config from loading', () => {
+    vi.mocked(fs.statSync).mockImplementation(((p: string) => {
+      if (p === '/cfg/secrets') throw Object.assign(new Error('nope'), { code: 'ENOENT' });
+      return { mtimeMs: 1, size: 10 };
+    }) as never);
+    vi.mocked(fs.readFileSync).mockReturnValue('{"s":{"v":1}}');
+    const cache = new ConfigCache({}, { section: 's', loader: (raw: any) => raw, watchDir: () => '/cfg/secrets' });
+    expect(cache.get()).toEqual({ v: 1 });
+  });
+});

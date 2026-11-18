@@ -6,6 +6,12 @@ export interface ConfigCacheOptions<T> {
   section: string;
   /** Parse the raw section value into T. Return null to keep previous cache. */
   loader: (raw: any) => T | null;
+  /**
+   * A directory whose change also re-runs the loader — the secret store for a loader that resolves
+   * `{"$secret"}` references (secret-access WU1, #1337): a secret added or replaced without touching the
+   * config file is picked up on the next read. A directory that does not exist counts as unchanged.
+   */
+  watchDir?: () => string | undefined;
 }
 
 /**
@@ -19,6 +25,7 @@ export class ConfigCache<T> {
   private defaultValue: T;
   private mtimeMs = 0;
   private size = 0;
+  private dirMtimeMs = 0;
   private options: ConfigCacheOptions<T>;
   private logger: StderrLogger;
 
@@ -38,7 +45,8 @@ export class ConfigCache<T> {
 
     try {
       const stat = fs.statSync(configFile);
-      if (stat.mtimeMs === this.mtimeMs && stat.size === this.size) {
+      const dirMtimeMs = this.watchedDirMtime();
+      if (stat.mtimeMs === this.mtimeMs && stat.size === this.size && dirMtimeMs === this.dirMtimeMs) {
         return this.cached; // File unchanged — use cache
       }
 
@@ -54,6 +62,7 @@ export class ConfigCache<T> {
       // Always update mtime/size so we don't re-read unchanged file
       this.mtimeMs = stat.mtimeMs;
       this.size = stat.size;
+      this.dirMtimeMs = dirMtimeMs;
     } catch (error: unknown) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== 'ENOENT') {
@@ -64,6 +73,16 @@ export class ConfigCache<T> {
     return this.cached;
   }
 
+  private watchedDirMtime(): number {
+    const dir = this.options.watchDir?.();
+    if (!dir) return 0;
+    try {
+      return fs.statSync(dir).mtimeMs;
+    } catch {
+      return 0;
+    }
+  }
+
   /**
    * Reset cache state. Forces re-read on next get().
    */
@@ -71,5 +90,6 @@ export class ConfigCache<T> {
     this.cached = this.defaultValue;
     this.mtimeMs = 0;
     this.size = 0;
+    this.dirMtimeMs = 0;
   }
 }
