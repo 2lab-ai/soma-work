@@ -1,6 +1,6 @@
 # 33 — secret-access 아키텍처: 비밀 grant · 호출 단위 판정 · 대시보드 두 탭
 
-Status: planned · Date: 2026-11-18 · 기준 main `e1003add` · 위 층 = [`32-secret-access-spec.md`](32-secret-access-spec.md) ·
+Status: shipped — main `14dd032e` (2026-11-18; 출하 기록 = 32 §8) · 설계 기준 main `e1003add` · 위 층 = [`32-secret-access-spec.md`](32-secret-access-spec.md) ·
 SSOT = [`secret-access/ssot.md`](secret-access/ssot.md) · 드라이버 = [`secret-access/loop.md`](secret-access/loop.md)
 
 > 요약: 새 저장소는 둘뿐이다 — 비밀 파일을 다루는 봇 쪽 관리자(이미 있는 `secrets/` 폴더를 읽고 쓰기만)와 감사 원장. 비밀 grant는
@@ -117,7 +117,10 @@ server-tools 원본 절(`{"$secret"}`이 풀리기 전)에서, 도구가 읽는 
 
 - **중복 방지:** 열린 요청 키 = (요청자, 이름 집합, 채널, 스레드). 같은 키가 열려 있으면 새 카드 없이 그 요청을 가리킨다.
 - **만료:** 24시간(환경 스킬 요청과 같다). 만료된 카드의 클릭은 "만료됨".
-- **결정:** 어드민만, 한 번만(`admin-request-store` 클레임). 이름 · 요청자 · 스레드는 저장된 요청에서 읽는다(버튼 값은 requestId만).
+- **결정:** 어드민만, 한 번만(`admin-request-store` 클레임). 이름 · 요청자 · 스레드는 저장된 요청에서 읽는다(버튼 값은 requestId와
+  라운드 = 요청의 `createdAt`뿐; 다른 라운드의 버튼은 거절). 허락은 `settled:false` 클레임으로 시작해 grant를 다 쓴 뒤 확정하고,
+  grant 쓰기가 실패하면 이번에 더한 grant를 되돌리고 요청을 다시 연다(`reopenAdminRequest`).
+- **배달:** 같은 라운드의 배달은 첫 await 전에 동기적으로 잡는다 — 병렬 도구 호출의 거부가 동시에 와도 카드 1장 · 알림 1번.
   - `once` → `addThreadGrant(ENV_SKILL_GRANT_OWNER, 'secret:<이름>', U, scope)` 이름마다.
   - `always` → `grantSecret(이름, U)` 이름마다.
   - `deny` → 기록 없음.
