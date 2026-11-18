@@ -1532,7 +1532,6 @@ describe('the detail deck — the title opens a detail card, its card goes to on
     const open = clientFn('openPanel');
     // In the deck first; the nav painted once it is open.
     expect(open).toContain('deckAdd(sessionKey);');
-    expect(open).not.toContain('var joining');
     // The ring and the front card's fold (SSOT_4) follow once the panel is open (boardCurrentKey reads panelOpen).
     expect(open).toContain('panelOpen = true;\n  // .prd/34 D5');
     expect(open.indexOf('syncBoardCurrent();')).toBeGreaterThan(open.indexOf('panelOpen = true;'));

@@ -292,7 +292,7 @@ describe('someone else\u2019s card starts on one line; the reader\u2019s \u2212 
 });
 
 describe('a viewer change on a drawn board reconciles the ownership default both ways (SSOT_3 review)', () => {
-  it('the old default lifts from the new viewer\u2019s cards and the new one folds; a saved \u2212, a starred day-old card and a deck card keep their reasons', () => {
+  it('the old default lifts from the new viewer\u2019s cards and the new one folds; a saved \u2212, a starred day-old card and the front card keep their reasons, a card behind comes back', () => {
     const H = 60 * 60 * 1000;
     const NOW = Date.UTC(2026, 10, 18, 9, 0, 0);
     const calls: unknown[][] = [];
@@ -310,7 +310,8 @@ describe('a viewer change on a drawn board reconciles the ownership default both
       B: { ownerId: 'U002', activityState: 'idle' }, // folded as someone else's for U001; mine for U002
       C: { ownerId: 'U002', activityState: 'idle' }, // the reader presses + then \u2212 on it (saved \u2212)
       D: { ownerId: 'U002', activityState: 'idle', starred: true, lastActivity: new Date(NOW - 30 * H).toISOString() },
-      E: { ownerId: 'U002', activityState: 'idle' }, // its detail card is in the deck
+      E: { ownerId: 'U002', activityState: 'idle' }, // its detail card is in front
+      F: { ownerId: 'U002', activityState: 'idle' }, // its detail card waits behind E's (review)
     };
     const m = load<{
       cardMinSeeds(cols: unknown): string[];
@@ -333,18 +334,18 @@ describe('a viewer change on a drawn board reconciles the ownership default both
       {
         localStorage: storage(),
         _sessionCache: cache,
-        _cardCol: { A: 'idle', B: 'idle', C: 'idle', D: 'idle', E: 'idle' },
-        _cardHost: { A: el, B: el, C: el, D: el, E: el },
+        _cardCol: { A: 'idle', B: 'idle', C: 'idle', D: 'idle', E: 'idle', F: 'idle' },
+        _cardHost: { A: el, B: el, C: el, D: el, E: el, F: el },
         _expanded: new Set(),
-        _deck: ['E'],
-        boardCurrentKey: () => 'E', // E's detail card in front
+        _deck: ['F', 'E'],
+        boardCurrentKey: () => 'E', // E's detail card in front, F's behind it
         Date: { now: () => NOW, parse: Date.parse },
       },
       { prelude: "var _viewerUserId = 'U001';", exports: 'setViewer: function (v) { _viewerUserId = v; }' },
     );
     // First paint as U001: the element starts these on one line.
-    const seeds = m.cardMinSeeds([{ keys: ['A', 'B', 'C', 'D', 'E'] }]);
-    expect(seeds.sort()).toEqual(['B', 'C', 'D', 'E']);
+    const seeds = m.cardMinSeeds([{ keys: ['A', 'B', 'C', 'D', 'E', 'F'] }]);
+    expect(seeds.sort()).toEqual(['B', 'C', 'D', 'E', 'F']);
     for (const k of seeds) folded.add(k);
     // The reader brings C back (+) and folds it again (\u2212): its fold is theirs now, recorded as a default before (review).
     folded.delete('C');
@@ -357,9 +358,11 @@ describe('a viewer change on a drawn board reconciles the ownership default both
     expect(calls).toEqual([
       ['A', true, undefined], // someone else's now
       ['B', false, undefined], // the old default lifts
-      // E's detail card is in the deck: it stays on one line until that closes, then comes back (restore()).
+      // E's detail card is in front: it stays on one line until that closes, then comes back (restore()).
       ['E', false, undefined],
       ['E', true, { untilRestore: true }],
+      // F's waits behind: nothing holds it on one line — back at once (SSOT_4: only the front card is).
+      ['F', false, undefined],
     ]);
     expect([...folded].sort()).toEqual(['A', 'C', 'D', 'E']);
     // Back to no viewer (a viewer token): nobody is someone else \u2014 A's default lifts too.

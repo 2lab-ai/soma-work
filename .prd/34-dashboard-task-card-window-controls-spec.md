@@ -1,6 +1,6 @@
 # 34 — 작업 카드 창 버튼: 한 줄 · 보통 · 펼침 · 상세 카드
 
-Status: shipped(라운드 1) · 라운드 2(D13, SSOT_3) · 라운드 3(D7 앞 카드만, SSOT_4) in-progress · 2026-11-18 · main `0a2476cf`(PR #1349) · dev v0.3.79 · `@2lab.ai/ui` 0.43.0(ui PR #84 `cc51d50`) · 설계 기준 main `5c85d551`, `@2lab.ai/ui` 0.42.1
+Status: shipped · 라운드 1 main `0a2476cf` · 라운드 2(D13 남의 카드 · D7 앞 카드만) main `abb592f9`(PR #1355 · #1358) · dev v0.3.81 · 2026-11-18 · main `0a2476cf`(PR #1349) · dev v0.3.79 · `@2lab.ai/ui` 0.43.0(ui PR #84 `cc51d50`) · 설계 기준 main `5c85d551`, `@2lab.ai/ui` 0.42.1
 앞선 계약: [`15-dashboard-detail-deck-spec.md`](15-dashboard-detail-deck-spec.md) §2(상세 카드 덱),
 [`19-dashboard-view-mode-spec.md`](19-dashboard-view-mode-spec.md) T9(카드 면의 별)
 SSOT·의도·diff: [`card-window/ssot.md`](card-window/ssot.md)
@@ -162,3 +162,9 @@ SSOT·의도·diff: [`card-window/ssot.md`](card-window/ssot.md)
 | S10 목록 · 폰 | 1280 목록 118 → 42px, 상세 카드 841,56. 390 폰: 상세 카드 = 전체 화면 시트(0,0 폭 390), ✕ → 118px | ✅ |
 | S11 즐겨찾기 · TL;DR | 30시간 지난 즐겨찾기 128px(TL;DR 79px), TL;DR × → 42px, + → 82px · `soma-card-unfold` 저장 · 새로 고침 뒤에도 펼친 채 | ✅ |
 | S12 · S13 · S14 | 상세 카드가 열린 한 줄 카드의 ▽ → 241px 제자리 펼침 · 상세 카드 유지. 검색으로 숨겼다 보임 → 덱 카드 42px 유지 · +로 펼친 카드 118px. Enter → 상세 카드, Esc → 포커스가 그 제목 | ✅ |
+
+### 7.2 라운드 2 배포 빌드 (D13 · D7 앞 카드만)
+
+- **D13 남의 카드**: dev v0.3.80 `ac6ac5fe`(다른 세션의 배포, #1355 포함 · #1358 없음). 그 번들에 45개 리시트를 돌리면 S15 9/9가 통과하고, S5 · S13 2개만 실패한다(#1358 전이라 AS-IS). S15 값은 §6 표와 같다: 남의 카드 42px · 내 카드 118px, + → 82px 저장 · 새로 고침 유지, − 저장 · 새로 고침 42px, `/auth/me` 늦게 + 상세 카드 열림 → ✕ 뒤에도 한 줄, 주인으로 로그인 → 다른 계정의 카드 42px · ✕ 뒤 82px.
+- **D7 앞 카드만 + 전부**: dev v0.3.81 `abb592f9`, run [44277138972](https://github.com/2lab-ai/soma-work/actions/runs/44277138972). `Deploy t3` 하나(dev 호스트 한 대) · `Verify` 성공 · 설치본 `version.json` commitHash = 머지 `abb592f9` · 번들의 `@2lab.ai/ui` 0.43.0 · 재시작 줄 `bot is running! [v0.3.81 (abb592f)]` 뒤 세션 시작 3개(서로 다른 sessionId), 거절 0. 배포 번들로 **45/45**. S5: 둘째 제목 뒤 앞 카드 A 42px + 강조, 앞서 접혔던 B는 241px로 펼친 채 돌아옴. S6: ✕ → A 118px, 앞이 된 B 42px. S13: 앞 카드는 검색으로 다시 그려도 42px, 뒤로 간 카드 118px. S15 9/9(위와 같은 값).
+
