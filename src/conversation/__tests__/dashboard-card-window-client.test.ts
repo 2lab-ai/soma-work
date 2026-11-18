@@ -38,19 +38,29 @@ function clientVar(name: string): string {
   if (!m) throw new Error(`client var ${name} not found`);
   return cook(m[1]);
 }
-function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}): T {
+// `more.prelude` declares page state the test changes later (through `more.exports`, e.g. a setter).
+function load<T>(
+  fns: string[],
+  vars: string[],
+  inject: Record<string, unknown> = {},
+  more: { prelude?: string; exports?: string } = {},
+): T {
   inject = { ...nextActionSeams(fns, inject), ...inject };
   const names = Object.keys(inject);
-  const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
+  const exported = more.exports ? `${fns.join(', ')}, ${more.exports}` : fns.join(', ');
+  const body = `${vars.map(clientVar).join('\n')}\n${more.prelude ?? ''}\n${fns.map(clientFn).join('\n')}\nreturn { ${exported} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
-function storage(seed: Record<string, string> = {}, opts: { failWrite?: boolean } = {}) {
+// `quota`: the most characters all values may hold together — a write past it throws, as a full localStorage does.
+function storage(seed: Record<string, string> = {}, opts: { failWrite?: boolean; quota?: number } = {}) {
   const items: Record<string, string> = { ...seed };
   return {
     items,
     getItem: (k: string) => (k in items ? items[k] : null),
     setItem: (k: string, v: string) => {
       if (opts.failWrite) throw new Error('QuotaExceededError');
+      const others = Object.keys(items).reduce((n, x) => (x === k ? n : n + items[x].length), 0);
+      if (opts.quota !== undefined && others + String(v).length > opts.quota) throw new Error('QuotaExceededError');
       items[k] = String(v);
     },
   };
@@ -108,6 +118,24 @@ describe('the reader’s one-line cards are kept in this browser (D8)', () => {
     const full = min(storage({}, { failWrite: true }));
     full.cardMinSave('A', true);
     expect(full.cardMinList()).toEqual(['A']);
+  });
+
+  it('at the storage quota the entry that goes is removed first, so the one that comes fits (review)', () => {
+    // A was brought back with + (soma-card-unfold), and the storage is full: folding A again must still be saved.
+    const fold = storage({ 'soma-card-unfold': '["A"]', 'soma-card-min': '[]' }, { quota: 7 });
+    min(fold).cardMinSave('A', true);
+    expect(min(fold).cardMinList()).toEqual(['A']);
+    expect(JSON.parse(fold.items['soma-card-unfold'])).toEqual([]);
+    // And the other way: + on a saved fold at the quota.
+    const unfold = storage({ 'soma-card-min': '["A"]', 'soma-card-unfold': '[]' }, { quota: 7 });
+    const page = load<{ cardMinSave(k: string, on: boolean): void; cardUnfoldList(): string[] }>(
+      ['cardPrefList', 'cardPrefPut', 'cardMinList', 'cardMinSave', 'cardUnfoldList'],
+      ['CARD_MIN_MAX', '_cardPrefs'],
+      { localStorage: unfold },
+    );
+    page.cardMinSave('A', false);
+    expect(JSON.parse(unfold.items['soma-card-unfold'])).toEqual(['A']);
+    expect(JSON.parse(unfold.items['soma-card-min'])).toEqual([]);
   });
 });
 
@@ -259,6 +287,7 @@ describe('a detail card folds its board card and undoes only that fold (D7)', ()
   });
 
   // The real autoOpenDecisions with the real fold helpers (review: execute the transition, not the source text).
+  type Decisions = { autoOpenDecisions(): void; setFront(k: string | null): void };
   const decisions = (o: { folded: string[]; expanded: string[]; deck: string[]; front: string | null }) => {
     const calls: unknown[][] = [];
     const folded = new Set(o.folded);
@@ -272,7 +301,7 @@ describe('a detail card folds its board card and undoes only that fold (D7)', ()
       reveal: (k: string, opts: unknown) => calls.push(['reveal', k, opts]),
     };
     const cache: Record<string, unknown> = { A: { key: 'A', sig: 'q2' }, B: { key: 'B', sig: 'q1' } };
-    const m = load<{ autoOpenDecisions(): void }>(
+    const m = load<Decisions>(
       ['boardDetailInFront', 'boardDecisionHidden', 'boardUnfoldForDecision', 'autoOpenDecisions'],
       ['_detailUnfolded'],
       {
@@ -286,9 +315,12 @@ describe('a detail card folds its board card and undoes only that fold (D7)', ()
         _cardCol: { A: 'waiting', B: 'waiting' },
         autoOpenWhenDefined: () => {},
         _deck: o.deck,
-        panelOpen: o.front !== null,
-        panelSessionKey: o.front,
         cardMinForget: (...a: unknown[]) => calls.push(['cardMinForget', ...a]),
+      },
+      {
+        // The panel's front card changes between polls (‹ ›, a title on the board).
+        prelude: `var panelOpen = ${o.front !== null}; var panelSessionKey = ${JSON.stringify(o.front)};`,
+        exports: 'setFront: function (k) { panelOpen = k !== null; panelSessionKey = k; }',
       },
     );
     return { m, calls, folded };
@@ -329,6 +361,15 @@ describe('a detail card folds its board card and undoes only that fold (D7)', ()
     expect(titleOnly.calls.filter((c) => c[1] === 'A')).toEqual([]);
     titleOnly.m.autoOpenDecisions(); // recorded: the next poll does nothing either
     expect(titleOnly.calls.filter((c) => c[1] === 'A')).toEqual([]);
+  });
+
+  it('a decision seen in its detail card is not opened on the board when the reader moves to another detail card (review)', () => {
+    const d = decisions({ folded: ['A'], expanded: [], deck: ['A', 'B'], front: 'A' });
+    d.m.autoOpenDecisions(); // A in front: its decision shows there
+    d.m.setFront('B'); // the reader moves to B — A waits behind, still on one line
+    d.m.autoOpenDecisions(); // the same decision on A: already seen
+    expect(d.calls.filter((c) => c[1] === 'A')).toEqual([]);
+    expect(d.folded.has('A')).toBe(true);
   });
 
   it('a deck card the reader had folded loses its saved fold when a decision unfolds it — a redraw seeds it open (review P1)', () => {

@@ -11978,8 +11978,9 @@ function cardMinList() { return cardPrefList(_cardPrefs.min); }
 // The reader's + is kept too: a card that starts on one line by default (a starred card a day old) stays open.
 function cardUnfoldList() { return cardPrefList(_cardPrefs.unfold); }
 function cardMinSave(key, on) {
-  cardPrefPut(_cardPrefs.min, key, on);
-  cardPrefPut(_cardPrefs.unfold, key, !on);
+  // The entry that goes is removed first: at the storage quota the space it frees lets the other be written (review).
+  cardPrefPut(on ? _cardPrefs.unfold : _cardPrefs.min, key, false);
+  cardPrefPut(on ? _cardPrefs.min : _cardPrefs.unfold, key, true);
 }
 // SSOT_2 T11: a starred card is never put to sleep or archived, so it would stay at full size for ever. A day after
 // it last moved it starts on one line (its TL;DR still shows) — not while it works or waits on someone.
