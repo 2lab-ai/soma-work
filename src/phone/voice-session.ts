@@ -116,6 +116,8 @@ export class CallRun {
    * they are words (the reply is then made again with them).
    */
   private floorHeld: Buffer[] = [];
+  /** The lines whose audio is (partly) in floorHeld: unheard if it is dropped. */
+  private heldLines: Array<{ text: string; at: number; role: 'agent'; interrupted?: boolean }> = [];
   private transcribing = 0;
   /** The start of the reply being written, until it is known whether it opens with "네,". */
   private openerOpen = false;
@@ -233,6 +235,7 @@ export class CallRun {
     if (this.floorTaken() || !this.floorHeld.length) return;
     const held = this.floorHeld;
     this.floorHeld = [];
+    this.heldLines = [];
     for (const f of held) this.sendFrame(f);
   }
 
@@ -326,6 +329,8 @@ export class CallRun {
     if (!this.call || this.ended) return;
     if (this.released && !this.hangupRequested && this.floorTaken()) {
       this.floorHeld.push(frame); // never over the other side's words
+      const line = this.lastAgentLine;
+      if (line && this.heldLines[this.heldLines.length - 1] !== line) this.heldLines.push(line);
       return;
     }
     this.call.sendAudio(frame);
@@ -370,13 +375,17 @@ export class CallRun {
     this.queue = [];
     this.floorHeld = [];
     this.playEndAt = this.now();
-    if (this.lastAgentLine && !this.lastAgentLine.interrupted) {
-      const line = this.lastAgentLine;
+    // The line playing, and every line held back that will now never be heard.
+    const cut = [...this.heldLines, ...(this.lastAgentLine ? [this.lastAgentLine] : [])].filter((l) => !l.interrupted);
+    this.heldLines = [];
+    if (cut.length) {
       this.deps.update((r) => {
-        const hit = r.transcript.find((l) => l.at === line.at && l.role === 'agent' && l.text === line.text);
-        if (hit) hit.interrupted = true;
+        for (const line of cut) {
+          const hit = r.transcript.find((l) => l.at === line.at && l.role === 'agent' && l.text === line.text);
+          if (hit) hit.interrupted = true;
+        }
       });
-      line.interrupted = true;
+      for (const line of cut) line.interrupted = true;
     }
     this.work({ kind: 'event', at: this.now(), text: why });
   }

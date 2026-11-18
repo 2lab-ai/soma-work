@@ -716,7 +716,7 @@ describe('CallRun — never over the caller, and a quick "네."', () => {
     const s = await inboundTalking(['화요일 오후 세 시로', '옮기고 싶은데 가능할까요?']);
     expect(s.dialog().sent).toContain('화요일 오후 세 시로');
     s.run.feedAudio(tone(100, 0.3)); // the caller goes on …
-    s.dialog().reply('화요일 오후 세 시로요.'); // … while the answer to half a sentence is made
+    s.dialog().reply('화요일 오후 세 시로요. 맞으시죠?'); // … while the answer to half a sentence is made
     await settleAll();
     expect(s.call.frames).toBe(s.before); // not a sound over the caller
     s.run.feedAudio(tone(500, 0.3));
@@ -724,7 +724,9 @@ describe('CallRun — never over the caller, and a quick "네."', () => {
     await settleAll();
     expect(s.call.frames).toBe(s.before); // that answer is never heard
     expect(s.dialog().sent[s.dialog().sent.length - 1]).toBe('옮기고 싶은데 가능할까요?');
+    // Neither line was heard: both are marked, not only the last.
     expect(s.record.transcript.find((l) => l.text === '화요일 오후 세 시로요.')?.interrupted).toBe(true);
+    expect(s.record.transcript.find((l) => l.text === '맞으시죠?')?.interrupted).toBe(true);
   });
 
   it('a cough while the reply is being made only delays it', async () => {
