@@ -53,6 +53,7 @@ export const NEXT_ACTION_SEAMS: Readonly<Record<string, unknown>> = {
   cardMinList: () => [],
   cardMinSeeds: () => [],
   cardMinSave: () => {},
+  cardMinForget: () => {},
   boardCurrentKey: () => '',
   syncBoardCurrent: () => {},
   boardFoldForDetail: () => {},

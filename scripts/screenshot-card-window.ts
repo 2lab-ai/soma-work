@@ -203,6 +203,12 @@ async function shot(page: Page, name: string) {
   await page.screenshot({ path: path.join(OUT, name) });
 }
 async function boot(page: Page, view: 'board' | 'list' = 'board') {
+  // The viewer token (CONVERSATION_VIEWER_TOKEN) as the dashboard's bearer cookie.
+  const tok = process.env.CONVERSATION_VIEWER_TOKEN;
+  if (tok)
+    await page
+      .context()
+      .addCookies([{ name: 'soma_dash_token', value: encodeURIComponent(`bearer:${tok}`), url: BASE_URL }]);
   await installMocks(page, view);
   await page.goto(`${BASE_URL}/dashboard/U001`);
   await page.waitForSelector(`li.ib-card[data-card="${KEY_A}"] [data-win="detail"]`, { timeout: 20_000 });
@@ -215,9 +221,6 @@ async function motionRun(browser: import('playwright').Browser) {
     colorScheme: 'light',
     deviceScaleFactor: 2,
   });
-  const tok = process.env.CONVERSATION_VIEWER_TOKEN;
-  if (tok)
-    await ctx.addCookies([{ name: 'soma_dash_token', value: encodeURIComponent(`bearer:${tok}`), url: BASE_URL }]);
   const page = await ctx.newPage();
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(String(e)));
@@ -260,12 +263,7 @@ async function motionRun(browser: import('playwright').Browser) {
   check(!a3.min && a3.rect.h === a0.rect.h, 'S2 ▢ → back as it was', { before: a0.rect, after: a3.rect });
 
   // S3
-  const tb = await page.evaluate((k) => {
-    const t = ((window as any).__card(k) as HTMLElement).querySelector('[data-win="detail"]') as HTMLElement;
-    const r = t.getBoundingClientRect();
-    return { x: r.x + 20, y: r.y + r.height / 2 };
-  }, KEY_B);
-  await page.mouse.move(tb.x, tb.y);
+  await page.hover(`li.ib-card[data-card="${KEY_B}"] [data-win="detail"]`);
   await sleep(300);
   const hover = await page.evaluate((k) => {
     const c = (window as any).__card(k) as HTMLElement;
@@ -456,15 +454,7 @@ async function motionRun(browser: import('playwright').Browser) {
     { card: d0.rect, tldr: tl },
   );
   await shot(page, '11-starred-tldr.png');
-  const xBox = await page.evaluate((k) => {
-    const x = ((window as any).__card(k) as HTMLElement).querySelector(
-      '.ib-min-tldr [data-dismiss="tldr"]',
-    ) as HTMLElement;
-    x.scrollIntoView({ block: 'center' });
-    const r = x.getBoundingClientRect();
-    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-  }, KEY_D);
-  await page.mouse.click(xBox.x, xBox.y);
+  await page.click(`li.ib-card[data-card="${KEY_D}"] .ib-min-tldr [data-dismiss="tldr"]`);
   await sleep(500);
   const d1 = await cardState(page, KEY_D);
   check(d1.min && d1.rect.h <= 44, 'S11 the TL;DR × → truly one line', { before: d0.rect, after: d1.rect });
@@ -504,6 +494,56 @@ async function motionRun(browser: import('playwright').Browser) {
   await press(page, KEY_A, 'expand'); // back to the normal view for S8
   await sleep(500);
 
+  // S13 (review) — a deck card hidden by the card search and shown again keeps its detail fold; a card the reader
+  // brought back with + while in the deck stays back. Closing brings it back as it was.
+  const search = async (q: string) => {
+    await page.fill('#bf-search', q);
+    await sleep(700);
+  };
+  await press(page, KEY_A, 'detail');
+  await page.waitForSelector('#slide-panel[open]');
+  await sleep(400);
+  await press(page, KEY_B, 'detail');
+  await sleep(400);
+  await press(page, KEY_B, 'min'); // the reader's + on B while its detail card is in front
+  await sleep(400);
+  await search('없는검색어');
+  const hidden = await page.evaluate((k) => !(window as any).__card(k), KEY_A);
+  await search('');
+  const a13 = await cardState(page, KEY_A);
+  const b13 = await cardState(page, KEY_B);
+  check(
+    hidden && a13.min && !b13.min,
+    'S13 hidden by the search and shown again: the deck card keeps its detail fold, the reader’s + stays',
+    { hidden, a: { min: a13.min, h: a13.rect.h }, b: { min: b13.min, h: b13.rect.h } },
+  );
+  await page.click('#slide-panel .panel-close');
+  await sleep(500);
+  await page.click('#slide-panel .panel-close');
+  await sleep(600);
+  const a13b = await cardState(page, KEY_A);
+  check(!a13b.min && !(await panel(page)).open, 'S13 both closed: A back as it was', { a: a13b.rect });
+
+  // S14 (review) — keyboard: Enter on a card's title opens its detail card; Esc closes it and focus is that title
+  // again (the opener is captured inside the board element's shadow root).
+  await page.focus(`li.ib-card[data-card="${KEY_A}"] [data-win="detail"]`);
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('#slide-panel[open]');
+  await sleep(500);
+  await page.keyboard.press('Escape');
+  await sleep(600);
+  const focus = await page.evaluate((k) => {
+    const host = document.activeElement as HTMLElement | null;
+    const inner = host?.shadowRoot?.activeElement as HTMLElement | null;
+    const title = ((window as any).__card(k) as HTMLElement).querySelector('[data-win="detail"]');
+    return { host: host?.tagName ?? null, onTitle: !!inner && inner === title };
+  }, KEY_A);
+  check(
+    focus.host === 'UI-AGENT-INBOX' && focus.onTitle && !(await panel(page)).open,
+    'S14 Enter on a title → its detail card; Esc → focus back on that title',
+    focus,
+  );
+
   // S8
   const sum = await page.evaluate((k) => {
     // The first row under the head (the summary, the task in progress…): text, not a control.
@@ -530,9 +570,6 @@ async function reducedRun(browser: import('playwright').Browser) {
     colorScheme: 'dark',
     reducedMotion: 'reduce',
   });
-  const tok = process.env.CONVERSATION_VIEWER_TOKEN;
-  if (tok)
-    await ctx.addCookies([{ name: 'soma_dash_token', value: encodeURIComponent(`bearer:${tok}`), url: BASE_URL }]);
   const page = await ctx.newPage();
   await boot(page);
   log('\n── 1440 dark · reduced motion ──');
@@ -562,9 +599,6 @@ async function narrowRun(browser: import('playwright').Browser, w: number, h: nu
       colorScheme: 'light',
       deviceScaleFactor: 2,
     });
-    const tok = process.env.CONVERSATION_VIEWER_TOKEN;
-    if (tok)
-      await ctx.addCookies([{ name: 'soma_dash_token', value: encodeURIComponent(`bearer:${tok}`), url: BASE_URL }]);
     const page = await ctx.newPage();
     const errors: string[] = [];
     page.on('pageerror', (e) => errors.push(String(e)));

@@ -12065,7 +12065,11 @@ function boardUnfoldForDecision(key) {
   var host = _cardHost[key];
   if (host && typeof host.setMinimized === 'function') host.setMinimized(key, false);
   if (_deck.indexOf(key) >= 0) _detailUnfolded[key] = 1;
-  cardMinSave(key, false);
+  // Only the saved fold goes: this is not the reader's +, so a starred card's day-old default still applies later.
+  cardMinForget(key);
+}
+function cardMinForget(key) {
+  cardPrefPut(_cardPrefs.min, key, false);
 }
 // The title of a card on its element (in the element's open shadow root), or null: where focus goes back after its
 // detail card closes when the control that opened it is gone.

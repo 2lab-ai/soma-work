@@ -288,7 +288,7 @@ describe('a detail card folds its board card and undoes only that fold (D7)', ()
         _deck: o.deck,
         panelOpen: o.front !== null,
         panelSessionKey: o.front,
-        cardMinSave: (...a: unknown[]) => calls.push(['cardMinSave', ...a]),
+        cardMinForget: (...a: unknown[]) => calls.push(['cardMinForget', ...a]),
       },
     );
     return { m, calls, folded };
@@ -299,7 +299,7 @@ describe('a detail card folds its board card and undoes only that fold (D7)', ()
     d.m.autoOpenDecisions();
     expect(d.calls.filter((c) => c[1] === 'A')).toEqual([
       ['setMinimized', 'A', false],
-      ['cardMinSave', 'A', false],
+      ['cardMinForget', 'A'],
       ['reveal', 'A', { open: true, scroll: false }],
     ]);
     // The same decision on the next poll: nothing again.
@@ -314,7 +314,7 @@ describe('a detail card folds its board card and undoes only that fold (D7)', ()
     behind.m.autoOpenDecisions();
     expect(behind.calls.filter((c) => c[1] === 'A')).toEqual([
       ['setMinimized', 'A', false],
-      ['cardMinSave', 'A', false],
+      ['cardMinForget', 'A'],
       ['reveal', 'A', { open: true, scroll: false }],
     ]);
     expect(behind.folded.has('A')).toBe(false);
@@ -341,6 +341,7 @@ describe('a detail card folds its board card and undoes only that fold (D7)', ()
         'cardMinList',
         'cardUnfoldList',
         'cardMinSave',
+        'cardMinForget',
         'cardStarDefaultFolded',
         'cardMinSeeds',
         'boardUnfoldForDecision',
@@ -352,6 +353,41 @@ describe('a detail card folds its board card and undoes only that fold (D7)', ()
     m.boardUnfoldForDecision('A');
     expect(m.cardMinSeeds([{ keys: ['A'] }])).toEqual([]);
     expect(JSON.parse(ls.items['soma-card-min'])).toEqual([]);
+    // Not recorded as the reader's + (review): nothing in the unfold list.
+    expect(ls.items['soma-card-unfold']).toBeUndefined();
+  });
+
+  it('a decision that unfolds a starred card a day old is not a +: the next paint a day later starts it folded again (review)', () => {
+    const NOW = Date.UTC(2026, 10, 18, 4, 0, 0);
+    const ls = storage();
+    const el = { isMinimized: () => true, setMinimized: () => {} };
+    const cache = {
+      S: { starred: true, activityState: 'idle', lastActivity: new Date(NOW - 30 * 3_600_000).toISOString() },
+    };
+    const m = load<{ boardUnfoldForDecision(k: string): void; cardMinSeeds(cols: unknown): string[] }>(
+      [
+        'cardPrefList',
+        'cardPrefPut',
+        'cardMinList',
+        'cardUnfoldList',
+        'cardMinForget',
+        'cardStarDefaultFolded',
+        'cardMinSeeds',
+        'boardUnfoldForDecision',
+      ],
+      ['CARD_MIN_MAX', '_cardPrefs', 'STAR_FOLD_MS', '_detailUnfolded'],
+      {
+        localStorage: ls,
+        _cardHost: { S: el },
+        _deck: [],
+        _sessionCache: cache,
+        _cardCol: { S: 'idle' },
+        Date: { now: () => NOW, parse: Date.parse },
+      },
+    );
+    expect(m.cardMinSeeds([{ keys: ['S'] }])).toEqual(['S']);
+    m.boardUnfoldForDecision('S');
+    expect(m.cardMinSeeds([{ keys: ['S'] }])).toEqual(['S']);
   });
 
   it('every way a detail card opens folds its card; every way it leaves the deck undoes it; a decision opened in place opens none', () => {
