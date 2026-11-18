@@ -5,15 +5,15 @@ Status: in-progress (라운드 1 열림 2026-11-18) · ssot = [`ssot.md`](ssot.m
 
 ## 라운드 1 — 문서 · 에픽 · WU1부터
 
-계획: WU0(이 문서들) PR → 에픽 + 서브이슈 → WU1 → WU2 · WU3 → WU4(dev 배포 · 실측). WU 하나 = 브랜치 하나 = PR 하나.
+계획: WU0(이 문서들) PR → 에픽 #1335 + 서브이슈 #1336–#1340 (만듦, 2026-11-18) → WU1 → WU2 · WU3 → WU4(dev 배포 · 실측). WU 하나 = 브랜치 하나 = PR 하나.
 
 | ID | WU | Status | 이슈 | 브랜치 | 스코프 | 끝상태 확인 |
 |---|---|---|---|---|---|---|
-| WU0 | 설계 문서 | 🟡 | — | `docs/secret-access-prd` | `.prd/32` · `33` · `secret-access/` | PR 머지 |
-| WU1 | 비밀 관리자 + 감사 원장 + 비밀 탭(목록 · 추가 · 덮어쓰기 · 삭제) | 🔴 | — | — | 33 §7 WU1 | 32 A7 · A8 · A9 |
-| WU2 | 비밀 grant + 판정 ③ + 3버튼 카드 + 비밀 탭 권한 편집 | 🔴 | — | — | 33 §7 WU2 | 32 A1–A6 |
-| WU3 | 서버 도구 탭 + 카탈로그 + config.json 수준 쓰기 | 🔴 | — | — | 33 §7 WU3 | 32 A10 · A11 |
-| WU4 | dev 배포 + 실측 + 문서 shipped | 🔴 | — | — | 33 §7 WU4 | 32 A12 |
+| WU0 | 설계 문서 | 🟡 | #1336 | `docs/secret-access-prd` | `.prd/32` · `33` · `secret-access/` | PR 머지 |
+| WU1 | 비밀 관리자 + 감사 원장 + 비밀 탭(목록 · 추가 · 덮어쓰기 · 삭제) | 🔴 | #1337 | `feat/secret-access-store-tab` | 33 §7 WU1 | 32 A7 · A8 · A9 |
+| WU2 | 비밀 grant + 판정 ③ + 3버튼 카드 + 비밀 탭 권한 편집 | 🔴 | #1338 | — | 33 §7 WU2 | 32 A1–A6 |
+| WU3 | 서버 도구 탭 + 카탈로그 + config.json 수준 쓰기 | 🔴 | #1339 | — | 33 §7 WU3 | 32 A10 · A11 |
+| WU4 | dev 배포 + 실측 + 문서 shipped | 🔴 | #1340 | — | 33 §7 WU4 | 32 A12 |
 
 ## 열린 질문
 
@@ -29,4 +29,4 @@ Status: in-progress (라운드 1 열림 2026-11-18) · ssot = [`ssot.md`](ssot.m
 
 ## 다음 착수점
 
-WU0 PR → 에픽 · 서브이슈 → WU1 브랜치 `feat/secret-access-store-tab`.
+WU0 PR 리뷰 · 머지 → WU1 브랜치 `feat/secret-access-store-tab`(#1337).
