@@ -46,19 +46,18 @@ export class LineOut {
   private target = 1;
   /** Gain change per frame toward `target`. */
   private step = 1;
-  private fadingOut = false;
+  /** Frames at the head of the queue that belong to the fade under way (audio queued after it is not faded). */
+  private fadeLeft = 0;
   private readonly parts = new Map<unknown, { total: number; sent: number }>();
 
   constructor(private readonly deps: LineOutDeps) {}
 
-  /** Queue one 20 ms frame (as the line takes it), optionally tagged with the part of speech it belongs to. */
-  push(frame: Buffer, tag?: unknown): void {
+  /** Queue one 20 ms frame (as the line takes it), tagged with the part of speech it belongs to. */
+  push(frame: Buffer, tag: unknown): void {
     this.frames.push({ data: frame, tag });
-    if (tag !== undefined) {
-      const p = this.parts.get(tag) ?? { total: 0, sent: 0 };
-      p.total++;
-      this.parts.set(tag, p);
-    }
+    const p = this.parts.get(tag) ?? { total: 0, sent: 0 };
+    p.total++;
+    this.parts.set(tag, p);
     if (this.timer === null) this.pump();
   }
 
@@ -89,32 +88,36 @@ export class LineOut {
 
   /** Fading out after a real interruption: what is left of the voice is going. */
   get fading(): boolean {
-    return this.fadingOut;
+    return this.fadeLeft > 0;
   }
 
   /** The other side may be interrupting: go on, quieter. */
   duck(gain = DUCK_GAIN): void {
-    if (this.fadingOut) return;
+    if (this.fading) return;
     this.rampTo(gain, DUCK_RAMP_MS);
   }
 
   /** It was only a "네": back to full voice. */
   restore(): void {
-    if (this.fadingOut) return;
+    if (this.fading) return;
     this.rampTo(1, RESTORE_RAMP_MS);
   }
 
   /**
-   * A real interruption: fall silent over `ms` (the word under way ends softly), then drop whatever is left unsent.
-   * The fade ends when the voice is silent or its audio runs out — whichever is first. With nothing left to send it
-   * ends at once (what is already sent plays out): it never carries over to the next thing said.
+   * A real interruption: the part under way falls silent over `ms` (its word ends softly) and the rest of it is
+   * dropped; parts not started yet are dropped at once — they are never heard. The fade ends when the voice is silent
+   * or that part's audio runs out, whichever is first, and at once when nothing of it is left to send. Audio queued
+   * after this call (the next reply) is not part of the fade: it plays at full voice when the fade is over.
    */
   fadeOut(ms: number): void {
-    if (!this.frames.length) {
-      this.endFade();
+    let keep = 0;
+    while (keep < this.frames.length && (this.parts.get(this.frames[keep].tag)?.sent ?? 0) > 0) keep++;
+    this.forget(this.frames.splice(keep));
+    this.fadeLeft = keep;
+    if (!keep) {
+      this.gain = this.target = 1;
       return;
     }
-    this.fadingOut = true;
     this.rampTo(0, ms);
     if (this.timer === null) this.pump();
   }
@@ -125,18 +128,22 @@ export class LineOut {
     this.parts.clear();
     if (this.timer !== null) this.deps.clearTimer(this.timer);
     this.timer = null;
-    this.fadingOut = false;
+    this.fadeLeft = 0;
     this.gain = this.target = 1;
     this.sentUntil = this.deps.now();
     this.deps.clear();
   }
 
-  /** Faded out: what is left is never heard, and no part of it waits to be said any more. */
+  /** Faded out: what is left of the faded part is never heard. What was queued after the fade plays at full voice. */
   private endFade(): void {
-    for (const rest of this.frames) if (rest.tag !== undefined) this.parts.delete(rest.tag);
-    this.frames = [];
-    this.fadingOut = false;
+    this.forget(this.frames.splice(0, this.fadeLeft));
+    this.fadeLeft = 0;
     this.gain = this.target = 1;
+  }
+
+  /** Dropped frames: their parts do not wait to be said any more. */
+  private forget(dropped: Frame[]): void {
+    for (const f of dropped) this.parts.delete(f.tag);
   }
 
   private rampTo(target: number, ms: number): void {
@@ -149,11 +156,9 @@ export class LineOut {
     const now = this.deps.now();
     while (this.frames.length && this.sentUntil - now < LEAD_MS) {
       const f = this.frames.shift() as Frame;
+      const fading = this.fadeLeft > 0;
       this.sendOne(f, now);
-      if (this.fadingOut && (this.gain === 0 || !this.frames.length)) {
-        this.endFade();
-        break;
-      }
+      if (fading && (--this.fadeLeft === 0 || this.gain === 0)) this.endFade();
     }
     if (this.frames.length) {
       this.timer = this.deps.setTimer(() => this.pump(), Math.max(FRAME_MS, this.sentUntil - LEAD_MS - now));
@@ -178,12 +183,10 @@ export class LineOut {
       }
       out = this.deps.encode(scaled);
     }
-    if (f.tag !== undefined) {
-      const p = this.parts.get(f.tag);
-      if (p) {
-        if (p.sent === 0) this.deps.onStart?.(f.tag);
-        p.sent++;
-      }
+    const p = this.parts.get(f.tag);
+    if (p) {
+      if (p.sent === 0) this.deps.onStart?.(f.tag);
+      p.sent++;
     }
     this.deps.send(out);
     this.sentUntil = Math.max(this.sentUntil, now) + FRAME_MS;

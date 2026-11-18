@@ -69,7 +69,7 @@ function setup() {
 describe('LineOut', () => {
   it('sends in real time, never more than the lead ahead of what is playing', () => {
     const { clock, out, sent } = setup();
-    for (let i = 0; i < 100; i++) out.push(frame(0.5)); // 2 s of speech
+    for (let i = 0; i < 100; i++) out.push(frame(0.5), 'a'); // 2 s of speech
     expect(sent).toHaveLength(10); // 200 ms ahead, no more
     clock.advance(1000);
     expect(sent.length).toBeGreaterThanOrEqual(58);
@@ -95,7 +95,7 @@ describe('LineOut', () => {
 
   it('ducks what is still unsent when the other side starts talking, and brings it back after a "네"', () => {
     const { clock, out, sent } = setup();
-    for (let i = 0; i < 150; i++) out.push(frame(0.8));
+    for (let i = 0; i < 150; i++) out.push(frame(0.8), 'a');
     clock.advance(500);
     out.duck();
     clock.advance(600);
@@ -105,9 +105,16 @@ describe('LineOut', () => {
     clock.advance(800);
     const back = sent.slice(-5).map((s) => peak(s.pcm));
     for (const p of back) expect(p).toBeGreaterThan(0.75);
-    // No jump: from frame to frame the level changes smoothly.
+    // No jump: from frame to frame the level changes smoothly …
     for (let i = 1; i < sent.length; i++)
       expect(Math.abs(peak(sent[i].pcm) - peak(sent[i - 1].pcm))).toBeLessThan(0.25);
+    // … and from sample to sample, across frame edges too: a step in gain would be a click. The tone itself moves at
+    // most 2π·300/8000·0.8 of full scale between two samples.
+    const samples = Buffer.concat(sent.map((s) => s.pcm));
+    let jump = 0;
+    for (let i = 2; i < samples.length; i += 2)
+      jump = Math.max(jump, Math.abs(samples.readInt16LE(i) - samples.readInt16LE(i - 2)));
+    expect(jump).toBeLessThan(((2 * Math.PI * 300) / 8000) * 0.8 * 32767 * 1.05);
   });
 
   it('a real interruption fades out over a moment and then stops — the rest is never sent', () => {
@@ -181,9 +188,33 @@ describe('LineOut', () => {
     expect(peak(sent[sent.length - 1].pcm)).toBeLessThan(0.8 * 0.35);
   });
 
+  it('a reply queued while the cut voice is still fading is not part of the fade: it plays whole, at full voice', () => {
+    const { clock, out, sent } = setup();
+    for (let i = 0; i < 100; i++) out.push(frame(0.8), 'old');
+    clock.advance(400);
+    out.fadeOut(300);
+    for (let i = 0; i < 30; i++) out.push(frame(0.8), 'next'); // a quick answer, before the fade is over
+    expect(out.fading).toBe(true);
+    clock.advance(2000);
+    expect(out.fading).toBe(false);
+    expect(out.sentFraction('next')).toBe(1);
+    const next = sent.slice(-30).map((s) => peak(s.pcm));
+    for (const p of next) expect(p).toBeGreaterThan(0.75);
+  });
+
+  it('a cut drops the parts not started yet at once: they never start during the fade', () => {
+    const { clock, out, started } = setup();
+    for (let i = 0; i < 12; i++) out.push(frame(0.8), 'a'); // 10 go out at once, 2 wait
+    for (let i = 0; i < 40; i++) out.push(frame(0.8), 'b');
+    out.fadeOut(300);
+    expect(out.unstarted()).toEqual([]);
+    clock.advance(1000);
+    expect(started).toEqual(['a']);
+  });
+
   it('stop() drops everything at once and clears the line (call ended, hang-up)', () => {
     const { clock, out, sent, cleared } = setup();
-    for (let i = 0; i < 100; i++) out.push(frame(0.5));
+    for (let i = 0; i < 100; i++) out.push(frame(0.5), 'a');
     out.stop();
     clock.advance(2000);
     expect(sent).toHaveLength(10);

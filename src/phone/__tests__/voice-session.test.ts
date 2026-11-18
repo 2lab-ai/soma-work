@@ -814,6 +814,43 @@ describe('CallRun — conversation', () => {
     expect(heard.length).toBeGreaterThanOrEqual(3);
   });
 
+  it('an answer that comes while the cut voice is still fading plays whole, at full voice', async () => {
+    const { run, dialog, call, clock } = await talking();
+    run.feedAudio(tone(600, 0.3));
+    run.feedAudio(quiet(800));
+    await settleAll();
+    dialog().reply('네, 회의 두 개 확인했어요. 시간도 알려 드릴까요?');
+    await settleAll();
+    clock.advance(100);
+    run.feedAudio(tone(900, 0.6)); // cut: the voice starts to fade …
+    run.feedAudio(quiet(800)); // … and "잠깐만요" goes to the model at once
+    await settleAll();
+    const at = call.levels.length;
+    dialog().reply('네, 말씀하세요.'); // answered before the fade is over
+    await settleAll();
+    clock.advance(3000);
+    const answer = call.levels.slice(at);
+    expect(answer.length).toBeGreaterThanOrEqual(40);
+    expect(Math.max(...answer.slice(-30))).toBeGreaterThan(0.18);
+    expect(Math.min(...answer.slice(-30, -1))).toBeGreaterThan(0.18);
+  });
+
+  it('a line that fails to take audio on a timer is reported once and never throws out of the timer', async () => {
+    const { run, dialog, call, clock, record } = await talking();
+    run.feedAudio(tone(600, 0.3));
+    run.feedAudio(quiet(800));
+    await settleAll();
+    dialog().reply('네, 회의 두 개 확인했어요. 시간도 알려 드릴까요?');
+    await settleAll();
+    call.sendAudio = () => {
+      throw new Error('socket closed');
+    };
+    expect(() => clock.advance(3000)).not.toThrow();
+    const errors = record.work.filter((w) => w.kind === 'error');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ stage: 'line', message: 'socket closed' });
+  });
+
   it('hang_up: says the goodbye first, then puts the phone down; text after it is not spoken', async () => {
     const { run, clock, dialog, call, spoken } = await talking();
     dialog().emit({ type: 'text_delta', text: '감사합니다. 좋은 하루 보내세요!' });

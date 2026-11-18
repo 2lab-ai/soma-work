@@ -128,6 +128,8 @@ export class CallRun {
   /** Said when the agent was cut: what the other side heard of it and what it did not get to say. */
   private cutNote: string | null = null;
   private fillerIndex = 0;
+  /** The line refused audio once (reported); later refusals are not reported again. */
+  private lineFailed = false;
   /** The voice's pace on this call, learnt from the pieces made so far. */
   private framesPerChar = FRAMES_PER_CHAR;
   /** An acknowledgment was just said: the reply should not open with another. */
@@ -188,8 +190,9 @@ export class CallRun {
     this.call = call;
     this.answered = true;
     this.out = new LineOut({
-      send: (f) => this.call?.sendAudio(f),
-      clear: () => this.call?.clearAudio(),
+      // Frames go out from timers now, outside any caller's try: a line that fails is reported here, once.
+      send: (f) => this.toLine(() => this.call?.sendAudio(f)),
+      clear: () => this.toLine(() => this.call?.clearAudio()),
       decode: (f) => this.deps.ulawToPcm16(f),
       encode: (p) => this.deps.pcm16ToUlaw(p),
       now: this.now,
@@ -426,6 +429,16 @@ export class CallRun {
   private sendFrame(frame: Buffer, part: SpokenPart): void {
     if (!this.out || this.ended) return;
     this.out.push(frame, part);
+  }
+
+  private toLine(send: () => void): void {
+    try {
+      send();
+    } catch (err) {
+      if (this.lineFailed) return;
+      this.lineFailed = true;
+      this.fail('line', err);
+    }
   }
 
   /** A piece starts to sound: from now on it is in the transcript (a piece never heard is not). */
