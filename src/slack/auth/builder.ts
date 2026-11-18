@@ -6,10 +6,14 @@
  *   ├ actions: [llmux] [cct (legacy)] mode buttons        (admin only)
  *   ├ context: llmux server line (version · uptime · port, or ❌ unreachable)
  *   ├ context: settings line (base URL · masked key) + ⚙️ Edit  (admin only)
+ *   ├ image: summary infographic (when the caller uploaded one — see
+ *   │   `renderAuthCard`): usable now, held back, used, 7-day return forecast
  *   ├ provider summary: remaining by window, measurement coverage, next reset
+ *   │   (text card only — the picture says it on the image card)
  *   ├ paged accounts: remaining percent, local reset time, cooldown + usage
  *   │   explicit admin mode: [Switch] [Remove] / overview: read-only details
- *   └ navigation: [Refresh] [Previous/Next] [Admin mode/Overview]
+ *   │   (image card overview: none — [📋 계정별 리포트] posts them as a picture)
+ *   └ navigation: [Refresh] [📋 계정별 리포트] [Previous/Next] [Admin mode/Overview]
  *       [Add account], settings and backend controls need explicit admin mode
  *
  * Layout (ccp/cct mode): header + mode buttons + hint; the caller appends
@@ -46,6 +50,8 @@ export interface AuthCardInput {
   canManage?: boolean;
   page?: number;
   nowMs: number;
+  /** Uploaded summary infographic. Present → the picture replaces the text summary (and, on the overview, the account list). */
+  summaryImage?: { fileId: string; altText: string };
 }
 
 /** Mask a secret for display: last 4 chars only (`••••ocal`). */
@@ -157,6 +163,8 @@ export function buildAuthNavigationBlocks(
   canManage: boolean,
   page = 0,
   pageCount = 1,
+  /** Offer [📋 계정별 리포트] (llmux pool cards only). */
+  report = false,
 ): ZBlock[] {
   const button = (id: string, label: string, mode: AuthCardViewerMode, targetPage: number): ZBlock => ({
     type: 'button',
@@ -165,6 +173,13 @@ export function buildAuthNavigationBlocks(
     value: JSON.stringify({ viewerMode: mode, page: targetPage }),
   });
   const elements = [button(AUTH_ACTION_IDS.refresh, '🔄 Refresh', viewerMode, page)];
+  if (report)
+    elements.push({
+      type: 'button',
+      action_id: AUTH_ACTION_IDS.report,
+      text: { type: 'plain_text', text: '📋 계정별 리포트' },
+      value: 'report',
+    });
   if (page > 0) elements.push(button(`${AUTH_ACTION_IDS.page}_prev`, '← 이전', viewerMode, page - 1));
   if (page + 1 < pageCount) elements.push(button(`${AUTH_ACTION_IDS.page}_next`, '다음 →', viewerMode, page + 1));
   if (viewerMode === 'admin') elements.push(button(AUTH_ACTION_IDS.viewer, '일반 보기', 'readonly', page));
@@ -174,8 +189,10 @@ export function buildAuthNavigationBlocks(
 
 /** Full auth card body for llmux mode (header included). */
 export function buildAuthCardBlocks(input: AuthCardInput): ZBlock[] {
-  const { runtime, llmuxStatus, llmuxError, viewerMode, nowMs } = input;
-  const pageCount = Math.max(1, Math.ceil((llmuxStatus?.accounts.length ?? 0) / PAGE_SIZE));
+  const { runtime, llmuxStatus, llmuxError, viewerMode, nowMs, summaryImage } = input;
+  // The overview picture stands for the account list: nothing to page through.
+  const pictureOverview = !!summaryImage && viewerMode !== 'admin';
+  const pageCount = pictureOverview ? 1 : Math.max(1, Math.ceil((llmuxStatus?.accounts.length ?? 0) / PAGE_SIZE));
   const page = Math.max(0, Math.min(pageCount - 1, Number.isFinite(input.page) ? Math.floor(input.page ?? 0) : 0));
   const blocks = buildAuthModeHeaderBlocks(runtime, viewerMode);
 
@@ -219,8 +236,27 @@ export function buildAuthCardBlocks(input: AuthCardInput): ZBlock[] {
     });
   }
 
+  // ── summary picture ──────────────────────────────────────────────
+  if (llmuxStatus && summaryImage) {
+    blocks.push({
+      type: 'image',
+      slack_file: { id: summaryImage.fileId },
+      alt_text: summaryImage.altText.slice(0, 2000),
+    });
+  }
+
   // ── accounts ─────────────────────────────────────────────────────
-  if (llmuxStatus) {
+  if (llmuxStatus && pictureOverview) {
+    blocks.push({
+      type: 'context',
+      elements: [
+        {
+          type: 'mrkdwn',
+          text: `${llmuxStatus.accounts.length} slot(s) · 계정별 상세는 📋 계정별 리포트 · 조회 <!date^${Math.floor(nowMs / 1000)}^{date_short_pretty} {time}|${new Date(nowMs).toISOString()}>`,
+        },
+      ],
+    });
+  } else if (llmuxStatus) {
     blocks.push({ type: 'divider' });
     if (llmuxStatus.accounts.length === 0) {
       blocks.push({
@@ -244,7 +280,7 @@ export function buildAuthCardBlocks(input: AuthCardInput): ZBlock[] {
         text: {
           type: 'mrkdwn',
           text: boundedText(
-            `*${providerName(group)}* · ${accounts.length}계정${current ? ` · current: *${authText(current)}*` : ''}\n${groupSummary(accounts, nowMs).join('\n')}`,
+            `*${providerName(group)}* · ${accounts.length}계정${current ? ` · current: *${authText(current)}*` : ''}${summaryImage ? '' : `\n${groupSummary(accounts, nowMs).join('\n')}`}`,
           ),
         },
       });
@@ -279,7 +315,9 @@ export function buildAuthCardBlocks(input: AuthCardInput): ZBlock[] {
     });
   }
   if (footer.length) blocks.push({ type: 'actions', elements: footer });
-  blocks.push(...buildAuthNavigationBlocks(viewerMode, input.canManage ?? viewerMode === 'admin', page, pageCount));
+  blocks.push(
+    ...buildAuthNavigationBlocks(viewerMode, input.canManage ?? viewerMode === 'admin', page, pageCount, !!llmuxStatus),
+  );
   if (viewerMode === 'admin') {
     blocks.push({
       type: 'context',
@@ -291,6 +329,59 @@ export function buildAuthCardBlocks(input: AuthCardInput): ZBlock[] {
       ],
     });
   }
+  return blocks;
+}
+
+/** Message block budget for the text report (Slack caps a message at 50). */
+const REPORT_TEXT_MAX_BLOCKS = 48;
+
+/**
+ * The per-account report as text — what [📋 계정별 리포트] posts when its
+ * picture cannot be made or Slack refuses it. Read-only rows, every provider,
+ * bounded to one message.
+ */
+export function buildAccountReportTextBlocks(llmuxStatus: LlmuxStatus, nowMs: number, header: string): ZBlock[] {
+  const blocks: ZBlock[] = [{ type: 'context', elements: [{ type: 'mrkdwn', text: header }] }];
+  let omitted = 0;
+  for (const [group, accounts] of groupAccounts(llmuxStatus.accounts)) {
+    const current = llmuxStatus.current_by_group?.[group] ?? (group === 'claude' ? llmuxStatus.current : undefined);
+    if (blocks.length >= REPORT_TEXT_MAX_BLOCKS) {
+      omitted += accounts.length;
+      continue;
+    }
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: boundedText(
+          `*${providerName(group)}* · ${accounts.length}계정${current ? ` · current: *${authText(current)}*` : ''}\n${groupSummary(accounts, nowMs).join('\n')}`,
+        ),
+      },
+    });
+    for (const account of accounts) {
+      if (blocks.length >= REPORT_TEXT_MAX_BLOCKS) {
+        omitted += 1;
+        continue;
+      }
+      blocks.push(
+        ...buildAccountBlocks(
+          { ...account, status: current === account.name && account.status === 'ok' ? 'active' : account.status },
+          'readonly',
+          nowMs,
+        ),
+      );
+    }
+  }
+  if (omitted)
+    blocks.push({
+      type: 'context',
+      elements: [
+        {
+          type: 'mrkdwn',
+          text: `… ${omitted}개 계정은 메시지 한도로 생략 — 어드민 모드 카드에서 페이지로 확인하세요.`,
+        },
+      ],
+    });
   return blocks;
 }
 

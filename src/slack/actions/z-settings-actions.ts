@@ -98,6 +98,15 @@ export interface ApplyResult {
 export interface RenderResult {
   text?: string;
   blocks: any[];
+  /**
+   * The same card without its uploaded image, for senders that see a refusal and
+   * can retry (`deliverImageCard`): Slack can refuse a just-uploaded file with
+   * `invalid_blocks` for a moment. Absent = `blocks` carry no such image.
+   * `ZRespond.replace` cannot see a refusal (it swallows errors, and a response_url
+   * answers 200 either way), so `renderCard` here gets no uploader and its cards
+   * are text.
+   */
+  fallbackBlocks?: ZBlock[];
 }
 
 /* ------------------------------------------------------------------ *

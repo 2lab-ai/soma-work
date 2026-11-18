@@ -10,6 +10,7 @@
  *   action  auth_refresh                  → re-render with fresh /llmux/status
  *   action  auth_view_mode                → toggle Overview ⟷ Admin mode (T3)
  *   action  auth_page                     → account-list pagination (T3)
+ *   action  auth_account_report           → post the per-account report picture in the card thread
  *   view    auth_llmux_add_account        → POST /llmux/add-account
  *   view    auth_llmux_remove_account     → POST /llmux/remove-account
  *   view    auth_llmux_settings           → setLlmuxSettings (validated probe)
@@ -46,8 +47,10 @@ import {
   switchLlmuxAccount,
 } from '../../auth/llmux-client';
 import { Logger } from '../../logger';
-import { renderInPlace } from '../cct/render-in-place';
+import { classifyRenderInPlaceSurface, renderInPlace } from '../cct/render-in-place';
+import { deliverImageCard, slackImageUploader } from '../slack-file-image';
 import { applyAuthMode, renderAuthCard } from '../z/topics/auth-topic';
+import { postAuthAccountReport } from './account-report';
 import {
   type AuthCardViewerMode,
   buildLlmuxAddAccountModal,
@@ -138,27 +141,47 @@ async function rerenderCard(args: {
   refreshUsage?: boolean;
   banner?: string;
 }): Promise<void> {
-  const { text, blocks } = await renderAuthCard({
+  // The picture goes only where a refusal is visible: `chat.update` on a posted
+  // message. An ephemeral card is replaced through its response_url, which answers
+  // 200 even when Slack drops the blocks — that card stays text.
+  const body = args.body as Parameters<typeof renderInPlace>[0]['body'];
+  const pictureSurface = classifyRenderInPlaceSurface(body) === 'message';
+  const card = await renderAuthCard({
     userId: args.userId,
     issuedAt: Date.now(),
     viewerMode: args.viewerMode,
     page: args.page,
     refreshUsage: args.refreshUsage,
+    ...(pictureSurface ? { uploadImage: slackImageUploader(args.client) } : {}),
   });
   if (args.banner) {
-    blocks.unshift({
-      type: 'section',
-      text: { type: 'mrkdwn', text: args.banner },
-    });
+    const banner = { type: 'section', text: { type: 'mrkdwn', text: args.banner } };
+    card.blocks.unshift(banner);
+    card.fallbackBlocks?.unshift(banner);
   }
-  await renderInPlace({
-    body: args.body as Parameters<typeof renderInPlace>[0]['body'],
-    client: args.client,
-    respond: args.respond,
-    text: text ?? '🔐 Auth',
-    renderMessageBlocks: () => blocks,
-    renderEphemeralBlocks: () => blocks,
-  });
+  // renderInPlace logs and reports a failed update instead of throwing: a failed
+  // picture card is retried, then the text card goes out (deliverImageCard). An
+  // update replaces the same message, so falling back after any failure is safe.
+  try {
+    await deliverImageCard(
+      card,
+      async (blocks) => {
+        const result = await renderInPlace({
+          body,
+          client: args.client,
+          respond: args.respond,
+          text: card.text ?? '🔐 Auth',
+          renderMessageBlocks: () => blocks as Record<string, unknown>[],
+          renderEphemeralBlocks: () => blocks as Record<string, unknown>[],
+        });
+        if (!result.ok && result.surface !== 'unknown') throw new Error('auth card update did not land');
+        return result;
+      },
+      { retryOn: () => true, fallbackOn: () => true },
+    );
+  } catch (err) {
+    logger.warn(`auth card re-render failed: ${(err as Error).message}`);
+  }
 }
 
 /**
@@ -174,9 +197,24 @@ async function rerenderCardAt(
 ): Promise<void> {
   if (!surface.channel || !surface.ts) return;
   try {
-    const { text, blocks } = await renderAuthCard({ userId, issuedAt: Date.now(), viewerMode: 'admin' });
-    if (banner) blocks.unshift({ type: 'section', text: { type: 'mrkdwn', text: banner } });
-    await client.chat.update({ channel: surface.channel, ts: surface.ts, text: text ?? '🔐 Auth', blocks });
+    const card = await renderAuthCard({
+      userId,
+      issuedAt: Date.now(),
+      viewerMode: 'admin',
+      uploadImage: slackImageUploader(client),
+    });
+    if (banner) {
+      const section = { type: 'section', text: { type: 'mrkdwn', text: banner } };
+      card.blocks.unshift(section);
+      card.fallbackBlocks?.unshift(section);
+    }
+    const { channel, ts } = surface;
+    // An update replaces the same message: any failure may fall back to the text card.
+    await deliverImageCard(
+      card,
+      (blocks) => client.chat.update({ channel, ts, text: card.text ?? '🔐 Auth', blocks: blocks as never }),
+      { fallbackOn: () => true },
+    );
   } catch (err) {
     logger.warn(`auth card update failed: ${(err as Error).message}`);
   }
@@ -288,6 +326,43 @@ export function registerAuthActions(app: App): void {
       }
     });
   }
+
+  // ── Account report (any viewer: identity is visible to all, #803) ──
+  // A NEW message in the card's thread — the card itself keeps its picture.
+  app.action(AUTH_ACTION_IDS.report, async ({ ack, body, client, respond }) => {
+    await ack();
+    try {
+      const userId = actorId(body);
+      if (!userId) return;
+      const b = body as {
+        container?: { channel_id?: string; message_ts?: string; thread_ts?: string };
+        channel?: { id?: string };
+        message?: { ts?: string; thread_ts?: string };
+      };
+      const channel = b.container?.channel_id ?? b.channel?.id;
+      if (!channel) return;
+      const parentTs = b.container?.thread_ts ?? b.message?.thread_ts;
+      const ephemeral =
+        classifyRenderInPlaceSurface(body as Parameters<typeof renderInPlace>[0]['body']) === 'ephemeral';
+      // A posted card: reply in its thread (or under the card itself). An ephemeral
+      // card: back to the clicker only, in the card's parent thread when it has one —
+      // an ephemeral message cannot be a thread root.
+      const threadTs = ephemeral ? parentTs : (parentTs ?? b.container?.message_ts ?? b.message?.ts);
+      if (!ephemeral && !threadTs) return;
+      await postAuthAccountReport({
+        client,
+        userId,
+        target: {
+          channel,
+          ...(threadTs ? { threadTs } : {}),
+          ...(ephemeral ? { ephemeralTo: userId } : {}),
+          ...(ephemeral && respond ? { respond: respond as (msg: Record<string, unknown>) => Promise<unknown> } : {}),
+        },
+      });
+    } catch (err) {
+      logger.error('auth_account_report failed', err);
+    }
+  });
 
   // ── Open modals ─────────────────────────────────────────────────
   app.action(AUTH_ACTION_IDS.settings, async ({ ack, body, client }) => {

@@ -64,6 +64,44 @@ In llmux mode the `auth` card is first and foremost a **read-only capacity
 overview** of the llmux account pool (`GET /llmux/status`), rendered the same
 for everyone — admins included:
 
+- **A picture first (2026-11-18)** — the card leads with one infographic image,
+  one panel per subscription provider (Claude, Codex). Left: the amount usable
+  right now as a large number, `x / total 계정분` and %, and a bar split into
+  usable now / held back by a block (cooldown, model ceiling) / used this week,
+  plus the model-scoped window (Fable) and how old the oldest reading is (a
+  triangle when over a day). Right: a 7-day step chart of the usable amount
+  coming back if nothing more is used — the next return (`다음 +1.0 · 내일 06:00`
+  and its accounts), the gain within 24 h, when the pool is full again, and the
+  gain of each KST day under the axis. The numbers are the dashboard's capacity
+  view (account-equivalents by plan tier, the same replayed forecast), not
+  tokens. Times in the picture are KST. The image's alt text says the same in
+  one line per provider.
+- **Per-account detail is a separate report** — on the picture card the
+  account list and its paging are gone; **📋 계정별 리포트** posts a second
+  picture as a new message in the card's thread (an ephemeral card gets an
+  ephemeral reply to the clicker, in the card's parent thread when it has one):
+  every account, one row — state with an icon and a label,
+  plan, weekly remaining bar, model-scoped (Fable) remaining, when it refills
+  (when a block lifts, else the weekly reset), in-flight requests and the
+  reading's age. Rows run usable → blocked → weekly used up → held. Any viewer
+  may ask for it (account identity is visible to all, #803).
+- **Text when there is no picture** — the picture is drawn with the bundled
+  Noto Sans KR (resvg) and uploaded privately by the bot that posts the card.
+  When the render or upload fails, the card is the text card below. When Slack
+  refuses the just-uploaded file (`invalid_blocks`), the post is retried three
+  times and then the text card is sent; the report falls back to text rows the
+  same way. A send that fails without a validation answer from Slack (a
+  timeout, a lost response, `internal_error`) is not followed by a second post —
+  the first one may have landed. An ephemeral card in a channel the bot cannot
+  post to (a private channel it was never invited to) gets the text report back
+  through the button's response_url.
+  The picture goes only where a refusal is visible: a posted card (`auth`,
+  `/z auth`, its buttons, modal submissions). An ephemeral card and the auth
+  button of the `/z` help card are replaced through a response_url or a replace
+  that cannot report a refused image, so they stay text. Admin mode keeps the
+  paged account rows with their controls under the picture, without the
+  per-provider text summary.
+
 - **Grouped by provider** — Claude → Codex → Grok, then any other groups
   alphabetically; within a group, accounts follow the scheduler's selection
   order.
@@ -94,8 +132,8 @@ for everyone — admins included:
   admins get an [Admin mode] button, and only that opens the mode switch /
   settings / add / remove / switch controls. A forged or stale admin click
   from a non-admin is demoted to readonly server-side.
-- **Pagination** — large pools page at a fixed size with prev/next buttons so
-  every account is reachable; Refresh and paging preserve the chosen view and
+- **Pagination** — on the text card and in Admin mode, large pools page at a
+  fixed size with prev/next buttons so every account is reachable; Refresh and paging preserve the chosen view and
   page. The legacy CCT view embedded in `auth` also pages slots; its management
   buttons and modal submissions return to the same auth view and page. The
   separate `cct` command keeps its existing behavior.
@@ -163,7 +201,13 @@ Spec: [`.prd/12-cron-lane-and-llm-capacity-spec.md`](../../../.prd/12-cron-lane-
 Wiring: [`src/slack/z/topics/auth-topic.ts`](../../../src/slack/z/topics/auth-topic.ts)
 → [`src/auth/llmux-client.ts`](../../../src/auth/llmux-client.ts) →
 [`src/slack/auth/capacity.ts`](../../../src/slack/auth/capacity.ts) →
-[`src/slack/auth/builder.ts`](../../../src/slack/auth/builder.ts). Details and pinned
+[`src/slack/auth/builder.ts`](../../../src/slack/auth/builder.ts). The pictures:
+[`src/conversation/capacity-view.ts`](../../../src/conversation/capacity-view.ts) →
+[`src/slack/auth/infographic-model.ts`](../../../src/slack/auth/infographic-model.ts) →
+[`src/slack/auth/infographic-svg.ts`](../../../src/slack/auth/infographic-svg.ts) →
+[`src/slack/auth/infographic-publish.ts`](../../../src/slack/auth/infographic-publish.ts) →
+[`src/slack/slack-file-image.ts`](../../../src/slack/slack-file-image.ts) (upload, retry, text fallback);
+the report button: [`src/slack/auth/account-report.ts`](../../../src/slack/auth/account-report.ts). Details and pinned
 upstream source verification:
 [`.prd/07-auth-capacity-spec.md`](../../../.prd/07-auth-capacity-spec.md).
 

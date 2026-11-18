@@ -9,9 +9,8 @@
  * `isSafeOperational` still matches in the handler's catch.
  */
 
-import * as fs from 'node:fs/promises';
-import * as path from 'node:path';
 import { EchartsInitError, FontLoadError, ResvgNativeError } from './errors';
+import { KOREAN_FONT_FAMILY, loadKoreanFontPath } from './font';
 import { svgToPng as defaultSvgToPng } from './svg-to-png';
 import type { CarouselStats, TabId } from './types';
 
@@ -27,31 +26,6 @@ const TAB_IDS: TabId[] = ['24h', '7d', '30d', 'all', 'models'];
 /** Canvas size per tab PNG. */
 const CANVAS_WIDTH = 1600;
 const CANVAS_HEIGHT = 2200;
-
-// Module-level font cache.
-const FONT_PATH = path.join(__dirname, 'assets', 'NotoSansKR.ttf');
-let fontPathPromise: Promise<string> | null = null;
-const MIN_FONT_BYTES = 1024 * 100; // 100KB
-
-async function loadFontPath(): Promise<string> {
-  if (fontPathPromise) return fontPathPromise;
-  const resolvedPath = FONT_PATH;
-  fontPathPromise = (async () => {
-    try {
-      await fs.access(resolvedPath, fs.constants.R_OK);
-      const stat = await fs.stat(resolvedPath);
-      if (!stat.isFile()) throw new Error(`${resolvedPath} is not a regular file`);
-      if (stat.size < MIN_FONT_BYTES) {
-        throw new Error(`font at ${resolvedPath} is only ${stat.size} bytes (< ${MIN_FONT_BYTES})`);
-      }
-      return resolvedPath;
-    } catch (err) {
-      fontPathPromise = null;
-      throw new FontLoadError(`Failed to load Noto Sans KR from ${resolvedPath}`, err);
-    }
-  })();
-  return fontPathPromise;
-}
 
 // ─── Default DI impls (lazy — avoid loading heavy deps at module eval) ──
 
@@ -127,14 +101,14 @@ export async function renderCarousel(
   const useRealSvgToPng = !opts.svgToPng;
   let fontPath: string | null = null;
   if (useRealSvgToPng) {
-    fontPath = await loadFontPath();
+    fontPath = await loadKoreanFontPath();
   }
   const svgToPng: SvgToPngFn =
     opts.svgToPng ??
     ((svg: string) =>
       defaultSvgToPng(svg, {
         fontPath: fontPath as string,
-        defaultFontFamily: 'Noto Sans KR',
+        defaultFontFamily: KOREAN_FONT_FAMILY,
       }));
 
   // Render one tab. Error wrapping enforced here so a single failure maps to

@@ -13,17 +13,23 @@
 import { isAdminUser } from '../../../admin-utils';
 import { getAuthRuntimeSnapshot, setAuthMode } from '../../../auth/auth-runtime';
 import { fetchLlmuxStatus, isLlmuxUp, type LlmuxStatus } from '../../../auth/llmux-client';
-import { type AuthMode, config } from '../../../config';
+import { type AuthMode, config, getLlmuxAccountTiers } from '../../../config';
+import { buildCapacityView } from '../../../conversation/capacity-view';
 import { Logger } from '../../../logger';
 import { getTokenManager } from '../../../token-manager';
 import type { ApplyResult, RenderResult, ZTopicBinding } from '../../actions/z-settings-actions';
 import {
+  type AuthCardInput,
   type AuthCardViewerMode,
   buildAuthCardBlocks,
   buildAuthModeHeaderBlocks,
   buildAuthNavigationBlocks,
 } from '../../auth/builder';
+import { buildAuthInfographic, describeAuthInfographic } from '../../auth/infographic-model';
+import { renderAuthSummaryPng } from '../../auth/infographic-publish';
 import { AUTH_ACTION_IDS } from '../../auth/views';
+import type { SlackImageUploader } from '../../slack-file-image';
+import type { ZBlock } from '../types';
 import { renderCctCard } from './cct-topic';
 
 const logger = new Logger('AuthTopic');
@@ -35,6 +41,43 @@ const logger = new Logger('AuthTopic');
  * 50-block hard cap with one slot reserved for the action-result banner.
  */
 const CCP_SLOT_PAGE_SIZE = 8;
+
+/**
+ * Draw the summary infographic for `status` and upload it. Undefined — and the
+ * card stays text — when anything on the way fails (font, resvg, upload).
+ */
+async function uploadSummaryImage(
+  status: LlmuxStatus,
+  nowMs: number,
+  upload: SlackImageUploader,
+): Promise<AuthCardInput['summaryImage']> {
+  try {
+    const view = buildCapacityView(status, getLlmuxAccountTiers(), nowMs);
+    const info = buildAuthInfographic(status, view, nowMs);
+    const png = await renderAuthSummaryPng(info);
+    const fileId = await upload(png, `auth-capacity-${Math.floor(nowMs / 1000)}.png`);
+    return { fileId, altText: describeAuthInfographic(info) };
+  } catch (err) {
+    logger.warn('renderAuthCard: summary picture skipped, text card only', {
+      error: (err as Error)?.name,
+      message: (err as Error)?.message,
+    });
+    return undefined;
+  }
+}
+
+const cancelRow = (): ZBlock => ({
+  type: 'actions',
+  elements: [
+    {
+      type: 'button',
+      action_id: AUTH_ACTION_IDS.cancel,
+      text: { type: 'plain_text', text: '❌ 취소' },
+      style: 'danger',
+      value: 'cancel',
+    },
+  ],
+});
 
 /**
  * Render the `auth` card.
@@ -64,6 +107,12 @@ export async function renderAuthCard(args: {
   page?: number;
   /** Explicit Refresh fetches legacy usage non-force, independently of management UI. */
   refreshUsage?: boolean;
+  /**
+   * Uploads the summary infographic with the bot that will post the card. With it,
+   * llmux cards lead with the picture and return the text card as `fallbackBlocks`;
+   * without it (or when the picture fails) the card is text only, as before.
+   */
+  uploadImage?: SlackImageUploader;
 }): Promise<RenderResult> {
   const { userId, issuedAt } = args;
   const canManage = isAdminUser(userId);
@@ -80,30 +129,17 @@ export async function renderAuthCard(args: {
       llmuxError = (err as Error).message;
       logger.warn(`renderAuthCard: llmux status fetch failed: ${llmuxError}`);
     }
-    const blocks = buildAuthCardBlocks({
-      runtime,
-      llmuxStatus,
-      llmuxError,
-      viewerMode,
-      nowMs: Date.now(),
-      canManage,
-      page,
-    });
-    blocks.push({
-      type: 'actions',
-      elements: [
-        {
-          type: 'button',
-          action_id: AUTH_ACTION_IDS.cancel,
-          text: { type: 'plain_text', text: '❌ 취소' },
-          style: 'danger',
-          value: 'cancel',
-        },
-      ],
-    });
+    const nowMs = Date.now();
+    const input: AuthCardInput = { runtime, llmuxStatus, llmuxError, viewerMode, nowMs, canManage, page };
+    const summaryImage =
+      llmuxStatus && args.uploadImage ? await uploadSummaryImage(llmuxStatus, nowMs, args.uploadImage) : undefined;
+    const blocks = buildAuthCardBlocks(summaryImage ? { ...input, summaryImage } : input);
+    blocks.push(cancelRow());
+    const fallbackBlocks = summaryImage ? [...buildAuthCardBlocks(input), cancelRow()] : undefined;
     return {
       text: `🔐 Auth: llmux (${llmuxStatus ? `${llmuxStatus.accounts.length} slots, current: ${llmuxStatus.current ?? 'none'}` : 'unreachable'})`,
       blocks,
+      ...(fallbackBlocks ? { fallbackBlocks } : {}),
     };
   }
 
@@ -204,6 +240,8 @@ export function createAuthTopicBinding(): ZTopicBinding {
       if (!mode) return { ok: false, summary: `❌ Unknown auth mode: \`${args.value}\` (expected llmux|cct)` };
       return applyAuthMode({ userId: args.userId, mode });
     },
+    // No uploader: ZRespond.replace cannot see Slack refusing a fresh image, so the
+    // `/z` help-card surface stays text; its [Refresh] posts through renderInPlace.
     renderCard: (args) => renderAuthCard({ userId: args.userId, issuedAt: args.issuedAt }),
   };
 }
