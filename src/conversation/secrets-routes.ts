@@ -55,8 +55,8 @@ export function setSecretsUserSourceForTests(fn: (() => SecretsUserRow[]) | null
   _users = fn;
 }
 
-/** Accepted users, as the picker shows them. */
-function knownUsers(): Array<{ id: string; name: string }> {
+/** Accepted users, as the picker shows them (the 서버 도구 tab's picker too). */
+export function knownUsers(): Array<{ id: string; name: string }> {
   const rows: SecretsUserRow[] = _users ? _users() : userSettingsStore.getAllUsers();
   return rows
     .filter((u) => u.accepted === true && !!u.userId)
@@ -95,19 +95,29 @@ function paths(): Paths {
  * The admin behind this request, or null after sending the refusal. A person signed in with Slack who is an
  * admin; for a change, with admin mode on.
  */
-export function namedAdmin(request: FastifyRequest, reply: FastifyReply, change: boolean): string | null {
+export function namedAdmin(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  change: boolean,
+  refusal: { read: string; change: string } = SECRETS_REFUSAL,
+): string | null {
   const auth = (request as { authContext?: { mode?: string; userId?: string } }).authContext;
   const userId = auth?.mode === 'oauth_jwt' ? auth.userId : undefined;
   if (!userId || isEnvironmentId(userId) || !isAdminUser(userId)) {
-    reply.status(403).send({ error: '비밀은 Slack 계정으로 로그인한 관리자만 보고 바꿉니다' });
+    reply.status(403).send({ error: refusal.read });
     return null;
   }
   if (change && request.headers['x-admin-mode'] !== 'on') {
-    reply.status(403).send({ error: '관리자 모드를 켜야 비밀을 바꿀 수 있습니다' });
+    reply.status(403).send({ error: refusal.change });
     return null;
   }
   return userId;
 }
+
+const SECRETS_REFUSAL = {
+  read: '비밀은 Slack 계정으로 로그인한 관리자만 보고 바꿉니다',
+  change: '관리자 모드를 켜야 비밀을 바꿀 수 있습니다',
+};
 
 /** The name the dashboard shows for a Slack id (the id itself when the store has none). */
 function displayName(userId: string): string {

@@ -59,6 +59,7 @@ import {
 } from './public-url';
 import { getConversation, getTurnRawContent, listConversations } from './recorder';
 import { registerSecretsRoutes } from './secrets-routes';
+import { registerServerToolsRoutes } from './server-tools-routes';
 import { registerSettingsRoutes } from './settings-routes';
 import { registerSkillsRoutes } from './skills-routes';
 import { canViewTask } from './task-visibility';
@@ -765,6 +766,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   );
   // Secrets — the settings page "비밀" tab (secret-access WU1, #1337): names only, an admin signed in with Slack.
   registerSecretsRoutes(server, authMiddleware, csrfMiddleware);
+  registerServerToolsRoutes(server, authMiddleware, csrfMiddleware);
 
   // Health check
   server.get('/health', async (_request, reply) => {

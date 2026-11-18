@@ -26,22 +26,35 @@ export type SecretAuditAction =
   | 'use.always'
   /** A "who may use it" change on the 비밀 tab. */
   | 'grant.add'
-  | 'grant.remove';
+  | 'grant.remove'
+  /** 서버 도구 tab (secret-access WU3): a tool level, a new permission map, a server-tools grant, an environment grant. */
+  | 'tool.level'
+  | 'tool.map.create'
+  | 'tool.grant.add'
+  | 'tool.grant.remove'
+  | 'env.grant.add'
+  | 'env.grant.remove';
 
 export interface SecretAuditRecord {
   /** The admin's Slack id. */
   actor: string;
   action: SecretAuditAction;
-  /** The secret's name. */
+  /** The secret's name — for a 서버 도구 change, the tool, `permission`, `server-tools` or the environment id. */
   name: string;
   /** Whose tools the answer or grant is about. */
   userId?: string;
   /** The server-tools tool and server a secret-use card was about. */
   tool?: string;
   server?: string;
+  /** A tool level before and after (`read` · `write` · `none`), or the level of a server-tools grant. */
+  from?: string;
+  to?: string;
+  level?: string;
+  /** When a server-tools grant ends (ISO). */
+  expiresAt?: string;
 }
 
-const FIELDS = ['actor', 'action', 'name', 'userId', 'tool', 'server'] as const;
+const FIELDS = ['actor', 'action', 'name', 'userId', 'tool', 'server', 'from', 'to', 'level', 'expiresAt'] as const;
 
 /** Append one record. Throws when it cannot be written and synced — the caller decides what that means. */
 export function appendSecretAudit(record: SecretAuditRecord, dataDir: string = DATA_DIR, now: Date = new Date()): void {

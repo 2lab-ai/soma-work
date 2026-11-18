@@ -13,6 +13,7 @@
  * pick one, every entry counts — a card more, never a secret less.
  */
 
+import { NO_SECRET_SERVER_TOOLS } from '../server-tools-admin/catalog';
 import { type GrantScope, isSecretUseAllowed } from '../user-skill-grants-store';
 
 // biome-ignore lint/style/noCommonJs: @soma/process-shared sub-path types are not visible under moduleResolution node
@@ -22,16 +23,6 @@ const { isSecretRef } = require('@soma/process-shared/secret-ref.js') as {
 
 const SERVER_TOOLS_PREFIX = 'mcp__server-tools__';
 const MAX_DEPTH = 32;
-
-/** server-tools tools that use no secret: the host's own identity, listings, call records. */
-const NO_SECRET_TOOLS: ReadonlySet<string> = new Set([
-  'list',
-  'list_service',
-  'list_stack',
-  'logs',
-  'ssh_exec',
-  'phone_calls',
-]);
 
 const DB_TOOLS: ReadonlySet<string> = new Set(['db_query', 'redis_query', 'mongodb_query', 'clickhouse_query']);
 
@@ -66,7 +57,7 @@ export function secretsForCall(
 ): string[] {
   if (!toolName.startsWith(SERVER_TOOLS_PREFIX)) return [];
   const tool = toolName.slice(SERVER_TOOLS_PREFIX.length);
-  if (NO_SECRET_TOOLS.has(tool)) return [];
+  if (NO_SECRET_SERVER_TOOLS.has(tool)) return [];
   const servers = obj(section);
   const server = input?.server;
   if (!servers || typeof server !== 'string' || server === 'permission') return [];

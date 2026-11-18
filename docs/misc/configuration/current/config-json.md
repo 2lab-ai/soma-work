@@ -204,6 +204,8 @@ The `server-tools` MCP server runs operational queries (DB read-only SQL, Docker
 
 Per-tool levels follow the `read` / `write` convention from `mcp-tool-permission-config.ts`. `read` covers tools that only observe; `write` is required for anything that can mutate. The new `list_stack` tool is `read`-only — it just runs `docker stack ls`.
 
+An admin can see and edit this map on the dashboard's settings page, **Server tools** tab (secret-access WU3): a level change rewrites only `server-tools.permission`, and **Make the map** writes every tool that is not admin-only at its default level when the key is missing. A tool that is not in a present map is closed to non-admins; with no map at all server-tools is open to everyone (#1170).
+
 | Tool | Default level | Notes |
 |---|---|---|
 | `list` | `read` | List configured servers + database types |

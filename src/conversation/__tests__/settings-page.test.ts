@@ -81,6 +81,7 @@ describe('settings page shell', () => {
       { id: 'skills', label: '스킬', icon: 'file-code' },
       // listed for admins only — the page script filters it on /auth/me (secret-access WU1)
       { id: 'secrets', label: '비밀', icon: 'lock', adminOnly: true },
+      { id: 'server-tools', label: '서버 도구', icon: 'shield', adminOnly: true },
       { id: 'layout', label: '대시보드 화면', icon: 'board' },
       { id: 'dictation', label: '받아쓰기', icon: 'mic' },
     ]);
