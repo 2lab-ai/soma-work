@@ -80,10 +80,19 @@ export class LineOut {
     return Math.max(this.sentUntil, this.deps.now()) + this.frames.length * FRAME_MS;
   }
 
-  /** The share of a tagged part that has gone out (≈ been heard: the lead is short). */
-  sentFraction(tag: unknown): number {
+  /**
+   * The share of a tagged part that has gone out (≈ been heard: the lead is short). A part still being made is
+   * measured against `expectedTotal` frames when that is more than it holds so far.
+   */
+  sentFraction(tag: unknown, expectedTotal = 0): number {
     const p = this.parts.get(tag);
-    return p?.total ? p.sent / p.total : 0;
+    const total = Math.max(p?.total ?? 0, expectedTotal);
+    return p && total ? p.sent / total : 0;
+  }
+
+  /** Fading out after a real interruption: what is left of the voice is going. */
+  get fading(): boolean {
+    return this.fadeDone !== null;
   }
 
   /** The other side may be interrupting: go on, quieter. */
@@ -132,7 +141,8 @@ export class LineOut {
       const f = this.frames.shift() as Frame;
       this.sendOne(f, now);
       if (this.fadeDone && this.gain === 0) {
-        // Faded out: what is left is never heard.
+        // Faded out: what is left is never heard, and no part of it waits to be said any more.
+        for (const rest of this.frames) if (rest.tag !== undefined) this.parts.delete(rest.tag);
         this.frames = [];
         const done = this.fadeDone;
         this.fadeDone = null;

@@ -129,6 +129,27 @@ describe('LineOut', () => {
     expect(out.sentFraction('reply')).toBeLessThan(0.4);
   });
 
+  it('forgets the parts a fade-out dropped: they are not waiting to be said any more', () => {
+    const { clock, out } = setup(200);
+    for (let i = 0; i < 50; i++) out.push(frame(0.8), 'a');
+    for (let i = 0; i < 50; i++) out.push(frame(0.8), 'b');
+    clock.advance(300);
+    expect(out.unstarted()).toEqual(['b']);
+    out.fadeOut(300, () => undefined);
+    clock.advance(1000);
+    expect(out.unstarted()).toEqual([]);
+  });
+
+  it('a part still being made: its share is counted against the length it is expected to have', () => {
+    const { clock, out } = setup(200);
+    for (let i = 0; i < 50; i++) out.push(frame(0.5), 'a'); // 1 s made so far
+    clock.advance(400);
+    const sent = out.sentFraction('a');
+    expect(sent).toBeGreaterThan(0.5); // of what is made so far
+    expect(out.sentFraction('a', 200)).toBeCloseTo((sent * 50) / 200, 5); // of the 4 s it will have
+    expect(out.sentFraction('a', 10)).toBe(sent); // never less than what is already made
+  });
+
   it('stop() drops everything at once and clears the line (call ended, hang-up)', () => {
     const { clock, out, sent, cleared } = setup(200);
     for (let i = 0; i < 100; i++) out.push(frame(0.5));

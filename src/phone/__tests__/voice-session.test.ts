@@ -144,6 +144,8 @@ function setup(
     speakMs?: number;
     warm?: (signal?: AbortSignal) => Promise<void>;
     sttGate?: () => Promise<void>;
+    /** The audio a synthesis streams, chunk by chunk (default: one chunk of `speakMs`). */
+    speakChunks?: (text: string) => AsyncGenerator<Buffer>;
   } = {},
 ) {
   const clock = new Clock();
@@ -178,9 +180,11 @@ function setup(
       return {
         sampleRate: RATE,
         headersMs: 1,
-        chunks: (async function* () {
-          yield pcm;
-        })(),
+        chunks:
+          opts.speakChunks?.(text) ??
+          (async function* () {
+            yield pcm;
+          })(),
       };
     },
   };
@@ -620,6 +624,147 @@ describe('CallRun — conversation', () => {
     expect(agentLines.some((l) => l.text === '시간도 알려 드릴까요?')).toBe(false);
     expect(record.work.some((w) => w.kind === 'event' && w.text.includes('말을 이어감'))).toBe(true);
     clock.advance(1);
+  });
+
+  it('a second interruption tells the model about the reply it cut, not again about the one cut before', async () => {
+    const s = setup({}, ['오늘 회의가 두 개 있어요.', '잠깐만요', '아니 그게 아니라']);
+    s.run.begin();
+    s.dialog().reply('안녕하세요, 소마예요.');
+    await settleAll();
+    const call = fakeCall();
+    s.run.attach(call as unknown as CallSessionLike);
+    s.clock.advance(1300);
+    await settleAll();
+    s.clock.advance(1000);
+    s.run.feedAudio(tone(600, 0.3));
+    s.run.feedAudio(quiet(800));
+    await settleAll();
+    s.dialog().reply('네, 회의 두 개 확인했어요. 시간도 알려 드릴까요?');
+    await settleAll();
+    s.clock.advance(100);
+    s.run.feedAudio(tone(900, 0.6)); // a real interruption: the second piece is never heard
+    s.run.feedAudio(quiet(800));
+    await settleAll();
+    // Its words were recognised while the voice was still fading: the note keeps what was heard of the first piece.
+    expect(s.dialog().sent[s.dialog().sent.length - 1]).toMatch(
+      /네 말이 "[^"]+"에서 끊겼다\. 못 한 말: "[^"]*시간도 알려 드릴까요\?"/,
+    );
+    s.clock.advance(3000);
+    s.dialog().reply('알겠어요. 무엇을 바꿀까요? 말씀해 주세요.');
+    await settleAll();
+    s.clock.advance(100);
+    s.run.feedAudio(tone(900, 0.6)); // cut again
+    s.run.feedAudio(quiet(800));
+    await settleAll();
+    const last = s.dialog().sent[s.dialog().sent.length - 1];
+    expect(last).toContain('무엇을 바꿀까요?');
+    expect(last).not.toContain('시간도 알려 드릴까요?');
+    expect(last.endsWith('\n아니 그게 아니라')).toBe(true);
+  });
+
+  it('a cut before the next reply makes a sound tells the model that reply went unheard — not the earlier one', async () => {
+    let gate: Promise<void> | null = null;
+    const s = setup({}, ['오늘 회의가 두 개 있어요.', '잠깐만요', '아니 그게 아니라'], {
+      speakGate: () => gate ?? Promise.resolve(),
+    });
+    s.run.begin();
+    s.dialog().reply('안녕하세요, 소마예요.');
+    await settleAll();
+    const call = fakeCall();
+    s.run.attach(call as unknown as CallSessionLike);
+    s.clock.advance(1300);
+    await settleAll();
+    s.clock.advance(1000);
+    s.run.feedAudio(tone(600, 0.3));
+    s.run.feedAudio(quiet(800));
+    await settleAll();
+    s.dialog().reply('네, 회의 두 개 확인했어요. 시간도 알려 드릴까요?');
+    await settleAll();
+    s.clock.advance(100);
+    s.run.feedAudio(tone(900, 0.6)); // cut while its first piece plays
+    s.run.feedAudio(quiet(800));
+    await settleAll();
+    s.clock.advance(3000);
+    gate = new Promise<void>(() => undefined); // the voice engine is slow to start the next piece
+    s.dialog().emit({ type: 'text_delta', text: '무엇을 바꿀지 말씀해 주시겠어요? ' });
+    await settleAll();
+    expect(s.spoken[s.spoken.length - 1]).toBe('무엇을 바꿀지 말씀해 주시겠어요?'); // being made
+    const before = call.frames;
+    s.run.feedAudio(tone(900, 0.6)); // cut again, before a sound of it
+    s.run.feedAudio(quiet(800));
+    await settleAll();
+    expect(call.frames).toBe(before);
+    s.dialog().emit({ type: 'turn_end', isError: true, message: 'interrupted' });
+    await settleAll();
+    const last = s.dialog().sent[s.dialog().sent.length - 1];
+    expect(last).toContain('"무엇을 바꿀지 말씀해 주시겠어요?"');
+    expect(last).not.toContain('회의 두 개 확인했어요');
+    expect(last.endsWith('\n아니 그게 아니라')).toBe(true);
+  });
+
+  it('a piece cut while still being made: what was heard is judged by the length it would have had', async () => {
+    const long = '이번 분기 매출은 지난 분기보다 조금 늘었고 비용은 줄어서 이익이 꽤 좋아졌어요.';
+    const s = setup({}, ['실적 어때요?', '잠깐만요'], {
+      speakChunks: (text) =>
+        (async function* () {
+          if (text !== long) {
+            yield tone(400, 0.2);
+            return;
+          }
+          yield tone(1000, 0.2); // the first second of it …
+          await new Promise(() => undefined); // … and the engine is still making the rest
+        })(),
+    });
+    s.run.begin();
+    s.dialog().reply('안녕하세요, 소마예요.'); // 400 ms for 11 characters: how fast this voice speaks
+    await settleAll();
+    const call = fakeCall();
+    s.run.attach(call as unknown as CallSessionLike);
+    s.clock.advance(1300);
+    await settleAll();
+    s.clock.advance(1000);
+    s.run.feedAudio(tone(600, 0.3));
+    s.run.feedAudio(quiet(800));
+    await settleAll();
+    s.dialog().reply(long);
+    await settleAll();
+    s.clock.advance(800); // half of what is made so far has played — a third of the whole sentence
+    s.run.feedAudio(tone(900, 0.6));
+    s.run.feedAudio(quiet(800));
+    await settleAll();
+    const last = s.dialog().sent[s.dialog().sent.length - 1];
+    const heard = /네 말이 "([^"]*)"에서 끊겼다/.exec(last)?.[1] ?? '';
+    // About a third: judged by this voice's pace (learnt from the opening), not by a fixed guess.
+    expect(heard.length).toBeGreaterThan(long.length * 0.25);
+    expect(heard.length).toBeLessThan(long.length * 0.4);
+  });
+
+  it('a short piece made in full is judged by its own length, not by the pace of the voice', async () => {
+    const s = setup({}, ['괜찮을까요?', '잠깐만요'], {
+      speakChunks: (text) =>
+        (async function* () {
+          yield tone(text === '안녕하세요, 소마예요.' ? 2000 : 400, 0.2); // a slow opening, a quick short answer
+        })(),
+    });
+    s.run.begin();
+    s.dialog().reply('안녕하세요, 소마예요.');
+    await settleAll();
+    const call = fakeCall();
+    s.run.attach(call as unknown as CallSessionLike);
+    s.clock.advance(1300);
+    await settleAll();
+    s.clock.advance(5000);
+    s.run.feedAudio(tone(600, 0.3));
+    s.run.feedAudio(quiet(800));
+    await settleAll();
+    s.dialog().reply('네, 좋아요.');
+    await settleAll();
+    s.clock.advance(300); // more than half of it has played
+    s.run.feedAudio(tone(900, 0.6));
+    s.run.feedAudio(quiet(800));
+    await settleAll();
+    const heard = /네 말이 "([^"]*)"에서 끊겼다/.exec(s.dialog().sent[s.dialog().sent.length - 1])?.[1] ?? '';
+    expect(heard.length).toBeGreaterThanOrEqual(3);
   });
 
   it('hang_up: says the goodbye first, then puts the phone down; text after it is not spoken', async () => {

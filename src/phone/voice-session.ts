@@ -44,6 +44,13 @@ const BARGE_IN_MS = 600;
 const FADE_OUT_MS = 300;
 /** At most this much text goes into one synthesis (the rest of a reply is spoken as one piece, without gaps). */
 const MAX_PIECE_CHARS = 400;
+/**
+ * How long the voice takes per character, in 20 ms frames, until a piece of this call has shown it (about 120 ms a
+ * character at the 1.5x the lines use). Used to judge how much of a piece still being made was heard.
+ */
+const FRAMES_PER_CHAR = 6;
+/** Pieces shorter than this say little about the voice's pace (punctuation, a pause at the end). */
+const PACE_MIN_CHARS = 8;
 
 /**
  * The speech engine is woken at most this often. It slows down after a few idle seconds (VoiceClient.warm), so the
@@ -85,6 +92,8 @@ interface SpokenPart {
   text: string;
   /** An acknowledgment said while the reply is made ("네."). */
   filler?: boolean;
+  /** All of its audio is made (its length is known). */
+  done?: boolean;
   line?: { text: string; at: number; role: 'agent'; interrupted?: boolean };
 }
 
@@ -112,9 +121,13 @@ export class CallRun {
   private out: LineOut | null = null;
   /** The piece of speech sounding now. */
   private sounding: SpokenPart | null = null;
+  /** The piece being synthesized now (it may have sent nothing yet). */
+  private making: SpokenPart | null = null;
   /** Said when the agent was cut: what the other side heard of it and what it did not get to say. */
   private cutNote: string | null = null;
   private fillerIndex = 0;
+  /** The voice's pace on this call, learnt from the pieces made so far. */
+  private framesPerChar = FRAMES_PER_CHAR;
   /** An acknowledgment was just said: the reply should not open with another. */
   private acknowledged = false;
   private synthAbort: AbortController | null = null;
@@ -190,7 +203,7 @@ export class CallRun {
     this.work({ kind: 'event', at, text: '상대가 전화를 받음' });
     if (this.plan.direction === 'inbound') {
       if (this.plan.greeting) {
-        const part: SpokenPart = { text: this.plan.greeting.text };
+        const part: SpokenPart = { text: this.plan.greeting.text, done: true };
         for (const f of this.plan.greeting.frames) this.sendFrame(f, part);
         this.armSilenceIfIdle();
       } else {
@@ -309,7 +322,7 @@ export class CallRun {
     if (!fillers?.length || !this.out || !this.released || this.hangupRequested || this.ended) return;
     if (this.agentSpeaking()) return;
     const f = fillers[this.fillerIndex++ % fillers.length];
-    const part: SpokenPart = { text: f.text, filler: true };
+    const part: SpokenPart = { text: f.text, filler: true, done: true };
     for (const frame of f.frames) this.sendFrame(frame, part);
     this.acknowledged = true;
   }
@@ -365,6 +378,7 @@ export class CallRun {
     const resampler = new StreamResampler(44100, LINE_SAMPLE_RATE);
     let carry = Buffer.alloc(0);
     const part: SpokenPart = { text };
+    this.making = part;
     const buffered: Buffered | null = this.released ? null : { part, frames: [] };
     try {
       const stream = await this.deps.voice.speak(text, abort.signal);
@@ -393,6 +407,11 @@ export class CallRun {
       if (!abort.signal.aborted) this.fail('tts', err);
     } finally {
       if (this.synthAbort === abort) this.synthAbort = null;
+      if (this.making === part) this.making = null;
+    }
+    if (!abort.signal.aborted && !this.ended && frames > 0) {
+      part.done = true;
+      if (text.length >= PACE_MIN_CHARS) this.framesPerChar = frames / text.length;
     }
     if (buffered && !this.released) this.held.push(buffered);
     else if (buffered && this.released && !abort.signal.aborted && !this.ended) {
@@ -449,11 +468,19 @@ export class CallRun {
    */
   private cutSpeech(why: string): void {
     this.synthAbort?.abort('barge-in');
+    if (this.out?.fading) {
+      // Cut already (the words of that interruption came in while the voice was still going): its note stands.
+      this.queue = [];
+      return;
+    }
     const unsaid: string[] = [];
     let heard = '';
     const part = this.sounding;
+    this.sounding = null;
     if (part && this.out) {
-      const share = this.out.sentFraction(part);
+      // A piece still being made is judged by the length it would have had, not by what is made of it so far.
+      const expected = part.done ? 0 : Math.ceil(part.text.length * this.framesPerChar);
+      const share = this.out.sentFraction(part, expected);
       if (share < 1) {
         const at = Math.round(part.text.length * share);
         heard = part.text.slice(0, at).trim();
@@ -461,7 +488,10 @@ export class CallRun {
         this.markInterrupted(part);
       }
     }
-    for (const p of (this.out?.unstarted() ?? []) as SpokenPart[]) if (!p.filler) unsaid.push(p.text);
+    const waiting = (this.out?.unstarted() ?? []) as SpokenPart[];
+    for (const p of waiting) if (!p.filler) unsaid.push(p.text);
+    // Being made and nothing of it sent yet: not heard either.
+    if (this.making && this.making !== part && !waiting.includes(this.making)) unsaid.push(this.making.text);
     unsaid.push(...this.queue);
     this.queue = [];
     this.out?.fadeOut(FADE_OUT_MS, () => undefined);
