@@ -699,7 +699,8 @@ export class CallRun {
             this.work({ kind: 'error', at, stage: 'dialog', message: ev.message });
           this.generating = false;
           this.dropTurn = false;
-          this.acknowledged = false;
+          // The "네." said for words still waiting belongs to their answer, not to the turn that ended.
+          if (!this.pendingPeer.length) this.acknowledged = false;
           this.turnText = '';
           if (this.pendingPeer.length && !this.hangupRequested && !this.ended) {
             // Words that waited for this reply: answered now, all together — or with the words the other side is
@@ -772,6 +773,8 @@ export class CallRun {
     this.later(() => {
       if (this.ended) return;
       if (this.speaking || this.queue.length) return;
+      // Still going out (the timers ran late, e.g. a stalled event loop): wait for the goodbye to end.
+      if (this.out?.busy) return this.finishWhenQuiet();
       void this.call?.hangup().catch((err) => this.fail('hangup', err));
     }, wait);
   }

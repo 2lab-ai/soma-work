@@ -35,11 +35,14 @@ class Clock {
   }
 }
 
-/** A steady tone frame at `amp` (0..1); the identity codec keeps PCM so the test can read levels back. */
-function frame(amp: number): Buffer {
+/**
+ * A steady tone frame at `amp` (0..1); the identity codec keeps PCM so the test can read levels back. `phase` shifts
+ * it: at π/2 a frame starts and ends at a crest, where a step in gain at the frame edge would show.
+ */
+function frame(amp: number, phase = 0): Buffer {
   const b = Buffer.alloc(FRAME);
   for (let i = 0; i < FRAME / 2; i++)
-    b.writeInt16LE(Math.round(Math.sin((2 * Math.PI * 300 * i) / 8000) * amp * 32767), i * 2);
+    b.writeInt16LE(Math.round(Math.sin((2 * Math.PI * 300 * i) / 8000 + phase) * amp * 32767), i * 2);
   return b;
 }
 function peak(b: Buffer): number {
@@ -69,6 +72,7 @@ function setup() {
 describe('LineOut', () => {
   it('sends in real time, never more than the lead ahead of what is playing', () => {
     const { clock, out, sent } = setup();
+    const t0 = clock.t;
     for (let i = 0; i < 100; i++) out.push(frame(0.5), 'a'); // 2 s of speech
     expect(sent).toHaveLength(10); // 200 ms ahead, no more
     clock.advance(1000);
@@ -77,6 +81,11 @@ describe('LineOut', () => {
     clock.advance(1200);
     expect(sent).toHaveLength(100);
     expect(out.busy).toBe(false);
+    // Every frame: sent no more than the lead before it plays (frame i plays at t0 + 20·i), and not after.
+    sent.forEach((s, i) => {
+      expect(t0 + i * 20 - s.at).toBeLessThanOrEqual(200);
+      expect(t0 + i * 20 - s.at).toBeGreaterThanOrEqual(0);
+    });
   });
 
   it('knows when what it holds will have played, and tells when a tagged part starts to sound', () => {
@@ -95,7 +104,8 @@ describe('LineOut', () => {
 
   it('ducks what is still unsent when the other side starts talking, and brings it back after a "네"', () => {
     const { clock, out, sent } = setup();
-    for (let i = 0; i < 150; i++) out.push(frame(0.8), 'a');
+    const crest = Math.PI / 2;
+    for (let i = 0; i < 150; i++) out.push(frame(0.8, crest), 'a');
     clock.advance(500);
     out.duck();
     clock.advance(600);
@@ -108,13 +118,20 @@ describe('LineOut', () => {
     // No jump: from frame to frame the level changes smoothly …
     for (let i = 1; i < sent.length; i++)
       expect(Math.abs(peak(sent[i].pcm) - peak(sent[i - 1].pcm))).toBeLessThan(0.25);
-    // … and from sample to sample, across frame edges too: a step in gain would be a click. The tone itself moves at
-    // most 2π·300/8000·0.8 of full scale between two samples.
-    const samples = Buffer.concat(sent.map((s) => s.pcm));
-    let jump = 0;
-    for (let i = 2; i < samples.length; i += 2)
-      jump = Math.max(jump, Math.abs(samples.readInt16LE(i) - samples.readInt16LE(i - 2)));
-    expect(jump).toBeLessThan(((2 * Math.PI * 300) / 8000) * 0.8 * 32767 * 1.05);
+    // … and from sample to sample, across frame edges too: a step in gain would be a click. The gain each sample got
+    // (what went out over what came in, where the tone is loud) moves by a hair from one sample to the next.
+    const input = frame(0.8, crest);
+    let last = -1;
+    let step = 0;
+    for (const s of sent)
+      for (let i = 0; i < s.pcm.length; i += 2) {
+        const x = input.readInt16LE(i);
+        if (Math.abs(x) < 0.5 * 0.8 * 32767) continue;
+        const g = s.pcm.readInt16LE(i) / x;
+        if (last >= 0) step = Math.max(step, Math.abs(g - last));
+        last = g;
+      }
+    expect(step).toBeLessThan(0.02);
   });
 
   it('a real interruption fades out over a moment and then stops — the rest is never sent', () => {

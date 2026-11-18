@@ -35,6 +35,17 @@ class Clock {
   clear = (id: unknown) => {
     this.timers = this.timers.filter((x) => x.id !== id);
   };
+  /** The event loop was blocked: time jumps, then every timer that came due fires — late. */
+  lag(ms: number) {
+    this.t += ms;
+    for (;;) {
+      this.timers.sort((a, b) => a.at - b.at);
+      const next = this.timers[0];
+      if (!next || next.at > this.t) break;
+      this.timers.shift();
+      next.fn();
+    }
+  }
   advance(ms: number) {
     const end = this.t + ms;
     for (;;) {
@@ -937,6 +948,27 @@ describe('CallRun — conversation', () => {
     void run;
   });
 
+  it('hang_up after the event loop stalled: the goodbye still plays out before the phone goes down', async () => {
+    const { clock, dialog, call } = await talking();
+    const before = call.frames;
+    let atHangup = -1;
+    call.hangup = async () => {
+      atHangup = call.frames;
+      call.hungUp++;
+    };
+    dialog().emit({ type: 'text_delta', text: '감사합니다. 좋은 하루 보내세요!' });
+    await dialog().tool('hang_up').handler({ reason: 'done' });
+    dialog().emit({ type: 'tool_use', name: 'mcp__phone__hang_up', input: { reason: 'done' } });
+    dialog().emit({ type: 'turn_end', isError: false });
+    await settleAll();
+    clock.lag(2300); // the hang-up deadline passes while most of the goodbye is still to go out
+    await settleAll();
+    clock.advance(5000);
+    await settleAll();
+    expect(call.hungUp).toBe(1);
+    expect(atHangup - before).toBe(80); // both sentences (40 frames each) went out first
+  });
+
   it('stop() ends the dialog and every timer', async () => {
     const { run, clock, dialog, call } = await talking();
     run.stop();
@@ -1119,6 +1151,24 @@ describe('CallRun — like a live call', () => {
     s.clock.advance(1000);
     expect(s.record.transcript.filter((l) => l.role === 'agent').some((l) => l.interrupted)).toBe(false);
     expect(s.dialog().sent[s.dialog().sent.length - 1]).toBe('그리고 장소는요');
+  });
+
+  it('a "네." said for words that wait on a dropped reply still keeps their answer from opening with "네,"', async () => {
+    const fillers = [{ text: '네.', frames: [tone(20, 0.5)] }];
+    const s = await answering(['내일 회의 시간이요', '그리고 장소도요'], { fillers });
+    s.run.feedAudio(tone(600, 0.3));
+    s.run.feedAudio(quiet(800)); // "네." — the answer is being written
+    await settleAll();
+    s.clock.advance(500);
+    s.run.feedAudio(tone(600, 0.3));
+    s.run.feedAudio(quiet(800)); // more words before it comes: "네." again, and that answer is dropped
+    await settleAll();
+    s.dialog().emit({ type: 'turn_end', isError: true, message: 'interrupted' });
+    await settleAll();
+    expect(s.dialog().sent[s.dialog().sent.length - 1]).toContain('그리고 장소도요');
+    s.dialog().reply('네, 내일 세 시에 삼 층이에요.');
+    await settleAll();
+    expect(s.spoken[s.spoken.length - 1]).toBe('내일 세 시에 삼 층이에요.');
   });
 
   it('the rest of a reply goes in pieces of at most 400 characters', async () => {
