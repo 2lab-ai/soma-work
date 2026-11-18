@@ -20861,7 +20861,6 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   // 되돌리기 모드 belongs to the session it was turned on for.
   if (_rb && _rb.key !== sessionKey) { _rb = null; _rbPick = null; }
   panelSessionKey = sessionKey;
-  syncBoardCurrent();
   panelConvId = s.conversationId || null;
   resetWorkLog(panelConvId);
   // Artifacts (T6): the summary now, the full list as soon as it arrives.
@@ -20919,6 +20918,8 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   layoutBeforeChange();
   panel.show();
   panelOpen = true;
+  // .prd/34 D5: the card in front wears the ring on its board — now that the panel is open.
+  syncBoardCurrent();
   paintDefaultsScope();
   panel.setAttribute('label', document.getElementById('panel-title').textContent);
   syncPanelWidth();

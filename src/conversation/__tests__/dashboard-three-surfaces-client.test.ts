@@ -1432,7 +1432,9 @@ describe('the detail deck — the title opens a detail card, its card goes to on
     expect(open).toContain('deckAdd(sessionKey);\n  // .prd/34 D7');
     expect(open).toContain('boardFoldForDetail(sessionKey);');
     expect(open.indexOf('boardFoldForDetail(sessionKey);')).toBeLessThan(open.indexOf('panelSessionKey = sessionKey;'));
-    expect(open).toContain('panelSessionKey = sessionKey;\n  syncBoardCurrent();');
+    // The ring follows once the panel is open (boardCurrentKey reads panelOpen).
+    expect(open).toContain('panelOpen = true;\n  // .prd/34 D5');
+    expect(open.indexOf('syncBoardCurrent();')).toBeGreaterThan(open.indexOf('panelOpen = true;'));
     expect(open).toContain('renderDeckNav(deckDir);');
     expect(open.indexOf('renderDeckNav(deckDir);')).toBeGreaterThan(open.indexOf('panelOpen = true;'));
     const close = clientFn('closePanel');

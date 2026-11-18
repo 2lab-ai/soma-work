@@ -358,8 +358,11 @@ async function motionRun(browser: import('playwright').Browser) {
   });
   await shot(page, '04-open-in-place.png');
 
-  // S5
+  // S5 — the ring is there at once (no board render needed).
   await press(page, KEY_B, 'detail');
+  await sleep(30);
+  const ringNow = await cardState(page, KEY_B);
+  check(ringNow.current, 'S5 the ring is on at once', { current: ringNow.current });
   try {
     await page.waitForSelector('#slide-panel[open]', { timeout: 8000 });
   } catch (e) {
