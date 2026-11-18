@@ -12048,16 +12048,12 @@ function boardFoldDeck(host) {
     if (_cardHost[k] === host && !_detailUnfolded[k]) boardFoldForDetail(k);
   }
 }
-// This card's detail card is the one in front of the panel.
-function boardDetailInFront(key) {
-  return !!panelOpen && panelSessionKey === key;
-}
 // A decision on this card is out of sight: the card is on one line and its detail card is not the one in front —
 // the reader folded it, or its detail card waits behind another (review P1).
 function boardDecisionHidden(key) {
   var host = _cardHost[key];
   if (!host || typeof host.isMinimized !== 'function' || !host.isMinimized(key)) return false;
-  return !boardDetailInFront(key);
+  return boardCurrentKey() !== key;
 }
 // A new decision unfolds it (.prd/34 D9): the fold was for what the card said before. A saved fold of the reader's
 // goes too — else the next element that draws the card (a filter, a CRON lane) seeds it folded again (review P1); a
@@ -16740,7 +16736,7 @@ function autoOpenDecisions() {
     if (_autoOpened[key] === sig) continue;
     // Its detail card is in front: the decision shows there — the board card is left as it is (review P1: a card
     // opened by its title is not in _expanded, and opening it here would change what it comes back as).
-    if (boardDetailInFront(key)) {
+    if (boardCurrentKey() === key) {
       _autoOpened[key] = sig;
       continue;
     }
