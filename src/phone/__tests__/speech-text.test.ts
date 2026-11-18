@@ -96,4 +96,11 @@ describe('stripAcknowledgment', () => {
     expect(stripAcknowledgment('네이버에서 확인했어요.')).toBe('네이버에서 확인했어요.');
     expect(stripAcknowledgment('내일 뵐게요.')).toBe('내일 뵐게요.');
   });
+
+  it('leaves "네" as the number four: only a "네" set off by a mark is an acknowledgment', () => {
+    expect(stripAcknowledgment('네 시에 시작해요.')).toBe('네 시에 시작해요.');
+    expect(stripAcknowledgment('네 가지가 있어요.')).toBe('네 가지가 있어요.');
+    expect(stripAcknowledgment('네 명이에요.')).toBe('네 명이에요.');
+    expect(stripAcknowledgment('네, 네 시예요.')).toBe('네 시예요.');
+  });
 });

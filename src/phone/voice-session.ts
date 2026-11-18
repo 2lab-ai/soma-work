@@ -51,6 +51,8 @@ const MAX_PIECE_CHARS = 400;
 const FRAMES_PER_CHAR = 6;
 /** Pieces shorter than this say little about the voice's pace (punctuation, a pause at the end). */
 const PACE_MIN_CHARS = 8;
+/** At most this share of a piece still being made counts as heard: its end is not made yet. */
+const UNFINISHED_MAX_SHARE = 0.9;
 
 /**
  * The speech engine is woken at most this often. It slows down after a few idle seconds (VoiceClient.warm), so the
@@ -480,7 +482,9 @@ export class CallRun {
     if (part && this.out) {
       // A piece still being made is judged by the length it would have had, not by what is made of it so far.
       const expected = part.done ? 0 : Math.ceil(part.text.length * this.framesPerChar);
-      const share = this.out.sentFraction(part, expected);
+      // Still being made, yet all of it heard by that measure: the voice ran slower than this call's pace — its end
+      // is not made, so it was not all said.
+      const share = Math.min(this.out.sentFraction(part, expected), part.done ? 1 : UNFINISHED_MAX_SHARE);
       if (share < 1) {
         const at = Math.round(part.text.length * share);
         heard = part.text.slice(0, at).trim();
@@ -492,9 +496,10 @@ export class CallRun {
     for (const p of waiting) if (!p.filler) unsaid.push(p.text);
     // Being made and nothing of it sent yet: not heard either.
     if (this.making && this.making !== part && !waiting.includes(this.making)) unsaid.push(this.making.text);
+    this.making = null; // aborted: whatever it still returns is never said
     unsaid.push(...this.queue);
     this.queue = [];
-    this.out?.fadeOut(FADE_OUT_MS, () => undefined);
+    this.out?.fadeOut(FADE_OUT_MS);
     const rest = unsaid.filter(Boolean).join(' ').slice(0, 300);
     if (rest) {
       this.cutNote = heard

@@ -86,8 +86,9 @@ export function hasSpeech(text: string): boolean {
 
 /**
  * A reply's opening acknowledgment ("네,", "네네.", "아, 네.", "음…") taken off — said when the phone already said one
- * the moment the other side stopped talking. What follows it stays as it is.
+ * the moment the other side stopped talking. What follows it stays as it is. Only a "네" set off by a mark counts:
+ * "네 시에", "네 명" is the number four.
  */
 export function stripAcknowledgment(text: string): string {
-  return text.replace(/^\s*(?:아,?\s*)?(?:네네|네|예|음)(?:[,.!~…]+\s*|\s+(?=\S))/, '').trimStart();
+  return text.replace(/^\s*(?:아,?\s*)?(?:네네|네|예|음)[,.!~…]+\s*/, '').trimStart();
 }

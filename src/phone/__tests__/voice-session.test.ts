@@ -685,7 +685,10 @@ describe('CallRun — conversation', () => {
     s.run.feedAudio(quiet(800));
     await settleAll();
     s.clock.advance(3000);
-    gate = new Promise<void>(() => undefined); // the voice engine is slow to start the next piece
+    let started: () => void = () => undefined;
+    gate = new Promise<void>((r) => {
+      started = r;
+    }); // the voice engine is slow to start the next piece
     s.dialog().emit({ type: 'text_delta', text: '무엇을 바꿀지 말씀해 주시겠어요? ' });
     await settleAll();
     expect(s.spoken[s.spoken.length - 1]).toBe('무엇을 바꿀지 말씀해 주시겠어요?'); // being made
@@ -700,6 +703,18 @@ describe('CallRun — conversation', () => {
     expect(last).toContain('"무엇을 바꿀지 말씀해 주시겠어요?"');
     expect(last).not.toContain('회의 두 개 확인했어요');
     expect(last.endsWith('\n아니 그게 아니라')).toBe(true);
+    // The cut piece's engine call returns late (it was aborted): nothing of it is said.
+    gate = null;
+    started();
+    await settleAll();
+    // The answer to the new words plays whole, at full voice: the cut left nothing behind to fade it.
+    const at = call.levels.length;
+    s.dialog().reply('알겠어요, 어떻게 바꿀까요?');
+    await settleAll();
+    s.clock.advance(3000);
+    const answer = call.levels.slice(at);
+    expect(answer.length).toBeGreaterThanOrEqual(39);
+    expect(Math.min(...answer.slice(1, -1))).toBeGreaterThan(0.18);
   });
 
   it('a piece cut while still being made: what was heard is judged by the length it would have had', async () => {
@@ -737,6 +752,38 @@ describe('CallRun — conversation', () => {
     // About a third: judged by this voice's pace (learnt from the opening), not by a fixed guess.
     expect(heard.length).toBeGreaterThan(long.length * 0.25);
     expect(heard.length).toBeLessThan(long.length * 0.4);
+  });
+
+  it('a piece still being made whose sound so far has all played is still cut: the model hears it was', async () => {
+    const piece = '이번 주 일정은 월요일 회의 하나뿐이에요.';
+    const s = setup({}, ['이번 주 일정이요?', '잠깐만요'], {
+      speakChunks: (text) =>
+        (async function* () {
+          // More of the piece is made than this voice's pace would give its words; then the engine stalls.
+          yield tone(text === piece ? 1000 : 400, 0.2);
+          if (text === piece) await new Promise(() => undefined);
+        })(),
+    });
+    s.run.begin();
+    s.dialog().reply('안녕하세요, 소마예요.');
+    await settleAll();
+    const call = fakeCall();
+    s.run.attach(call as unknown as CallSessionLike);
+    s.clock.advance(1300);
+    await settleAll();
+    s.clock.advance(1000);
+    s.run.feedAudio(tone(600, 0.3));
+    s.run.feedAudio(quiet(800));
+    await settleAll();
+    s.dialog().reply(piece);
+    await settleAll();
+    s.clock.advance(3000); // what was made of it has played; the rest is not made yet
+    s.run.feedAudio(tone(900, 0.6));
+    s.run.feedAudio(quiet(800));
+    await settleAll();
+    const last = s.dialog().sent[s.dialog().sent.length - 1];
+    expect(last).toMatch(/^\[시스템: 상대가 끼어들어 네 말이 "[^"]*"에서 끊겼다\. 못 한 말: "[^"]+"/);
+    expect(s.record.transcript.find((l) => l.text === piece)?.interrupted).toBe(true);
   });
 
   it('a short piece made in full is judged by its own length, not by the pace of the voice', async () => {
