@@ -48,7 +48,7 @@ describe('createVoiceClient().warm', () => {
 
   it('never throws when the service is down', async () => {
     const failing = createVoiceClient(
-      { url: 'http://voice-host:9999', voice: 'v', model: 'drama-3', language: 'ko' },
+      { url: 'http://down-voice:9999', voice: 'v', model: 'drama-3', language: 'ko' },
       (async () => {
         throw new Error('down');
       }) as unknown as typeof fetch,
@@ -57,6 +57,7 @@ describe('createVoiceClient().warm', () => {
   });
 
   it('keeps one wake-up in flight, and drops a stalled one when the caller aborts', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
     let fetches = 0;
     const fetchImpl = (async (_url: string, init: RequestInit) => {
       fetches++;
@@ -64,7 +65,7 @@ describe('createVoiceClient().warm', () => {
       return new Response(lazyBody(fetches === 1 ? 0 : 1, init.signal, { reads: 0, eof: false }), { status: 200 });
     }) as unknown as typeof fetch;
     const client = createVoiceClient(
-      { url: 'http://voice-host:9999', voice: 'v', model: 'drama-3', language: 'ko' },
+      { url: 'http://stalled-voice:9999', voice: 'v', model: 'drama-3', language: 'ko' },
       fetchImpl,
     );
     const ended = new AbortController();
@@ -75,19 +76,20 @@ describe('createVoiceClient().warm', () => {
     expect(second).toBe(first);
     ended.abort('call-ended'); // the call is over: the stalled wake-up ends with it
     await expect(first).resolves.toBeUndefined();
+    vi.setSystemTime(Date.now() + 2_000); // the engine has been idle since
     await client.warm?.(); // and the next one may go out
     expect(fetches).toBe(2);
   });
 
   it('gives up a stalled wake-up after a few seconds on its own, so later ones can go out', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
     let fetches = 0;
     const fetchImpl = (async (_url: string, init: RequestInit) => {
       fetches++;
       return new Response(lazyBody(fetches === 1 ? 0 : 1, init.signal, { reads: 0, eof: false }), { status: 200 });
     }) as unknown as typeof fetch;
     const client = createVoiceClient(
-      { url: 'http://voice-host:9999', voice: 'v', model: 'drama-3', language: 'ko' },
+      { url: 'http://deadline-voice:9999', voice: 'v', model: 'drama-3', language: 'ko' },
       fetchImpl,
     );
     const call = new AbortController(); // the call goes on: nobody aborts
@@ -121,7 +123,7 @@ describe('createVoiceClient().warm', () => {
     }) as unknown as typeof fetch;
     const cfg = { url: 'http://shared-voice:9999', voice: 'v', model: 'drama-3', language: 'ko' };
     const lineA = createVoiceClient(cfg, fetchImpl);
-    const lineB = createVoiceClient(cfg, fetchImpl);
+    const lineB = createVoiceClient({ ...cfg, voice: 'karina' }, fetchImpl); // another line: own voice, same host
     const elsewhere = createVoiceClient({ ...cfg, url: 'http://other-voice:9999' }, fetchImpl);
     const heard = lineA.transcribe(Buffer.alloc(44));
     await new Promise((r) => setTimeout(r, 0));
@@ -150,8 +152,8 @@ describe('createVoiceClient().warm', () => {
     }) as unknown as typeof fetch;
     const cfg = { url: 'http://counted-voice:9999', voice: 'v', model: 'drama-3', language: 'ko' };
     const lineA = createVoiceClient(cfg, fetchImpl);
-    const lineB = createVoiceClient(cfg, fetchImpl);
-    const lineC = createVoiceClient(cfg, fetchImpl);
+    const lineB = createVoiceClient({ ...cfg, voice: 'karina' }, fetchImpl); // another line: own voice, same host
+    const lineC = createVoiceClient({ ...cfg, voice: 'kate', token: 't' }, fetchImpl);
     const a = lineA.transcribe(Buffer.alloc(44));
     const b = lineB.transcribe(Buffer.alloc(44));
     await new Promise((r) => setTimeout(r, 0));
@@ -175,7 +177,7 @@ describe('createVoiceClient().warm', () => {
     }) as unknown as typeof fetch;
     const cfg = { url: 'http://busy-voice:9999', voice: 'v', model: 'drama-3', language: 'ko' };
     const lineA = createVoiceClient(cfg, fetchImpl);
-    const lineB = createVoiceClient(cfg, fetchImpl);
+    const lineB = createVoiceClient({ ...cfg, voice: 'karina' }, fetchImpl); // another line: own voice, same host
     const wake = lineA.warm?.();
     await new Promise((r) => setTimeout(r, 0));
     expect(wakeSignal?.aborted).toBe(false);
@@ -213,7 +215,7 @@ describe('createVoiceClient().warm', () => {
     }) as unknown as typeof fetch;
     const cfg = { url: 'http://joined-voice:9999', voice: 'v', model: 'drama-3', language: 'ko' };
     const lineA = createVoiceClient(cfg, fetchImpl);
-    const lineB = createVoiceClient(cfg, fetchImpl);
+    const lineB = createVoiceClient({ ...cfg, voice: 'karina' }, fetchImpl); // another line: own voice, same host
     const a = lineA.warm?.();
     const b = lineB.warm?.();
     await new Promise((r) => setTimeout(r, 0));
@@ -221,6 +223,30 @@ describe('createVoiceClient().warm', () => {
     expect(b).toBe(a);
     answer();
     await a;
+  });
+
+  it('skips the wake-up while the engine is synthesizing for another line on the same host', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const tts: string[] = [];
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      tts.push(JSON.parse(String(init.body)).text);
+      return new Response(lazyBody(3, init.signal, { reads: 0, eof: false }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const cfg = { url: 'http://speaking-voice:9999', voice: 'cwon-phone', model: 'drama-3', language: 'ko' };
+    const lineA = createVoiceClient(cfg, fetchImpl);
+    const lineB = createVoiceClient({ ...cfg, voice: 'karina' }, fetchImpl);
+    const reply = await lineA.speak('정리해 드릴게요.');
+    const chunks = reply.chunks[Symbol.asyncIterator]();
+    await chunks.next(); // line A's reply is streaming
+    vi.setSystemTime(Date.now() + 800);
+    await chunks.next(); // a chunk 0.8 s after the request …
+    vi.setSystemTime(Date.now() + 800); // … and 1.6 s after it, 0.8 s after the last chunk
+    await lineB.warm?.(); // the engine is busy and awake: no wake-up
+    expect(tts).toEqual(['정리해 드릴게요.']);
+    await chunks.next();
+    vi.setSystemTime(Date.now() + 2_000); // then idle for a while
+    await lineB.warm?.();
+    expect(tts).toEqual(['정리해 드릴게요.', '네']);
   });
 });
 
