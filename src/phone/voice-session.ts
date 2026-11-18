@@ -252,6 +252,8 @@ export class CallRun {
         this.clearSilence();
         this.silenceNudged = false;
         this.holdTurn(); // they go on: their turn is not over
+        // Nobody starts talking over someone: nothing new goes out until their turn is over (what sounds goes on).
+        this.out?.hold();
         this.startedOverAgent = this.released && this.agentSpeaking();
         this.bargeArmed = this.startedOverAgent;
         // Someone talks over the agent: it lowers its voice at once and goes on — a "네" brings it back, a real
@@ -268,11 +270,14 @@ export class CallRun {
         // said alone.
         const keepReply = releasedOpening || (this.startedOverAgent && ev.speechMs < BARGE_IN_MS);
         if (this.startedOverAgent) this.out?.restore(); // it was not an interruption (that would have faded it out)
+        if (keepReply) this.out?.release(); // a "네" or the hello that released the opening: the agent goes on
         void this.transcribe(ev.pcm, ev.totalMs, first, keepReply, keepReply ? undefined : this.openTurn());
       } else if (ev.type === 'noise') {
         this.bargeArmed = false;
         if (this.startedOverAgent) this.out?.restore();
-        if (this.turn) this.armTurnEnd(this.turn); // a cough in a pause: the turn still ends after quiet
+        if (this.turn)
+          this.armTurnEnd(this.turn); // a cough in a pause: the turn still ends after quiet
+        else this.out?.release(); // a click, not a turn: what waited may start
         if (!this.released) this.release('상대가 조용해서 첫 마디 시작');
         else if (!this.flushPending()) this.armSilenceIfIdle(); // its start cleared the quiet-line timer
       }
@@ -636,19 +641,23 @@ export class CallRun {
     if (this.turn) this.turn.over = false;
   }
 
-  /** The turn is over once the line stayed quiet and all its words are in: then "네." and the words to the model. */
+  /**
+   * The turn is over once the line stayed quiet and all its words are in: the words go to the model — a reply made
+   * meanwhile and held back is dropped by them (hear) — then the line is the agent's again, and "네.".
+   */
   private endTurn(): void {
     const turn = this.turn;
-    if (!turn || !turn.over || turn.pending > 0) return;
+    if (!turn?.over || turn.pending > 0) return;
     this.turn = null;
-    if (this.ended || this.hangupRequested) return;
     const text = turn.words.join(' ');
-    if (!text) {
-      if (!this.flushPending()) this.armSilenceIfIdle();
+    if (this.ended || this.hangupRequested || !text) {
+      this.out?.release();
+      if (!text && !this.ended && !this.hangupRequested && !this.flushPending()) this.armSilenceIfIdle();
       return;
     }
-    if (text.replace(/[\s\p{P}\p{S}]/gu, '').length >= ACK_MIN_LETTERS) this.acknowledge();
     this.hear(text);
+    this.out?.release();
+    if (text.replace(/[\s\p{P}\p{S}]/gu, '').length >= ACK_MIN_LETTERS) this.acknowledge();
   }
 
   private async transcribe(

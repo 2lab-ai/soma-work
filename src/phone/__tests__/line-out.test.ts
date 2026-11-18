@@ -237,6 +237,20 @@ describe('LineOut', () => {
     expect(started).toEqual(['a']);
   });
 
+  it('held (the other side is talking): a part not started waits; the one already sounding goes on', () => {
+    const { clock, out, started } = setup();
+    for (let i = 0; i < 12; i++) out.push(frame(0.8), 'a'); // sounding
+    out.hold();
+    for (let i = 0; i < 20; i++) out.push(frame(0.8), 'b'); // made while they talk
+    clock.advance(1000);
+    expect(out.sentFraction('a')).toBe(1);
+    expect(out.sentFraction('b')).toBe(0);
+    expect(started).toEqual(['a']);
+    out.release();
+    clock.advance(1000);
+    expect(out.sentFraction('b')).toBe(1);
+  });
+
   it('stop() drops everything at once and clears the line (call ended, hang-up)', () => {
     const { clock, out, sent, cleared } = setup();
     for (let i = 0; i < 100; i++) out.push(frame(0.5), 'a');
