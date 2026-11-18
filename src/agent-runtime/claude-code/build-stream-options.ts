@@ -71,6 +71,7 @@ import { launchAllFrom, mcpLaunchDir, wrapPluginLaunchers } from '../../sandbox/
 import { projectConfigRoot } from '../../sandbox/project-config-root';
 import { checkSecretAccess } from '../../secrets/secret-access';
 import { loadServerToolsSection } from '../../secrets/secret-usage';
+import { ADMIN_ONLY_SERVER_TOOLS } from '../../server-tools-admin/catalog';
 import type { SessionRegistry } from '../../session-registry';
 import { isPlanPending } from '../../task-turn/task-plan';
 import type { ConversationSession, WorkflowType } from '../../types';
@@ -1135,23 +1136,6 @@ function readIncidentRequest(session: ConversationSession | undefined): Incident
   if (candidate === undefined) return undefined;
   return assertIncidentRequest(candidate);
 }
-
-/**
- * server-tools tools that are an admin's whatever the server-tools grants say — or, on an environment's server, a
- * user's that environment's admin granted it (WU4, #1212): host commands (env-access WU2, #1210), and an environment
- * user's PR approvals and merges and web logins with its own accounts (WU3, #1211), its repository reads (WU5), and its Cloudflare calls (WU6).
- */
-const ADMIN_ONLY_SERVER_TOOLS: ReadonlyMap<string, string> = new Map([
-  ['mcp__server-tools__ssh_exec', 'ssh_exec runs a command on a host and is for admins only.'],
-  ['mcp__server-tools__gh_pr', "gh_pr acts on a PR with an environment's own token and is for admins only."],
-  ['mcp__server-tools__login', "login signs in with an environment's own account and is for admins only."],
-  ['mcp__server-tools__gh_read', "gh_read reads a repository with an environment's own token and is for admins only."],
-  ['mcp__server-tools__cf_api', "cf_api calls Cloudflare with an environment's own token and is for admins only."],
-  [
-    'mcp__server-tools__phone_call',
-    "phone_call dials a real number from an environment's own line and is for admins only.",
-  ],
-]);
 
 /**
  * What no model writes (env-access WU2, #1210), each as written and as the OS resolves it: the

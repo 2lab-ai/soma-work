@@ -673,7 +673,29 @@ export class McpConfigBuilder {
    * Load tool permission config from config.json (cached per build).
    */
   private toolPermConfigCache: McpToolPermissionConfig | null = null;
+  /** `config.json`'s mtime and size when the caches below were filled (secret-access WU3). */
+  private configStamp = '';
+
+  /**
+   * Drop the config caches when `config.json` changed since they were filled: the dashboard's 서버 도구 tab edits
+   * the tool levels while this builder (one per ClaudeHandler) lives on.
+   */
+  private refreshConfigCaches(): void {
+    let stamp = '';
+    try {
+      const stat = CONFIG_FILE ? fs.statSync(CONFIG_FILE) : undefined;
+      stamp = stat ? `${stat.mtimeMs}:${stat.size}` : '';
+    } catch {
+      stamp = '';
+    }
+    if (stamp === this.configStamp) return;
+    this.configStamp = stamp;
+    this.toolPermConfigCache = null;
+    this.rawConfigCache = undefined;
+  }
+
   private loadToolPermissions(): McpToolPermissionConfig {
+    this.refreshConfigCaches();
     if (!this.toolPermConfigCache) {
       this.toolPermConfigCache = CONFIG_FILE ? loadMcpToolPermissions(CONFIG_FILE) : {};
     }
@@ -687,6 +709,7 @@ export class McpConfigBuilder {
    */
   private rawConfigCache: Record<string, any> | null | undefined = undefined;
   private getRawConfig(): Record<string, any> | null {
+    this.refreshConfigCaches();
     if (this.rawConfigCache === undefined) {
       if (!CONFIG_FILE) {
         this.rawConfigCache = null;
