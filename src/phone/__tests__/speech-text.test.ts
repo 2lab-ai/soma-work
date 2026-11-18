@@ -35,6 +35,13 @@ describe('SentenceSplitter', () => {
     expect(s.push('말씀하신 내용은 담당자에게, ')).toEqual(['말씀하신 내용은 담당자에게,']);
   });
 
+  it('waits for the character after a comma when the comma ends a piece', () => {
+    const s = new SentenceSplitter();
+    expect(s.push('말씀하신 내용은 담당자에게,')).toEqual([]);
+    expect(s.push(' 그대로 전하')).toEqual(['말씀하신 내용은 담당자에게,']);
+    expect(s.flush()).toEqual(['그대로 전하']);
+  });
+
   it('releases only one early clause per turn, even when one piece holds several', () => {
     const s = new SentenceSplitter();
     expect(s.push('오늘 오후 두 시에 디자인 회의가 있고, 저녁에는 코드 리뷰가 있고, 내일은')).toEqual([

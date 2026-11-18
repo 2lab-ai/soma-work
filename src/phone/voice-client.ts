@@ -37,8 +37,8 @@ export interface VoiceClient {
   speak(text: string, signal?: AbortSignal): Promise<SpeechStream>;
   /**
    * Wake the speech engine: it answers ~0.8 s slower after a few idle seconds (measured: 1.4 s vs 0.6 s to the first
-   * byte). A one-word synthesis whose audio is dropped; one at a time, given up after a few seconds or when `signal`
-   * aborts. Best effort — never throws.
+   * byte). A one-word synthesis whose audio is dropped; one at a time, skipped while the host transcribes, given up
+   * after a few seconds or when `signal` aborts. Best effort — never throws.
    */
   warm?(signal?: AbortSignal): Promise<void> | void;
 }
@@ -47,6 +47,11 @@ type FetchLike = typeof fetch;
 
 /** A warm-up the engine has not finished in this long is dropped (the word takes ~0.6 s). */
 const WARM_TIMEOUT_MS = 5_000;
+/**
+ * Transcriptions in flight per voice host, across every line of this process. A wake-up while one runs would slow
+ * it (measured: STT 0.9 s → 2.5 s), so it is skipped then.
+ */
+const transcribing = new Map<string, number>();
 
 export class VoiceServiceError extends Error {
   constructor(
@@ -65,42 +70,56 @@ export function createVoiceClient(cfg: VoiceConfig, fetchImpl: FetchLike = fetch
 
   return {
     async transcribe(wav, signal) {
-      const started = Date.now();
-      const form = new FormData();
-      form.append('file', new Blob([new Uint8Array(wav)], { type: 'audio/wav' }), 'utterance.wav');
-      form.append('language', cfg.language);
-      let res: Response;
+      transcribing.set(base, (transcribing.get(base) ?? 0) + 1);
       try {
-        res = await fetchImpl(`${base}/api/stt`, { method: 'POST', body: form, headers: auth, signal });
-      } catch (err) {
-        throw new VoiceServiceError('stt', `speech-to-text unreachable: ${(err as Error).message}`);
+        return await transcribeNow(wav, signal);
+      } finally {
+        const left = (transcribing.get(base) ?? 1) - 1;
+        if (left > 0) transcribing.set(base, left);
+        else transcribing.delete(base);
       }
-      if (!res.ok) throw new VoiceServiceError('stt', `speech-to-text answered ${res.status}`);
-      const body = (await res.json()) as { text?: unknown; ms?: unknown };
-      const text = typeof body.text === 'string' ? body.text.trim() : '';
-      const ms = typeof body.ms === 'number' ? body.ms : Date.now() - started;
-      return { text, ms };
     },
 
     speak,
     warm(signal) {
+      if (transcribing.has(base)) return; // this host is transcribing (any line): a wake-up would slow it
       // One in flight: a stalled service never piles up wake-ups.
       warming ??= (async () => {
+        const deadline = new AbortController();
+        const timer = setTimeout(() => deadline.abort('warm-up timed out'), WARM_TIMEOUT_MS);
         try {
-          const deadline = AbortSignal.timeout(WARM_TIMEOUT_MS);
-          const s = await speak('네', signal ? AbortSignal.any([signal, deadline]) : deadline);
+          const s = await speak('네', signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal);
           for await (const _ of s.chunks) {
             // dropped: the request only wakes the engine
           }
         } catch {
           // best effort: the next real sentence pays the cold start instead
         } finally {
+          clearTimeout(timer);
           warming = null;
         }
       })();
       return warming;
     },
   };
+
+  async function transcribeNow(wav: Buffer, signal?: AbortSignal): Promise<Transcription> {
+    const started = Date.now();
+    const form = new FormData();
+    form.append('file', new Blob([new Uint8Array(wav)], { type: 'audio/wav' }), 'utterance.wav');
+    form.append('language', cfg.language);
+    let res: Response;
+    try {
+      res = await fetchImpl(`${base}/api/stt`, { method: 'POST', body: form, headers: auth, signal });
+    } catch (err) {
+      throw new VoiceServiceError('stt', `speech-to-text unreachable: ${(err as Error).message}`);
+    }
+    if (!res.ok) throw new VoiceServiceError('stt', `speech-to-text answered ${res.status}`);
+    const body = (await res.json()) as { text?: unknown; ms?: unknown };
+    const text = typeof body.text === 'string' ? body.text.trim() : '';
+    const ms = typeof body.ms === 'number' ? body.ms : Date.now() - started;
+    return { text, ms };
+  }
 
   async function speak(text: string, signal?: AbortSignal): Promise<SpeechStream> {
     const started = Date.now();

@@ -2,7 +2,7 @@
  * The voice service client (.prd/31-phone-calls-architecture.md §3): `warm()` wakes the speech engine with a
  * one-word synthesis whose audio is thrown away — the engine answers ~0.8 s slower after a few idle seconds.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createVoiceClient } from '../voice-client';
 
 /** A streaming body that hands out chunks only when read (no eager pull), and errors when the request aborts. */
@@ -78,4 +78,64 @@ describe('createVoiceClient().warm', () => {
     await client.warm?.(); // and the next one may go out
     expect(fetches).toBe(2);
   });
+
+  it('gives up a stalled wake-up after a few seconds on its own, so later ones can go out', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let fetches = 0;
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      fetches++;
+      return new Response(lazyBody(fetches === 1 ? 0 : 1, init.signal, { reads: 0, eof: false }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const client = createVoiceClient(
+      { url: 'http://voice-host:9999', voice: 'v', model: 'drama-3', language: 'ko' },
+      fetchImpl,
+    );
+    const call = new AbortController(); // the call goes on: nobody aborts
+    let settled = false;
+    const first = Promise.resolve(client.warm?.(call.signal)).then(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(4_900);
+    expect(settled).toBe(false);
+    expect(client.warm?.(call.signal)).toBeDefined(); // still the same one in flight
+    expect(fetches).toBe(1);
+    await vi.advanceTimersByTimeAsync(200); // past the deadline
+    await first;
+    expect(settled).toBe(true);
+    await client.warm?.(call.signal);
+    expect(fetches).toBe(2);
+  });
+
+  it('skips the wake-up while the same voice host is transcribing, for any line', async () => {
+    const tts: string[] = [];
+    let answerStt!: () => void;
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      if (url.endsWith('/api/stt')) {
+        await new Promise<void>((r) => {
+          answerStt = r;
+        });
+        return new Response(JSON.stringify({ text: '네', ms: 1 }), { status: 200 });
+      }
+      tts.push(url);
+      return new Response(lazyBody(1, init.signal, { reads: 0, eof: false }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const cfg = { url: 'http://shared-voice:9999', voice: 'v', model: 'drama-3', language: 'ko' };
+    const lineA = createVoiceClient(cfg, fetchImpl);
+    const lineB = createVoiceClient(cfg, fetchImpl);
+    const elsewhere = createVoiceClient({ ...cfg, url: 'http://other-voice:9999' }, fetchImpl);
+    const heard = lineA.transcribe(Buffer.alloc(44));
+    await new Promise((r) => setTimeout(r, 0));
+    await lineB.warm?.(); // line A's caller is being transcribed on this host: no wake-up
+    expect(tts).toEqual([]);
+    await elsewhere.warm?.(); // another host is not busy
+    expect(tts).toEqual(['http://other-voice:9999/api/tts/stream']);
+    answerStt();
+    await expect(heard).resolves.toMatchObject({ text: '네' });
+    await lineB.warm?.(); // done: wake-ups go out again
+    expect(tts).toHaveLength(2);
+  });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
