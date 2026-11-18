@@ -65,7 +65,7 @@ export function namedAdmin(request: FastifyRequest, reply: FastifyReply, change:
 /** The name the dashboard shows for a Slack id (the id itself when the store has none). */
 function displayName(userId: string): string {
   try {
-    const row = userSettingsStore.getUserSettings(userId) as { slackDisplayName?: string; slackName?: string } | undefined;
+    const row = userSettingsStore.getUserSettings(userId);
     return row?.slackDisplayName || row?.slackName || userId;
   } catch {
     return userId;
