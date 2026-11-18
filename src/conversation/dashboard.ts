@@ -11948,6 +11948,7 @@ function inboxPaint(host) {
     columns: columns, load: p.load, announce: p.announce, expanded: open, strings: BOARD_STRINGS, openLabel: false,
     controls: 'window', minimized: cardMinList(), current: boardCurrentKey(),
   };
+  boardFoldDeck(host);
   if (typeof syncCardFinish === 'function') syncCardFinish();
 }
 
@@ -11992,8 +11993,47 @@ function boardFoldForDetail(key) {
   if (host && typeof host.setMinimized === 'function') host.setMinimized(key, true, { untilRestore: true });
 }
 function boardRestoreFromDetail(key) {
+  delete _detailUnfolded[key];
   var host = _cardHost[key];
   if (host && typeof host.restore === 'function') host.restore(key);
+}
+// Cards in the deck the reader brought back with + (.prd/34 review): left as they are until they leave the deck.
+var _detailUnfolded = Object.create(null);
+function boardNoteReaderFold(key, minimized) {
+  if (_deck.indexOf(key) < 0) return;
+  if (minimized) delete _detailUnfolded[key];
+  else _detailUnfolded[key] = 1;
+}
+// An element's cards in the deck keep their detail fold through a repaint that drew them anew (a filter hid and
+// showed a card, a card moved between the board and a CRON lane — the element forgets a card that leaves it).
+function boardFoldDeck(host) {
+  for (var i = 0; i < _deck.length; i++) {
+    var k = _deck[i];
+    if (_cardHost[k] === host && !_detailUnfolded[k]) boardFoldForDetail(k);
+  }
+}
+// A card the reader folded to one line (not one folded for its detail card, whose detail card shows the decision).
+function boardReaderFolded(key) {
+  var host = _cardHost[key];
+  return !!host && typeof host.isMinimized === 'function' && host.isMinimized(key) && _deck.indexOf(key) < 0;
+}
+// A new decision unfolds it (.prd/34 D9): the reader's fold was for what the card said before; it is not kept.
+function boardUnfoldForDecision(key) {
+  var host = _cardHost[key];
+  if (host && typeof host.setMinimized === 'function') host.setMinimized(key, false);
+  cardMinSave(key, false);
+}
+// The title of a card on its element (in the element's open shadow root), or null: where focus goes back after its
+// detail card closes when the control that opened it is gone.
+function cardTitleOf(key) {
+  var host = _cardHost[key];
+  var root = host && host.shadowRoot;
+  if (!root) return null;
+  var cards = root.querySelectorAll('li.ib-card[data-card]');
+  for (var i = 0; i < cards.length; i++) {
+    if (cards[i].getAttribute('data-card') === key) return cards[i].querySelector('[data-win="detail"]');
+  }
+  return null;
 }
 
 // The task card's finish by model (SSOT 2026-11-17, card-finish-client.ts): each element — the board, each CRON lane
@@ -12138,6 +12178,7 @@ function wireInbox(host) {
   host.addEventListener('ui-minimize', function(e) {
     if (e.target !== host || !e.detail) return;
     cardMinSave(String(e.detail.cardId), !!e.detail.minimized);
+    boardNoteReaderFold(String(e.detail.cardId), !!e.detail.minimized);
     scheduleLayoutRefresh(MOTION.expand + 60);
   });
   // A DONE day opened or closed (a click, or reveal for a deep link): the
@@ -16646,8 +16687,10 @@ function autoOpenDecisions() {
       continue;
     }
     if (_autoOpened[key] === sig) continue;
-    // Open already: nothing to do for this decision.
-    if (_expanded.has(key)) {
+    // .prd/34 D9: a card the reader folded to one line hides the decision even when it is open.
+    var folded = boardReaderFolded(key);
+    // Open already (and on view): nothing to do for this decision.
+    if (_expanded.has(key) && !folded) {
       _autoOpened[key] = sig;
       continue;
     }
@@ -16662,7 +16705,8 @@ function autoOpenDecisions() {
       continue;
     }
     _autoOpened[key] = sig;
-    // In place only: an opened card never opens a detail card (.prd/34 — that is the title's).
+    // A new decision unfolds the reader's one line; in place only — an opened card never opens a detail card (.prd/34).
+    if (folded) boardUnfoldForDecision(key);
     host.reveal(key, { open: true, scroll: false });
   }
 }
@@ -20801,9 +20845,11 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   // (or comes to the front); a switch between cards slides in from its side.
   var deckDir = panelOpen && panelSessionKey && panelSessionKey !== sessionKey
     ? (_deck.indexOf(sessionKey) < 0 || _deck.indexOf(sessionKey) > _deck.indexOf(panelSessionKey) ? 1 : -1) : 0;
+  // .prd/34 D7: a card whose detail card joins the deck goes to one line on its board (until it leaves the deck). A
+  // card already in the deck coming to the front (‹ ›, its title again) keeps what the reader made of it since.
+  var joining = _deck.indexOf(sessionKey) < 0;
   deckAdd(sessionKey);
-  // .prd/34 D7: a card whose detail card is open is one line on its board (until it leaves the deck).
-  boardFoldForDetail(sessionKey);
+  if (joining) boardFoldForDetail(sessionKey);
   // The intent of this opening: true is the 작업 로그 landing, as before.
   _panelLand = focusWorkLog === true ? 'worklog' : (focusWorkLog || '');
   _panelLanded = false;
@@ -20815,7 +20861,9 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   _treeMaxN = null;
   // The control that opened it gets focus back on close (not a control inside the panel).
   var opener = document.activeElement;
-  if (opener && opener !== document.body && !(opener.closest && opener.closest('#slide-panel'))) _panelReturnFocus = document.activeElement;
+  // A board card's title is in its element's shadow root: the deepest focused control is the one to come back to.
+  while (opener && opener.shadowRoot && opener.shadowRoot.activeElement) opener = opener.shadowRoot.activeElement;
+  if (opener && opener !== document.body && !(opener.closest && opener.closest('#slide-panel'))) _panelReturnFocus = opener;
   // Spec 12 §4.3: the agent whose tasks and work log the panel shows ('' = main).
   _panelAgent = agentId ? String(agentId) : '';
   // A layout without the 에이전트 tab shows one agent, the main one — it has no strip to lead back from another (a
@@ -22369,9 +22417,16 @@ function closePanel() {
   var wasInPanel = !a || a === document.body || !!(a.closest && a.closest('#slide-panel'));
   if (!wasInPanel) return;
   // An opener inside a card that has since folded (inert) cannot take focus: fall through.
-  if (back && document.body.contains(back) && back.focus) {
+  // isConnected, not document.body.contains: a card's title lives in its element's shadow root.
+  if (back && back.isConnected && back.focus) {
     back.focus({ preventScroll: true });
-    if (document.activeElement === back) return;
+    if (back.getRootNode().activeElement === back) return;
+  }
+  // .prd/34: else that card's title on the board (its face was drawn again since).
+  var title = closingKey ? cardTitleOf(closingKey) : null;
+  if (title) {
+    title.focus({ preventScroll: true });
+    if (title.getRootNode().activeElement === title) return;
   }
   var body = closingKey && _cardBodies[closingKey] ? _cardBodies[closingKey].el : null;
   var log = body && body.isConnected ? body.querySelector('[data-card-worklog]') : null;

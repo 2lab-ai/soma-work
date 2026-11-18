@@ -6,9 +6,9 @@ Status: in-progress (라운드 1 — 구현 · 리시트 끝, 라이브러리 �
 
 | ID | 단위 | Status | 브랜치 · 워크트리 | 스코프 · 지금 |
 |---|---|---|---|---|
-| WU1 | 라이브러리 창 버튼 | 🟡 | `2lab-ai/ui` `feat/agent-inbox-window-controls` | `src/components/agent-inbox/{agent-inbox,styles,docs,agent-inbox.test}.ts`, 0.43.0. PR [2lab-ai/ui#84](https://github.com/2lab-ai/ui/pull/84) — `npm run verify` 녹색(2,600), 새 테스트 13개 RED→GREEN. 머지 · npm 배포 대기(G1) |
-| WU2 | soma-work 연결 | 🟡 | `2lab-ai/soma-work` `feat/task-card-window-controls` | `dashboard.ts`(inboxPaint · wireInbox · openPanel · deckRemove · closePanel · closeDetailCard · 딥 링크 · 새 작업 카드 · autoOpenDecisions), 하네스 seam, 테스트 갱신. 대시보드 테스트 RED 15 → GREEN. `package.json`의 `@2lab.ai/ui` 0.43.0 올림은 G1 뒤 |
-| WU3 | 실브라우저 리시트 | 🟡 | WU2와 같음 | `scripts/screenshot-card-window.ts` 18/18(스펙 §6 표). 배포 뒤 dev에서 다시 |
+| WU1 | 라이브러리 창 버튼 | 🟡 | `2lab-ai/ui` `feat/agent-inbox-window-controls` | `src/components/agent-inbox/{agent-inbox,styles,docs,agent-inbox.test}.ts`, 0.43.0. PR https://github.com/2lab-ai/ui/pull/84 — `npm run verify` 녹색(2,600), 새 테스트 13개 RED→GREEN. 머지 · npm 배포 대기(G1) |
+| WU2 | soma-work 연결 | 🟡 | `2lab-ai/soma-work` `feat/task-card-window-controls` | `dashboard.ts`(inboxPaint · wireInbox · openPanel · deckRemove · closePanel · closeDetailCard · 딥 링크 · 새 작업 카드 · autoOpenDecisions), 하네스 seam, 테스트 갱신. 대시보드 테스트 RED 15 → GREEN. draft PR https://github.com/2lab-ai/soma-work/pull/1349. `package.json`의 `@2lab.ai/ui` 0.43.0 올림은 G1 뒤 |
+| WU3 | 실브라우저 리시트 | 🟡 | WU2와 같음 | `scripts/screenshot-card-window.ts` 27/27(스펙 §6 표 — 1440 보드 · 다크 감소된 모션 · 1280 목록 · 390 폰). 배포 뒤 dev에서 다시 |
 
 ## 열린 gap
 

@@ -106,7 +106,7 @@ SSOT·의도·diff: [`card-window/ssot.md`](card-window/ssot.md)
 
 ## 6. 검증
 
-실측(2026-11-18, `@2lab.ai/ui` 0.43.0 로컬 빌드를 설치한 soma-work 실서버 + Chromium, `scripts/screenshot-card-window.ts`): **18/18**.
+실측(2026-11-18, `@2lab.ai/ui` 0.43.0 로컬 빌드를 설치한 soma-work 실서버 + Chromium, `scripts/screenshot-card-window.ts`): **27/27** — 1440 보드(라이트) · 1440 다크(감소된 모션) · 1280 목록 보기 · 390 폰.
 
 | 시나리오 | 실측 |
 |---|---|
@@ -117,6 +117,7 @@ SSOT·의도·diff: [`card-window/ssot.md`](card-window/ssot.md)
 | 6 사람이 줄인 카드 | ✕ 뒤에도 42px |
 | 8 면의 글 | 눌러도 카드 · 패널 그대로 |
 | 9 감소된 모션 | `is-hop` 없음, 애니메이션 0개, 바로 180° |
+| 목록 · 폰 | 목록 보기(카드 폭 1232px) 118 → 42px. 390px: 제목 → 전체 화면 시트(머리 x 0 · 폭 390), ✕ → 카드 118px로 복원 |
 
 캡처: 보통 · 한 줄 · 제목 호버 · 점프 150/330/430ms · 제자리 펼침 · 상세 한 장/두 장 · 닫은 뒤 · 다크(감소된 모션) 상세.
 

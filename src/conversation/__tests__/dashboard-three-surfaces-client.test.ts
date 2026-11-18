@@ -1082,6 +1082,9 @@ describe('focus goes back to whatever opened the panel (executed)', () => {
           },
           hasAttribute: () => true,
           setAttribute: () => {},
+          isConnected: true,
+          // .prd/34: the page asks the node's own root (a board card's title is in a shadow root).
+          getRootNode: () => doc,
         };
         return node;
       };
@@ -1091,6 +1094,7 @@ describe('focus goes back to whatever opened the panel (executed)', () => {
         querySelector: (sel: string) => (sel === '.board-title, h1, h2' ? heading : null),
       };
       const opener = el('opener', !!o.inert);
+      opener.isConnected = o.present;
       const log = el('worklog');
       const body = {
         isConnected: true,
@@ -1292,9 +1296,10 @@ describe('the detail deck — the title opens a detail card, its card goes to on
         'closeDetailCard',
         'boardFoldForDetail',
         'boardRestoreFromDetail',
+        'boardNoteReaderFold',
         'wireInbox',
       ],
-      ['_deck', '_panelOpenWaiting'],
+      ['_deck', '_panelOpenWaiting', '_detailUnfolded'],
       {
         log,
         _sessionCache: cache,
@@ -1320,7 +1325,7 @@ describe('the detail deck — the title opens a detail card, its card goes to on
       },
       [
         'var panelOpen = false, panelSessionKey = null, _expanded = new Set();',
-        "function openPanel(k) { if (!_sessionCache[k]) return; log.push('open ' + k); deckAdd(k); boardFoldForDetail(k); panelOpen = true; panelSessionKey = k; }",
+        "function openPanel(k) { if (!_sessionCache[k]) return; log.push('open ' + k); var joining = _deck.indexOf(k) < 0; deckAdd(k); if (joining) boardFoldForDetail(k); panelOpen = true; panelSessionKey = k; }",
         "function closePanel() { log.push('close'); if (panelSessionKey) deckRemove(panelSessionKey); panelOpen = false; panelSessionKey = null; }",
         'function state() { return { deck: _deck.slice(), front: panelSessionKey, open: panelOpen, expanded: Array.from(_expanded) }; }',
       ],
@@ -1390,6 +1395,19 @@ describe('the detail deck — the title opens a detail card, its card goes to on
     expect(w.m.state()).toMatchObject({ deck: [], front: null, open: false });
   });
 
+  it('a card the reader brought back with + while its detail card waits in the deck stays back when ‹ › bring it forward (review)', () => {
+    const w = world();
+    w.title('A');
+    w.title('B');
+    w.minimize('A'); // A in the deck, folded for its detail card: the reader's + brings it back
+    expect(w.folded()).toEqual({ B: 'detail' });
+    w.page(0); // ‹ to A
+    expect(w.m.state().front).toBe('A');
+    expect(w.folded()).toEqual({ B: 'detail' }); // not folded again
+    w.m.closeDetailCard(); // A leaves the deck: nothing to undo
+    expect(w.folded()).toEqual({ B: 'detail' });
+  });
+
   it('deckDrop: a session gone from the board since it joined the deck is never the next front card', () => {
     const w = world();
     w.title('A');
@@ -1429,8 +1447,10 @@ describe('the detail deck — the title opens a detail card, its card goes to on
   it('the shipped openPanel / closePanel / deckRemove / wireInbox / Escape / cron drawer do their part of the deck', () => {
     const open = clientFn('openPanel');
     // In the deck and its card folded before anything else of the opening; the nav painted once it is open.
-    expect(open).toContain('deckAdd(sessionKey);\n  // .prd/34 D7');
-    expect(open).toContain('boardFoldForDetail(sessionKey);');
+    // A card joining the deck folds; one already in it coming to the front keeps what the reader made of it.
+    expect(open).toContain(
+      'var joining = _deck.indexOf(sessionKey) < 0;\n  deckAdd(sessionKey);\n  if (joining) boardFoldForDetail(sessionKey);',
+    );
     expect(open.indexOf('boardFoldForDetail(sessionKey);')).toBeLessThan(open.indexOf('panelSessionKey = sessionKey;'));
     // The ring follows once the panel is open (boardCurrentKey reads panelOpen).
     expect(open).toContain('panelOpen = true;\n  // .prd/34 D5');

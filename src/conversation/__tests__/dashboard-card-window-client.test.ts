@@ -145,7 +145,7 @@ describe('a detail card folds its board card and undoes only that fold (D7)', ()
     };
     const m = load<{ boardFoldForDetail(k: string): void; boardRestoreFromDetail(k: string): void }>(
       ['boardFoldForDetail', 'boardRestoreFromDetail'],
-      [],
+      ['_detailUnfolded'],
       { _cardHost: { A: el, OLD: {} } },
     );
     m.boardFoldForDetail('A');
@@ -157,6 +157,67 @@ describe('a detail card folds its board card and undoes only that fold (D7)', ()
       ['setMinimized', 'A', true, { untilRestore: true }],
       ['restore', 'A'],
     ]);
+  });
+
+  it('a repaint keeps the deck’s folds on the element that now draws them, except a card the reader brought back (review)', () => {
+    const calls: unknown[][] = [];
+    const board = { setMinimized: (...a: unknown[]) => calls.push(['board', ...a]) };
+    const lane = { setMinimized: (...a: unknown[]) => calls.push(['lane', ...a]) };
+    const cardHost: Record<string, unknown> = { A: board, B: board, C: lane };
+    type Api = {
+      boardFoldDeck(h: unknown): void;
+      boardNoteReaderFold(k: string, on: boolean): void;
+      boardRestoreFromDetail(k: string): void;
+    };
+    const m = load<Api>(
+      ['boardFoldForDetail', 'boardFoldDeck', 'boardNoteReaderFold', 'boardRestoreFromDetail'],
+      ['_detailUnfolded'],
+      { _cardHost: cardHost, _deck: ['A', 'B', 'C'] },
+    );
+    m.boardNoteReaderFold('B', false); // the reader's + on B while its detail card waits
+    m.boardNoteReaderFold('Z', false); // not in the deck: nothing to note
+    m.boardFoldDeck(board);
+    expect(calls).toEqual([['board', 'A', true, { untilRestore: true }]]);
+    m.boardFoldDeck(lane); // C moved to a CRON lane: folded there
+    expect(calls[1]).toEqual(['lane', 'C', true, { untilRestore: true }]);
+    m.boardNoteReaderFold('B', true); // − again: the deck's fold applies once more
+    calls.length = 0;
+    m.boardFoldDeck(board);
+    expect(calls).toEqual([
+      ['board', 'A', true, { untilRestore: true }],
+      ['board', 'B', true, { untilRestore: true }],
+    ]);
+    // Leaving the deck forgets the note.
+    m.boardNoteReaderFold('B', false);
+    m.boardRestoreFromDetail('B');
+    calls.length = 0;
+    m.boardFoldDeck(board);
+    expect(calls.map((c) => c[1])).toEqual(['A', 'B']);
+  });
+
+  it('a new decision unfolds a card the reader folded — not one folded for its detail card (D9, review)', () => {
+    const calls: unknown[][] = [];
+    const el = {
+      isMinimized: (k: string) => k !== 'OPEN',
+      setMinimized: (...a: unknown[]) => calls.push(['setMinimized', ...a]),
+    };
+    const saved: unknown[][] = [];
+    const m = load<{ boardReaderFolded(k: string): boolean; boardUnfoldForDecision(k: string): void }>(
+      ['boardReaderFolded', 'boardUnfoldForDecision'],
+      [],
+      { _cardHost: { A: el, D: el, OPEN: el }, _deck: ['D'], cardMinSave: (...a: unknown[]) => saved.push(a) },
+    );
+    expect(m.boardReaderFolded('A')).toBe(true);
+    expect(m.boardReaderFolded('D')).toBe(false); // in the deck: its detail card shows the decision
+    expect(m.boardReaderFolded('OPEN')).toBe(false);
+    expect(m.boardReaderFolded('NONE')).toBe(false);
+    m.boardUnfoldForDecision('A');
+    expect(calls).toEqual([['setMinimized', 'A', false]]);
+    expect(saved).toEqual([['A', false]]);
+    const auto = clientFn('autoOpenDecisions');
+    expect(auto).toContain('var folded = boardReaderFolded(key);');
+    expect(auto).toContain('if (_expanded.has(key) && !folded) {');
+    expect(auto).toContain('if (folded) boardUnfoldForDecision(key);');
   });
 
   it('every way a detail card opens folds its card; every way it leaves the deck undoes it; a decision opened in place opens none', () => {
