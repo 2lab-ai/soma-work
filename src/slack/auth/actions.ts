@@ -329,7 +329,7 @@ export function registerAuthActions(app: App): void {
 
   // ── Account report (any viewer: identity is visible to all, #803) ──
   // A NEW message in the card's thread — the card itself keeps its picture.
-  app.action(AUTH_ACTION_IDS.report, async ({ ack, body, client }) => {
+  app.action(AUTH_ACTION_IDS.report, async ({ ack, body, client, respond }) => {
     await ack();
     try {
       const userId = actorId(body);
@@ -352,7 +352,12 @@ export function registerAuthActions(app: App): void {
       await postAuthAccountReport({
         client,
         userId,
-        target: { channel, ...(threadTs ? { threadTs } : {}), ...(ephemeral ? { ephemeralTo: userId } : {}) },
+        target: {
+          channel,
+          ...(threadTs ? { threadTs } : {}),
+          ...(ephemeral ? { ephemeralTo: userId } : {}),
+          ...(ephemeral && respond ? { respond: respond as (msg: Record<string, unknown>) => Promise<unknown> } : {}),
+        },
       });
     } catch (err) {
       logger.error('auth_account_report failed', err);

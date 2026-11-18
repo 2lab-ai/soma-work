@@ -193,6 +193,29 @@ describe('buildAccountReport — every account, one row', () => {
     expect(grok.rows[0].plan).toBeUndefined();
   });
 
+  it('keeps a blocked account with an unknown plan apart from a drained one', () => {
+    // Codex accounts without a configured or reported plan stay out of the totals (unknownTier).
+    const { status, view } = build([
+      acct({ name: 'codex:x1@c', group: 'codex', type: 'codex', seven_day: w(0.5, 3 * D) }),
+      acct({
+        name: 'codex:x2@c',
+        group: 'codex',
+        type: 'codex',
+        seven_day: w(0.5, 3 * D),
+        blocked: 'cooldown',
+        cooldown_until: NOW_S + 2 * H,
+      }),
+      acct({ name: 'codex:x3@c', group: 'codex', type: 'codex', seven_day: w(1, D), blocked: '7d 100.0% > 99%' }),
+    ]);
+    const [codex] = buildAccountReport(status, view, NOW_MS).groups;
+    expect(codex.rows.map((r) => [r.name, r.state, r.stateLabel])).toEqual([
+      ['x1', 'usable', '사용 가능 (플랜 미상)'],
+      ['x2', 'blocked', '쿨다운'],
+      ['x3', 'drained', '주간 소진'],
+    ]);
+    expect(codex.rows[1].returnAt).toBe(NOW_S + 2 * H);
+  });
+
   it('holds a provider account paused by status alone (no blocked reason)', () => {
     const { status, view } = build([
       acct({ name: 'grok:ai@c', group: 'grok', type: 'grok', seven_day: w(0.3, 2 * D) }),

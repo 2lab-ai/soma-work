@@ -165,15 +165,8 @@ describe('entry points', () => {
   });
 
   it('card buttons re-render with a fresh picture', async () => {
-    type Handler = (ctx: Record<string, unknown>) => Promise<void>;
-    const handlers: Array<{ pattern: string | RegExp; fn: Handler }> = [];
-    registerAuthActions({
-      action: (p: string | RegExp, fn: Handler) => handlers.push({ pattern: p, fn }),
-      view: () => {},
-    } as never);
-    const refresh = handlers.find((h) => h.pattern === AUTH_ACTION_IDS.refresh);
     const client = slackClient();
-    await refresh?.fn({
+    await navHandler(AUTH_ACTION_IDS.refresh)({
       ack: async () => {},
       body: {
         user: { id: 'U_PLAIN' },
@@ -230,17 +223,6 @@ describe('entry points', () => {
 });
 
 describe('[📋 계정별 리포트]', () => {
-  type Handler = (ctx: Record<string, unknown>) => Promise<void>;
-  function reportHandler(): Handler {
-    const handlers: Array<{ pattern: string | RegExp; fn: Handler }> = [];
-    registerAuthActions({
-      action: (p: string | RegExp, fn: Handler) => handlers.push({ pattern: p, fn }),
-      view: () => {},
-    } as never);
-    const found = handlers.find((h) => h.pattern === AUTH_ACTION_IDS.report);
-    expect(found, 'report action registered').toBeDefined();
-    return (found as { fn: Handler }).fn;
-  }
   const body = (thread?: string) => ({
     user: { id: 'U_PLAIN' },
     container: { type: 'message', channel_id: 'C1', message_ts: '111.222', ...(thread ? { thread_ts: thread } : {}) },
@@ -250,9 +232,17 @@ describe('[📋 계정별 리포트]', () => {
 
   it('acks first, then posts the account picture into the card thread', async () => {
     const client = slackClient();
-    const ack = vi.fn(async () => {});
-    await reportHandler()({ ack, body: body('100.000'), client });
-    expect(ack).toHaveBeenCalled();
+    let releaseAck: () => void = () => {};
+    const ack = vi.fn(() => new Promise<void>((resolve) => (releaseAck = resolve)));
+    const run = navHandler(AUTH_ACTION_IDS.report)({ ack, body: body('100.000'), client });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    // Nothing slow (status, render, upload, post) starts before Slack's 3-second ack.
+    expect(ack).toHaveBeenCalledTimes(1);
+    expect(renderAuthReportPng).not.toHaveBeenCalled();
+    expect(client.filesUploadV2).not.toHaveBeenCalled();
+    expect(client.chat.postMessage).not.toHaveBeenCalled();
+    releaseAck();
+    await run;
     expect(renderAuthReportPng).toHaveBeenCalledTimes(1);
     const [msg] = client.chat.postMessage.mock.calls[0] as unknown as [Card & { channel: string; thread_ts: string }];
     expect(msg.channel).toBe('C1');
@@ -263,7 +253,7 @@ describe('[📋 계정별 리포트]', () => {
 
   it('threads under the card itself when the card is top-level', async () => {
     const client = slackClient();
-    await reportHandler()({ ack: async () => {}, body: body(), client });
+    await navHandler(AUTH_ACTION_IDS.report)({ ack: async () => {}, body: body(), client });
     const [msg] = client.chat.postMessage.mock.calls[0] as unknown as [{ thread_ts: string }];
     expect(msg.thread_ts).toBe('111.222');
   });
@@ -271,7 +261,7 @@ describe('[📋 계정별 리포트]', () => {
   it('posts the per-account text when the picture cannot be made', async () => {
     vi.mocked(renderAuthReportPng).mockRejectedValueOnce(new Error('resvg down'));
     const client = slackClient();
-    await reportHandler()({ ack: async () => {}, body: body(), client });
+    await navHandler(AUTH_ACTION_IDS.report)({ ack: async () => {}, body: body(), client });
     expect(client.filesUploadV2).not.toHaveBeenCalled();
     const [msg] = client.chat.postMessage.mock.calls[0] as unknown as [Card];
     expect(imageOf(msg.blocks)).toBeUndefined();
@@ -293,7 +283,7 @@ describe('[📋 계정별 리포트]', () => {
 
   it('an ephemeral card gets the report back as an ephemeral message in its parent thread', async () => {
     const client = slackClient();
-    await reportHandler()({ ack: async () => {}, body: ephemeralBody('100.000'), client });
+    await navHandler(AUTH_ACTION_IDS.report)({ ack: async () => {}, body: ephemeralBody('100.000'), client });
     expect(client.chat.postMessage).not.toHaveBeenCalled();
     const [msg] = client.chat.postEphemeral.mock.calls[0] as unknown as [
       Card & { channel: string; user: string; thread_ts?: string },
@@ -305,7 +295,7 @@ describe('[📋 계정별 리포트]', () => {
   it('a top-level ephemeral card gets an ephemeral report with no thread (an ephemeral cannot be a root)', async () => {
     vi.mocked(renderAuthReportPng).mockRejectedValueOnce(new Error('resvg down'));
     const client = slackClient();
-    await reportHandler()({ ack: async () => {}, body: ephemeralBody(), client });
+    await navHandler(AUTH_ACTION_IDS.report)({ ack: async () => {}, body: ephemeralBody(), client });
     expect(client.chat.postMessage).not.toHaveBeenCalled();
     const [msg] = client.chat.postEphemeral.mock.calls[0] as unknown as [Card & { thread_ts?: string }];
     expect(msg).not.toHaveProperty('thread_ts');
@@ -331,10 +321,25 @@ describe('[📋 계정별 리포트]', () => {
     } as never);
     vi.mocked(renderAuthReportPng).mockRejectedValueOnce(new Error('resvg down'));
     const client = slackClient();
-    await reportHandler()({ ack: async () => {}, body: body(), client });
+    await navHandler(AUTH_ACTION_IDS.report)({ ack: async () => {}, body: body(), client });
     const [msg] = client.chat.postMessage.mock.calls[0] as unknown as [Card];
     expect(msg.blocks.length).toBeLessThanOrEqual(50);
     // header 1 + Claude 1 + 30 rows + Codex 1 + 15 rows = 48; 5 Codex + 10 Grok rows left out.
     expect(str(msg.blocks)).toContain('… 15개 계정은 메시지 한도로 생략');
+  });
+
+  it('an ephemeral card where the bot cannot post sends the text report through the response_url', async () => {
+    const client = slackClient();
+    client.chat.postEphemeral.mockRejectedValue(
+      Object.assign(new Error('not_in_channel'), { data: { error: 'not_in_channel' } }),
+    );
+    const respond = vi.fn(async (_msg: unknown) => ({}));
+    await navHandler(AUTH_ACTION_IDS.report)({ ack: async () => {}, body: ephemeralBody('100.000'), client, respond });
+    expect(client.chat.postMessage).not.toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledTimes(1);
+    const [msg] = respond.mock.calls[0] as unknown as [Card & { response_type: string; replace_original: boolean }];
+    expect([msg.response_type, msg.replace_original]).toEqual(['ephemeral', false]);
+    expect(imageOf(msg.blocks)).toBeUndefined(); // a response_url cannot report a refused image
+    expect(str(msg.blocks)).toContain('claude:ai1@x');
   });
 });

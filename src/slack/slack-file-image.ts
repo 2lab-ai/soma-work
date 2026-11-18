@@ -121,11 +121,12 @@ export interface DeliverImageCardOptions {
   /** Which failures another send of the image blocks can fix (default: Slack `invalid_blocks`). */
   retryOn?: (err: unknown) => boolean;
   /**
-   * Which failures may be followed by the text fallback (default: a Slack platform
-   * rejection — `err.data.error` set — which proves nothing was posted). A transport
-   * error (timeout, lost response) may hide a delivered message, so an append-only
-   * send propagates it instead of posting a second message. In-place updates
-   * (`chat.update`, a replace) are idempotent and pass `() => true`.
+   * Which failures may be followed by the text fallback (default: a Slack rejection
+   * known to come before anything is posted — {@link isNonCommittingRejection}). A
+   * transport error (timeout, lost response) or an ambiguous server error
+   * (`internal_error`, `fatal_error`) may hide a delivered message, so an
+   * append-only send propagates it instead of posting a second message. In-place
+   * updates (`chat.update`) are idempotent and pass `() => true`.
    */
   fallbackOn?: (err: unknown) => boolean;
   sleep?: (ms: number) => Promise<void>;
@@ -137,9 +138,13 @@ const IMAGE_SEND_DELAY_MS = 500;
 
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-/** Slack answered and refused the request: a platform error carries its code. */
-export function isSlackRejection(err: unknown): boolean {
-  return typeof (err as { data?: { error?: unknown } } | null | undefined)?.data?.error === 'string';
+/** Slack codes that reject a message while validating it — nothing was posted. */
+const NON_COMMITTING_CODES = new Set(['invalid_blocks', 'invalid_blocks_format', 'invalid_arguments', 'msg_too_long']);
+
+/** Slack refused the request before posting anything (validation), so a second send cannot duplicate it. */
+export function isNonCommittingRejection(err: unknown): boolean {
+  const code = (err as { data?: { error?: unknown } } | null | undefined)?.data?.error;
+  return typeof code === 'string' && NON_COMMITTING_CODES.has(code);
 }
 
 /**
@@ -155,7 +160,7 @@ export async function deliverImageCard<T>(
 ): Promise<T> {
   if (!card.fallbackBlocks) return send(card.blocks);
   const retryOn = opts.retryOn ?? isInvalidBlocksError;
-  const fallbackOn = opts.fallbackOn ?? isSlackRejection;
+  const fallbackOn = opts.fallbackOn ?? isNonCommittingRejection;
   const sleep = opts.sleep ?? defaultSleep;
   let lastError: unknown;
   for (let attempt = 0; attempt < IMAGE_SEND_ATTEMPTS; attempt++) {

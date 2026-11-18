@@ -29,7 +29,16 @@ export interface AuthReportTarget {
   threadTs?: string;
   /** Set when the card is ephemeral: the report is an ephemeral message to this user only. */
   ephemeralTo?: string;
+  /**
+   * The clicked action's response_url sender. An ephemeral card can live where the
+   * bot cannot post (a private channel it was never invited to — `/z auth` answers
+   * through the response_url there); then the text report goes back this way.
+   */
+  respond?: (msg: Record<string, unknown>) => Promise<unknown>;
 }
+
+/** `chat.postEphemeral` codes that mean the bot cannot post in this conversation. */
+const NO_ACCESS_CODES = new Set(['channel_not_found', 'not_in_channel', 'is_archived', 'restricted_action']);
 
 const TEXT = '📋 계정별 상세';
 
@@ -61,15 +70,32 @@ export async function postAuthAccountReport(args: {
 }): Promise<void> {
   const { client, target, userId } = args;
   const thread = target.threadTs ? { thread_ts: target.threadTs } : {};
+  // Set once the bot is known not to reach the channel: later sends use the response_url.
+  let textViaRespond: unknown[] | undefined;
+  const ephemeral = async (blocks: unknown[], text: string) => {
+    try {
+      return await client.chat.postEphemeral({
+        channel: target.channel,
+        user: target.ephemeralTo as string,
+        ...thread,
+        text,
+        blocks: blocks as never,
+      });
+    } catch (err) {
+      const code = (err as { data?: { error?: string } })?.data?.error;
+      if (!target.respond || !code || !NO_ACCESS_CODES.has(code)) throw err;
+      // The response_url cannot report a refused image: send the text report there.
+      return target.respond({
+        response_type: 'ephemeral',
+        replace_original: false,
+        text,
+        blocks: textViaRespond ?? blocks,
+      });
+    }
+  };
   const send = (blocks: unknown[], text = TEXT) =>
     target.ephemeralTo
-      ? client.chat.postEphemeral({
-          channel: target.channel,
-          user: target.ephemeralTo,
-          ...thread,
-          text,
-          blocks: blocks as never,
-        })
+      ? ephemeral(blocks, text)
       : client.chat.postMessage({ channel: target.channel, ...thread, text, blocks: blocks as never });
 
   try {
@@ -89,6 +115,7 @@ export async function postAuthAccountReport(args: {
     const header = `📋 *계정별 상세* · <@${userId}> 요청 · <!date^${Math.floor(nowMs / 1000)}^{date_short_pretty} {time}|${new Date(nowMs).toISOString()}>`;
     // The text rows open with this header as a context block; the picture reuses it.
     const textBlocks = buildAccountReportTextBlocks(status, nowMs, header);
+    textViaRespond = textBlocks;
     const picture = await reportPicture(client, status, nowMs, textBlocks[0]);
     await deliverImageCard(
       picture ? { blocks: picture, fallbackBlocks: textBlocks } : { blocks: textBlocks },

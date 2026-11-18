@@ -7,7 +7,7 @@ import type { LlmuxAccount, LlmuxStatus } from '../../../auth/llmux-client';
 import { buildCapacityView } from '../../../conversation/capacity-view';
 import { buildAccountReport, buildAuthInfographic, describeAuthInfographic } from '../infographic-model';
 import { renderAuthReportPng, renderAuthSummaryPng } from '../infographic-publish';
-import { buildAccountReportSvg, buildAuthSummarySvg, escapeXml, REPORT_WIDTH, SUMMARY_WIDTH } from '../infographic-svg';
+import { buildAccountReportSvg, buildAuthSummarySvg, REPORT_WIDTH, SUMMARY_WIDTH } from '../infographic-svg';
 
 const NOW_S = 1_800_000_000;
 const NOW_MS = NOW_S * 1000;
@@ -63,7 +63,7 @@ describe('buildAccountReportSvg', () => {
 
   it('escapes account names and marks the current account', () => {
     expect(svg).not.toContain('a<b>&c');
-    expect(svg).toContain(escapeXml('a<b>&c'));
+    expect(svg).toContain('>a&lt;b&gt;&amp;c<');
     expect(svg).toContain('현재');
     expect(svg).toContain(`width="${REPORT_WIDTH * 2}"`);
   });

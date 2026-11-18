@@ -357,9 +357,22 @@ function planRow(account: LlmuxAccount, unit: CapacityUnit, current: boolean, no
   }
   if (unit.excluded === 'noMeasure') return row;
   if (unit.excluded === 'unknownTier') {
-    // Not in the totals, but llmux still measured it.
-    const usable = (row.week ?? 0) > EPS && !account.blocked;
-    return { ...row, state: usable ? 'usable' : 'drained', stateLabel: usable ? '사용 가능 (플랜 미상)' : '주간 소진' };
+    // Not in the totals, but llmux still measured it — and its blocks are known.
+    if ((row.week ?? 0) <= EPS) return { ...row, state: 'drained', stateLabel: '주간 소진' };
+    const { weekly, cooldownUntil, scopedUntil } = unit.blocks;
+    if (weekly || cooldownUntil || scopedUntil) {
+      // It runs again once every block has lifted; a weekly block lifts at the weekly reset.
+      const weeklyLift = weekly ? row.resetAt : 0;
+      const returnAt =
+        weeklyLift === undefined ? undefined : Math.max(weeklyLift, cooldownUntil ?? 0, scopedUntil ?? 0);
+      return {
+        ...row,
+        state: 'blocked',
+        stateLabel: blockLabel(unit, row.scoped?.label),
+        ...(returnAt ? { returnAt } : {}),
+      };
+    }
+    return { ...row, state: 'usable', stateLabel: '사용 가능 (플랜 미상)' };
   }
   row.week = unit.week;
   if (unit.now > EPS) return { ...row, state: 'usable', stateLabel: '사용 가능' };

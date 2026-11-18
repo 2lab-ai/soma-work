@@ -90,8 +90,11 @@ for everyone — admins included:
   When the render or upload fails, the card is the text card below. When Slack
   refuses the just-uploaded file (`invalid_blocks`), the post is retried three
   times and then the text card is sent; the report falls back to text rows the
-  same way. A send that fails without Slack's answer (a timeout, a lost
-  response) is not followed by a second post — the first one may have landed.
+  same way. A send that fails without a validation answer from Slack (a
+  timeout, a lost response, `internal_error`) is not followed by a second post —
+  the first one may have landed. An ephemeral card in a channel the bot cannot
+  post to (a private channel it was never invited to) gets the text report back
+  through the button's response_url.
   The picture goes only where a refusal is visible: a posted card (`auth`,
   `/z auth`, its buttons, modal submissions). An ephemeral card and the auth
   button of the `/z` help card are replaced through a response_url or a replace

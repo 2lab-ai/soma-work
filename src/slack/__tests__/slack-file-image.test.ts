@@ -41,8 +41,8 @@ describe('deliverImageCard', () => {
     expect(send.mock.calls[send.mock.calls.length - 1]?.[0]).toBe(card.fallbackBlocks);
   });
 
-  it('falls back at once on another Slack rejection (nothing was posted)', async () => {
-    const send = vi.fn().mockRejectedValueOnce(platform('too_many_attachments')).mockResolvedValue('text');
+  it('falls back at once on another validation rejection (nothing was posted)', async () => {
+    const send = vi.fn().mockRejectedValueOnce(platform('invalid_arguments')).mockResolvedValue('text');
     await expect(deliverImageCard(card, send, { sleep: noSleep })).resolves.toBe('text');
     expect(send).toHaveBeenCalledTimes(2);
     expect(send.mock.calls[1][0]).toBe(card.fallbackBlocks);
@@ -54,6 +54,12 @@ describe('deliverImageCard', () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
+  it('propagates an ambiguous server error (internal_error may follow a posted message)', async () => {
+    const send = vi.fn().mockRejectedValueOnce(platform('internal_error')).mockResolvedValue('text');
+    await expect(deliverImageCard(card, send, { sleep: noSleep })).rejects.toThrow('internal_error');
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
   it('an in-place update may fall back after any failure (fallbackOn)', async () => {
     const send = vi.fn().mockRejectedValueOnce(new Error('update did not land')).mockResolvedValue('text');
     await expect(deliverImageCard(card, send, { sleep: noSleep, fallbackOn: () => true })).resolves.toBe('text');
@@ -62,9 +68,9 @@ describe('deliverImageCard', () => {
 
   it('throws when the fallback fails too', async () => {
     const send = vi.fn(async () => {
-      throw platform('channel_not_found');
+      throw platform('invalid_arguments');
     });
-    await expect(deliverImageCard(card, send, { sleep: noSleep })).rejects.toThrow('channel_not_found');
+    await expect(deliverImageCard(card, send, { sleep: noSleep })).rejects.toThrow('invalid_arguments');
     expect(send).toHaveBeenCalledTimes(2);
   });
 });
