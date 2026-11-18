@@ -428,6 +428,26 @@ describe('CallRun — a warm voice engine', () => {
     expect(warmed).toHaveLength(2);
   });
 
+  it('skips the wake-up while the agent is still synthesizing (the engine is awake)', async () => {
+    let letGo!: () => void;
+    const { run, warmed, dialog } = setup({}, ['여보세요?'], {
+      speakGate: () =>
+        new Promise<void>((r) => {
+          letGo = r;
+        }),
+    });
+    run.begin();
+    dialog().reply('안녕하세요, 소마예요. 잠깐 통화 괜찮으세요?');
+    await settleAll(); // the opening is being synthesized while it rings
+    run.attach(fakeCall() as unknown as CallSessionLike);
+    run.feedAudio(tone(400, 0.3));
+    run.feedAudio(quiet(800)); // "여보세요?" ends while the opening is still in synthesis
+    await settleAll();
+    expect(warmed).toEqual([]);
+    letGo();
+    await settleAll();
+  });
+
   it('does not wait for the wake-up: the words reach the dialog while it runs, and it is cancelled with the call', async () => {
     let warmSignal: AbortSignal | undefined;
     const { run, clock, warmed, dialog } = setup({ direction: 'inbound' }, ['예약 확인하려고요'], {

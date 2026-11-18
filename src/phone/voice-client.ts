@@ -48,15 +48,19 @@ type FetchLike = typeof fetch;
 /** A warm-up the engine has not finished in this long is dropped (the word takes ~0.6 s). */
 const WARM_TIMEOUT_MS = 5_000;
 /**
- * Per voice host, across every line of this process: transcriptions in flight and the wake-ups running. A wake-up
+ * Per voice host, across every line of this process: transcriptions in flight and the one wake-up running. A wake-up
  * beside a transcription slows it (measured: STT 0.9 s → 2.5 s), so none starts while one runs, and a transcription
- * that starts cancels the running ones.
+ * that starts cancels it. One wake-up per host: a second line joins the running one.
  */
-const hosts = new Map<string, { transcribing: number; wakeUps: Set<AbortController> }>();
-function hostOf(base: string): { transcribing: number; wakeUps: Set<AbortController> } {
+interface VoiceHost {
+  transcribing: number;
+  wakeUp: { done: Promise<void>; abort: AbortController } | null;
+}
+const hosts = new Map<string, VoiceHost>();
+function hostOf(base: string): VoiceHost {
   let host = hosts.get(base);
   if (!host) {
-    host = { transcribing: 0, wakeUps: new Set() };
+    host = { transcribing: 0, wakeUp: null };
     hosts.set(base, host);
   }
   return host;
@@ -75,12 +79,11 @@ export class VoiceServiceError extends Error {
 export function createVoiceClient(cfg: VoiceConfig, fetchImpl: FetchLike = fetch): VoiceClient {
   const base = cfg.url.replace(/\/+$/, '');
   const auth: Record<string, string> = cfg.token ? { authorization: `Bearer ${cfg.token}` } : {};
-  let warming: Promise<void> | null = null;
 
   return {
     async transcribe(wav, signal) {
       const host = hostOf(base);
-      for (const wakeUp of host.wakeUps) wakeUp.abort('transcription first');
+      host.wakeUp?.abort.abort('transcription first');
       host.transcribing++;
       try {
         const started = Date.now();
@@ -107,10 +110,9 @@ export function createVoiceClient(cfg: VoiceConfig, fetchImpl: FetchLike = fetch
     warm(signal) {
       const host = hostOf(base);
       if (host.transcribing > 0) return; // this host is transcribing (any line): a wake-up would slow it
-      // One in flight: a stalled service never piles up wake-ups.
-      warming ??= (async () => {
-        const own = new AbortController();
-        host.wakeUps.add(own);
+      if (host.wakeUp) return host.wakeUp.done; // one per host: a stalled service never piles up wake-ups
+      const own = new AbortController();
+      const done = (async () => {
         const timer = setTimeout(() => own.abort('warm-up timed out'), WARM_TIMEOUT_MS);
         try {
           const s = await speak('네', signal ? AbortSignal.any([signal, own.signal]) : own.signal);
@@ -122,11 +124,11 @@ export function createVoiceClient(cfg: VoiceConfig, fetchImpl: FetchLike = fetch
         } finally {
           clearTimeout(timer);
           own.abort('warm-up over'); // an error answer's body is not left open
-          host.wakeUps.delete(own);
-          warming = null;
+          host.wakeUp = null;
         }
       })();
-      return warming;
+      host.wakeUp = { done, abort: own };
+      return done;
     },
   };
 

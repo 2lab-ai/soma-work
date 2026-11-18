@@ -200,6 +200,28 @@ describe('createVoiceClient().warm', () => {
     expect(call.signal.aborted).toBe(false); // the call goes on
     expect(wakeSignal?.aborted).toBe(true); // the failed request does not
   });
+
+  it('runs one wake-up per voice host: a second line joins the running one', async () => {
+    let fetches = 0;
+    let answer!: () => void;
+    const fetchImpl = (async () => {
+      fetches++;
+      await new Promise<void>((r) => {
+        answer = r;
+      });
+      return new Response(lazyBody(1, null, { reads: 0, eof: false }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const cfg = { url: 'http://joined-voice:9999', voice: 'v', model: 'drama-3', language: 'ko' };
+    const lineA = createVoiceClient(cfg, fetchImpl);
+    const lineB = createVoiceClient(cfg, fetchImpl);
+    const a = lineA.warm?.();
+    const b = lineB.warm?.();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetches).toBe(1);
+    expect(b).toBe(a);
+    answer();
+    await a;
+  });
 });
 
 afterEach(() => {
