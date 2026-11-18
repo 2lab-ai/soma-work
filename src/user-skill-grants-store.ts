@@ -523,14 +523,6 @@ export function secretGrantees(name: string): string[] {
   return [...secretRequesters(loadGrants(ENV_SKILL_GRANT_OWNER), name)];
 }
 
-/** The secret names some requester holds an "always" grant for — in the store or not (the tab lists them all). */
-export function secretGrantNames(): string[] {
-  const grants = loadGrants(ENV_SKILL_GRANT_OWNER);
-  return Object.keys(grants.perSecret ?? {})
-    .filter((name) => secretRequesters(grants, name).length > 0)
-    .sort();
-}
-
 /** Has an admin let the requester's tools use secret `name` always? */
 export function hasSecretGrant(name: string, requesterId: string): boolean {
   return secretRequesters(loadGrants(ENV_SKILL_GRANT_OWNER), name).includes(requesterId);

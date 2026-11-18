@@ -154,13 +154,20 @@ describe('server-tools calls and secret grants in the policy hook', () => {
   });
 
   it('only adds: the tool grant or the environment grant opens the call with no card', async () => {
+    // A thread of its own: an earlier test's thread grant (in memory) must not be what opens these calls.
+    const thread = '1700000000.0901';
     const onSecretUseDenied = vi.fn(async () => undefined);
-    const withToolGrant = await hook(deps({ onSecretUseDenied, checkMcpToolPermission: vi.fn(() => null) }));
+    const bare = await hook(deps({ onSecretUseDenied }), thread);
+    expect((await bare('db_query', { server: 'plain', database: 'app' })).hookSpecificOutput?.permissionDecision).toBe(
+      'deny',
+    );
+    onSecretUseDenied.mockClear();
+    const withToolGrant = await hook(deps({ onSecretUseDenied, checkMcpToolPermission: vi.fn(() => null) }), thread);
     expect(
       (await withToolGrant('db_query', { server: 'plain', database: 'app' })).hookSpecificOutput?.permissionDecision,
     ).not.toBe('deny');
     grantEnvironment('env:acme-dev2', USER);
-    const withEnvGrant = await hook(deps({ onSecretUseDenied }));
+    const withEnvGrant = await hook(deps({ onSecretUseDenied }), thread);
     expect(
       (await withEnvGrant('gh_pr', { server: 'dev2', action: 'view', number: 1 })).hookSpecificOutput
         ?.permissionDecision,

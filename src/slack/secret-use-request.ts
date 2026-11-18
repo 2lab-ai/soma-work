@@ -21,7 +21,7 @@ import {
 } from '../admin-request-store';
 import { getAdminUsers } from '../admin-utils';
 import { Logger } from '../logger';
-import { buildSecretUseMessage, type SecretUseView, secretNamesText } from './secret-use-blocks';
+import { buildSecretUseMessage, SECRET_NAMES_TEXT_MAX, type SecretUseView, secretNamesText } from './secret-use-blocks';
 
 const logger = new Logger('SecretUseRequest');
 
@@ -49,11 +49,16 @@ export interface RequestSecretUseInput {
   adminOnlyTool: boolean;
   /** Sent again as the requester once an admin allows it, to continue the run. */
   originalText: string;
-  /** Test seam — defaults to ADMIN_USERS. */
-  admins?: readonly string[];
 }
 
 export type SecretUseDelivery = 'dm' | 'fallback' | 'none' | 'pending';
+
+/**
+ * Rounds whose card is going out right now. Prompts are recorded only once Slack answers, so a second denial in that
+ * window (the model's parallel tool calls) would otherwise send a second card: it is claimed here, synchronously,
+ * before the first await.
+ */
+const delivering = new Set<string>();
 
 /** One request per (requester, secret set, thread): the same ask in the same thread is the same card. */
 export function secretUseRequestId(requesterId: string, names: readonly string[], channel: string, threadTs?: string) {
@@ -65,6 +70,7 @@ export function secretUseRequestId(requesterId: string, names: readonly string[]
 export function secretUseView(req: AdminRequest): SecretUseView {
   return {
     requestId: req.requestId,
+    round: String(req.createdAt),
     requesterId: req.requesterId,
     names: (req.data.names ?? '').split(',').filter(Boolean),
     tool: req.data.tool ?? '',
@@ -76,7 +82,7 @@ export function secretUseView(req: AdminRequest): SecretUseView {
 }
 
 function describeDelivery(delivered: SecretUseDelivery, names: readonly string[]): string {
-  const what = `비밀 ${secretNamesText(names)}`;
+  const what = `비밀 ${secretNamesText(names, SECRET_NAMES_TEXT_MAX)}`;
   switch (delivered) {
     case 'none':
       return `⚠️ ${what} 사용은 어드민 승인이 필요하지만 요청을 전달하지 못했습니다(어드민 미설정 또는 Slack 오류). 어드민에게 직접 문의하세요.`;
@@ -92,6 +98,7 @@ export async function requestSecretUse(
   input: RequestSecretUseInput,
 ): Promise<{ requestId: string; delivered: SecretUseDelivery }> {
   const requestId = secretUseRequestId(input.requesterId, input.names, input.channel, input.threadTs);
+  let claimed = '';
   try {
     const req = openAdminRequest({
       kind: 'secret_use',
@@ -110,6 +117,10 @@ export async function requestSecretUse(
     });
     // An unanswered card is already in the admins' DMs: re-sending on every retry would spam them.
     if (req.prompts.length > 0) return { requestId, delivered: 'pending' };
+    const round = `${requestId}@${req.createdAt}`;
+    if (delivering.has(round)) return { requestId, delivered: 'pending' };
+    delivering.add(round);
+    claimed = round;
     const delivered = await deliver(input, req);
     await input.slackApi
       .postMessage(input.channel, describeDelivery(delivered, input.names), { threadTs: input.threadTs })
@@ -121,11 +132,13 @@ export async function requestSecretUse(
   } catch (error) {
     logger.error('secret use request failed', { requestId, error: (error as Error)?.message ?? String(error) });
     return { requestId, delivered: 'none' };
+  } finally {
+    if (claimed) delivering.delete(claimed);
   }
 }
 
 async function deliver(input: RequestSecretUseInput, req: AdminRequest): Promise<SecretUseDelivery> {
-  const admins = [...(input.admins ?? getAdminUsers())];
+  const admins = [...getAdminUsers()];
   const msg = buildSecretUseMessage(secretUseView(req));
   const close = () =>
     markAdminRequest('secret_use', req.requestId, {

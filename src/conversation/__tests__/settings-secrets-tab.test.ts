@@ -300,7 +300,7 @@ describe('비밀 tab — who may use it (secret-access WU2)', () => {
 
   it('adds and removes through POST …/grants and redraws from the answer', async () => {
     const p = page({ adminMode: true, inputs: { 'sc-pick-gh-token': { value: 'U_C' } } });
-    p.apiWrite.mockResolvedValue({
+    p.apiWrite.mockResolvedValueOnce({
       ok: true,
       status: 200,
       data: { access: { direct: ['U_A', 'U_C'], environments: [] } },
@@ -308,11 +308,24 @@ describe('비밀 tab — who may use it (secret-access WU2)', () => {
     await p.api.scAddGrant({ getAttribute: () => 'gh-token' });
     expect(p.apiWrite).toHaveBeenCalledWith('POST', '/api/secrets/gh-token/grants', { userId: 'U_C', allow: true });
     expect(p.els['sc-body'].innerHTML).toContain('>씨<');
+    p.apiWrite.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      data: { access: { direct: ['U_C'], environments: [] } },
+    });
     await p.api.scRemoveGrant({ getAttribute: (k: string) => (k === 'data-name' ? 'gh-token' : 'U_A') });
     expect(p.apiWrite).toHaveBeenLastCalledWith('POST', '/api/secrets/gh-token/grants', {
       userId: 'U_A',
       allow: false,
     });
+    // redrawn from the answer: 에이 is no longer a direct chip and is offered in the picker again
+    const html: string = p.els['sc-body'].innerHTML;
+    const direct = /직접 허락\(앞으로 계속 자동 수락\):<\/span>(.*?)<\/div>/.exec(
+      html.split('sc-name">gh-token')[1],
+    )![1];
+    expect(direct).not.toContain('>에이<');
+    expect(direct).toContain('>씨<');
+    expect(/id="sc-pick-gh-token"[^>]*>(.*?)<\/select>/.exec(html)![1]).toContain('value="U_A"');
   });
 
   it('no pick sends nothing', async () => {
