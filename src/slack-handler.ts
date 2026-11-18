@@ -146,6 +146,7 @@ import {
 } from './slack/handoff-budget';
 import { buildCompactHooks } from './slack/hooks/compact-hooks';
 import { InputProcessor, type MessageEvent, SessionInitializer, StreamExecutor } from './slack/pipeline';
+import { requestSecretUse } from './slack/secret-use-request';
 import {
   advanceGoalQueue,
   deleteCurrentGoal,
@@ -1096,6 +1097,19 @@ export class SlackHandler {
           `어드민이 환경 스킬 ${skillKey} 실행을 허용했습니다. ` +
           '이 스킬이 거부되어 진행하지 못한 단계부터 이어서 진행하세요.',
         notifyWhenPending: false,
+      });
+    });
+
+    // 3b. Secret-use gate (secret-access WU2): a non-admin's server-tools call that uses secrets they hold no grant
+    //     for is denied and this asks the admins (수락 · 거부 · 앞으로 계속 자동 수락). On approval the action handler
+    //     sends the continuation below as the requester, so the run resumes. Names only, never a value.
+    this.claudeHandler.setSecretUseRequester?.(async (denial) => {
+      await requestSecretUse({
+        slackApi: this.slackApi,
+        ...denial,
+        originalText:
+          `어드민이 비밀 ${denial.names.join(', ')} 사용을 허락했습니다. ` +
+          '그 비밀이 없어 진행하지 못한 단계부터 이어서 진행하세요.',
       });
     });
 

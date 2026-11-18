@@ -4,6 +4,7 @@
  *   GET    /api/secrets          names · last change · who changed it · where configuration uses it — no values
  *   PUT    /api/secrets/:name    { value, overwrite? } — add, or replace with overwrite
  *   DELETE /api/secrets/:name
+ *   POST   /api/secrets/:name/grants   { userId, allow } — who may have their tools use it (secret-access WU2)
  *
  * Only an admin signed in with Slack (`oauth_jwt`, `ADMIN_USERS`, not an environment user) reads or changes it;
  * a change needs admin mode (`X-Admin-Mode: on`) and CSRF. The viewer token and a dashboard without sign-in are
@@ -16,14 +17,18 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { isAdminUser } from '../admin-utils';
 import { CONFIG_FILE, DATA_DIR, SECRETS_DIR } from '../env-paths';
-import { isEnvironmentId } from '../env-users';
+import { isEnvironmentId, loadEnvironments } from '../env-users';
 import { Logger } from '../logger';
 import { deleteSecret, listSecrets, SecretAdminError, writeSecret } from '../secrets/secret-admin-store';
 import { appendSecretAudit, lastSecretChanges, type SecretAuditAction } from '../secrets/secret-audit';
 import { loadServerToolsSection, secretUsages } from '../secrets/secret-usage';
 import { userSettingsStore } from '../user-settings-store';
+import { environmentGrantees, grantSecret, revokeSecret, secretGrantees } from '../user-skill-grants-store';
 
 const logger = new Logger('SecretsRoutes');
+
+// biome-ignore lint/style/noCommonJs: @soma/process-shared sub-path types are not visible under moduleResolution node
+const { isSecretName } = require('@soma/process-shared/secret-ref.js') as { isSecretName(name: unknown): boolean };
 
 type Middleware = (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
 
@@ -34,6 +39,48 @@ interface Paths {
 }
 
 let _paths: Paths | null = null;
+
+/** A user of the picker (the user settings store's rows). */
+export interface SecretsUserRow {
+  userId: string;
+  slackName?: string;
+  slackDisplayName?: string;
+  accepted?: boolean;
+}
+
+let _users: (() => SecretsUserRow[]) | null = null;
+
+/** Tests: the users the picker offers. */
+export function setSecretsUserSourceForTests(fn: (() => SecretsUserRow[]) | null): void {
+  _users = fn;
+}
+
+/** Accepted users, as the picker shows them. */
+function knownUsers(): Array<{ id: string; name: string }> {
+  const rows: SecretsUserRow[] = _users ? _users() : userSettingsStore.getAllUsers();
+  return rows
+    .filter((u) => u.accepted === true && !!u.userId)
+    .map((u) => ({ id: u.userId, name: u.slackDisplayName || u.slackName || u.userId }))
+    .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+}
+
+/**
+ * Who may have their tools use secret `name`, beyond admins and environment users (who always may): the direct
+ * grants (the 3-answer card's "always", or this tab), and — derived, edited on the environment — the holders of
+ * the environment grant of each environment server that uses it.
+ */
+function accessOf(name: string, usages: ReadonlyArray<{ server: string }>, configFile: string) {
+  const environments = loadEnvironments(configFile);
+  const seen = new Set<string>();
+  const viaEnvironment: Array<{ id: string; server: string; users: string[] }> = [];
+  for (const { server } of usages) {
+    const env = environments.find((e) => e.servers.includes(server));
+    if (!env || seen.has(env.id)) continue;
+    seen.add(env.id);
+    viaEnvironment.push({ id: env.id, server, users: environmentGrantees(env.id) });
+  }
+  return { direct: secretGrantees(name), environments: viaEnvironment };
+}
 
 /** Tests: the store, the data directory (ledger) and the config file to read usages from. */
 export function setSecretsPathsForTests(paths: Paths | null): void {
@@ -126,8 +173,10 @@ export function registerSecretsRoutes(
               ? { updatedBy: change.actor, updatedByName: displayName(change.actor) }
               : {}),
             usages: usages.get(s.name) ?? [],
+            access: accessOf(s.name, usages.get(s.name) ?? [], configFile),
           };
         }),
+        users: knownUsers(),
         missing: [...usages.entries()]
           .filter(([name]) => !names.has(name))
           .map(([name, where]) => ({ name, usages: where }))
@@ -157,6 +206,47 @@ export function registerSecretsRoutes(
         reply.send({ ok: true, created, secret: entry });
       } catch (error) {
         refuse(reply, 'writing a secret', error);
+      }
+    },
+  );
+
+  server.post<{ Params: { name: string }; Body: { userId?: unknown; allow?: unknown } }>(
+    '/api/secrets/:name/grants',
+    write,
+    async (request, reply) => {
+      const actor = namedAdmin(request, reply, true);
+      if (!actor) return;
+      const { name } = request.params;
+      const { userId, allow } = request.body || {};
+      if (!isSecretName(name)) {
+        reply.status(400).send({ error: '비밀 이름이 올바르지 않습니다' });
+        return;
+      }
+      if (typeof userId !== 'string' || typeof allow !== 'boolean') {
+        reply.status(400).send({ error: 'userId와 allow가 필요합니다' });
+        return;
+      }
+      try {
+        if (allow && !knownUsers().some((u) => u.id === userId)) {
+          reply.status(400).send({ error: '승인된 사용자가 아닙니다' });
+          return;
+        }
+        if (allow) grantSecret(name, userId);
+        else revokeSecret(name, userId);
+        try {
+          appendSecretAudit({ actor, action: allow ? 'grant.add' : 'grant.remove', name, userId }, paths().dataDir);
+        } catch (error) {
+          logger.error('Secret grant changed but the audit ledger could not be written', {
+            name,
+            code: (error as NodeJS.ErrnoException)?.code,
+          });
+        }
+        logger.info('Secret grant changed from the settings page', { name, userId, allow, actor });
+        const { configFile } = paths();
+        const usages = secretUsages(loadServerToolsSection(configFile)).get(name) ?? [];
+        reply.send({ ok: true, access: accessOf(name, usages, configFile) });
+      } catch (error) {
+        refuse(reply, 'changing a secret grant', error);
       }
     },
   );

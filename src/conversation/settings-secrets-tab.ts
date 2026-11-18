@@ -35,6 +35,10 @@ export const SECRETS_TAB_CSS = `
 .sc-actions, .sc-line { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .sc-form { display: grid; gap: 8px; max-width: 560px; }
 .sc-value { font-family: var(--mono); font-size: 12px; min-height: 88px; resize: vertical; }
+.sc-access { margin-top: 8px; display: grid; gap: 6px; }
+.sc-access .chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.sc-access .lbl { font-size: 12px; color: var(--text-secondary); }
+.sc-access .chip:not(:has(button)) { padding-right: 10px; }
 .sc-banner { font-size: 13px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); margin-bottom: 12px; display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
 `;
 
@@ -102,7 +106,8 @@ function scRow(s, editable) {
   var by = who ? ' · ' + who : '';
   var html = '<li class="sc-row"><div><span class="sc-name">' + esc(s.name) + '</span>'
     + '<span class="sc-sub">바꾼 시각 ' + esc(scWhen(s.updatedAt)) + esc(by) + '</span>'
-    + '<span class="sc-sub">' + esc(s.usages && s.usages.length ? '쓰는 곳: ' + scUsageText(s.usages) : '설정에서 쓰지 않음') + '</span>';
+    + '<span class="sc-sub">' + esc(s.usages && s.usages.length ? '쓰는 곳: ' + scUsageText(s.usages) : '설정에서 쓰지 않음') + '</span>'
+    + scAccess(s, editable);
   if (editable && _scReplacing === s.name) {
     html += '<div class="sc-form" style="margin-top:8px">' + scValueBox('sc-replace-value', s.name + '의 새 값')
       + '<div class="sc-line"><button type="button" class="btn primary" data-name="' + escAttr(s.name) + '" onclick="scSaveReplace(this)">새 값 저장</button>'
@@ -114,6 +119,67 @@ function scRow(s, editable) {
       + '<button type="button" class="btn danger" data-name="' + escAttr(s.name) + '" onclick="scDelete(this)">삭제</button></div>';
   }
   return html + '</li>';
+}
+function scUserName(id) {
+  var users = (_sc && _sc.users) || [];
+  for (var i = 0; i < users.length; i++) if (users[i].id === id) return users[i].name;
+  return id;
+}
+function scChip(id, name, removable) {
+  var label = scUserName(id);
+  return '<span class="chip">' + esc(label) + (removable ? '<button type="button" aria-label="' + escAttr(label + ' 빼기') + '" data-name="' + escAttr(name) + '" data-user="' + escAttr(id)
+    + '" onclick="scRemoveGrant(this)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>' : '') + '</span>';
+}
+// Who may have their tools use the secret: admins and environment users always; the holders of an environment grant
+// of an environment server that uses it (edited on that environment); the direct grants (the card's "always").
+function scAccess(s, editable) {
+  var access = s.access || { direct: [], environments: [] };
+  var html = '<div class="sc-access"><span class="lbl">누가 쓸 수 있나 — 관리자 · 환경 유저는 항상</span>';
+  for (var i = 0; i < access.environments.length; i++) {
+    var env = access.environments[i];
+    var chips = '';
+    for (var j = 0; j < env.users.length; j++) chips += scChip(env.users[j], s.name, false);
+    html += '<div class="chips"><span class="lbl">' + esc(String(env.id).replace(/^env:/, '')) + ' 환경 허락:</span>' + (chips || '<span class="lock">없음</span>') + '</div>';
+  }
+  var direct = '';
+  for (var k = 0; k < access.direct.length; k++) direct += scChip(access.direct[k], s.name, editable);
+  html += '<div class="chips"><span class="lbl">직접 허락(앞으로 계속 자동 수락):</span>' + (direct || '<span class="lock">없음</span>') + '</div>';
+  if (editable) {
+    var opts = '';
+    var users = (_sc && _sc.users) || [];
+    for (var u = 0; u < users.length; u++) {
+      if (access.direct.indexOf(users[u].id) >= 0) continue;
+      opts += '<option value="' + escAttr(users[u].id) + '">' + esc(users[u].name) + '</option>';
+    }
+    var off = opts ? '' : ' disabled';
+    html += '<div class="sc-line"><select class="ui-input" id="' + escAttr('sc-pick-' + s.name) + '" aria-label="' + escAttr(s.name + '을(를) 쓸 수 있게 할 사람') + '"' + off + '><option value="">사람 선택…</option>' + opts + '</select>'
+      + '<button type="button" class="btn" data-name="' + escAttr(s.name) + '" onclick="scAddGrant(this)"' + off + '>추가</button></div>';
+  }
+  return html + '</div>';
+}
+async function scGrant(name, userId, allow) {
+  var r = await apiWrite('POST', '/api/secrets/' + encodeURIComponent(name) + '/grants', { userId: userId, allow: allow });
+  if (!r.ok) {
+    scStatus((r.status === 403 ? '권한이 없습니다: ' : '바꾸지 못했습니다: ') + r.error, true);
+    return;
+  }
+  var row = scFindSecret(name);
+  if (row && r.data && r.data.access) row.access = r.data.access;
+  scStatus((allow ? '허락했습니다: ' : '뺐습니다: ') + scUserName(userId) + ' — ' + name, false);
+  renderSecrets();
+}
+async function scAddGrant(btn) {
+  var name = btn.getAttribute('data-name');
+  var pick = document.getElementById('sc-pick-' + name);
+  var userId = pick ? pick.value : '';
+  if (!userId) {
+    scStatus('허락할 사람을 고르세요', true);
+    return;
+  }
+  await scGrant(name, userId, true);
+}
+async function scRemoveGrant(btn) {
+  await scGrant(btn.getAttribute('data-name'), btn.getAttribute('data-user'), false);
 }
 function scMissingRow(m, editable) {
   return '<li class="sc-row"><div><span class="sc-name">' + esc(m.name) + '</span>'

@@ -17,7 +17,8 @@ import { Logger } from './logger';
 
 const logger = new Logger('AdminRequestStore');
 
-export type AdminRequestKind = 'new_user' | 'bot_delete';
+/** `secret_use` (secret-access WU2, #1338): may a requester's tools use these secrets — the 3-answer card. */
+export type AdminRequestKind = 'new_user' | 'bot_delete' | 'secret_use';
 
 export interface AdminRequestPrompt {
   channel: string;

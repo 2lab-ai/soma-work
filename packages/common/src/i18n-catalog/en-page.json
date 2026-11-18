@@ -1721,5 +1721,14 @@
   " 삭제": " — delete",
   "삭제하지 못했습니다: ": "Could not delete: ",
   "삭제했습니다: ": "Deleted: ",
-  "설정에서 쓰지 않음": "Not used in configuration"
+  "설정에서 쓰지 않음": "Not used in configuration",
+  "비밀 사용": "Secret use",
+  "<div class=\"sc-access\"><span class=\"lbl\">누가 쓸 수 있나 — 관리자 · 환경 유저는 항상</span>": "<div class=\"sc-access\"><span class=\"lbl\">Who may use it — admins and environment users always</span>",
+  " 환경 허락:</span>": " environment grant:</span>",
+  "<div class=\"chips\"><span class=\"lbl\">직접 허락(앞으로 계속 자동 수락):</span>": "<div class=\"chips\"><span class=\"lbl\">Granted directly (always accept):</span>",
+  "을(를) 쓸 수 있게 할 사람": ": who else may use it",
+  "바꾸지 못했습니다: ": "Could not change it: ",
+  "허락했습니다: ": "Allowed: ",
+  "뺐습니다: ": "Removed: ",
+  "허락할 사람을 고르세요": "Pick the person to allow"
 }

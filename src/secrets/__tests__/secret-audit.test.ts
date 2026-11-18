@@ -66,3 +66,30 @@ describe('secret-audit', () => {
     expect(fs.readFileSync(outside, 'utf-8')).toBe('');
   });
 });
+
+describe('secret-audit — answers and grants (secret-access WU2)', () => {
+  it('records who the answer was about, and the tool and server of the card', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'secret-audit-wu2-'));
+    try {
+      appendSecretAudit(
+        { actor: 'U_ADMIN', action: 'use.always', name: 'gh-token', userId: 'U_REQ', tool: 'gh_pr', server: 'dev2' },
+        dir,
+        new Date(0),
+      );
+      const line = JSON.parse(fs.readFileSync(path.join(dir, SECRET_AUDIT_FILE), 'utf-8'));
+      expect(line).toEqual({
+        at: new Date(0).toISOString(),
+        actor: 'U_ADMIN',
+        action: 'use.always',
+        name: 'gh-token',
+        userId: 'U_REQ',
+        tool: 'gh_pr',
+        server: 'dev2',
+      });
+      // a grant change is not a change of the secret itself
+      expect(lastSecretChanges(dir).size).toBe(0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
