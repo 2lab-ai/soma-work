@@ -274,6 +274,7 @@ describe('someone else\u2019s card starts on one line; the reader\u2019s \u2212 
       _cardHost: { MINE: el, THEIRS: el, NOBODY: el, PLUSSED: el, OPENED: el, DECK: el, ALREADY: el, GONE: null },
       _expanded: new Set(['OPENED']),
       _deck: ['DECK'],
+      boardCurrentKey: () => 'DECK', // its detail card in front
     });
     p.boardOwnerDefaults();
     expect(calls).toEqual([
@@ -285,12 +286,7 @@ describe('someone else\u2019s card starts on one line; the reader\u2019s \u2212 
     expect(ls.items['soma-card-min']).toBeUndefined(); // a default is not the reader's \u2212
     // Not known (a viewer token): nothing folds.
     calls.length = 0;
-    page(storage(), '', {
-      _sessionCache: more,
-      _cardHost: { THEIRS: el },
-      _expanded: new Set(),
-      _deck: [],
-    }).boardOwnerDefaults();
+    page(storage(), '', { _sessionCache: more, _cardHost: { THEIRS: el } }).boardOwnerDefaults();
     expect(calls).toEqual([]);
   });
 });
@@ -312,12 +308,13 @@ describe('a viewer change on a drawn board reconciles the ownership default both
     const cache: Record<string, unknown> = {
       A: { ownerId: 'U001', activityState: 'idle' }, // mine as U001, someone else's as U002
       B: { ownerId: 'U002', activityState: 'idle' }, // folded as someone else's for U001; mine for U002
-      C: { ownerId: 'U002', activityState: 'idle' }, // the reader folded it (saved \u2212)
+      C: { ownerId: 'U002', activityState: 'idle' }, // the reader presses + then \u2212 on it (saved \u2212)
       D: { ownerId: 'U002', activityState: 'idle', starred: true, lastActivity: new Date(NOW - 30 * H).toISOString() },
       E: { ownerId: 'U002', activityState: 'idle' }, // its detail card is in the deck
     };
     const m = load<{
       cardMinSeeds(cols: unknown): string[];
+      cardMinSave(k: string, on: boolean): void;
       boardOwnerDefaults(): void;
       setViewer(v: string): void;
     }>(
@@ -325,6 +322,7 @@ describe('a viewer change on a drawn board reconciles the ownership default both
         'cardPrefList',
         'cardPrefPut',
         'cardMinList',
+        'cardMinSave',
         'cardUnfoldList',
         'cardStarDefaultFolded',
         'cardOthersDefaultFolded',
@@ -333,12 +331,13 @@ describe('a viewer change on a drawn board reconciles the ownership default both
       ],
       ['CARD_MIN_MAX', '_cardPrefs', 'STAR_FOLD_MS', '_ownerFolded'],
       {
-        localStorage: storage({ 'soma-card-min': '["C"]' }),
+        localStorage: storage(),
         _sessionCache: cache,
         _cardCol: { A: 'idle', B: 'idle', C: 'idle', D: 'idle', E: 'idle' },
         _cardHost: { A: el, B: el, C: el, D: el, E: el },
         _expanded: new Set(),
         _deck: ['E'],
+        boardCurrentKey: () => 'E', // E's detail card in front
         Date: { now: () => NOW, parse: Date.parse },
       },
       { prelude: "var _viewerUserId = 'U001';", exports: 'setViewer: function (v) { _viewerUserId = v; }' },
@@ -347,6 +346,11 @@ describe('a viewer change on a drawn board reconciles the ownership default both
     const seeds = m.cardMinSeeds([{ keys: ['A', 'B', 'C', 'D', 'E'] }]);
     expect(seeds.sort()).toEqual(['B', 'C', 'D', 'E']);
     for (const k of seeds) folded.add(k);
+    // The reader brings C back (+) and folds it again (\u2212): its fold is theirs now, recorded as a default before (review).
+    folded.delete('C');
+    m.cardMinSave('C', false);
+    folded.add('C');
+    m.cardMinSave('C', true);
     // Another account (U002) on the same mounted board.
     m.setViewer('U002');
     m.boardOwnerDefaults();
@@ -363,6 +367,62 @@ describe('a viewer change on a drawn board reconciles the ownership default both
     m.setViewer('');
     m.boardOwnerDefaults();
     expect(calls).toEqual([['A', false, undefined]]);
+  });
+});
+
+describe('the ownership default and a detail card in front, through the element\u2019s own fold marks (review)', () => {
+  it('known late while someone else\u2019s detail card is in front: stays on one line after it closes; switched to its owner: comes back', () => {
+    // As <ui-agent-inbox> 0.43.0: setMinimized(on) on a folded card keeps its mark; untilRestore marks a fold the
+    // detail card made; restore() lifts only that one.
+    const marks = new Map<string, 'detail' | 'plain'>();
+    const el = {
+      isMinimized: (k: string) => marks.has(k),
+      setMinimized: (k: string, on: boolean, opts: { untilRestore?: boolean } = {}) => {
+        if (!on) marks.delete(k);
+        else if (!marks.has(k)) marks.set(k, opts.untilRestore ? 'detail' : 'plain');
+      },
+      restore: (k: string) => marks.get(k) === 'detail' && marks.delete(k),
+    };
+    const deck = ['E'];
+    const m = load<{ boardOwnerDefaults(): void; boardRestoreFromDetail(k: string): void; setViewer(v: string): void }>(
+      [
+        'cardPrefList',
+        'cardPrefPut',
+        'cardMinList',
+        'cardUnfoldList',
+        'cardStarDefaultFolded',
+        'cardOthersDefaultFolded',
+        'boardOwnerDefaults',
+        'boardRestoreFromDetail',
+      ],
+      ['CARD_MIN_MAX', '_cardPrefs', 'STAR_FOLD_MS', '_ownerFolded', '_detailUnfolded'],
+      {
+        localStorage: storage(),
+        _sessionCache: { E: { ownerId: 'U002', activityState: 'idle' } },
+        _cardCol: { E: 'idle' },
+        _cardHost: { E: el },
+        _expanded: new Set(),
+        _deck: deck,
+        boardCurrentKey: () => (deck.indexOf('E') >= 0 ? 'E' : ''),
+      },
+      { prelude: "var _viewerUserId = '';", exports: 'setViewer: function (v) { _viewerUserId = v; }' },
+    );
+    // Before /auth/me: E's title opened its detail card (E folded for it).
+    marks.set('E', 'detail');
+    m.setViewer('U001');
+    m.boardOwnerDefaults();
+    expect(marks.get('E')).toBe('plain'); // the default now, not the detail card's
+    deck.length = 0;
+    m.boardRestoreFromDetail('E'); // its detail card closes
+    expect(marks.get('E')).toBe('plain'); // still on one line: someone else's
+    // E's title again (in front, already on one line), then the reader signs in as E's owner.
+    deck.push('E');
+    m.setViewer('U002');
+    m.boardOwnerDefaults();
+    expect(marks.get('E')).toBe('detail'); // held only by its detail card now
+    deck.length = 0;
+    m.boardRestoreFromDetail('E');
+    expect(marks.has('E')).toBe(false); // back at full size once the detail card closes
   });
 });
 
@@ -468,40 +528,76 @@ describe('a detail card folds its board card and undoes only that fold (D7)', ()
     ]);
   });
 
-  it('a repaint keeps the deck’s folds on the element that now draws them, except a card the reader brought back (review)', () => {
+  it('only the front detail card\u2019s board card is one line: a new front folds, the one before comes back as it was (SSOT_4)', () => {
+    const calls: unknown[][] = [];
+    const host = {
+      setMinimized: (...a: unknown[]) => calls.push(['fold', ...a]),
+      restore: (k: string) => calls.push(['restore', k]),
+    };
+    let front = 'A';
+    const m = load<{ boardSyncDetailFold(): void; boardNoteReaderFold(k: string, on: boolean): void }>(
+      ['boardFoldForDetail', 'boardSyncDetailFold', 'boardNoteReaderFold'],
+      ['_detailUnfolded'],
+      { _cardHost: { A: host, B: host, C: host }, _deck: ['A', 'B', 'C'], boardCurrentKey: () => front },
+    );
+    m.boardSyncDetailFold();
+    expect(calls).toEqual([
+      ['fold', 'A', true, { untilRestore: true }],
+      ['restore', 'B'],
+      ['restore', 'C'],
+    ]);
+    // Another title (or \u2039 \u203a): B in front \u2014 A comes back as it was before its detail card folded it.
+    calls.length = 0;
+    front = 'B';
+    m.boardSyncDetailFold();
+    expect(calls).toEqual([
+      ['restore', 'A'],
+      ['fold', 'B', true, { untilRestore: true }],
+      ['restore', 'C'],
+    ]);
+    // The reader\u2019s + on the front card holds while it stays in the deck: in front again, it is not folded.
+    m.boardNoteReaderFold('B', false);
+    calls.length = 0;
+    m.boardSyncDetailFold();
+    expect(calls).toEqual([
+      ['restore', 'A'],
+      ['restore', 'C'],
+    ]);
+    // The panel closed (nothing in front): every card in the deck is back (restore() is a no-op on B, not folded).
+    calls.length = 0;
+    front = '';
+    m.boardSyncDetailFold();
+    expect(calls).toEqual([
+      ['restore', 'A'],
+      ['restore', 'B'],
+      ['restore', 'C'],
+    ]);
+  });
+
+  it('a repaint folds only the front card, on the element that now draws it, unless the reader brought it back (SSOT_4)', () => {
     const calls: unknown[][] = [];
     const board = { setMinimized: (...a: unknown[]) => calls.push(['board', ...a]) };
     const lane = { setMinimized: (...a: unknown[]) => calls.push(['lane', ...a]) };
-    const cardHost: Record<string, unknown> = { A: board, B: board, C: lane };
-    type Api = {
-      boardFoldDeck(h: unknown): void;
-      boardNoteReaderFold(k: string, on: boolean): void;
-      boardRestoreFromDetail(k: string): void;
-    };
-    const m = load<Api>(
-      ['boardFoldForDetail', 'boardFoldDeck', 'boardNoteReaderFold', 'boardRestoreFromDetail'],
+    let front = 'B';
+    const m = load<{ boardFoldDeck(h: unknown): void; boardNoteReaderFold(k: string, on: boolean): void }>(
+      ['boardFoldForDetail', 'boardFoldDeck', 'boardNoteReaderFold'],
       ['_detailUnfolded'],
-      { _cardHost: cardHost, _deck: ['A', 'B', 'C'] },
+      { _cardHost: { A: board, B: board, C: lane }, _deck: ['A', 'B', 'C'], boardCurrentKey: () => front },
     );
-    m.boardNoteReaderFold('B', false); // the reader's + on B while its detail card waits
-    m.boardNoteReaderFold('Z', false); // not in the deck: nothing to note
-    m.boardFoldDeck(board);
-    expect(calls).toEqual([['board', 'A', true, { untilRestore: true }]]);
-    m.boardFoldDeck(lane); // C moved to a CRON lane: folded there
-    expect(calls[1]).toEqual(['lane', 'C', true, { untilRestore: true }]);
-    m.boardNoteReaderFold('B', true); // − again: the deck's fold applies once more
+    m.boardFoldDeck(board); // A waits behind: not folded
+    expect(calls).toEqual([['board', 'B', true, { untilRestore: true }]]);
     calls.length = 0;
-    m.boardFoldDeck(board);
-    expect(calls).toEqual([
-      ['board', 'A', true, { untilRestore: true }],
-      ['board', 'B', true, { untilRestore: true }],
-    ]);
-    // Leaving the deck forgets the note.
-    m.boardNoteReaderFold('B', false);
-    m.boardRestoreFromDetail('B');
+    m.boardFoldDeck(lane); // C is behind too
+    expect(calls).toEqual([]);
+    front = 'C'; // C (moved to a CRON lane) in front: folded there
+    m.boardFoldDeck(lane);
+    expect(calls).toEqual([['lane', 'C', true, { untilRestore: true }]]);
+    m.boardNoteReaderFold('C', false); // the reader's + on it
     calls.length = 0;
+    m.boardFoldDeck(lane);
+    front = ''; // the panel closed
     m.boardFoldDeck(board);
-    expect(calls.map((c) => c[1])).toEqual(['A', 'B']);
+    expect(calls).toEqual([]);
   });
 
   // The real autoOpenDecisions with the real fold helpers (review: execute the transition, not the source text).

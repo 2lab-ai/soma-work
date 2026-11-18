@@ -54,6 +54,7 @@ export const NEXT_ACTION_SEAMS: Readonly<Record<string, unknown>> = {
   cardMinSeeds: () => [],
   cardMinSave: () => {},
   cardMinForget: () => {},
+  // Loaded with the real cardMinSeeds in the starred-card and decision suites, which do not load this one.
   cardOthersDefaultFolded: () => false,
   boardOwnerDefaults: () => {},
   boardCurrentKey: () => '',
@@ -62,6 +63,7 @@ export const NEXT_ACTION_SEAMS: Readonly<Record<string, unknown>> = {
   boardRestoreFromDetail: () => {},
   boardNoteReaderFold: () => {},
   boardFoldDeck: () => {},
+  boardSyncDetailFold: () => {},
   boardDecisionHidden: () => false,
   boardUnfoldForDecision: () => {},
   cardTitleOf: () => null,
