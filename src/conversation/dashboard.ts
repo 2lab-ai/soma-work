@@ -10897,11 +10897,15 @@ function _applyUserPill(data) {
   const isAdminCapable = !!(data && (data.isAdmin || (data.user && data.user.name && data.isAdmin)));
   _viewerIsAdmin = isAdminCapable;
   if (typeof paintUsageBreakdown === 'function') paintUsageBreakdown(); // the by-user view is an admin's
+  var viewerWas = _viewerUserId;
   _viewerUserId = (data && data.user && data.user.slackUserId) || '';
   syncBoardScope();
   // 내 카드만 needs the viewer (SSOT 2026-11-05): the bar shows it now (and a filter another account stored drops its users).
   if (boardFilterViewerKnown(_viewerUserId) && _lastBoardData) renderBoard(_lastBoardData);
   else paintBoardTools(_lastBoardData);
+  // .prd/34 D13: the cards drawn before the viewer was known (or under another account) follow the ownership default
+  // now — when the viewer changes, not on every /auth/me (a CSRF refresh answers it again).
+  if (_viewerUserId !== viewerWas) boardOwnerDefaults();
   // Plan mode: the viewer is known now — their cards that wait on a decision open (autoOpenDecisions).
   autoOpenDecisions();
   const lifecycleBtn = document.getElementById('lifecycle-btn');
@@ -11991,8 +11995,14 @@ function cardStarDefaultFolded(s, col, now) {
   var last = Date.parse(String(s.lastActivity));
   return Number.isFinite(last) && now - last >= STAR_FOLD_MS;
 }
+// SSOT_3 (.prd/34 D13): someone else's card starts on one line, in any state. Someone else = the signed-in viewer is
+// known (/auth/me) and the card names another owner; a viewer token, the page before /auth/me, or a card with no
+// owner: nobody else's.
+function cardOthersDefaultFolded(s) {
+  return !!_viewerUserId && !!(s && s.ownerId) && s.ownerId !== _viewerUserId;
+}
 // What an element starts on one line (it reads each card once while the card is on it): the reader's folds, and the
-// starred cards a day old the reader has not brought back with +.
+// default ones — starred cards a day old, someone else's cards — the reader has not brought back with +.
 function cardMinSeeds(cols) {
   var out = cardMinList();
   var open = cardUnfoldList();
@@ -12000,7 +12010,11 @@ function cardMinSeeds(cols) {
   function add(keys) {
     for (var i = 0; i < keys.length; i++) {
       var k = keys[i];
-      if (out.indexOf(k) < 0 && open.indexOf(k) < 0 && cardStarDefaultFolded(_sessionCache[k], _cardCol[k], now)) out.push(k);
+      if (out.indexOf(k) >= 0 || open.indexOf(k) >= 0) continue;
+      var s = _sessionCache[k];
+      var others = cardOthersDefaultFolded(s);
+      if (others) _ownerFolded[k] = 1; // a viewer change can lift it again (boardOwnerDefaults)
+      if (others || cardStarDefaultFolded(s, _cardCol[k], now)) out.push(k);
     }
   }
   (cols || []).forEach(function(c) {
@@ -12067,6 +12081,39 @@ function boardUnfoldForDecision(key) {
 }
 function cardMinForget(key) {
   cardPrefPut(_cardPrefs.min, key, false);
+}
+// The ownership default (D13) on the cards already drawn, both ways. An element reads a card's starting fold only the
+// first time it draws it (@2lab.ai/ui #minSeen), and /auth/me can answer after the board drew or name another account
+// later. Someone else's card folds — a default: no event, not saved; left alone: the reader's saved +, a card they
+// opened in place. A card folded as someone else's that no longer is (the viewer changed) unfolds unless another reason
+// holds it: the reader's saved −, the starred day-old default (D12), its detail card in the deck (it then comes back
+// when that leaves — restore()).
+var _ownerFolded = Object.create(null);
+function boardOwnerDefaults() {
+  var open = cardUnfoldList();
+  var shut = cardMinList();
+  var now = Date.now();
+  for (var k in _cardHost) {
+    var host = _cardHost[k];
+    if (!host || typeof host.setMinimized !== 'function' || typeof host.isMinimized !== 'function') continue;
+    var s = _sessionCache[k];
+    var inDeck = _deck.indexOf(k) >= 0;
+    if (cardOthersDefaultFolded(s)) {
+      if (open.indexOf(k) >= 0 || _expanded.has(k)) continue;
+      _ownerFolded[k] = 1;
+      if (host.isMinimized(k)) {
+        // In the deck it is folded for its detail card: plain one line now, so closing the detail card keeps the default.
+        if (!inDeck) continue;
+        host.setMinimized(k, false);
+      }
+      host.setMinimized(k, true);
+    } else if (_ownerFolded[k]) {
+      delete _ownerFolded[k];
+      if (!host.isMinimized(k) || shut.indexOf(k) >= 0 || cardStarDefaultFolded(s, _cardCol[k], now)) continue;
+      host.setMinimized(k, false);
+      if (inDeck) host.setMinimized(k, true, { untilRestore: true });
+    }
+  }
 }
 // The title of a card on its element (in the element's open shadow root), or null: where focus goes back after its
 // detail card closes when the control that opened it is gone.

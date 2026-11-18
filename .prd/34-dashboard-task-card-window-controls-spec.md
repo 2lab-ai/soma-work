@@ -1,6 +1,6 @@
 # 34 — 작업 카드 창 버튼: 한 줄 · 보통 · 펼침 · 상세 카드
 
-Status: shipped · 2026-11-18 · main `0a2476cf`(PR #1349) · dev v0.3.79 · `@2lab.ai/ui` 0.43.0(ui PR #84 `cc51d50`) · 설계 기준 main `5c85d551`, `@2lab.ai/ui` 0.42.1
+Status: shipped(라운드 1) · 라운드 2(D13, SSOT_3) in-progress · 2026-11-18 · main `0a2476cf`(PR #1349) · dev v0.3.79 · `@2lab.ai/ui` 0.43.0(ui PR #84 `cc51d50`) · 설계 기준 main `5c85d551`, `@2lab.ai/ui` 0.42.1
 앞선 계약: [`15-dashboard-detail-deck-spec.md`](15-dashboard-detail-deck-spec.md) §2(상세 카드 덱),
 [`19-dashboard-view-mode-spec.md`](19-dashboard-view-mode-spec.md) T9(카드 면의 별)
 SSOT·의도·diff: [`card-window/ssot.md`](card-window/ssot.md)
@@ -65,6 +65,7 @@ SSOT·의도·diff: [`card-window/ssot.md`](card-window/ssot.md)
 - **D9a — 그대로인 것.** 별, 파일 칩 · 링크 · 후속 작업 · 에픽 자식 줄(각자 자기 일), 덱 ‹ › 넘기기, 폰(<840px)의 전체 화면 시트.
 - **D11 — 한 줄이어도 TL;DR은 보인다 (SSOT_2-1).** TL;DR이 있는 카드는 한 줄로 접혀도 머리 아래에 TL;DR 상자를 둔다(라이브러리 `.ib-min-tldr`, 카드의 rows에 TL;DR이 있을 때만). TL;DR의 ×(`ui-dismiss` → `tldrDismiss`, 이 브라우저에 그 TL;DR을 지웠다고 저장)를 누르면 상자가 빠지고 그제서야 머리 한 줄이다. 포커스는 그 카드의 제목으로 간다.
 - **D12 — 하루 지난 즐겨찾기는 한 줄로 시작 (SSOT_2-2).** 즐겨찾기 카드는 휴면 · 보관되지 않아 보드에 계속 남는다. 마지막으로 움직인 지(`lastActivity`) 24시간이 지났고 일하는 중도 응답 필요도 아니면, 보드가 그 카드를 처음 그릴 때 한 줄(+ TL;DR, D11)로 시작한다(`cardMinSeeds` → `data.minimized`). 사람이 +로 펼치면 `soma-card-unfold`에 저장되어 기본보다 앞선다(다시 −를 누르면 지워진다). 열어 둔 화면에서 24시간을 넘는 순간 접지는 않는다(다음에 그릴 때).
+- **D13 — 남의 작업 카드는 한 줄로 시작 (SSOT_3).** 카드 주인(`ownerId`)이 로그인한 보는 사람(`/auth/me`의 `slackUserId`)과 다르면 그 카드는 한 줄(+ TL;DR, D11)로 시작한다 — 상태와 상관없이. 보는 사람을 모르거나(뷰어 토큰, `/auth/me` 전) 주인이 없는 카드는 남의 것이 아니다. D12와 같은 길이다: `cardMinSeeds`가 기본 한 줄에 넣고, 사람이 +(또는 한 줄에서 ▽)로 펼친 카드는 `soma-card-unfold`에, 다시 −로 줄인 카드는 `soma-card-min`에 저장되어 새로 고침해도 그대로다. 건드리지 않은 카드는 저장하지 않는다 — 언제나 기본대로. 요소는 한 번 본 카드의 시작 접힘을 다시 읽지 않으므로, 보는 사람이 바뀌면 — `/auth/me`가 보드를 처음 그린 뒤에 오거나, 그려진 보드에서 다른 계정이 되거나, 보는 사람이 없어지면 — 이미 그려진 카드에 이 기본을 양쪽으로 다시 맞춘다(`boardOwnerDefaults`). 남의 카드는 `setMinimized(key, true)`로 접는다(이벤트 없음 · 저장 안 함). 사람이 저장한 + 와 제자리로 펼친 카드는 건드리지 않고, 덱에 있는 카드는 상세 카드에서 줄였음 표시를 지우고 그냥 한 줄로 둔다(상세 카드를 닫아도 기본 한 줄). 이 페이지가 남의 것이라 접은 카드(`_ownerFolded` — 시드와 이 함수가 적는다)가 더는 남의 것이 아니면 펼친다. 다른 이유가 붙잡고 있으면 그대로 둔다: 사람이 저장한 −, 하루 지난 즐겨찾기(D12), 덱의 상세 카드(그때는 상세 카드에서 줄였음으로 바꿔, 닫히면 돌아온다). `/auth/me`가 CSRF 갱신으로 같은 사람을 다시 알려 주면 아무것도 하지 않는다.
 - **D10 — 라이브러리 경계.** 버튼 · 상태 · 애니메이션은 `@2lab.ai/ui` `<ui-agent-inbox>`의 opt-in(`data.controls = 'window'`)이다. 다른 소비자는 지금 그대로(면 = 토글). soma-work는 보드 · CRON 줄의 모든 요소에 켠다.
 
 ## 3. 라이브러리 계약 (`@2lab.ai/ui` 0.43.0)
@@ -96,6 +97,8 @@ SSOT·의도·diff: [`card-window/ssot.md`](card-window/ssot.md)
 | `closePanel` | 포커스가 패널 안에 있었으면 상세 카드를 연 버튼으로 돌린다. 그 버튼이 다시 그려져 없거나 포커스를 못 받으면 그 카드의 제목으로 |
 | `autoOpenDecisions` | 덱 앞 카드는 건너뛴다. 한 줄이면 `boardUnfoldForDecision` 뒤 `reveal(key, { open: true })`(D9) |
 | `inboxPaint` 뒤 `boardFoldDeck` | 덱에 있는 카드를 다시 한 줄로(새로 그려진 요소가 접힘을 잊었을 때, D7) |
+| `cardMinSeeds` | 기본 한 줄 = 하루 지난 즐겨찾기(D12) 또는 남의 카드(D13, `cardOthersDefaultFolded`), 사람의 +는 빼고 |
+| `_applyUserPill`(보는 사람이 바뀜) | 보드를 다시 그린 뒤 `boardOwnerDefaults()`(D13, 양쪽) |
 | 딥 링크 · 새 작업 시작 카드 | `host.reveal(key, { open: false })` 뒤 `openPanel` (본문을 펼치지 않는다 — 카드는 한 줄) |
 
 ## 5. 인수 시나리오
@@ -110,6 +113,7 @@ SSOT·의도·diff: [`card-window/ssot.md`](card-window/ssot.md)
 8. 카드 면의 요약 글을 누르거나 끌어 선택한다 → 아무 일도 일어나지 않는다(선택만 된다).
 9. 감소된 모션 → 3에서 점프 · 먼지 없이 △로 바뀐다.
 10. 키보드: Tab으로 − → 제목 → ★ → ▽ 순서. Enter로 각각 위와 같은 결과. 펼친 본문 안 Esc → △와 같고 포커스는 캐럿.
+11. 남의 카드(주인 ≠ 로그인한 나)는 한 줄로 시작하고 내 카드는 보통이다. + → 펼침, 새로 고침 뒤에도 펼침. − → 한 줄, 새로 고침 뒤에도 한 줄. `/auth/me`가 보드보다 늦어도 보는 사람을 알게 되는 순간 한 줄이 되고, 그 기본은 저장되지 않는다(D13).
 
 ## 6. 검증
 
@@ -129,6 +133,9 @@ SSOT·의도·diff: [`card-window/ssot.md`](card-window/ssot.md)
 | S12 상세 카드가 열린 한 줄 카드의 ▽ | 제자리 펼침, 다시 그려도 펼친 채, 상세 카드는 그대로 |
 | S13 검색으로 숨겼다 다시 보임 | 덱 카드는 한 줄 그대로, 사람이 +로 펼친 카드는 펼친 채. 둘 다 닫으면 A 118px(원래대로) |
 | S14 키보드 | 제목에서 Enter → 그 상세 카드, Esc → 포커스가 그 제목(`UI-AGENT-INBOX` 그림자 안) |
+| S15 남의 카드 (라운드 2, D13) | 남의 카드 42px · 내 카드 118px, 저장 없음. + → 82px, `soma-card-unfold`에 그 카드, 새로 고침 뒤 82px. − → `soma-card-min`에 그 카드 · `soma-card-unfold` 비움, 새로 고침 뒤 42px. `/auth/me`를 보드를 본 뒤에야 답하게(게이트): 처음 82px → 보는 사람을 안 뒤 42px, 내 카드 118px, 저장 없음. 보는 사람이 바뀌는 길(U001 → U002 → 없음)은 단위 시험이 카드 상태로 확인한다 |
+
+라운드 2(D13, 2026-11-18, 소스): **43/43**(S15 9개 추가). 같은 하네스를 배포 전 dev v0.3.79 번들로 돌리면 S15 6개가 실패한다(남의 카드 82px로 시작 — AS-IS), 나머지 37개는 통과.
 
 캡처: 보통 · 한 줄 · 제목 호버 · 점프 150/330/430ms · 제자리 펼침 · 상세 한 장/두 장 · 닫은 뒤 · 다크(감소된 모션) 상세.
 

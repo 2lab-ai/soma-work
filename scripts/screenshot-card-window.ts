@@ -20,6 +20,8 @@
  *   S12 ▽ on a one-line card whose detail card is open: open in place through a repaint, the detail card stays
  *   S13 a deck card hidden by the search and shown again keeps its detail fold; the reader's + stays
  *   S14 keyboard: Enter on a title → its detail card; Esc → focus back on that title
+ *   S15 someone else's card starts on one line, mine does not; + and − are saved and survive a reload; the viewer
+ *       known late (/auth/me held until the board is observed): the card folds then, nothing saved (SSOT_3, D13)
  *
  * Run from the repo root (keeps state out of the checkout):
  *   SOMA_CONFIG_DIR=$TMP/cfg SOMA_INSTANCE_DIR=$TMP/inst CONVERSATION_VIEWER_TOKEN=t npx tsx scripts/screenshot-card-window.ts [outDir]
@@ -44,6 +46,8 @@ const KEY_B = 'mock-inst::work:C502:1700000000.000200';
 const KEY_C = 'mock-inst::work:C503:1700000000.000300';
 // SSOT_2: a starred card whose work last moved 30 hours ago, with an Executive Summary TL;DR.
 const KEY_D = 'mock-inst::work:C504:1700000000.000400';
+// SSOT_3: someone else's card (the viewer is U001).
+const KEY_E = 'mock-inst::work:C505:1700000000.000500';
 
 function session(key: string, title: string, channel: string, state: string, summary: string) {
   return {
@@ -90,6 +94,11 @@ const BOARD = {
       lastActivity: new Date(NOW - 30 * 60 * M).toISOString(),
       esTldr: { lines: ['지표 6개를 한 화면에 모았다.', '다음: 알림 기준 정하기.'], at: NOW - 30 * 60 * M },
     },
+    {
+      ...session(KEY_E, '케이트의 배포 점검', 'C505', 'idle', '케이트가 배포 스크립트를 점검한다.'),
+      ownerId: 'U002',
+      ownerName: 'Kate',
+    },
   ],
 };
 const TURNS = [
@@ -118,13 +127,24 @@ const PAGE_HELPERS = [
   'window.__name = function (f) { return f; };',
 ].join('\n');
 
-async function installMocks(page: Page, view: 'board' | 'list' = 'board') {
+// authGate: /auth/me answers only once it settles — the board draws before the viewer is known (S15).
+async function installMocks(page: Page, view: 'board' | 'list' = 'board', authGate?: Promise<void>) {
   await page.addInitScript({ content: PAGE_HELPERS });
   await page.addInitScript({ content: `localStorage.setItem("soma-board-view", "${view}");` });
-  await page.route('**/auth/me', (r) =>
-    r.fulfill({ json: { user: { name: 'Zhuge', slackUserId: 'U001' }, csrfToken: 'x' } }),
+  await page.route('**/auth/me', async (r) => {
+    if (authGate) await authGate;
+    await r.fulfill({ json: { user: { name: 'Zhuge', slackUserId: 'U001' }, csrfToken: 'x' } });
+  });
+  await page.route('**/api/dashboard/users', (r) =>
+    r.fulfill({
+      json: {
+        users: [
+          { id: 'U001', name: 'Zhuge' },
+          { id: 'U002', name: 'Kate' },
+        ],
+      },
+    }),
   );
-  await page.route('**/api/dashboard/users', (r) => r.fulfill({ json: { users: [{ id: 'U001', name: 'Zhuge' }] } }));
   await page.route('**/api/dashboard/stats**', (r) => r.fulfill({ json: { stats: [], byDay: [] } }));
   await page.route('**/api/dashboard/usage**', (r) => r.fulfill({ json: { totals: {}, byUser: {}, byDay: [] } }));
   await page.route('**/api/dashboard/sessions**', (r) => r.fulfill({ json: { board: BOARD } }));
@@ -210,14 +230,14 @@ async function press(page: Page, key: string, what: 'min' | 'detail' | 'expand')
 async function shot(page: Page, name: string) {
   await page.screenshot({ path: path.join(OUT, name) });
 }
-async function boot(page: Page, view: 'board' | 'list' = 'board') {
+async function boot(page: Page, view: 'board' | 'list' = 'board', authGate?: Promise<void>) {
   // The viewer token (CONVERSATION_VIEWER_TOKEN) as the dashboard's bearer cookie.
   const tok = process.env.CONVERSATION_VIEWER_TOKEN;
   if (tok)
     await page
       .context()
       .addCookies([{ name: 'soma_dash_token', value: encodeURIComponent(`bearer:${tok}`), url: BASE_URL }]);
-  await installMocks(page, view);
+  await installMocks(page, view, authGate);
   await page.goto(`${BASE_URL}/dashboard/U001`);
   await page.waitForSelector(`li.ib-card[data-card="${KEY_A}"] [data-win="detail"]`, { timeout: 20_000 });
   await sleep(500);
@@ -639,6 +659,97 @@ async function narrowRun(browser: import('playwright').Browser, w: number, h: nu
   }
 }
 
+// S15 (SSOT_3, .prd/34 D13) — someone else's card.
+async function othersRun(browser: import('playwright').Browser) {
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
+  const page = await ctx.newPage();
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  await boot(page);
+  log("\n── 1440 someone else's card ──");
+  const prefs = () =>
+    page.evaluate(() => ({
+      min: localStorage.getItem('soma-card-min'),
+      unfold: localStorage.getItem('soma-card-unfold'),
+    }));
+  const reload = async () => {
+    await page.reload();
+    await page.waitForSelector(`li.ib-card[data-card="${KEY_E}"] [data-win="detail"]`);
+    await sleep(600);
+  };
+  const e0 = await cardState(page, KEY_E);
+  const mine = await cardState(page, KEY_A);
+  check(e0.min && e0.rect.h <= 44 && !mine.min, "S15 someone else's card starts on one line, mine does not", {
+    theirs: e0.rect,
+    mine: mine.rect,
+    prefs: await prefs(),
+  });
+  await shot(page, '15-others-one-line.png');
+  await press(page, KEY_E, 'min'); // +
+  await sleep(450);
+  const e1 = await cardState(page, KEY_E);
+  const p1 = await prefs();
+  check(!e1.min && (p1.unfold ?? '').includes(KEY_E), 'S15 + → open, saved in this browser', {
+    card: e1.rect,
+    prefs: p1,
+  });
+  await reload();
+  const e2 = await cardState(page, KEY_E);
+  check(!e2.min && e2.rect.h > 44, 'S15 a reload keeps the +', { card: e2.rect });
+  await press(page, KEY_E, 'min'); // − again
+  await sleep(450);
+  const p3 = await prefs();
+  check(
+    (p3.min ?? '').includes(KEY_E) && !(p3.unfold ?? '').includes(KEY_E),
+    'S15 − → one line, saved; the + is gone',
+    p3,
+  );
+  await reload();
+  const e4 = await cardState(page, KEY_E);
+  check(e4.min && e4.rect.h <= 44, 'S15 a reload keeps the −', { card: e4.rect });
+  check(errors.length === 0, 'S15 no page errors', errors);
+  await ctx.close();
+}
+
+// S15 — the viewer known after the board drew: someone else's card folds then, as a default (nothing saved).
+async function othersLateRun(browser: import('playwright').Browser) {
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
+  const page = await ctx.newPage();
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  // /auth/me is held until the drawn board is observed (review: no race on a fixed delay).
+  let release = () => {};
+  const gate = new Promise<void>((res) => {
+    release = res;
+  });
+  await boot(page, 'board', gate);
+  log('\n── 1440 /auth/me late ──');
+  const before = await cardState(page, KEY_E);
+  release();
+  await page
+    .waitForFunction((k) => !!(window as any).__card(k)?.classList.contains('is-min'), KEY_E, { timeout: 5000 })
+    .catch(() => {});
+  await sleep(450);
+  const after = await cardState(page, KEY_E);
+  const mine = await cardState(page, KEY_A);
+  const prefs = await page.evaluate(() => ({
+    min: localStorage.getItem('soma-card-min'),
+    unfold: localStorage.getItem('soma-card-unfold'),
+  }));
+  check(
+    !before.min && after.min && after.rect.h <= 44 && !mine.min,
+    'S15 /auth/me late: drawn at full size, one line once the viewer is known; mine stays',
+    { before: before.rect, after: after.rect, mine: mine.rect },
+  );
+  check(
+    !(prefs.min ?? '').includes(KEY_E) && !(prefs.unfold ?? '').includes(KEY_E),
+    'S15 the default is not saved',
+    prefs,
+  );
+  check(errors.length === 0, 'S15 late no page errors', errors);
+  await ctx.close();
+}
+
 async function main() {
   const ws = await import('../src/conversation/web-server');
   await ws.startWebServer({ listen: true });
@@ -651,6 +762,8 @@ async function main() {
       reducedRun,
       (b: import('playwright').Browser) => narrowRun(b, 1280, 860, 'list'),
       (b: import('playwright').Browser) => narrowRun(b, 390, 844, 'board'),
+      othersRun,
+      othersLateRun,
     ]) {
       const browser = await chromium.launch({ headless: true, args: ['--single-process', '--no-zygote'] });
       try {
