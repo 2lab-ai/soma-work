@@ -46,14 +46,18 @@ describe('createVoiceClient().warm', () => {
     expect(state).toEqual({ reads: 3, eof: true });
   });
 
-  it('never throws when the service is down', async () => {
+  it('never throws when the service is down, and the failed request does not keep the host busy', async () => {
+    let fetches = 0;
     const failing = createVoiceClient(
       { url: 'http://down-voice:9999', voice: 'v', model: 'drama-3', language: 'ko' },
-      (async () => {
-        throw new Error('down');
+      (async (_url: string, init: RequestInit) => {
+        if (++fetches === 1) throw new Error('down');
+        return new Response(lazyBody(1, init.signal, { reads: 0, eof: false }), { status: 200 });
       }) as unknown as typeof fetch,
     );
     await expect(failing.warm?.()).resolves.toBeUndefined();
+    await failing.warm?.(); // right away: the service is back
+    expect(fetches).toBe(2);
   });
 
   it('keeps one wake-up in flight, and drops a stalled one when the caller aborts', async () => {
@@ -201,6 +205,9 @@ describe('createVoiceClient().warm', () => {
     await client.warm?.(call.signal);
     expect(call.signal.aborted).toBe(false); // the call goes on
     expect(wakeSignal?.aborted).toBe(true); // the failed request does not
+    const first = wakeSignal;
+    await client.warm?.(call.signal); // and it does not keep the host busy: the next one goes out at once
+    expect(wakeSignal).not.toBe(first);
   });
 
   it('runs one wake-up per voice host: a second line joins the running one', async () => {
@@ -281,6 +288,82 @@ describe('createVoiceClient().warm', () => {
     for await (const _ of left.chunks) {
       // drain
     }
+  });
+
+  it('a real reply cancels a running wake-up on the same host (it never waits behind one)', async () => {
+    let wakeSignal: AbortSignal | undefined;
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      const text = JSON.parse(String(init.body)).text;
+      if (text === '네') wakeSignal = init.signal ?? undefined;
+      return new Response(lazyBody(text === '네' ? 0 : 1, init.signal, { reads: 0, eof: false }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const cfg = { url: 'http://preempt-voice:9999', voice: 'cwon-phone', model: 'drama-3', language: 'ko' };
+    const lineA = createVoiceClient(cfg, fetchImpl);
+    const lineB = createVoiceClient({ ...cfg, voice: 'karina' }, fetchImpl);
+    const wake = lineA.warm?.(); // a slow wake-up
+    await new Promise((r) => setTimeout(r, 0));
+    expect(wakeSignal?.aborted).toBe(false);
+    const reply = await lineB.speak('바로 말씀드릴게요.');
+    expect(wakeSignal?.aborted).toBe(true);
+    await expect(wake).resolves.toBeUndefined();
+    for await (const _ of reply.chunks) {
+      // drain
+    }
+  });
+
+  it('a synthesis aborted before anyone reads it frees the host at once', async () => {
+    let fetches = 0;
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      fetches++;
+      return new Response(lazyBody(1, init.signal, { reads: 0, eof: false }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const cfg = { url: 'http://cancelled-voice:9999', voice: 'cwon-phone', model: 'drama-3', language: 'ko' };
+    const lineA = createVoiceClient(cfg, fetchImpl);
+    const lineB = createVoiceClient({ ...cfg, voice: 'karina' }, fetchImpl);
+    const bargeIn = new AbortController();
+    await lineA.speak('정리해 드릴게요.', bargeIn.signal); // headers in, nobody has read the stream yet
+    bargeIn.abort('barge-in');
+    await lineB.warm?.(); // nothing is synthesizing any more
+    expect(fetches).toBe(2);
+  });
+
+  it('a transcription stuck for good stops holding the host after a while', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const tts: string[] = [];
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      if (url.endsWith('/api/stt')) return new Promise<Response>(() => undefined); // never answers
+      tts.push(url);
+      return new Response(lazyBody(1, init.signal, { reads: 0, eof: false }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const cfg = { url: 'http://stuck-voice:9999', voice: 'v', model: 'drama-3', language: 'ko' };
+    const lineA = createVoiceClient(cfg, fetchImpl);
+    const lineB = createVoiceClient({ ...cfg, voice: 'karina' }, fetchImpl);
+    void lineA.transcribe(Buffer.alloc(44));
+    await new Promise((r) => setTimeout(r, 0));
+    vi.setSystemTime(Date.now() + 10_000);
+    await lineB.warm?.(); // still counted: no wake-up beside it
+    expect(tts).toEqual([]);
+    vi.setSystemTime(Date.now() + 25_000); // 35 s: not a live transcription any more
+    await lineB.warm?.();
+    expect(tts).toHaveLength(1);
+  });
+
+  it('a real reply that fails (unreachable or an error answer) does not keep the host busy', async () => {
+    const answers: Array<'throw' | 503 | 200> = ['throw', 503, 200, 200];
+    const sent: string[] = [];
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      sent.push(JSON.parse(String(init.body)).text);
+      const a = answers.shift();
+      if (a === 'throw') throw new Error('down');
+      return new Response(lazyBody(1, init.signal, { reads: 0, eof: false }), { status: a });
+    }) as unknown as typeof fetch;
+    const cfg = { url: 'http://failing-reply-voice:9999', voice: 'cwon-phone', model: 'drama-3', language: 'ko' };
+    const lineA = createVoiceClient(cfg, fetchImpl);
+    const lineB = createVoiceClient({ ...cfg, voice: 'karina' }, fetchImpl);
+    await expect(lineA.speak('하나')).rejects.toThrow('unreachable');
+    await expect(lineA.speak('둘')).rejects.toThrow('answered 503');
+    await lineB.warm?.(); // neither failed reply is still counted: the wake-up goes out
+    expect(sent).toEqual(['하나', '둘', '네']);
   });
 });
 

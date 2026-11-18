@@ -49,27 +49,27 @@ type FetchLike = typeof fetch;
 const WARM_TIMEOUT_MS = 5_000;
 /** The engine synthesized for some line this recently: it is awake, a wake-up would only add work. */
 const ENGINE_AWAKE_MS = 1_000;
-/** A synthesis still open after this long is not counted any more (a stream nobody reads must not block wake-ups). */
-const SYNTHESIS_STALE_MS = 30_000;
+/** A request still open after this long is not counted any more: a stuck or unread one must not block wake-ups. */
+const REQUEST_STALE_MS = 30_000;
 /**
  * Per voice host, across every line of this process:
  * - transcriptions in flight: a wake-up beside one slows it (measured: STT 0.9 s → 2.5 s), so none starts while one
- *   runs, and a transcription that starts cancels the running wake-up;
- * - syntheses in flight, from request to the end of their stream, and when audio last came out: the engine is busy
- *   or awake then, a wake-up would only add work;
- * - the one wake-up running: a second line joins it.
+ *   runs;
+ * - syntheses in flight, from request to the end of their stream (or their abort), and when audio last came out: the
+ *   engine is busy or awake then, a wake-up would only add work;
+ * - the one wake-up running: a second line joins it, and a real transcription or synthesis that starts cancels it.
  */
 interface VoiceHost {
-  transcribing: number;
+  transcribing: Set<{ at: number }>;
   synthesizing: Set<{ at: number }>;
   synthesizedAt: number;
   wakeUp: { done: Promise<void>; abort: AbortController } | null;
 }
 const hosts = new Map<string, VoiceHost>();
 
-function engineBusy(host: VoiceHost, now: number): boolean {
-  for (const s of host.synthesizing) if (now - s.at > SYNTHESIS_STALE_MS) host.synthesizing.delete(s);
-  return host.synthesizing.size > 0 || now - host.synthesizedAt < ENGINE_AWAKE_MS;
+function anyOpen(requests: Set<{ at: number }>, now: number): boolean {
+  for (const r of requests) if (now - r.at > REQUEST_STALE_MS) requests.delete(r);
+  return requests.size > 0;
 }
 
 export class VoiceServiceError extends Error {
@@ -86,7 +86,7 @@ export function createVoiceClient(cfg: VoiceConfig, fetchImpl: FetchLike = fetch
   const base = cfg.url.replace(/\/+$/, '');
   const auth: Record<string, string> = cfg.token ? { authorization: `Bearer ${cfg.token}` } : {};
   const host: VoiceHost = hosts.get(base) ?? {
-    transcribing: 0,
+    transcribing: new Set(),
     synthesizing: new Set(),
     synthesizedAt: Number.NEGATIVE_INFINITY,
     wakeUp: null,
@@ -96,7 +96,8 @@ export function createVoiceClient(cfg: VoiceConfig, fetchImpl: FetchLike = fetch
   return {
     async transcribe(wav, signal) {
       host.wakeUp?.abort.abort('transcription first');
-      host.transcribing++;
+      const job = { at: Date.now() };
+      host.transcribing.add(job);
       try {
         const started = Date.now();
         const form = new FormData();
@@ -114,20 +115,22 @@ export function createVoiceClient(cfg: VoiceConfig, fetchImpl: FetchLike = fetch
         const ms = typeof body.ms === 'number' ? body.ms : Date.now() - started;
         return { text, ms };
       } finally {
-        host.transcribing--;
+        host.transcribing.delete(job);
       }
     },
 
-    speak,
+    speak: (text, signal) => synthesize(text, signal, false),
     warm(signal) {
       if (host.wakeUp) return host.wakeUp.done; // one per host: a stalled service never piles up wake-ups
-      if (host.transcribing > 0) return; // this host is transcribing (any line): a wake-up would slow it
-      if (engineBusy(host, Date.now())) return; // synthesizing for some line, or just did: already awake
+      const now = Date.now();
+      if (anyOpen(host.transcribing, now)) return; // this host is transcribing (any line): a wake-up would slow it
+      // Synthesizing for some line, or just did: already awake.
+      if (anyOpen(host.synthesizing, now) || now - host.synthesizedAt < ENGINE_AWAKE_MS) return;
       const own = new AbortController();
       const done = (async () => {
         const timer = setTimeout(() => own.abort('warm-up timed out'), WARM_TIMEOUT_MS);
         try {
-          const s = await speak('네', signal ? AbortSignal.any([signal, own.signal]) : own.signal);
+          const s = await synthesize('네', signal ? AbortSignal.any([signal, own.signal]) : own.signal, true);
           for await (const _ of s.chunks) {
             // dropped: the request only wakes the engine
           }
@@ -144,11 +147,17 @@ export function createVoiceClient(cfg: VoiceConfig, fetchImpl: FetchLike = fetch
     },
   };
 
-  async function speak(text: string, signal?: AbortSignal): Promise<SpeechStream> {
+  async function synthesize(text: string, signal: AbortSignal | undefined, wakeUp: boolean): Promise<SpeechStream> {
+    if (!wakeUp) host.wakeUp?.abort.abort('speech first'); // a reply never waits behind a wake-up
     const started = Date.now();
     const job = { at: started };
     host.synthesizing.add(job);
-    const over = () => host.synthesizing.delete(job);
+    // Over at the end of the stream, an error, or an abort (also one before anybody reads the stream).
+    const over = () => {
+      host.synthesizing.delete(job);
+      signal?.removeEventListener('abort', over);
+    };
+    signal?.addEventListener('abort', over, { once: true });
     let res: Response;
     try {
       res = await fetchImpl(`${base}/api/tts/stream`, {

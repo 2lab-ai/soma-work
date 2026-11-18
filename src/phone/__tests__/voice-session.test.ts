@@ -422,13 +422,14 @@ describe('CallRun — a warm voice engine', () => {
     expect(warmed).toHaveLength(0);
     await settleAll(); // transcribed: the reply reaches the engine in ~1 s, wake it now
     expect(warmed).toHaveLength(1);
+    clock.advance(2_900);
     run.feedAudio(tone(400, 0.3));
-    run.feedAudio(quiet(800)); // a second utterance right after: no second ping
+    run.feedAudio(quiet(800)); // a second utterance 2.9 s later: still within the 3 s window, no second ping
     await settleAll();
     expect(warmed).toHaveLength(1);
-    clock.advance(10_000);
+    clock.advance(200);
     run.feedAudio(tone(400, 0.3));
-    run.feedAudio(quiet(800)); // a new turn after a while: wakes it again
+    run.feedAudio(quiet(800)); // 3.1 s after the first: wakes it again
     await settleAll();
     expect(warmed).toHaveLength(2);
   });
