@@ -255,7 +255,7 @@ source of truth for any model not listed here:
 | `gpt-6-luna[1m]` (aliases `luna`, `luna[1m]`) | 1,000,000 | 600,000 |
 | `gpt-6-luna` (bare literal only) | 272,000 | 240,000 |
 | `gpt-6.1-sol[1m]` (version-pinned alias `gpt-6.1`) | 1,000,000 | 600,000 |
-| `gpt-6.1-sol` (bare literal only; 500k since 2026-11-18, was 272k) | 500,000 | 450,000 |
+| `gpt-6.1-sol` (bare literal only; 500k since the 2026-11-17 codex catalog, was 272k) | 500,000 | 450,000 |
 | `gpt-6.1-terra[1m]` (aliases `terra`, `terra[1m]`) | 1,000,000 | 600,000 |
 | `gpt-6.1-terra` (bare literal only) | 500,000 | 450,000 |
 | `gpt-6.2-sol[1m]` (aliases `sol`, `sol[1m]`, `gpt-6.2`; since 2026-11-18) | 1,000,000 | 600,000 |

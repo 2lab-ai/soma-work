@@ -299,7 +299,8 @@ const MODEL_REGISTRY: [pattern: string, spec: ModelSpec][] = [
   // never applies here — llmux reports no cache-creation tokens on the codex
   // wire — so both cache-write fields stay 0, like every codex row. The
   // >272k-input long-context surcharge (2x input and cache, 1.5x output) is
-  // not modeled (llmux does not model it either). 500k window — the
+  // not modeled here, although llmux prices it per request since 2026-11-12,
+  // so a long sol turn reads cheaper here than in llmux. 500k window — the
   // openai/codex models.json context_window; the `[1m]` twin reaches 1M.
   // Context numbers are policy and live in model-profile.ts. Before this row
   // the id matched nothing and was priced at FALLBACK_SPEC's Sonnet rates:
