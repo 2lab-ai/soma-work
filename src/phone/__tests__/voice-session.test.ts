@@ -181,8 +181,9 @@ function setup(
       return opts.warm?.(signal);
     },
     async transcribe() {
+      const text = stt.shift() ?? ''; // the words of this utterance, whenever the recogniser answers
       await opts.sttGate?.();
-      return { text: stt.shift() ?? '', ms: 5 };
+      return { text, ms: 5 };
     },
     async speak(text) {
       spoken.push(text);
@@ -200,7 +201,8 @@ function setup(
     },
   };
   const run = new CallRun(
-    { callId: 'CA1', direction: 'outbound', maxMinutes: 5, ...plan },
+    // No turn hold unless a test asks for one: the words of an utterance go on as soon as they are recognised.
+    { callId: 'CA1', direction: 'outbound', maxMinutes: 5, turnHoldMs: 0, ...plan },
     {
       ulawToPcm16: (b) => b,
       pcm16ToUlaw: (b) => b,
@@ -584,43 +586,45 @@ describe('CallRun — conversation', () => {
     expect(dialog().sent[dialog().sent.length - 1]).toBe(SILENCE_CUE);
   });
 
-  it('newer words stop a reply that is playing its first sentence while the rest is still being written', async () => {
+  it('a reply still being written does not start over a caller who talks again; newer words drop it', async () => {
     const { run, record, dialog, call } = await talking();
     run.feedAudio(tone(600, 0.3));
     run.feedAudio(quiet(800));
     await settleAll();
+    const atReply = call.frames;
     run.feedAudio(tone(200, 0.3)); // the caller starts again before the reply makes a sound
     dialog().emit({ type: 'text_delta', text: '네, 회의 두 개 확인했어요. 그리고 ' }); // no turn_end: still writing
     await settleAll();
-    expect(call.frames).toBeGreaterThan(0); // its first sentence plays over the caller
+    expect(call.frames).toBe(atReply); // its first sentence is made, but not said over the caller
     const before = dialog().sent.length;
     run.feedAudio(tone(400, 0.3));
     run.feedAudio(quiet(800)); // "잠깐만요" is transcribed
     await settleAll();
+    expect(call.frames).toBe(atReply); // never said
     expect(record.work.some((w) => w.kind === 'event' && w.text.includes('말을 이어감'))).toBe(true);
     expect(dialog().interrupted).toBe(1);
     expect(dialog().sent.length).toBe(before); // not before the dropped turn has ended
-    const agentLines = record.transcript.filter((l) => l.role === 'agent');
-    expect(agentLines[agentLines.length - 1]).toMatchObject({ text: '네, 회의 두 개 확인했어요.', interrupted: true });
+    expect(record.transcript.some((l) => l.role === 'agent' && l.text === '네, 회의 두 개 확인했어요.')).toBe(false);
     dialog().emit({ type: 'turn_end', isError: true, message: 'interrupted' });
     await settleAll();
-    expect(dialog().sent[dialog().sent.length - 1]).toContain('잠깐만요');
+    const last = dialog().sent[dialog().sent.length - 1];
+    expect(last).toContain('"네, 회의 두 개 확인했어요."'); // the model hears it was not heard
+    expect(last.endsWith('\n잠깐만요')).toBe(true);
     expect(dialog().sent.slice(before)).toHaveLength(1);
   });
 
-  it('newer words stop a reply that started playing while the caller was still talking', async () => {
+  it('a real interruption fades a playing reply; the model hears what was heard and what was not said', async () => {
     const { run, record, dialog, call, clock } = await talking();
     run.feedAudio(tone(600, 0.3));
     run.feedAudio(quiet(800));
     await settleAll();
-    run.feedAudio(tone(200, 0.3)); // the caller starts again before the reply makes a sound (no barge-in yet)
     dialog().reply('네, 회의 두 개 확인했어요. 시간도 알려 드릴까요?');
     await settleAll();
-    expect(call.frames).toBeGreaterThan(0); // the reply is playing over the caller
-    run.feedAudio(tone(400, 0.3));
-    run.feedAudio(quiet(800)); // "잠깐만요" is transcribed
-    await settleAll();
+    expect(call.frames).toBeGreaterThan(0); // the reply plays
+    run.feedAudio(tone(900, 0.6)); // talking over it: "잠깐만요"
     const atCut = call.frames;
+    run.feedAudio(quiet(800));
+    await settleAll();
     clock.advance(3000);
     expect(call.frames - atCut).toBeLessThanOrEqual(10 + 15 + 1); // faded out, the rest never sent
     // The model hears what was cut: the words go with a note of what the caller heard and what was not said.
@@ -633,7 +637,7 @@ describe('CallRun — conversation', () => {
     // Only what started to sound is in the transcript: the cut piece is marked, the unheard one is not there.
     expect(agentLines[agentLines.length - 1]).toMatchObject({ text: '네, 회의 두 개 확인했어요.', interrupted: true });
     expect(agentLines.some((l) => l.text === '시간도 알려 드릴까요?')).toBe(false);
-    expect(record.work.some((w) => w.kind === 'event' && w.text.includes('말을 이어감'))).toBe(true);
+    expect(record.work.some((w) => w.kind === 'event' && w.text.includes('끼어듦'))).toBe(true);
     clock.advance(1);
   });
 
@@ -1072,8 +1076,25 @@ describe('CallRun — like a live call', () => {
       s.clock.advance(20);
     }
   }
-  async function answering(stt: string[], extra: { speakMs?: number; fillers?: CallRunPlan['fillers'] } = {}) {
-    const s = setup({ direction: 'inbound', fillers: extra.fillers }, stt, { speakMs: extra.speakMs });
+  async function answering(
+    stt: string[],
+    extra: {
+      speakMs?: number;
+      fillers?: CallRunPlan['fillers'];
+      turnHoldMs?: number;
+      sttGate?: () => Promise<void>;
+      speakGate?: () => Promise<void>;
+    } = {},
+  ) {
+    const s = setup(
+      {
+        direction: 'inbound',
+        fillers: extra.fillers,
+        ...(extra.turnHoldMs === undefined ? {} : { turnHoldMs: extra.turnHoldMs }),
+      },
+      stt,
+      { speakMs: extra.speakMs, sttGate: extra.sttGate, speakGate: extra.speakGate },
+    );
     s.run.begin();
     const call = fakeCall();
     s.run.attach(call as unknown as CallSessionLike);
@@ -1106,15 +1127,15 @@ describe('CallRun — like a live call', () => {
     expect(s.record.transcript.filter((l) => l.role === 'agent').some((l) => l.interrupted)).toBe(false);
   });
 
-  it('says a short acknowledgment the moment the caller stops, then the answer without a second "네"', async () => {
+  it('says a short acknowledgment once the turn is over, then the answer without a second "네"', async () => {
     const fillers = [{ text: '네.', frames: [tone(20, 0.5), tone(20, 0.5), tone(20, 0.5)] }];
     const s = await answering(['내일 회의 시간이요'], { fillers });
     s.run.feedAudio(tone(600, 0.3));
     const before = s.call.frames;
-    s.run.feedAudio(quiet(800)); // the caller stops: "네." goes out now, before the words are even recognised
+    s.run.feedAudio(quiet(800));
+    await settleAll(); // the words are in and the turn is over: "네." goes out now, the answer is being written
     expect(s.call.frames - before).toBe(3);
     expect(s.record.transcript[s.record.transcript.length - 1]).toMatchObject({ role: 'agent', text: '네.' });
-    await settleAll();
     s.dialog().reply('네, 내일 회의는 세 시예요.');
     await settleAll();
     expect(s.spoken[s.spoken.length - 1]).toBe('내일 회의는 세 시예요.');
@@ -1126,6 +1147,7 @@ describe('CallRun — like a live call', () => {
     fillers.push({ text: '네.', frames: [tone(20, 0.5)] }); // ready now
     s.run.feedAudio(tone(600, 0.3));
     s.run.feedAudio(quiet(800));
+    await settleAll();
     expect(s.record.transcript.some((l) => l.role === 'agent' && l.text === '네.')).toBe(true);
   });
 
@@ -1169,6 +1191,312 @@ describe('CallRun — like a live call', () => {
     s.dialog().reply('네, 내일 세 시에 삼 층이에요.');
     await settleAll();
     expect(s.spoken[s.spoken.length - 1]).toBe('내일 세 시에 삼 층이에요.');
+  });
+
+  // A real call (owner, 2026-11-18): "내가 말하던 중에 니가 치고 들어온다" — a half-second pause inside a sentence
+  // was taken for the end of the turn: "네." and an answer to half of it, while the owner was still talking.
+  describe('whose turn it is', () => {
+    const fillers = () => [{ text: '네.', frames: [tone(20, 0.5)] }];
+    const agentSaid = (s: { record: PhoneCallRecord }, text: string) =>
+      s.record.transcript.filter((l) => l.role === 'agent' && l.text === text).length;
+
+    it('a half-second pause inside a sentence is not the end of it: no "네.", no answer, one turn for the model', async () => {
+      const s = await answering(['내일 회의가', '몇 시인지 알려 주세요'], { fillers: fillers(), turnHoldMs: 500 });
+      const sent = s.dialog().sent.length;
+      live(s, tone(800, 0.3));
+      live(s, quiet(700)); // a pause: 0.5 s ends the utterance (it is recognised), the turn may go on
+      await settleAll();
+      expect(agentSaid(s, '네.')).toBe(0);
+      expect(s.dialog().sent.length).toBe(sent);
+      live(s, tone(800, 0.3)); // … and it does
+      live(s, quiet(1200));
+      await settleAll();
+      expect(s.dialog().sent.slice(sent)).toEqual(['내일 회의가 몇 시인지 알려 주세요']);
+      expect(agentSaid(s, '네.')).toBe(1);
+    });
+
+    it('after a second of quiet the turn is over: then "네." and the words go to the model', async () => {
+      const s = await answering(['내일 회의 몇 시예요?'], { fillers: fillers(), turnHoldMs: 500 });
+      live(s, tone(800, 0.3));
+      live(s, quiet(800));
+      await settleAll();
+      expect(agentSaid(s, '네.')).toBe(0); // 0.8 s of quiet: not yet
+      live(s, quiet(400));
+      await settleAll();
+      expect(agentSaid(s, '네.')).toBe(1);
+      expect(s.dialog().sent[s.dialog().sent.length - 1]).toBe('내일 회의 몇 시예요?');
+    });
+
+    it('words still being recognised when the quiet is long enough go on as soon as they are in', async () => {
+      let heard: () => void = () => undefined;
+      let gate: Promise<void> | null = new Promise<void>((r) => {
+        heard = r;
+      });
+      const s = await answering(['내일 회의 몇 시예요?'], {
+        fillers: fillers(),
+        turnHoldMs: 500,
+        sttGate: () => gate ?? Promise.resolve(),
+      });
+      live(s, tone(800, 0.3));
+      live(s, quiet(1500));
+      await settleAll();
+      expect(agentSaid(s, '네.')).toBe(0);
+      gate = null;
+      heard();
+      await settleAll();
+      expect(agentSaid(s, '네.')).toBe(1);
+      expect(s.dialog().sent[s.dialog().sent.length - 1]).toBe('내일 회의 몇 시예요?');
+    });
+
+    it('a caller who says only "네" or "음" gets no "네." back; the words still reach the model', async () => {
+      const s = await answering(['음.'], { fillers: fillers(), turnHoldMs: 500 });
+      live(s, tone(500, 0.3));
+      live(s, quiet(1200));
+      await settleAll();
+      expect(agentSaid(s, '네.')).toBe(0);
+      expect(s.dialog().sent[s.dialog().sent.length - 1]).toBe('음.');
+    });
+
+    it('a cough in the pause does not end the turn early or lose its first half', async () => {
+      const s = await answering(['내일 회의가', '몇 시인지 알려 주세요'], { fillers: fillers(), turnHoldMs: 500 });
+      const sent = s.dialog().sent.length;
+      live(s, tone(800, 0.3));
+      live(s, quiet(560));
+      live(s, tone(100, 0.3)); // a click: noise, not speech
+      live(s, quiet(560));
+      await settleAll();
+      live(s, tone(800, 0.3));
+      live(s, quiet(1200));
+      await settleAll();
+      expect(s.dialog().sent.slice(sent)).toEqual(['내일 회의가 몇 시인지 알려 주세요']);
+    });
+
+    it('a cough in the pause, then quiet: the turn still ends, with what was said', async () => {
+      const s = await answering(['내일 회의 몇 시예요?'], { fillers: fillers(), turnHoldMs: 500 });
+      live(s, tone(800, 0.3));
+      live(s, quiet(560));
+      live(s, tone(100, 0.3)); // a click in the pause
+      live(s, quiet(1200));
+      await settleAll();
+      expect(s.dialog().sent[s.dialog().sent.length - 1]).toBe('내일 회의 몇 시예요?');
+      expect(agentSaid(s, '네.')).toBe(1);
+    });
+
+    it('a "네" that waited for a reply goes with the next turn when that turn is still open as the reply ends', async () => {
+      const s = await answering(['내일 회의 시간이요', '네', '그리고 장소도요'], { turnHoldMs: 500, speakMs: 1000 });
+      live(s, tone(800, 0.3));
+      live(s, quiet(1200)); // turn over: the words go to the model
+      await settleAll();
+      const n = s.dialog().sent.length;
+      s.dialog().emit({ type: 'text_delta', text: '내일 회의는 세 시예요. ' }); // still writing; this plays
+      await settleAll();
+      live(s, tone(300, 0.6)); // "네" over it: waits for the reply
+      live(s, quiet(600));
+      await settleAll();
+      live(s, quiet(2500)); // the sentence has played
+      live(s, tone(800, 0.3));
+      live(s, quiet(560)); // more words; their turn is still open …
+      await settleAll();
+      s.dialog().emit({ type: 'turn_end', isError: false }); // … when the reply ends
+      await settleAll();
+      live(s, quiet(600));
+      await settleAll();
+      expect(s.dialog().sent.slice(n)).toEqual(['네 그리고 장소도요']);
+    });
+
+    // The owner again, the same day: "사람이 말하고 있을때 끼어들면 안됨". A reply ready while the caller talks
+    // waits for the end of their turn — and is dropped if what they said is new.
+    it('a reply ready while the caller is talking again does not start; their new words drop it', async () => {
+      const s = await answering(['내일 회의 시간이요', '아 그리고 장소도요'], { turnHoldMs: 500 });
+      live(s, tone(800, 0.3));
+      live(s, quiet(1200)); // turn over: the words go to the model
+      await settleAll();
+      live(s, tone(400, 0.3)); // they go on talking …
+      const before = s.call.frames;
+      s.dialog().reply('내일 회의는 세 시예요.'); // … while the answer is ready
+      await settleAll();
+      live(s, tone(400, 0.3));
+      expect(s.call.frames).toBe(before); // not a sound over them
+      live(s, quiet(1200));
+      await settleAll();
+      s.clock.advance(2000);
+      expect(s.call.frames).toBe(before); // the old answer is never said
+      const last = s.dialog().sent[s.dialog().sent.length - 1];
+      expect(last).toContain('"내일 회의는 세 시예요."');
+      expect(last.endsWith('\n아 그리고 장소도요')).toBe(true);
+    });
+
+    it('a reply held back by a click on the line plays once the line is quiet again', async () => {
+      const s = await answering(['내일 회의 시간이요'], { turnHoldMs: 500 });
+      live(s, tone(800, 0.3));
+      live(s, quiet(1200));
+      await settleAll();
+      const n = s.dialog().sent.length;
+      live(s, tone(100, 0.3)); // a click: it might be speech …
+      const before = s.call.frames;
+      s.dialog().reply('내일 회의는 세 시예요.');
+      await settleAll();
+      expect(s.call.frames).toBe(before); // … so the answer waits
+      live(s, quiet(700)); // it was noise
+      await settleAll();
+      s.clock.advance(2000);
+      expect(s.call.frames - before).toBeGreaterThanOrEqual(40); // the whole answer
+      expect(s.dialog().sent.length).toBe(n);
+    });
+
+    it('a sound the recogniser makes nothing of releases a held reply too', async () => {
+      const s = await answering(['내일 회의 시간이요', ''], { turnHoldMs: 500 });
+      live(s, tone(800, 0.3));
+      live(s, quiet(1200));
+      await settleAll();
+      live(s, tone(400, 0.3)); // a sound long enough to be recognised …
+      const before = s.call.frames;
+      s.dialog().reply('내일 회의는 세 시예요.');
+      await settleAll();
+      expect(s.call.frames).toBe(before);
+      live(s, quiet(1200)); // … into nothing
+      await settleAll();
+      s.clock.advance(2000);
+      expect(s.call.frames - before).toBeGreaterThanOrEqual(40);
+    });
+
+    it('two parts recognised out of order still reach the model in the order they were said', async () => {
+      let first: () => void = () => undefined;
+      const slow = new Promise<void>((r) => {
+        first = r;
+      });
+      let calls = 0;
+      const s = await answering(['내일 회의가', '몇 시인지 알려 주세요'], {
+        turnHoldMs: 500,
+        sttGate: () => (calls++ === 0 ? slow : Promise.resolve()), // the first part takes longer to recognise
+      });
+      const n = s.dialog().sent.length;
+      live(s, tone(800, 0.3));
+      live(s, quiet(600));
+      live(s, tone(800, 0.3));
+      live(s, quiet(1200));
+      await settleAll();
+      expect(s.dialog().sent.length).toBe(n); // the first part is not in yet
+      first();
+      await settleAll();
+      expect(s.dialog().sent.slice(n)).toEqual(['내일 회의가 몇 시인지 알려 주세요']);
+    });
+
+    it('words said while the goodbye is due do not keep it from playing, nor the phone from going down', async () => {
+      const s = await answering(['내일 회의 시간이요', '잠깐만요'], { turnHoldMs: 500 });
+      live(s, tone(800, 0.3));
+      live(s, quiet(1200));
+      await settleAll();
+      const before = s.call.frames;
+      s.dialog().emit({ type: 'text_delta', text: '네, 세 시예요. 좋은 하루 보내세요!' });
+      await s.dialog().tool('hang_up').handler({ reason: 'done' });
+      s.dialog().emit({ type: 'tool_use', name: 'mcp__phone__hang_up', input: { reason: 'done' } });
+      s.dialog().emit({ type: 'turn_end', isError: false });
+      live(s, tone(400, 0.3)); // the caller says something as it starts
+      await settleAll();
+      live(s, quiet(1200));
+      await settleAll();
+      s.clock.advance(10_000);
+      await settleAll();
+      expect(s.call.frames - before).toBeGreaterThanOrEqual(80); // the whole goodbye
+      expect(s.call.hungUp).toBe(1);
+    });
+
+    it('a recogniser that fails releases a held reply', async () => {
+      let fail = false;
+      const s = await answering(['내일 회의 시간이요', '?'], {
+        turnHoldMs: 500,
+        sttGate: () => (fail ? Promise.reject(new Error('stt down')) : Promise.resolve()),
+      });
+      live(s, tone(800, 0.3));
+      live(s, quiet(1200));
+      await settleAll();
+      fail = true;
+      live(s, tone(400, 0.3));
+      const before = s.call.frames;
+      s.dialog().reply('내일 회의는 세 시예요.');
+      await settleAll();
+      live(s, quiet(1200));
+      await settleAll();
+      s.clock.advance(2000);
+      expect(s.call.frames - before).toBeGreaterThanOrEqual(40);
+    });
+
+    it('with no hold, a turn whose words are in still ends when a click follows them', async () => {
+      const s = await answering(['내일 회의 몇 시예요?'], { turnHoldMs: 0 });
+      const n = s.dialog().sent.length;
+      s.run.feedAudio(tone(600, 0.3));
+      s.run.feedAudio(quiet(800)); // the utterance: being recognised …
+      s.run.feedAudio(tone(100, 0.3)); // … when a click starts
+      await settleAll(); // recognised while the click goes on
+      s.run.feedAudio(quiet(800)); // the click ends as noise
+      await settleAll();
+      expect(s.dialog().sent.slice(n)).toEqual(['내일 회의 몇 시예요?']);
+    });
+
+    it('a short sound while a turn is open belongs to that turn: the turn still ends', async () => {
+      let stall = false;
+      const s = await answering(['내일 회의 시간이요', '그리고', '네'], {
+        turnHoldMs: 500,
+        speakGate: () => (stall ? new Promise<void>(() => undefined) : Promise.resolve()),
+      });
+      live(s, tone(800, 0.3));
+      live(s, quiet(1200)); // turn over: the words go to the model
+      await settleAll();
+      stall = true;
+      s.dialog().emit({ type: 'text_delta', text: '내일 회의는 세 시예요. ' }); // being synthesized (stalls)
+      await settleAll();
+      live(s, tone(800, 0.3)); // "그리고" — while the agent counts as speaking: it drops that reply
+      live(s, quiet(600)); // a turn opens …
+      live(s, tone(300, 0.3)); // … and a short "네" comes in it
+      live(s, quiet(600));
+      await settleAll();
+      s.dialog().emit({ type: 'turn_end', isError: true, message: 'interrupted' });
+      await settleAll();
+      live(s, quiet(1200));
+      await settleAll();
+      expect(s.dialog().sent[s.dialog().sent.length - 1].endsWith('그리고 네')).toBe(true);
+    });
+
+    it('speech that resumes after the hold, while the first words are still being recognised, keeps the turn open', async () => {
+      let first: () => void = () => undefined;
+      const slow = new Promise<void>((r) => {
+        first = r;
+      });
+      let calls = 0;
+      const s = await answering(['내일 회의가', '몇 시인지 알려 주세요'], {
+        fillers: [{ text: '네.', frames: [tone(20, 0.5)] }],
+        turnHoldMs: 500,
+        sttGate: () => (calls++ === 0 ? slow : Promise.resolve()),
+      });
+      const n = s.dialog().sent.length;
+      live(s, tone(800, 0.3));
+      live(s, quiet(1200)); // the hold is over, but the words are not in
+      live(s, tone(400, 0.3)); // they go on …
+      first(); // … as the first words come in
+      await settleAll();
+      expect(s.dialog().sent.length).toBe(n);
+      expect(s.record.transcript.some((l) => l.role === 'agent' && l.text === '네.')).toBe(false);
+      live(s, tone(400, 0.3));
+      live(s, quiet(1200));
+      await settleAll();
+      expect(s.dialog().sent.slice(n)).toEqual(['내일 회의가 몇 시인지 알려 주세요']);
+    });
+
+    it('while the words of a turn are still being recognised, the quiet line is not nudged', async () => {
+      const s = await answering(['내일 회의 몇 시예요?'], {
+        fillers: fillers(),
+        turnHoldMs: 500,
+        sttGate: () => new Promise<void>(() => undefined), // the recogniser hangs
+      });
+      live(s, tone(800, 0.3));
+      live(s, quiet(560));
+      live(s, tone(100, 0.3)); // a click: the quiet-line timer would start here
+      live(s, quiet(600));
+      s.clock.advance(20_000);
+      await settleAll();
+      expect(s.dialog().sent).not.toContain(SILENCE_CUE);
+    });
   });
 
   it('the rest of a reply goes in pieces of at most 400 characters', async () => {

@@ -245,7 +245,7 @@ describe('PhoneService', () => {
     await svc.stop();
   });
 
-  it('acknowledgments made after a call began reach that call: the moment the caller stops, it says "네."', async () => {
+  it('acknowledgments made after a call began reach that call: when the caller\'s turn is over, it says "네."', async () => {
     let ready: () => void = () => undefined;
     const made = new Promise<void>((r) => {
       ready = r;
@@ -280,6 +280,9 @@ describe('PhoneService', () => {
     };
     session.feedAudio(tone(600, 0.3)); // the caller speaks …
     session.feedAudio(tone(800, 0.0005)); // … and stops
+    await new Promise((r) => setTimeout(r, 150)); // recognised, but the turn may still go on: nothing yet
+    expect(store.get('IN1')?.transcript.some((l) => l.role === 'agent' && l.text === '네.')).toBe(false);
+    await new Promise((r) => setTimeout(r, 600)); // the line stays quiet: the turn is over (0.5 s, real timers)
     expect(store.get('IN1')?.transcript.some((l) => l.role === 'agent' && l.text === '네.')).toBe(true);
     await svc.stop();
   });

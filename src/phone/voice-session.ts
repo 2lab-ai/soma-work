@@ -42,6 +42,15 @@ const TIME_UP_GRACE_MS = 25_000;
 const BARGE_IN_MS = 600;
 /** A real interruption: the agent's voice falls silent over this long (it ends its word), it is not cut dead. */
 const FADE_OUT_MS = 300;
+/**
+ * The end of an utterance (0.5 s of quiet) is when its words are sent to be recognised; the turn is over only once
+ * the line has stayed quiet this much longer. A person pauses inside a sentence: a real call answered the first half
+ * of one, and said "네." over the second ("내가 말하던 중에 니가 치고 들어온다"). Recognising takes about as long
+ * (0.45 s median), so the wait costs little: the words are ready when the turn ends.
+ */
+const TURN_HOLD_MS = 500;
+/** Fewer letters than this ("네", "음", "아우, 네") are a backchannel, not something to say "네." to. */
+const ACK_MIN_LETTERS = 4;
 /** At most this much text goes into one synthesis (the rest of a reply is spoken as one piece, without gaps). */
 const MAX_PIECE_CHARS = 400;
 /**
@@ -82,10 +91,15 @@ export interface CallRunPlan {
   /** Inbound: the greeting already synthesized (μ-law frames) and its words. */
   greeting?: { text: string; frames: Buffer[] };
   /**
-   * Short acknowledgments already synthesized ("네."): one is said the moment the other side stops talking, while
-   * the reply is still being made — the answer itself takes a few seconds.
+   * Short acknowledgments already synthesized ("네."): one is said when the other side's turn is over, while the
+   * reply is still being made — the answer itself takes a few seconds.
    */
   fillers?: Array<{ text: string; frames: Buffer[] }>;
+  /**
+   * How much longer than the end of an utterance (0.5 s of quiet) the line must stay quiet before the other side's
+   * turn is over. Default {@link TURN_HOLD_MS}.
+   */
+  turnHoldMs?: number;
   model?: string;
 }
 
@@ -97,6 +111,12 @@ interface SpokenPart {
   /** All of its audio is made (its length is known). */
   done?: boolean;
   line?: { text: string; at: number; role: 'agent'; interrupted?: boolean };
+}
+
+/** Where an utterance's words go in the turn they belong to. */
+interface TurnSlot {
+  turn: { words: string[]; pending: number; over: boolean };
+  index: number;
 }
 
 interface Buffered {
@@ -134,6 +154,12 @@ export class CallRun {
   private framesPerChar = FRAMES_PER_CHAR;
   /** An acknowledgment was just said: the reply should not open with another. */
   private acknowledged = false;
+  /**
+   * The other side's turn while it may still go on: the words recognised so far, the recognitions still running, and
+   * whether the line has been quiet long enough since its last utterance.
+   */
+  private turn: { words: string[]; pending: number; over: boolean } | null = null;
+  private turnTimer: unknown = null;
   private synthAbort: AbortController | null = null;
 
   /** Outbound: the opening is held until the other side has picked up and said hello (or stayed quiet). */
@@ -231,6 +257,9 @@ export class CallRun {
         // The other side is talking: no silence timer, and the next quiet spell starts with a fresh nudge.
         this.clearSilence();
         this.silenceNudged = false;
+        this.holdTurn(); // they go on: their turn is not over
+        // Nobody starts talking over someone: nothing new goes out until their turn is over (what sounds goes on).
+        this.out?.hold();
         this.startedOverAgent = this.released && this.agentSpeaking();
         this.bargeArmed = this.startedOverAgent;
         // Someone talks over the agent: it lowers its voice at once and goes on — a "네" brings it back, a real
@@ -245,13 +274,18 @@ export class CallRun {
         if (releasedOpening) this.release('상대의 첫 말이 끝남');
         // A backchannel (short, begun over the agent) and the hello that released the opening leave what is being
         // said alone.
-        const keepReply = releasedOpening || (this.startedOverAgent && ev.speechMs < BARGE_IN_MS);
+        // While their turn is still open, whatever they say belongs to it — even a "네" over the agent (which may
+        // count as speaking while a dropped reply is still being synthesized).
+        const keepReply = !this.turn && (releasedOpening || (this.startedOverAgent && ev.speechMs < BARGE_IN_MS));
         if (this.startedOverAgent) this.out?.restore(); // it was not an interruption (that would have faded it out)
-        if (!keepReply && !releasedOpening) this.acknowledge();
-        void this.transcribe(ev.pcm, ev.totalMs, first, keepReply);
+        if (keepReply) this.out?.release(); // a "네" or the hello that released the opening: the agent goes on
+        void this.transcribe(ev.pcm, ev.totalMs, first, keepReply, keepReply ? undefined : this.openTurn());
       } else if (ev.type === 'noise') {
         this.bargeArmed = false;
         if (this.startedOverAgent) this.out?.restore();
+        if (this.turn)
+          this.armTurnEnd(this.turn); // a cough in a pause: the turn still ends after quiet
+        else this.out?.release(); // a click, not a turn: what waited may start
         if (!this.released) this.release('상대가 조용해서 첫 마디 시작');
         else if (!this.flushPending()) this.armSilenceIfIdle(); // its start cleared the quiet-line timer
       }
@@ -277,6 +311,7 @@ export class CallRun {
    */
   private flushPending(): boolean {
     if (!this.pendingPeer.length || this.generating || this.hangupRequested || this.ended) return false;
+    if (this.turn) return false; // they go with the words of the turn still open (endTurn → hear)
     if (this.vad.speaking || this.sttInFlight > 0) return false;
     const words = this.pendingPeer.join(' ');
     this.pendingPeer = [];
@@ -583,7 +618,69 @@ export class CallRun {
 
   // ── hearing ─────────────────────────────────────────────────
 
-  private async transcribe(pcm: Buffer, audioMs: number, first = false, keepReply = false): Promise<void> {
+  /** An utterance of the other side's turn has ended: the turn is open (or goes on) until the line stays quiet. */
+  /**
+   * An utterance of the other side's turn has ended: the turn is open (or goes on) until the line stays quiet. Its
+   * words get their place in the turn now — recognitions may answer out of order.
+   */
+  private openTurn(): TurnSlot {
+    const turn = this.turn ?? { words: [], pending: 0, over: false };
+    this.turn = turn;
+    turn.pending++;
+    const index = turn.words.push('') - 1;
+    this.armTurnEnd(turn);
+    return { turn, index };
+  }
+
+  private armTurnEnd(turn: NonNullable<CallRun['turn']>): void {
+    this.holdTurn();
+    const hold = this.plan.turnHoldMs ?? TURN_HOLD_MS;
+    if (hold <= 0) {
+      turn.over = true;
+      this.endTurn(); // its words may all be in already (a click after them)
+      return;
+    }
+    this.turnTimer = this.later(() => {
+      this.turnTimer = null;
+      turn.over = true;
+      this.endTurn();
+    }, hold);
+  }
+
+  /** The other side is talking again: the turn is not over yet. */
+  private holdTurn(): void {
+    if (this.turnTimer !== null) this.clearTimer(this.turnTimer);
+    this.timers.delete(this.turnTimer);
+    this.turnTimer = null;
+    if (this.turn) this.turn.over = false;
+  }
+
+  /**
+   * The turn is over once the line stayed quiet and all its words are in: the words go to the model — a reply made
+   * meanwhile and held back is dropped by them (hear) — then the line is the agent's again, and "네.".
+   */
+  private endTurn(): void {
+    const turn = this.turn;
+    if (!turn?.over || turn.pending > 0) return;
+    this.turn = null;
+    const text = turn.words.filter(Boolean).join(' ');
+    if (this.ended || this.hangupRequested || !text) {
+      this.out?.release();
+      if (!text && !this.ended && !this.hangupRequested && !this.flushPending()) this.armSilenceIfIdle();
+      return;
+    }
+    this.hear(text);
+    this.out?.release();
+    if (text.replace(/[\s\p{P}\p{S}]/gu, '').length >= ACK_MIN_LETTERS) this.acknowledge();
+  }
+
+  private async transcribe(
+    pcm: Buffer,
+    audioMs: number,
+    first = false,
+    keepReply = false,
+    slot?: TurnSlot,
+  ): Promise<void> {
     const at = this.now();
     let text = '';
     let ms = 0;
@@ -595,6 +692,7 @@ export class CallRun {
     } catch (err) {
       this.sttInFlight--;
       this.fail('stt', err);
+      if (slot) return this.doneRecognising(slot);
       if (!this.flushPending()) this.armSilenceIfIdle();
       return;
     }
@@ -603,7 +701,7 @@ export class CallRun {
     this.work({ kind: 'stt', at, text, ms, audioMs });
     if (!text) {
       // A cough or line noise: nothing for the model, but the line is quiet again (or words waited for this).
-      this.acknowledged = false; // nothing to answer: the next reply opens as it likes
+      if (slot) return this.doneRecognising(slot);
       if (!this.flushPending()) this.armSilenceIfIdle();
       return;
     }
@@ -619,16 +717,27 @@ export class CallRun {
       this.heldPeer.push(text);
       return;
     }
-    if (this.hangupRequested) return;
+    if (this.hangupRequested) {
+      if (slot) this.doneRecognising(slot); // the turn still closes: it holds the line the goodbye goes out on
+      return;
+    }
     // The reply's first sentence reaches the speech engine in ~1 s (first tokens). Wake it now — not earlier: on the
     // voice host the wake-up would compete with this transcription (measured: STT 0.9 s → 2.5 s).
     this.warmEngine();
     // The other side's "여보세요" as it picks up is heard and logged, but it is not a turn: the opening answers it.
     if (first && this.plan.direction === 'outbound' && isBareGreeting(text)) {
+      if (slot) return this.doneRecognising(slot);
       this.armSilenceIfIdle();
       return;
     }
+    if (slot) return this.doneRecognising(slot, text);
     this.hear(text, keepReply);
+  }
+
+  private doneRecognising(slot: TurnSlot, text = ''): void {
+    slot.turn.words[slot.index] = text;
+    slot.turn.pending--;
+    this.endTurn();
   }
 
   // ── thinking ────────────────────────────────────────────────
@@ -790,7 +899,7 @@ export class CallRun {
 
   /** Arm the silence timer unless the agent is still speaking or thinking (they arm it when they finish). */
   private armSilenceIfIdle(): void {
-    if (this.ended || this.speaking || this.queue.length || this.generating) return;
+    if (this.ended || this.speaking || this.queue.length || this.generating || this.turn) return;
     this.armSilence();
   }
 

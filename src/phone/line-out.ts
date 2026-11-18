@@ -46,6 +46,8 @@ export class LineOut {
   private target = 1;
   /** Gain change per frame toward `target`. */
   private step = 1;
+  /** The other side is talking: nothing new starts (a part already sounding goes on). */
+  private held = false;
   /** Frames at the head of the queue that belong to the fade under way (audio queued after it is not faded). */
   private fadeLeft = 0;
   private readonly parts = new Map<unknown, { total: number; sent: number }>();
@@ -124,6 +126,18 @@ export class LineOut {
     if (this.timer === null) this.pump();
   }
 
+  /** The other side is talking: start nothing new until {@link release} — a person does not begin over someone. */
+  hold(): void {
+    this.held = true;
+  }
+
+  /** The other side's turn is over: what waited may start. */
+  release(): void {
+    if (!this.held) return;
+    this.held = false;
+    if (this.timer === null) this.pump();
+  }
+
   /** Drop everything now and clear the line (the call ended, or nothing may be heard any more). */
   stop(): void {
     this.frames = [];
@@ -157,6 +171,7 @@ export class LineOut {
     this.timer = null;
     const now = this.deps.now();
     while (this.frames.length && this.sentUntil - now < LEAD_MS) {
+      if (this.held && !this.parts.get(this.frames[0].tag)?.sent) return; // waits for release()
       const f = this.frames.shift() as Frame;
       const fading = this.fadeLeft > 0;
       this.sendOne(f, now);
