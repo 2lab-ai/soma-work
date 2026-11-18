@@ -129,6 +129,8 @@ const configCache = new ConfigCache<ServerToolsConfig>(
       }
       return {} as ServerToolsConfig; // Section removed/invalid → clear config
     },
+    // A secret added or replaced from the dashboard's 비밀 tab is resolved on the next call (secret-access WU1).
+    watchDir: () => process.env.SOMA_SECRETS_DIR,
   },
 );
 

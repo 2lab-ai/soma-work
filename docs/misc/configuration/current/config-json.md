@@ -274,6 +274,8 @@ Every string value above accepts `${VAR}` substitution. Keep DB passwords out of
 A server entry can stand for an environment that acts as its own user: `envUser` names it, and `github` gives it the
 environment's own GitHub token and what it may approve and merge. The token is a `{"$secret": "<name>"}` reference into
 the secret store (`<config dir>/secrets/<name>`); server-tools reads it outside every model sandbox and no model sees it.
+An admin adds, replaces and deletes secrets on the dashboard's settings page, tab 비밀 (`/dashboard/settings#secrets`) —
+names only, the value is never shown again; server-tools resolves a change on its next call.
 
 ```jsonc
 {

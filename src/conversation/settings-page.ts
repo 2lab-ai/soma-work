@@ -29,6 +29,7 @@ import { DICTATION_CLIENT_JS, DICTATION_TAB_CSS, DICTATION_TAB_HTML } from './se
 import { LAYOUT_CLIENT_JS, LAYOUT_TAB_CSS, LAYOUT_TAB_HTML } from './settings-layout-tab';
 import { MEMORY_CLIENT_JS, MEMORY_TAB_CSS, MEMORY_TAB_HTML } from './settings-memory-tab';
 import { PROJECT_CLIENT_JS, PROJECT_TAB_CSS, PROJECT_TAB_HTML } from './settings-project-tab';
+import { SECRETS_CLIENT_JS, SECRETS_TAB_CSS, SECRETS_TAB_HTML } from './settings-secrets-tab';
 import { SKILLS_CLIENT_JS, SKILLS_TAB_CSS, SKILLS_TAB_HTML } from './settings-skills-tab';
 import { soundClientJs } from './sound-client';
 import { themeClientJs } from './theme-client';
@@ -40,6 +41,8 @@ export interface SettingsPageTab {
   label: string;
   /** A glyph of @2lab.ai/ui's icon set before the label. */
   icon?: string;
+  /** Listed for admins only (`/auth/me` isAdmin). Hiding is cosmetic — the tab's API refuses everyone else. */
+  adminOnly?: true;
 }
 
 /** Tabs that exist on this build. Later areas append here. */
@@ -49,6 +52,8 @@ export const SETTINGS_TABS: SettingsPageTab[] = [
   { id: 'project', label: '프로젝트 메모리', icon: 'file-text' },
   // 스킬 (#1079): my skills, the host's environment skills and the installed ones — and who may run them.
   { id: 'skills', label: '스킬', icon: 'file-code' },
+  // 비밀 (secret-access WU1, #1337): the host's secret store — names only, admins only.
+  { id: 'secrets', label: '비밀', icon: 'lock', adminOnly: true },
   // 대시보드 화면 (SSOT 2026-11-02, .prd/21): the surface editor — card, open card, detail card, thread card.
   { id: 'layout', label: '대시보드 화면', icon: 'board' },
   // 받아쓰기 (SSOT 2026-11-02, epic #737): this device's engine — kept in this browser only — and its recogniser's details.
@@ -210,6 +215,7 @@ dialog .actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 export const SETTINGS_CLIENT_JS = String.raw`
 var _csrfToken = '';
+var _viewerIsAdmin = false; // /auth/me — lists the admin-only tabs
 var _snapshot = null;
 var _rowStatus = Object.create(null); // key -> { text, error }
 
@@ -228,6 +234,10 @@ async function refreshCsrfToken() {
     if (res.ok) {
       var data = await res.json();
       _csrfToken = data.csrfToken || '';
+      if (!!data.isAdmin !== _viewerIsAdmin) {
+        _viewerIsAdmin = !!data.isAdmin;
+        if (typeof showTab === 'function' && showTab.current) showTab(showTab.current);
+      }
       if (data.user && data.user.name) {
         _appBarAccount = { name: data.user.name, href: '/login' };
         if (data.isAdmin) _appBarAccount.role = '관리자';
@@ -640,7 +650,12 @@ function paintAppBar() {
 // element is defined, the hidden attribute keeps the other tab page out of sight.
 function settingsTabs() {
   var el = document.getElementById('settings-tabs-data');
-  try { return (el && JSON.parse(el.textContent || '[]')) || []; } catch (_e) { return []; }
+  var all = [];
+  try { all = (el && JSON.parse(el.textContent || '[]')) || []; } catch (_e) { all = []; }
+  // An admin-only tab is listed once /auth/me says the viewer is an admin (refreshCsrfToken repaints the list).
+  var out = [];
+  for (var i = 0; i < all.length; i++) if (!all[i].adminOnly || _viewerIsAdmin) out.push(all[i]);
+  return out;
 }
 function showTab(id) {
   var tabs = document.querySelectorAll('[data-tab]');
@@ -701,6 +716,7 @@ function onTabShown(id) {
   if (id === 'memory' && !_memLoaded) loadMemory();
   if (id === 'project' && !_pmLoaded) loadProjects();
   if (id === 'skills' && !_skLoaded) loadSkills();
+  if (id === 'secrets' && !_scLoaded) loadSecrets();
   if (id === 'layout' && !_layLoaded) loadLayout();
   if (id === 'dictation' && !_dicLoaded) loadDictationTab();
 }
@@ -708,10 +724,9 @@ function onTabShown(id) {
 
 export function renderSettingsPage(tabs: SettingsPageTab[] = SETTINGS_TABS): string {
   // The tab list's data, read by the page script (showTab): JSON with every < escaped, inert in a data script.
-  const tabsJson = JSON.stringify(tabs.map((t) => ({ id: t.id, label: t.label, icon: t.icon }))).replace(
-    /</g,
-    '\\u003c',
-  );
+  const tabsJson = JSON.stringify(
+    tabs.map((t) => ({ id: t.id, label: t.label, icon: t.icon, ...(t.adminOnly ? { adminOnly: true } : {}) })),
+  ).replace(/</g, '\\u003c');
   return `<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -728,7 +743,7 @@ export function renderSettingsPage(tabs: SettingsPageTab[] = SETTINGS_TABS): str
 <style id="ui-kit">
 ${uiLibKitCss()}
 </style>
-<style>${SETTINGS_PAGE_CSS}${MEMORY_TAB_CSS}${PROJECT_TAB_CSS}${SKILLS_TAB_CSS}${LAYOUT_TAB_CSS}${DICTATION_TAB_CSS}</style>
+<style>${SETTINGS_PAGE_CSS}${MEMORY_TAB_CSS}${PROJECT_TAB_CSS}${SKILLS_TAB_CSS}${SECRETS_TAB_CSS}${LAYOUT_TAB_CSS}${DICTATION_TAB_CSS}</style>
 <!-- Tokens — @2lab.ai/ui is the single source, as on the dashboard (P10, P9): its tokens.css puts every
      --ui-* on :root and [data-theme="light|dark"], and the page's names are aliases of them. -->
 <style id="ui-tokens">
@@ -746,6 +761,7 @@ ${preferencesTab()}
 ${MEMORY_TAB_HTML}
 ${PROJECT_TAB_HTML}
 ${SKILLS_TAB_HTML}
+${SECRETS_TAB_HTML}
 ${LAYOUT_TAB_HTML}
 ${DICTATION_TAB_HTML}
 </ui-tabs>
@@ -760,7 +776,7 @@ ${DICTATION_TAB_HTML}
     </div>
   </form>
 </dialog>
-<script>${MEMORY_CLIENT_JS}${PROJECT_CLIENT_JS}${SKILLS_CLIENT_JS}${VIEW_LAYOUT_CLIENT_JS}${LAYOUT_CLIENT_JS}${DICTATION_PREF_JS}${DICTATION_SERVER_JS}${DICTATION_BROWSER_JS}${DICTATION_CLIENT_JS}${TAB_HOOKS_JS}${SETTINGS_CLIENT_JS}</script>
+<script>${MEMORY_CLIENT_JS}${PROJECT_CLIENT_JS}${SKILLS_CLIENT_JS}${SECRETS_CLIENT_JS}${VIEW_LAYOUT_CLIENT_JS}${LAYOUT_CLIENT_JS}${DICTATION_PREF_JS}${DICTATION_SERVER_JS}${DICTATION_BROWSER_JS}${DICTATION_CLIENT_JS}${TAB_HOOKS_JS}${SETTINGS_CLIENT_JS}</script>
 <script type="module" src="/dashboard/ui/app-bar.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/setting-row.js?v=${UI_LIB_VERSION}"></script>
 <!-- <ui-settings-nav> and the library's own row filter (applySettingsFilter) for the page script's applyFilter. -->
