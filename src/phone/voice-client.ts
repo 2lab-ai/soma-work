@@ -7,6 +7,8 @@
  *                               (`x-soma-voice-sample-rate`, 44 100 Hz for Drama 3)
  */
 
+import { MAX_STRETCH_RATE, MIN_STRETCH_RATE, TimeStretcher } from './audio';
+
 export interface VoiceConfig {
   /** Base URL of the voice service, e.g. `http://voice-host:9999`. */
   url: string;
@@ -17,6 +19,8 @@ export interface VoiceConfig {
   language: string;
   /** Sent as `Authorization: Bearer` when the service has a token. */
   token?: string;
+  /** Speech rate (1.5 = 1.5x faster at the same pitch); the service has none, so the client stretches. */
+  speed?: number;
 }
 
 export interface Transcription {
@@ -176,21 +180,30 @@ export function createVoiceClient(cfg: VoiceConfig, fetchImpl: FetchLike = fetch
     }
     const rate = Number(res.headers.get('x-soma-voice-sample-rate') ?? '44100');
     const reader = res.body.getReader();
+    const sampleRate = Number.isFinite(rate) && rate > 0 ? rate : 44100;
+    // A rate the stretcher cannot work at (a malformed header) plays at the service's own speed.
+    const stretchable = sampleRate >= MIN_STRETCH_RATE && sampleRate <= MAX_STRETCH_RATE;
+    const stretch = cfg.speed && cfg.speed !== 1 && stretchable ? new TimeStretcher(sampleRate, cfg.speed) : null;
     const chunks: AsyncIterable<Buffer> = {
       async *[Symbol.asyncIterator]() {
         try {
           while (true) {
             const { done, value } = await reader.read();
-            if (done) return;
+            if (done) break;
             host.synthesizedAt = Date.now(); // audio came out: the engine is awake
-            if (value && value.byteLength) yield Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+            if (!value?.byteLength) continue;
+            const pcm = Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+            const out = stretch ? stretch.push(pcm) : pcm;
+            if (out.length) yield out;
           }
+          const rest = stretch?.flush();
+          if (rest?.length) yield rest;
         } finally {
           reader.releaseLock();
           over();
         }
       },
     };
-    return { sampleRate: Number.isFinite(rate) && rate > 0 ? rate : 44100, headersMs: Date.now() - started, chunks };
+    return { sampleRate, headersMs: Date.now() - started, chunks };
   }
 }

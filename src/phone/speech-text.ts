@@ -30,7 +30,9 @@ export class SentenceSplitter {
     for (let i = 0; i < this.buffer.length; i++) {
       const ch = this.buffer[i];
       const length = i + 1 - start;
-      const atEnd = SENTENCE_END.test(ch) && length >= MIN_SENTENCE_CHARS;
+      // "1.5배" is one number: a point between digits ends nothing. With nothing after it yet, the next piece decides.
+      const decimal = ch === '.' && /\d/.test(this.buffer[i - 1] ?? '') && /^\d?$/.test(this.buffer[i + 1] ?? '');
+      const atEnd = SENTENCE_END.test(ch) && length >= MIN_SENTENCE_CHARS && !decimal;
       const comma = ch === ',' || ch === '，';
       // A clause ends at a comma with a space after it; "123,456원" has none. The next character may not have
       // arrived yet: then the comma waits for the next piece.

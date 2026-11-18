@@ -16,7 +16,7 @@ const SAMPLES_PER_FRAME = (LINE_SAMPLE_RATE * FRAME_MS) / 1000; // 160
 export interface VadOptions {
   /** Consecutive loud frames before speech counts as started. Default 3 (60 ms). */
   startFrames?: number;
-  /** Quiet time after speech that ends an utterance. Default 700 ms. */
+  /** Quiet time after speech that ends an utterance. Default 500 ms (a caller waits for every one of them). */
   endSilenceMs?: number;
   /** Shorter bursts are noise (a cough, a click), not an utterance. Default 300 ms. */
   minSpeechMs?: number;
@@ -74,7 +74,7 @@ export class EnergyVad {
 
   constructor(options: VadOptions = {}) {
     this.startFrames = options.startFrames ?? 3;
-    this.endSilenceFrames = Math.ceil((options.endSilenceMs ?? 700) / FRAME_MS);
+    this.endSilenceFrames = Math.ceil((options.endSilenceMs ?? 500) / FRAME_MS);
     this.minSpeechFrames = Math.ceil((options.minSpeechMs ?? 300) / FRAME_MS);
     this.maxFrames = Math.ceil((options.maxUtteranceMs ?? 30_000) / FRAME_MS);
     this.preRollFrames = Math.ceil((options.preRollMs ?? 300) / FRAME_MS);
@@ -156,7 +156,7 @@ export class EnergyVad {
 
     const speechMs = this.speechFrames * FRAME_MS;
     if (this.speechFrames >= this.minSpeechFrames) {
-      // Keep a little of the trailing quiet (the recogniser likes a soft ending), not all 700 ms of it.
+      // Keep a little of the trailing quiet (the recogniser likes a soft ending), not all of it.
       const keep = tooLong ? this.utterance.length : this.utterance.length - Math.max(0, this.silenceRun - 10);
       const pcm = Buffer.concat(this.utterance.slice(0, keep));
       events.push({ type: 'utterance', pcm, speechMs, totalMs: keep * FRAME_MS });
@@ -235,6 +235,141 @@ export class StreamResampler {
     this.last = src[src.length - 1];
     const buf = Buffer.alloc(out.length * 2);
     for (let i = 0; i < out.length; i++) buf.writeInt16LE(Math.max(-32768, Math.min(32767, out[i])), i * 2);
+    return buf;
+  }
+}
+
+/**
+ * Sample rates a {@link TimeStretcher} accepts: a 20 ms window holds at least 160 samples, and the search work per
+ * second (it grows with the square of the rate) stays near what 44.1 kHz needs (0.2 s of CPU per 10 s of audio).
+ */
+export const MIN_STRETCH_RATE = 8000;
+export const MAX_STRETCH_RATE = 48000;
+
+/**
+ * Faster speech at the same pitch, for mono PCM16 LE (WSOLA: overlap-add of 20 ms windows taken `speed` times
+ * further apart than they are laid down, each nudged by up to 10 ms to the spot that best continues the last one).
+ * The voice service has no speed control, so the phone speeds up what it gets. Streaming: a window is made only
+ * once all the input it may look at has arrived, so the output does not depend on how the stream was chunked.
+ * Speed 1 passes the audio through untouched.
+ */
+export class TimeStretcher {
+  private readonly n: number;
+  private readonly hop: number;
+  private readonly window: Float32Array;
+  private input: number[] = [];
+  /** Absolute index of input[0]. */
+  private base = 0;
+  private total = 0;
+  private out: Float64Array = new Float64Array(0);
+  /** Absolute index of out[0]. */
+  private outBase = 0;
+  private emitted = 0;
+  private frame = 0;
+  private prevPos = 0;
+  private split: Buffer | null = null;
+
+  constructor(
+    sampleRate: number,
+    private readonly speed: number,
+  ) {
+    // A window must hold samples, or no frame ever advances (a malformed rate header must not hang the process).
+    if (!(Number.isFinite(sampleRate) && sampleRate >= MIN_STRETCH_RATE && sampleRate <= MAX_STRETCH_RATE)) {
+      throw new RangeError(
+        `TimeStretcher: sample rate ${sampleRate} is outside ${MIN_STRETCH_RATE}–${MAX_STRETCH_RATE}`,
+      );
+    }
+    if (!(Number.isFinite(speed) && speed > 0)) throw new RangeError(`TimeStretcher: speed ${speed} is not positive`);
+    this.n = 2 * Math.round(sampleRate * 0.01); // 20 ms, even
+    this.hop = this.n / 2;
+    this.window = new Float32Array(this.n);
+    for (let i = 0; i < this.n; i++) this.window[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / this.n);
+  }
+
+  push(chunk: Buffer): Buffer {
+    if (this.speed === 1) return chunk;
+    let pcm = this.split ? Buffer.concat([this.split, chunk]) : chunk;
+    this.split = null;
+    if (pcm.length % 2) {
+      this.split = Buffer.from(pcm.subarray(pcm.length - 1));
+      pcm = pcm.subarray(0, pcm.length - 1);
+    }
+    for (let i = 0; i < pcm.length; i += 2) this.input.push(pcm.readInt16LE(i));
+    this.total += pcm.length / 2;
+    this.makeFrames(false);
+    return this.take(this.frame * this.hop);
+  }
+
+  /** The rest, once the stream has ended. */
+  flush(): Buffer {
+    if (this.speed === 1) return Buffer.alloc(0);
+    this.makeFrames(true);
+    return this.take(Math.round(this.total / this.speed));
+  }
+
+  private at(abs: number): number {
+    return this.input[abs - this.base] ?? 0;
+  }
+
+  private makeFrames(final: boolean): void {
+    const n = this.n;
+    const hop = this.hop;
+    const tolerance = hop; // ±10 ms
+    for (;;) {
+      const nominal = Math.round(this.frame * hop * this.speed);
+      if (final ? nominal >= this.total : nominal + tolerance + n > this.total || this.prevPos + hop + n > this.total) {
+        break;
+      }
+      let pos = nominal;
+      if (this.frame > 0) {
+        // The window that best continues the previous one: its natural next part is the template.
+        const from = Math.max(0, nominal - tolerance);
+        const to = nominal + tolerance;
+        let best = -Infinity;
+        for (let c = from; c <= to; c++) {
+          let sum = 0;
+          for (let k = 0; k < n; k += 4) sum += this.at(this.prevPos + hop + k) * this.at(c + k);
+          if (sum > best) {
+            best = sum;
+            pos = c;
+          }
+        }
+      }
+      const start = this.frame * hop;
+      const need = start + n - this.outBase;
+      if (need > this.out.length) {
+        const grown = new Float64Array(Math.max(need, this.out.length * 2));
+        grown.set(this.out);
+        this.out = grown;
+      }
+      for (let k = 0; k < n; k++) this.out[start - this.outBase + k] += this.window[k] * this.at(pos + k);
+      this.prevPos = pos;
+      this.frame++;
+      // Input before what the next search can reach is done with.
+      const keep = Math.min(this.prevPos, Math.round(this.frame * hop * this.speed) - tolerance) - this.base;
+      if (keep > 4096) {
+        this.input = this.input.slice(keep);
+        this.base += keep;
+      }
+    }
+  }
+
+  /** Output samples up to `end` (absolute) that no later window will add to. */
+  private take(end: number): Buffer {
+    const upto = Math.max(this.emitted, end);
+    const count = upto - this.emitted;
+    const buf = Buffer.alloc(count * 2);
+    for (let i = 0; i < count; i++) {
+      const j = this.emitted + i - this.outBase;
+      const v = j < this.out.length ? Math.round(this.out[j]) : 0;
+      buf.writeInt16LE(Math.max(-32768, Math.min(32767, v)), i * 2);
+    }
+    this.emitted = upto;
+    const drop = this.emitted - this.outBase;
+    if (drop > 8192) {
+      this.out = this.out.slice(drop);
+      this.outBase += drop;
+    }
     return buf;
   }
 }

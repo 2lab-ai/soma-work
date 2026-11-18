@@ -87,6 +87,8 @@ export const HANG_UP_TOOL = {
   description: '통화를 끝낸다. 마지막 인사를 먼저 말한 뒤에 부른다. 부른 뒤에는 더 말하지 않는다.',
   reason: '끊는 이유(기록용, 짧게)',
   result: '말하던 문장을 마치면 통화를 끊는다. 더 말하지 마라.',
+  /** The reply that called it answered out-of-date words (the caller went on talking): the call goes on. */
+  cancelled: '상대가 말을 이어가서 끊지 않았다. 이어서 들어오는 상대 말에 답하라.',
 };
 export const SEND_DTMF_TOOL = {
   description: '상대 자동응답(ARS)에 키패드 번호를 누른다. 예: "1", "1234#".',

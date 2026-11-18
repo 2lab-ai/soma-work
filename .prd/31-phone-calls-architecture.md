@@ -82,10 +82,14 @@ SDK는 세션 객체 하나를 모든 통화에 쓴다. 그래서 래퍼 하나�
 
 1. **듣기** — `feedAudio(ulaw)` → `ulawToPcm16` → `EnergyVad.push(pcm, agentSpeaking)`.
    - `speech_start`이고 에이전트가 말하는 중이면 끼어들기(§3.4).
-   - `utterance` → WAV(8 kHz) → `POST /api/stt`(language ko) → 상대 전사 한 줄.
+   - `utterance`(말 끝 0.5 s 조용) → WAV(8 kHz) → `POST /api/stt`(language ko) → 상대 전사 한 줄.
 2. **생각** — 전사를 `voice-dialog`의 입력 스트림에 사용자 메시지로 넣는다. 텍스트 델타는 `SentenceSplitter`로
-   문장이 되어 말하기 큐로 간다. `hang_up` 도구는 "말을 다 한 뒤 끊기"로 표시만 한다.
-3. **말하기** — 문장마다 `POST /api/tts/stream`(voice cwon, model drama-3, format pcm) → 44.1 kHz → 8 kHz 리샘플 →
+   문장이 되어 말하기 큐로 간다(숫자의 소수점 · 천 단위 쉼표에서는 끊지 않는다). `hang_up` 도구는 "말을 다 한 뒤
+   끊기"로 표시만 한다. **답은 한 번에 하나** — 상대가 생각 중간에 쉬었다 이어 말하면(실통화: 쉼마다 답이 따로 쌓여
+   20 s를 연달아 말함) 새 말이 옛 말에 대한 답을 대신한다: 쓰는 중인 답은 `interrupt()`로 버리고 새 말은 그 턴이
+   끝난 뒤 보낸다(앞의 말과 함께 한 번에 답한다). 이미 나가는 답은 끊는다. 버린 답의 `hang_up`은 하지 않는다.
+3. **말하기** — 문장마다 `POST /api/tts/stream`(voice cwon, model drama-3, format pcm) → 44.1 kHz → (말 속도
+   `voice.speed`: 음성 서비스에 속도 조절이 없어 클라이언트가 WSOLA로 음높이를 지킨 채 줄인다, 10 s에 CPU 0.2 s) → 8 kHz 리샘플 →
    `pcm16ToUlaw` → 160바이트 프레임 `sendAudio`. 한 번에 한 문장, 순서대로. 보낸 오디오 길이로 재생 끝 시각을 추정한다
    (`playEndAt`). 전사의 에이전트 줄은 그 문장 합성을 시작할 때 쓴다.
 4. **끼어들기** — `clearAudio()`, 합성 중단(AbortController), 큐 비우기, 생성 중이면 `interrupt()`. 끊긴 문장은 전사에
@@ -129,7 +133,7 @@ SDK는 세션 객체 하나를 모든 통화에 쓴다. 그래서 래퍼 하나�
     "accountId": "AC…",
     "number": "070…",
     "owner": "U…",
-    "voice": { "url": "http://<음성 호스트>:9999", "voice": "cwon-phone", "model": "drama-3" },
+    "voice": { "url": "http://<음성 호스트>:9999", "voice": "cwon-phone", "model": "drama-3", "speed": 1.5 },
     "model": "sonnet",
     "outbound": { "systemPrompt": "…", "maxMinutes": 10, "allowTo": ["010…"] },
     "inbound": { "enabled": true, "systemPrompt": "…", "greeting": "…" }

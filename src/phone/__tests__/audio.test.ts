@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { EnergyVad, pcm16ToWav, rmsDbfs, StreamResampler } from '../audio';
+import { EnergyVad, pcm16ToWav, rmsDbfs, StreamResampler, TimeStretcher } from '../audio';
 
 const RATE = 8000;
 
@@ -33,13 +33,14 @@ describe('rmsDbfs', () => {
 });
 
 describe('EnergyVad', () => {
-  it('hears speech start, then one utterance after 700 ms of quiet', () => {
+  it('hears speech start, then one utterance after 500 ms of quiet (not before)', () => {
     const vad = new EnergyVad();
     expect(vad.push(hiss(1000))).toEqual([]);
     const start = vad.push(tone(600, 0.3));
     expect(start).toEqual([{ type: 'speech_start' }]);
     expect(vad.speaking).toBe(true);
-    const end = vad.push(hiss(800));
+    expect(vad.push(hiss(440))).toEqual([]); // a pause inside a sentence
+    const end = vad.push(hiss(100));
     expect(end).toHaveLength(1);
     expect(end[0].type).toBe('utterance');
     const u = end[0] as { pcm: Buffer; speechMs: number; totalMs: number };
@@ -153,5 +154,89 @@ describe('StreamResampler', () => {
       const expected = Math.sin((2 * Math.PI * 300 * i) / 8000) * 10000;
       expect(Math.abs(got[i] - expected)).toBeLessThan(60);
     }
+  });
+});
+
+describe('TimeStretcher', () => {
+  const R = 44100;
+  /** A voiced sound: 180 Hz with harmonics and a slow loudness sway (deterministic). */
+  function voiced(ms: number): Buffer {
+    const n = Math.round((R * ms) / 1000);
+    const b = Buffer.alloc(n * 2);
+    for (let i = 0; i < n; i++) {
+      const t = i / R;
+      const v =
+        (Math.sin(2 * Math.PI * 180 * t) +
+          0.5 * Math.sin(2 * Math.PI * 360 * t) +
+          0.25 * Math.sin(2 * Math.PI * 540 * t)) *
+        (0.6 + 0.4 * Math.sin(2 * Math.PI * 3 * t));
+      b.writeInt16LE(Math.round(v * 0.35 * 32767), i * 2);
+    }
+    return b;
+  }
+  const ms = (b: Buffer) => (b.length / 2 / R) * 1000;
+  /** Zero crossings per second of the middle half (the pitch, for this signal 2 × 180). */
+  function crossingsPerSecond(b: Buffer): number {
+    const n = b.length / 2;
+    let c = 0;
+    let prev = b.readInt16LE(Math.floor(n / 4) * 2);
+    for (let i = Math.floor(n / 4) + 1; i < Math.floor((3 * n) / 4); i++) {
+      const v = b.readInt16LE(i * 2);
+      if ((prev < 0 && v >= 0) || (prev >= 0 && v < 0)) c++;
+      prev = v;
+    }
+    return c / (n / 2 / R);
+  }
+  function stretch(input: Buffer, speed: number, chunks: number[] = [input.length]): Buffer {
+    const ts = new TimeStretcher(R, speed);
+    const out: Buffer[] = [];
+    let off = 0;
+    for (let i = 0; off < input.length; i++) {
+      const size = chunks[i % chunks.length];
+      out.push(ts.push(input.subarray(off, off + size)));
+      off += size;
+    }
+    out.push(ts.flush());
+    return Buffer.concat(out);
+  }
+
+  it('refuses a sample rate it cannot work at, instead of looping forever', () => {
+    expect(() => new TimeStretcher(1, 1.5)).toThrow(RangeError);
+    expect(() => new TimeStretcher(192000, 1.5)).toThrow(RangeError); // its search would cost ~19x 44.1 kHz
+    expect(() => new TimeStretcher(44100, 0)).toThrow(RangeError);
+  });
+
+  it('passes audio through untouched at speed 1', () => {
+    const input = voiced(300);
+    expect(stretch(input, 1).equals(input)).toBe(true);
+  });
+
+  it('says the same thing 1.5x faster: two thirds of the time, same pitch, same loudness', () => {
+    const input = voiced(3000);
+    const out = stretch(input, 1.5);
+    expect(ms(out)).toBeGreaterThan(2000 * 0.97);
+    expect(ms(out)).toBeLessThan(2000 * 1.03);
+    const pitchIn = crossingsPerSecond(input);
+    expect(Math.abs(crossingsPerSecond(out) - pitchIn) / pitchIn).toBeLessThan(0.05);
+    const dbIn = rmsDbfs(input);
+    expect(Math.abs(rmsDbfs(out) - dbIn)).toBeLessThan(1.5);
+  });
+
+  it('slows down too: at 0.5 it takes twice the time, same pitch, same loudness, however it is chunked', () => {
+    const input = voiced(1500);
+    const out = stretch(input, 0.5);
+    expect(ms(out)).toBeGreaterThan(3000 * 0.97);
+    expect(ms(out)).toBeLessThan(3000 * 1.03);
+    const pitchIn = crossingsPerSecond(input);
+    expect(Math.abs(crossingsPerSecond(out) - pitchIn) / pitchIn).toBeLessThan(0.05);
+    expect(Math.abs(rmsDbfs(out) - rmsDbfs(input))).toBeLessThan(1.5);
+    expect(stretch(input, 0.5, [999, 7, 4096]).equals(out)).toBe(true);
+  });
+
+  it('gives the same audio however the stream is chunked (odd byte splits included)', () => {
+    const input = voiced(1500);
+    const whole = stretch(input, 1.5);
+    const chunked = stretch(input, 1.5, [4097, 13, 2048, 777, 1]);
+    expect(chunked.equals(whole)).toBe(true);
   });
 });

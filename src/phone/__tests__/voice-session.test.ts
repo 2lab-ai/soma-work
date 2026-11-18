@@ -294,6 +294,133 @@ describe('CallRun — conversation', () => {
     expect(record.work.some((w) => w.kind === 'event' && w.text.includes('끼어듦'))).toBe(true);
   });
 
+  it('a caller who goes on talking while the reply is still being written gets one answer to all of it', async () => {
+    const s = setup({ direction: 'inbound' }, ['내일 회의 시간 알려 주세요', '아 그리고 장소도요']);
+    s.run.begin();
+    s.run.attach(fakeCall() as unknown as CallSessionLike);
+    s.dialog().reply('네, 말씀하세요.');
+    await settleAll();
+    s.clock.advance(3000);
+    s.run.feedAudio(tone(600, 0.3));
+    s.run.feedAudio(quiet(800)); // a pause: the first part goes to the model
+    await settleAll();
+    expect(s.dialog().sent).toContain('내일 회의 시간 알려 주세요');
+    s.dialog().emit({ type: 'text_delta', text: '내일 회' }); // it starts answering …
+    await settleAll();
+    s.run.feedAudio(tone(600, 0.3));
+    s.run.feedAudio(quiet(800)); // … while the caller goes on
+    await settleAll();
+    expect(s.dialog().interrupted).toBe(1); // the answer to half a question is dropped
+    expect(s.dialog().sent).not.toContain('아 그리고 장소도요'); // not before that turn has ended
+    s.dialog().emit({ type: 'text_delta', text: '의는 세 시예요. ' });
+    s.dialog().emit({ type: 'turn_end', isError: true, message: 'interrupted' });
+    await settleAll();
+    expect(s.spoken).not.toContain('내일 회의는 세 시예요.');
+    expect(s.dialog().sent[s.dialog().sent.length - 1]).toBe('아 그리고 장소도요');
+    s.dialog().reply('내일 회의는 세 시, 삼 층 회의실이에요.');
+    await settleAll();
+    expect(s.spoken.join(' ')).toContain('내일 회의는 세 시, 삼 층 회의실이에요.');
+    expect(s.record.work.some((w) => w.kind === 'error')).toBe(false);
+  });
+
+  for (const order of ['handler first', 'event first'] as const) {
+    it(`the goodbye of a reply that answered out-of-date words is not said, and the call goes on (${order})`, async () => {
+      const s = setup({ direction: 'inbound' }, ['네 감사합니다', '아 잠깐만요, 하나 더 있어요']);
+      s.run.begin();
+      const call = fakeCall();
+      s.run.attach(call as unknown as CallSessionLike);
+      s.dialog().reply('네, 말씀하세요.');
+      await settleAll();
+      s.clock.advance(3000);
+      s.run.feedAudio(tone(600, 0.3));
+      s.run.feedAudio(quiet(800)); // "네 감사합니다"
+      await settleAll();
+      s.run.feedAudio(tone(600, 0.3));
+      s.run.feedAudio(quiet(800)); // "… 하나 더 있어요" while the model is still on the first part
+      await settleAll();
+      // The model, still answering the first part, says goodbye and hangs up — the handler and the stream's
+      // tool_use event may come in either order.
+      s.dialog().emit({ type: 'text_delta', text: '네, 좋은 하루 보내세요.' });
+      let result = '';
+      if (order === 'handler first') result = String(await s.dialog().tool('hang_up').handler({ reason: '마무리' }));
+      s.dialog().emit({ type: 'tool_use', name: 'hang_up', input: {} });
+      await settleAll();
+      if (order === 'event first') result = String(await s.dialog().tool('hang_up').handler({ reason: '마무리' }));
+      s.dialog().emit({ type: 'turn_end', isError: false });
+      await settleAll();
+      s.clock.advance(5000);
+      await settleAll();
+      expect(call.hungUp).toBe(0);
+      expect(result).toContain('끊지 않았다');
+      expect(s.spoken).not.toContain('네, 좋은 하루 보내세요.');
+      expect(s.dialog().sent[s.dialog().sent.length - 1]).toBe('아 잠깐만요, 하나 더 있어요');
+    });
+  }
+
+  it('words heard while a dropped reply is still ending are all sent together, once, after it', async () => {
+    const s = setup({ direction: 'inbound' }, ['내일 회의', '시간이랑', '장소 알려 주세요']);
+    s.run.begin();
+    s.run.attach(fakeCall() as unknown as CallSessionLike);
+    s.dialog().reply('네, 말씀하세요.');
+    await settleAll();
+    s.clock.advance(3000);
+    for (let i = 0; i < 3; i++) {
+      s.run.feedAudio(tone(400, 0.3));
+      s.run.feedAudio(quiet(800));
+      await settleAll();
+      if (i === 0) s.dialog().emit({ type: 'text_delta', text: '네, ' }); // it starts on "내일 회의"
+      await settleAll();
+    }
+    expect(s.dialog().interrupted).toBe(1);
+    const before = s.dialog().sent.length;
+    s.dialog().emit({ type: 'turn_end', isError: true, message: 'interrupted' });
+    await settleAll();
+    expect(s.dialog().sent.slice(before)).toEqual(['시간이랑 장소 알려 주세요']);
+  });
+
+  it('newer words stop a reply that is playing its first sentence while the rest is still being written', async () => {
+    const { run, record, dialog, call } = await talking();
+    run.feedAudio(tone(600, 0.3));
+    run.feedAudio(quiet(800));
+    await settleAll();
+    run.feedAudio(tone(200, 0.3)); // the caller starts again before the reply makes a sound
+    dialog().emit({ type: 'text_delta', text: '네, 회의 두 개 확인했어요. 그리고 ' }); // no turn_end: still writing
+    await settleAll();
+    expect(call.frames).toBeGreaterThan(0); // its first sentence plays over the caller
+    const before = dialog().sent.length;
+    run.feedAudio(tone(400, 0.3));
+    run.feedAudio(quiet(800)); // "잠깐만요" is transcribed
+    await settleAll();
+    expect(call.cleared).toBeGreaterThanOrEqual(1);
+    expect(dialog().interrupted).toBe(1);
+    expect(dialog().sent.length).toBe(before); // not before the dropped turn has ended
+    const agentLines = record.transcript.filter((l) => l.role === 'agent');
+    expect(agentLines[agentLines.length - 1]).toMatchObject({ text: '네, 회의 두 개 확인했어요.', interrupted: true });
+    dialog().emit({ type: 'turn_end', isError: true, message: 'interrupted' });
+    await settleAll();
+    expect(dialog().sent.slice(before)).toEqual(['잠깐만요']);
+  });
+
+  it('newer words stop a reply that started playing while the caller was still talking', async () => {
+    const { run, record, dialog, call, clock } = await talking();
+    run.feedAudio(tone(600, 0.3));
+    run.feedAudio(quiet(800));
+    await settleAll();
+    run.feedAudio(tone(200, 0.3)); // the caller starts again before the reply makes a sound (no barge-in yet)
+    dialog().reply('네, 회의 두 개 확인했어요. 시간도 알려 드릴까요?');
+    await settleAll();
+    expect(call.frames).toBeGreaterThan(0); // the reply is playing over the caller
+    run.feedAudio(tone(400, 0.3));
+    run.feedAudio(quiet(800)); // "잠깐만요" is transcribed
+    await settleAll();
+    expect(call.cleared).toBeGreaterThanOrEqual(1);
+    expect(dialog().sent[dialog().sent.length - 1]).toBe('잠깐만요');
+    const agentLines = record.transcript.filter((l) => l.role === 'agent');
+    expect(agentLines[agentLines.length - 1]).toMatchObject({ text: '시간도 알려 드릴까요?', interrupted: true });
+    expect(record.work.some((w) => w.kind === 'event' && w.text.includes('말을 이어감'))).toBe(true);
+    clock.advance(1);
+  });
+
   it('hang_up: says the goodbye first, then puts the phone down; text after it is not spoken', async () => {
     const { run, clock, dialog, call, spoken } = await talking();
     dialog().emit({ type: 'text_delta', text: '감사합니다. 좋은 하루 보내세요!' });
