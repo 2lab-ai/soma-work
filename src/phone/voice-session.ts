@@ -274,7 +274,9 @@ export class CallRun {
         if (releasedOpening) this.release('상대의 첫 말이 끝남');
         // A backchannel (short, begun over the agent) and the hello that released the opening leave what is being
         // said alone.
-        const keepReply = releasedOpening || (this.startedOverAgent && ev.speechMs < BARGE_IN_MS);
+        // While their turn is still open, whatever they say belongs to it — even a "네" over the agent (which may
+        // count as speaking while a dropped reply is still being synthesized).
+        const keepReply = !this.turn && (releasedOpening || (this.startedOverAgent && ev.speechMs < BARGE_IN_MS));
         if (this.startedOverAgent) this.out?.restore(); // it was not an interruption (that would have faded it out)
         if (keepReply) this.out?.release(); // a "네" or the hello that released the opening: the agent goes on
         void this.transcribe(ev.pcm, ev.totalMs, first, keepReply, keepReply ? undefined : this.openTurn());

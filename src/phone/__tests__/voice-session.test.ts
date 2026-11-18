@@ -1083,6 +1083,7 @@ describe('CallRun — like a live call', () => {
       fillers?: CallRunPlan['fillers'];
       turnHoldMs?: number;
       sttGate?: () => Promise<void>;
+      speakGate?: () => Promise<void>;
     } = {},
   ) {
     const s = setup(
@@ -1092,7 +1093,7 @@ describe('CallRun — like a live call', () => {
         ...(extra.turnHoldMs === undefined ? {} : { turnHoldMs: extra.turnHoldMs }),
       },
       stt,
-      { speakMs: extra.speakMs, sttGate: extra.sttGate },
+      { speakMs: extra.speakMs, sttGate: extra.sttGate, speakGate: extra.speakGate },
     );
     s.run.begin();
     const call = fakeCall();
@@ -1431,6 +1432,55 @@ describe('CallRun — like a live call', () => {
       s.run.feedAudio(quiet(800)); // the click ends as noise
       await settleAll();
       expect(s.dialog().sent.slice(n)).toEqual(['내일 회의 몇 시예요?']);
+    });
+
+    it('a short sound while a turn is open belongs to that turn: the turn still ends', async () => {
+      let stall = false;
+      const s = await answering(['내일 회의 시간이요', '그리고', '네'], {
+        turnHoldMs: 500,
+        speakGate: () => (stall ? new Promise<void>(() => undefined) : Promise.resolve()),
+      });
+      live(s, tone(800, 0.3));
+      live(s, quiet(1200)); // turn over: the words go to the model
+      await settleAll();
+      stall = true;
+      s.dialog().emit({ type: 'text_delta', text: '내일 회의는 세 시예요. ' }); // being synthesized (stalls)
+      await settleAll();
+      live(s, tone(800, 0.3)); // "그리고" — while the agent counts as speaking: it drops that reply
+      live(s, quiet(600)); // a turn opens …
+      live(s, tone(300, 0.3)); // … and a short "네" comes in it
+      live(s, quiet(600));
+      await settleAll();
+      s.dialog().emit({ type: 'turn_end', isError: true, message: 'interrupted' });
+      await settleAll();
+      live(s, quiet(1200));
+      await settleAll();
+      expect(s.dialog().sent[s.dialog().sent.length - 1].endsWith('그리고 네')).toBe(true);
+    });
+
+    it('speech that resumes after the hold, while the first words are still being recognised, keeps the turn open', async () => {
+      let first: () => void = () => undefined;
+      const slow = new Promise<void>((r) => {
+        first = r;
+      });
+      let calls = 0;
+      const s = await answering(['내일 회의가', '몇 시인지 알려 주세요'], {
+        fillers: [{ text: '네.', frames: [tone(20, 0.5)] }],
+        turnHoldMs: 500,
+        sttGate: () => (calls++ === 0 ? slow : Promise.resolve()),
+      });
+      const n = s.dialog().sent.length;
+      live(s, tone(800, 0.3));
+      live(s, quiet(1200)); // the hold is over, but the words are not in
+      live(s, tone(400, 0.3)); // they go on …
+      first(); // … as the first words come in
+      await settleAll();
+      expect(s.dialog().sent.length).toBe(n);
+      expect(s.record.transcript.some((l) => l.role === 'agent' && l.text === '네.')).toBe(false);
+      live(s, tone(400, 0.3));
+      live(s, quiet(1200));
+      await settleAll();
+      expect(s.dialog().sent.slice(n)).toEqual(['내일 회의가 몇 시인지 알려 주세요']);
     });
 
     it('while the words of a turn are still being recognised, the quiet line is not nudged', async () => {
