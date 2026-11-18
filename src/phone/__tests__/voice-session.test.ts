@@ -417,9 +417,9 @@ describe('CallRun — conversation', () => {
     expect(dialog().sent.slice(before)).toEqual(['잠깐만요']);
   });
 
-  /** Feed audio the way the line does: 20 ms frames. */
+  /** Feed audio the way the line does: 20 ms frames (160 B of μ-law; the identity codec keeps the bytes). */
   function frames(run: { feedAudio(b: Buffer): void }, pcm: Buffer) {
-    for (let off = 0; off < pcm.length; off += 320) run.feedAudio(pcm.subarray(off, off + 320));
+    for (let off = 0; off < pcm.length; off += 160) run.feedAudio(pcm.subarray(off, off + 160));
   }
 
   it('in 20 ms frames, a 500 ms "네" and the quiet after it do not add up to an interruption', async () => {
@@ -460,6 +460,81 @@ describe('CallRun — conversation', () => {
     s.dialog().emit({ type: 'turn_end', isError: false });
     await settleAll();
     expect(s.dialog().sent.slice(before)).toEqual(['네 네네']);
+  });
+
+  it('a real interruption between two sentences of a reply still being written drops that reply', async () => {
+    const { run, dialog, call, clock } = await talking();
+    frames(run, tone(600, 0.3));
+    frames(run, quiet(800));
+    await settleAll();
+    dialog().emit({ type: 'text_delta', text: '네, 회의 두 개 확인했어요. ' }); // its first sentence plays …
+    await settleAll();
+    frames(run, tone(200, 0.6)); // … the caller starts over it
+    clock.advance(5000); // the sentence has played out; the model is still writing the next
+    frames(run, tone(500, 0.6)); // the caller goes on: a real interruption, with nothing playing right now
+    await settleAll();
+    expect(dialog().interrupted).toBe(1);
+    dialog().emit({ type: 'text_delta', text: '그리고 시간도 알려 드릴게요.' }); // what it still writes is not said
+    dialog().emit({ type: 'turn_end', isError: true, message: 'interrupted' });
+    await settleAll();
+    expect(call.frames).toBeGreaterThan(0);
+  });
+
+  it('a whole interruption arriving in one packet interrupts at once, not when its words are recognised', async () => {
+    let slow = false;
+    const s = setup({ direction: 'inbound' }, ['오늘 회의가 두 개 있어요.', '잠깐만요'], {
+      sttGate: () => (slow ? new Promise<void>(() => undefined) : Promise.resolve()),
+    });
+    s.run.begin();
+    const call = fakeCall();
+    s.run.attach(call as unknown as CallSessionLike);
+    s.dialog().reply('네, 말씀하세요.');
+    await settleAll();
+    s.clock.advance(3000);
+    frames(s.run, tone(600, 0.3));
+    frames(s.run, quiet(800));
+    await settleAll();
+    s.dialog().emit({ type: 'text_delta', text: '네, 회의 두 개 확인했어요. 그리고 ' });
+    await settleAll();
+    slow = true; // its words will not be recognised in time
+    s.run.feedAudio(Buffer.concat([tone(700, 0.6), quiet(800)])); // speech start and its end in one push
+    await settleAll();
+    expect(call.cleared).toBe(1);
+    expect(s.dialog().interrupted).toBe(1);
+  });
+
+  it('a "네" waiting for the reply is not answered on its own when a real interruption follows', async () => {
+    let heard!: () => void;
+    let gate: Promise<void> | null = null;
+    const s = setup({ direction: 'inbound' }, ['내일 회의는요?', '네', '아니 잠깐만요 장소를 바꿔야 해요'], {
+      sttGate: () => gate ?? Promise.resolve(),
+    });
+    s.run.begin();
+    s.run.attach(fakeCall() as unknown as CallSessionLike);
+    s.dialog().reply('네, 말씀하세요.');
+    await settleAll();
+    s.clock.advance(3000);
+    frames(s.run, tone(600, 0.3));
+    frames(s.run, quiet(800));
+    await settleAll();
+    s.dialog().emit({ type: 'text_delta', text: '내일 회의는 세 시예요. 장소는 삼 층이고요. ' });
+    await settleAll();
+    frames(s.run, tone(300, 0.6)); // "네" over it: waits for the reply
+    frames(s.run, quiet(800));
+    await settleAll();
+    gate = new Promise<void>((r) => {
+      heard = r;
+    }); // the next words take long to recognise
+    frames(s.run, tone(900, 0.6)); // a real interruption
+    frames(s.run, quiet(800));
+    await settleAll();
+    const before = s.dialog().sent.length;
+    s.dialog().emit({ type: 'turn_end', isError: true, message: 'interrupted' });
+    await settleAll();
+    expect(s.dialog().sent.length).toBe(before); // the "네" is not sent alone while the caller's words are pending
+    heard();
+    await settleAll();
+    expect(s.dialog().sent.slice(before)).toEqual(['네 아니 잠깐만요 장소를 바꿔야 해요']);
   });
 
   it('a sound that interrupted nothing still leaves the line watched: the quiet-line nudge comes', async () => {

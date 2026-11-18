@@ -109,6 +109,8 @@ export class CallRun {
   private bargeArmed = false;
   /** The agent was talking when the current utterance began. */
   private startedOverAgent = false;
+  /** Transcriptions under way: words waiting for a reply go with theirs. */
+  private sttInFlight = 0;
   private turnText = '';
   private turnStartAt = 0;
   private firstTokenAt = 0;
@@ -179,6 +181,8 @@ export class CallRun {
         this.startedOverAgent = this.released && this.agentSpeaking();
         this.bargeArmed = this.startedOverAgent;
       } else if (ev.type === 'utterance') {
+        // All of it may have come in one packet: judge it as a whole before letting go of the arm.
+        if (this.bargeArmed && ev.speechMs >= BARGE_IN_MS) this.interrupt();
         this.bargeArmed = false;
         const first = this.peerUtterances++ === 0;
         const releasedOpening = !this.released;
@@ -190,15 +194,35 @@ export class CallRun {
       } else if (ev.type === 'noise') {
         this.bargeArmed = false;
         if (!this.released) this.release('상대가 조용해서 첫 마디 시작');
-        else this.armSilenceIfIdle(); // the start of it cleared the quiet-line timer; nothing else would set it again
+        else if (!this.flushPending()) this.armSilenceIfIdle(); // its start cleared the quiet-line timer
       }
     }
     // Speech over the agent interrupts it once it has said enough to be meant — loud time only: the quiet the
     // recogniser waits through at the end of a short "네" does not make it longer.
-    if (this.bargeArmed && this.vad.speechMsSoFar >= BARGE_IN_MS) {
-      this.bargeArmed = false;
-      if (this.agentSpeaking()) this.bargeIn();
-    }
+    if (this.bargeArmed && this.vad.speechMsSoFar >= BARGE_IN_MS) this.interrupt();
+  }
+
+  /**
+   * The other side has said enough over the agent to mean it. What plays stops; a reply still being written is
+   * dropped even when nothing of it plays right now (between two of its sentences).
+   */
+  private interrupt(): void {
+    this.bargeArmed = false;
+    if (this.agentSpeaking()) this.bargeIn();
+    else if (this.generating && !this.hangupRequested) this.dropReply();
+  }
+
+  /**
+   * Words that waited for a reply to end go to the model — unless the other side is still talking or being
+   * recognised: then they go together with those words (hear). Returns whether they were sent.
+   */
+  private flushPending(): boolean {
+    if (!this.pendingPeer.length || this.generating || this.hangupRequested || this.ended) return false;
+    if (this.vad.speaking || this.sttInFlight > 0) return false;
+    const words = this.pendingPeer.join(' ');
+    this.pendingPeer = [];
+    this.sendToDialog(words);
+    return true;
   }
 
   feedDtmf(digits: string): void {
@@ -375,6 +399,11 @@ export class CallRun {
    * after the current reply.
    */
   private hear(text: string, keepReply = false): void {
+    if (!this.generating && this.pendingPeer.length) {
+      // Words that waited for the last reply go with these.
+      text = [...this.pendingPeer, text].join(' ');
+      this.pendingPeer = [];
+    }
     if (keepReply) {
       // Not a correction or a new thought: what is being said goes on, and the words reach the model after it.
       if (this.generating) this.pendingPeer.push(text);
@@ -409,19 +438,23 @@ export class CallRun {
     const at = this.now();
     let text = '';
     let ms = 0;
+    this.sttInFlight++;
     try {
       const t = await this.deps.voice.transcribe(pcm16ToWav(pcm, LINE_SAMPLE_RATE));
       text = t.text;
       ms = t.ms;
     } catch (err) {
+      this.sttInFlight--;
       this.fail('stt', err);
-      this.armSilenceIfIdle();
+      if (!this.flushPending()) this.armSilenceIfIdle();
       return;
     }
+    this.sttInFlight--;
     if (this.ended) return;
     this.work({ kind: 'stt', at, text, ms, audioMs });
     if (!text) {
-      this.armSilenceIfIdle(); // a cough or line noise: nothing for the model, but the line is quiet again
+      // A cough or line noise: nothing for the model, but the line is quiet again (or words waited for this).
+      if (!this.flushPending()) this.armSilenceIfIdle();
       return;
     }
     this.deps.update((r) => {
@@ -510,10 +543,9 @@ export class CallRun {
           this.dropTurn = false;
           this.turnText = '';
           if (this.pendingPeer.length && !this.hangupRequested && !this.ended) {
-            // Words heard while that reply was being dropped: answered now, all together.
-            const words = this.pendingPeer.join(' ');
-            this.pendingPeer = [];
-            this.sendToDialog(words);
+            // Words that waited for this reply: answered now, all together — or with the words the other side is
+            // still saying or being recognised for, if any (flushPending).
+            this.flushPending();
           } else if (this.hangupRequested) {
             this.dropAfterHangup = true;
             this.finishWhenQuiet();
