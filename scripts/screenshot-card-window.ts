@@ -650,9 +650,20 @@ async function reducedRun(browser: import('playwright').Browser) {
   const bBack = await cardState(page, KEY_B);
   const pBack = await panel(page);
   check(
-    !bBack.open && bBack.expanded === 'false' && !bBack.min && bBack.rect.h === bBefore.rect.h && !pBack.open,
+    !bBack.open &&
+      bBack.expanded === 'false' &&
+      !bBack.min &&
+      bBack.rect.h === bBefore.rect.h &&
+      bBack.caret === bBefore.caret &&
+      !pBack.open,
     'S9 △ → back to normal in place (▽ again), no detail card',
-    { before: bBefore.rect, open: b.rect, after: bBack.rect, caret: bBack.caret, panelOpen: pBack.open },
+    {
+      before: bBefore.rect,
+      open: b.rect,
+      after: bBack.rect,
+      caret: { before: bBefore.caret, open: b.caret, after: bBack.caret },
+      panelOpen: pBack.open,
+    },
   );
   await press(page, KEY_A, 'detail');
   await page.waitForSelector('#slide-panel[open]');
