@@ -126,6 +126,7 @@ describe('secrets routes (secret-access WU1)', () => {
         name: 'gh-token',
         updatedAt: expect.any(String),
         updatedBy: 'U_ADMIN',
+        updatedByName: 'U_ADMIN', // no settings row for the id in this test: the id stands in
         usages: [{ server: 'dev2', path: 'github.token' }],
       },
     ]);

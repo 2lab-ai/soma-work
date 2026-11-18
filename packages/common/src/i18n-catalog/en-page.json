@@ -1720,5 +1720,6 @@
   " 되돌릴 수 없습니다.": " This cannot be undone.",
   " 삭제": " — delete",
   "삭제하지 못했습니다: ": "Could not delete: ",
-  "삭제했습니다: ": "Deleted: "
+  "삭제했습니다: ": "Deleted: ",
+  "설정에서 쓰지 않음": "Not used in configuration"
 }

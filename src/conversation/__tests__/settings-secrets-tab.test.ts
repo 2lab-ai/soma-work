@@ -51,6 +51,7 @@ function data() {
         name: 'gh-token',
         updatedAt: '2026-11-18T01:00:00.000Z',
         updatedBy: 'U_ADMIN',
+        updatedByName: '관리자님',
         usages: [{ server: 'dev2', path: 'github.token' }],
       },
       { name: 'unused', updatedAt: '2026-11-17T01:00:00.000Z', usages: [] },
@@ -93,8 +94,11 @@ describe('비밀 tab — list', () => {
     const html: string = els['sc-body'].innerHTML;
     expect(html).toContain('gh-token');
     expect(html).toContain('dev2 › github.token');
-    expect(html).toContain('U_ADMIN');
-    expect(html).toContain('쓰는 곳 없음');
+    // who changed it, by name; an unused secret says so once (not "쓰는 곳: 쓰는 곳 없음")
+    expect(html).toContain('관리자님');
+    expect(html).not.toContain('U_ADMIN');
+    expect(html).toContain('설정에서 쓰지 않음');
+    expect(html).not.toContain('쓰는 곳: 쓰는 곳 없음');
     expect(html).toContain('설정이 가리키지만 저장소에 없습니다');
     expect(html).toContain('&lt;b&gt;x&lt;/b&gt;');
     expect(html).toContain('관리자 모드 켜기');
@@ -218,5 +222,43 @@ describe('비밀 tab — on the page', () => {
       );
     expect(make(false).map((t: { id: string }) => t.id)).toEqual(['preferences']);
     expect(make(true).map((t: { id: string }) => t.id)).toEqual(['preferences', 'secrets']);
+  });
+});
+
+describe('비밀 tab — opened by address', () => {
+  function shell(admin: boolean) {
+    const panels = ['preferences', 'secrets'].map((id) => ({ hidden: id !== 'preferences', getAttribute: () => id }));
+    const tabsEl: { data?: { value: string } } = {};
+    const json = JSON.stringify([
+      { id: 'preferences', label: '개인 설정' },
+      { id: 'secrets', label: '비밀', adminOnly: true },
+    ]);
+    const document = {
+      querySelectorAll: () => panels,
+      getElementById: (id: string) => (id === 'settings-tabs' ? tabsEl : { textContent: json }),
+    };
+    const onTabShown = vi.fn();
+    const api = new Function(
+      'document',
+      'onTabShown',
+      `var _viewerIsAdmin = ${admin};\n${clientFn('settingsTabs')}\n${clientFn('showTab')}\nreturn { showTab };`,
+    )(document, onTabShown);
+    return { api, panels, tabsEl, onTabShown };
+  }
+
+  it('a non-admin who types #secrets lands on 개인 설정 and never loads the tab', () => {
+    const s = shell(false);
+    s.api.showTab('secrets');
+    expect(s.tabsEl.data?.value).toBe('preferences');
+    expect(s.panels[1].hidden).toBe(true);
+    expect(s.onTabShown).toHaveBeenCalledWith('preferences');
+    expect(s.onTabShown).not.toHaveBeenCalledWith('secrets');
+  });
+
+  it('an admin who types #secrets gets the tab', () => {
+    const s = shell(true);
+    s.api.showTab('secrets');
+    expect(s.tabsEl.data?.value).toBe('secrets');
+    expect(s.panels[1].hidden).toBe(false);
   });
 });

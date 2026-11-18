@@ -236,7 +236,8 @@ async function refreshCsrfToken() {
       _csrfToken = data.csrfToken || '';
       if (!!data.isAdmin !== _viewerIsAdmin) {
         _viewerIsAdmin = !!data.isAdmin;
-        if (typeof showTab === 'function' && showTab.current) showTab(showTab.current);
+        // The address may name an admin-only tab that was held back until now.
+        if (typeof showTab === 'function' && showTab.current) showTab(location.hash.slice(1) || showTab.current);
       }
       if (data.user && data.user.name) {
         _appBarAccount = { name: data.user.name, href: '/login' };
@@ -661,7 +662,11 @@ function showTab(id) {
   var tabs = document.querySelectorAll('[data-tab]');
   var found = false;
   for (var i = 0; i < tabs.length; i++) if (tabs[i].getAttribute('data-tab') === id) found = true;
-  if (!found) id = 'preferences';
+  // A tab the viewer is not listed (an admin-only one before /auth/me says admin) is not opened by its address.
+  var listed = settingsTabs();
+  var allowed = false;
+  for (var k = 0; k < listed.length; k++) if (listed[k].id === id) allowed = true;
+  if (!found || !allowed) id = 'preferences';
   for (var j = 0; j < tabs.length; j++) {
     var on = tabs[j].getAttribute('data-tab') === id;
     tabs[j].hidden = !on;

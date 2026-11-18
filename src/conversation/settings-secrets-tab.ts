@@ -98,10 +98,11 @@ function scValueBox(id, label) {
   return '<textarea class="ui-input sc-value" id="' + escAttr(id) + '" aria-label="' + escAttr(label) + '" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="값을 붙여넣으세요 — 저장한 뒤에는 다시 볼 수 없습니다"></textarea>';
 }
 function scRow(s, editable) {
-  var by = s.updatedBy ? ' · ' + s.updatedBy : '';
+  var who = s.updatedByName || s.updatedBy;
+  var by = who ? ' · ' + who : '';
   var html = '<li class="sc-row"><div><span class="sc-name">' + esc(s.name) + '</span>'
     + '<span class="sc-sub">바꾼 시각 ' + esc(scWhen(s.updatedAt)) + esc(by) + '</span>'
-    + '<span class="sc-sub">쓰는 곳: ' + esc(scUsageText(s.usages)) + '</span>';
+    + '<span class="sc-sub">' + esc(s.usages && s.usages.length ? '쓰는 곳: ' + scUsageText(s.usages) : '설정에서 쓰지 않음') + '</span>';
   if (editable && _scReplacing === s.name) {
     html += '<div class="sc-form" style="margin-top:8px">' + scValueBox('sc-replace-value', s.name + '의 새 값')
       + '<div class="sc-line"><button type="button" class="btn primary" data-name="' + escAttr(s.name) + '" onclick="scSaveReplace(this)">새 값 저장</button>'

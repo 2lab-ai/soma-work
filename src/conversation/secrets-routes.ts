@@ -21,6 +21,7 @@ import { Logger } from '../logger';
 import { deleteSecret, listSecrets, SecretAdminError, writeSecret } from '../secrets/secret-admin-store';
 import { appendSecretAudit, lastSecretChanges, type SecretAuditAction } from '../secrets/secret-audit';
 import { loadServerToolsSection, secretUsages } from '../secrets/secret-usage';
+import { userSettingsStore } from '../user-settings-store';
 
 const logger = new Logger('SecretsRoutes');
 
@@ -59,6 +60,16 @@ export function namedAdmin(request: FastifyRequest, reply: FastifyReply, change:
     return null;
   }
   return userId;
+}
+
+/** The name the dashboard shows for a Slack id (the id itself when the store has none). */
+function displayName(userId: string): string {
+  try {
+    const row = userSettingsStore.getUserSettings(userId) as { slackDisplayName?: string; slackName?: string } | undefined;
+    return row?.slackDisplayName || row?.slackName || userId;
+  } catch {
+    return userId;
+  }
 }
 
 function refuse(reply: FastifyReply, what: string, error: unknown): void {
@@ -111,7 +122,9 @@ export function registerSecretsRoutes(
           return {
             name: s.name,
             updatedAt: s.updatedAt,
-            ...(change && change.action !== 'secret.delete' ? { updatedBy: change.actor } : {}),
+            ...(change && change.action !== 'secret.delete'
+              ? { updatedBy: change.actor, updatedByName: displayName(change.actor) }
+              : {}),
             usages: usages.get(s.name) ?? [],
           };
         }),
