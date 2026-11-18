@@ -10,8 +10,10 @@
  *   S2  − → one line (≤ 44px tall), +; saved — a reload keeps it; + → back
  *   S3  title hover: accent underline + the side-panel glyph slides in
  *   S4  ▽ → the body opens in place, no detail card; the hop: mid-air (up, bigger), dust after landing, lands as △ (180°)
- *   S5  title → one line + ring, its detail card on the right; a second title → that one in front, the ring moves
- *   S6  ✕ → the front leaves and its card comes back as it was (open again if it was open); the last closes the panel
+ *   S5  title → one line + ring, its detail card on the right; a second title → that one in front on one line, the ring
+ *       moves, and the first card comes back as it was before its title (SSOT_4: open again if it was open)
+ *   S6  ✕ → the front leaves and its card comes back as it was; the card now in front goes to one line; the last closes
+ *       the panel
  *   S7  a card the reader folded stays one line after its detail card closes
  *   S8  a press on the face's text opens nothing
  *   S9  reduced motion: ▽ turns without the hop
@@ -127,13 +129,15 @@ const PAGE_HELPERS = [
   'window.__name = function (f) { return f; };',
 ].join('\n');
 
+// The account /auth/me names (S15 switches it on a drawn board).
+let AUTH_USER = { name: 'Zhuge', slackUserId: 'U001' };
 // authGate: /auth/me answers only once it settles — the board draws before the viewer is known (S15).
 async function installMocks(page: Page, view: 'board' | 'list' = 'board', authGate?: Promise<void>) {
   await page.addInitScript({ content: PAGE_HELPERS });
   await page.addInitScript({ content: `localStorage.setItem("soma-board-view", "${view}");` });
   await page.route('**/auth/me', async (r) => {
     if (authGate) await authGate;
-    await r.fulfill({ json: { user: { name: 'Zhuge', slackUserId: 'U001' }, csrfToken: 'x' } });
+    await r.fulfill({ json: { user: AUTH_USER, csrfToken: 'x' } });
   });
   await page.route('**/api/dashboard/users', (r) =>
     r.fulfill({
@@ -389,6 +393,7 @@ async function motionRun(browser: import('playwright').Browser) {
   await shot(page, '04-open-in-place.png');
 
   // S5 — the ring is there at once (no board render needed).
+  const b2Before = await cardState(page, KEY_B); // open in place since S4
   await press(page, KEY_B, 'detail');
   await sleep(30);
   const ringNow = await cardState(page, KEY_B);
@@ -416,9 +421,16 @@ async function motionRun(browser: import('playwright').Browser) {
   const b5 = await cardState(page, KEY_B);
   const p5b = await panel(page);
   check(
-    a5.min && a5.current && !b5.current && b5.min && p5b.key === KEY_A && p5b.deck.join() === [KEY_B, KEY_A].join(),
-    'S5 a second title → that one in front, the ring moves, both on one line',
-    { a: a5.rect, b: b5.rect, panel: p5b },
+    a5.min &&
+      a5.current &&
+      !b5.current &&
+      !b5.min &&
+      b5.open &&
+      b5.rect.h === b2Before.rect.h &&
+      p5b.key === KEY_A &&
+      p5b.deck.join() === [KEY_B, KEY_A].join(),
+    'S5 a second title → that one in front on one line, the ring moves; the first comes back as it was (SSOT_4)',
+    { a: a5.rect, b: b5.rect, bBefore: b2Before.rect, panel: p5b },
   );
   await shot(page, '05-detail-two.png');
 
@@ -427,11 +439,13 @@ async function motionRun(browser: import('playwright').Browser) {
   await sleep(600);
   const a6 = await cardState(page, KEY_A);
   const p6 = await panel(page);
+  const b6front = await cardState(page, KEY_B);
   check(
-    !a6.min && !a6.current && p6.key === KEY_B && (await cardState(page, KEY_B)).current,
-    'S6 ✕ → A back, B in front',
+    !a6.min && !a6.current && p6.key === KEY_B && b6front.current && b6front.min,
+    'S6 ✕ → A back, B in front on one line',
     {
       a: a6.rect,
+      b: b6front.rect,
       panel: p6,
     },
   );
@@ -522,8 +536,8 @@ async function motionRun(browser: import('playwright').Browser) {
   await press(page, KEY_A, 'expand'); // back to the normal view for S8
   await sleep(500);
 
-  // S13 (review) — a deck card hidden by the card search and shown again keeps its detail fold; a card the reader
-  // brought back with + while in the deck stays back. Closing brings it back as it was.
+  // S13 (review, SSOT_4) — the front card hidden by the card search and shown again keeps its detail fold; after
+  // another title the card behind is back as it was, and a card the reader brought back with + stays back.
   const search = async (q: string) => {
     await page.fill('#bf-search', q);
     await sleep(700);
@@ -531,19 +545,26 @@ async function motionRun(browser: import('playwright').Browser) {
   await press(page, KEY_A, 'detail');
   await page.waitForSelector('#slide-panel[open]');
   await sleep(400);
+  await search('없는검색어');
+  const hidden = await page.evaluate((k) => !(window as any).__card(k), KEY_A);
+  await search('');
+  const a13front = await cardState(page, KEY_A);
+  check(hidden && a13front.min, 'S13 hidden by the search and shown again: the front card keeps its detail fold', {
+    hidden,
+    a: { min: a13front.min, h: a13front.rect.h },
+  });
   await press(page, KEY_B, 'detail');
   await sleep(400);
   await press(page, KEY_B, 'min'); // the reader's + on B while its detail card is in front
   await sleep(400);
   await search('없는검색어');
-  const hidden = await page.evaluate((k) => !(window as any).__card(k), KEY_A);
   await search('');
   const a13 = await cardState(page, KEY_A);
   const b13 = await cardState(page, KEY_B);
   check(
-    hidden && a13.min && !b13.min,
-    'S13 hidden by the search and shown again: the deck card keeps its detail fold, the reader’s + stays',
-    { hidden, a: { min: a13.min, h: a13.rect.h }, b: { min: b13.min, h: b13.rect.h } },
+    !a13.min && !b13.min,
+    'S13 another title: the card behind is back as it was; the reader’s + on the front card stays through a repaint',
+    { a: { min: a13.min, h: a13.rect.h }, b: { min: b13.min, h: b13.rect.h } },
   );
   await page.click('#slide-panel .panel-close');
   await sleep(500);
@@ -725,11 +746,14 @@ async function othersLateRun(browser: import('playwright').Browser) {
   await boot(page, 'board', gate);
   log('\n── 1440 /auth/me late ──');
   const before = await cardState(page, KEY_E);
+  // Its detail card opens before the viewer is known (E folds for it), then /auth/me answers.
+  await press(page, KEY_E, 'detail');
+  await page.waitForSelector('#slide-panel[open]', { timeout: 8000 });
+  await sleep(400);
   release();
-  await page
-    .waitForFunction((k) => !!(window as any).__card(k)?.classList.contains('is-min'), KEY_E, { timeout: 5000 })
-    .catch(() => {});
-  await sleep(450);
+  await sleep(1200);
+  await page.click('#slide-panel .panel-close');
+  await sleep(600);
   const after = await cardState(page, KEY_E);
   const mine = await cardState(page, KEY_A);
   const prefs = await page.evaluate(() => ({
@@ -738,13 +762,30 @@ async function othersLateRun(browser: import('playwright').Browser) {
   }));
   check(
     !before.min && after.min && after.rect.h <= 44 && !mine.min,
-    'S15 /auth/me late: drawn at full size, one line once the viewer is known; mine stays',
+    'S15 /auth/me late, its detail card open: one line once the viewer is known, still one line after ✕; mine stays',
     { before: before.rect, after: after.rect, mine: mine.rect },
   );
   check(
     !(prefs.min ?? '').includes(KEY_E) && !(prefs.unfold ?? '').includes(KEY_E),
     'S15 the default is not saved',
     prefs,
+  );
+  // Another account (E's owner) on the same board while E's detail card is in front.
+  await press(page, KEY_E, 'detail');
+  await page.waitForSelector('#slide-panel[open]', { timeout: 8000 });
+  await sleep(400);
+  AUTH_USER = { name: 'Kate', slackUserId: 'U002' };
+  await page.evaluate('refreshCsrfToken()');
+  await sleep(1000);
+  const aSwitched = await cardState(page, KEY_A);
+  await page.click('#slide-panel .panel-close');
+  await sleep(600);
+  const eMine = await cardState(page, KEY_E);
+  AUTH_USER = { name: 'Zhuge', slackUserId: 'U001' };
+  check(
+    aSwitched.min && aSwitched.rect.h <= 44 && !eMine.min && eMine.rect.h > 44,
+    "S15 signed in as its owner: the other account's card folds; ✕ → E back at full size",
+    { a: aSwitched.rect, e: eMine.rect },
   );
   check(errors.length === 0, 'S15 late no page errors', errors);
   await ctx.close();

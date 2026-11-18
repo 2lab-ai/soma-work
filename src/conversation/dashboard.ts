@@ -12047,6 +12047,20 @@ function boardRestoreFromDetail(key) {
   var host = _cardHost[key];
   if (host && typeof host.restore === 'function') host.restore(key);
 }
+// SSOT_4 (.prd/34 D7): only the card whose detail card is in front is on one line for it. Whenever the front changes
+// (a title, ‹ ›, a detail card leaving, the panel closing) the front card folds — unless the reader brought it back
+// with + while it was in the deck — and every card waiting behind comes back as it was before its detail card folded
+// it (restore() undoes only that fold: a card the reader folded or opened stays as they left it).
+function boardSyncDetailFold() {
+  var front = boardCurrentKey();
+  for (var i = 0; i < _deck.length; i++) {
+    var k = _deck[i];
+    if (k !== front) {
+      var host = _cardHost[k];
+      if (host && typeof host.restore === 'function') host.restore(k);
+    } else if (!_detailUnfolded[k]) boardFoldForDetail(k);
+  }
+}
 // Cards in the deck the reader brought back with + (.prd/34 review): left as they are until they leave the deck.
 var _detailUnfolded = Object.create(null);
 function boardNoteReaderFold(key, minimized) {
@@ -12054,16 +12068,14 @@ function boardNoteReaderFold(key, minimized) {
   if (minimized) delete _detailUnfolded[key];
   else _detailUnfolded[key] = 1;
 }
-// An element's cards in the deck keep their detail fold through a repaint that drew them anew (a filter hid and
-// showed a card, a card moved between the board and a CRON lane — the element forgets a card that leaves it).
+// The front card keeps its detail fold through a repaint that drew it anew (a filter hid and showed it, it moved
+// between the board and a CRON lane — the element forgets a card that leaves it). Cards behind are not folded (SSOT_4).
 function boardFoldDeck(host) {
-  for (var i = 0; i < _deck.length; i++) {
-    var k = _deck[i];
-    if (_cardHost[k] === host && !_detailUnfolded[k]) boardFoldForDetail(k);
-  }
+  var k = boardCurrentKey();
+  if (k && _deck.indexOf(k) >= 0 && _cardHost[k] === host && !_detailUnfolded[k]) boardFoldForDetail(k);
 }
 // A decision on this card is out of sight: the card is on one line and its detail card is not the one in front —
-// the reader folded it, or its detail card waits behind another (review P1).
+// the reader folded it (its detail card, if any, waits behind another).
 function boardDecisionHidden(key) {
   var host = _cardHost[key];
   if (!host || typeof host.isMinimized !== 'function' || !host.isMinimized(key)) return false;
@@ -12075,7 +12087,6 @@ function boardDecisionHidden(key) {
 function boardUnfoldForDecision(key) {
   var host = _cardHost[key];
   if (host && typeof host.setMinimized === 'function') host.setMinimized(key, false);
-  if (_deck.indexOf(key) >= 0) _detailUnfolded[key] = 1;
   // Only the saved fold goes: this is not the reader's +, so a starred card's day-old default still applies later.
   cardMinForget(key);
 }
@@ -12097,13 +12108,13 @@ function boardOwnerDefaults() {
     var host = _cardHost[k];
     if (!host || typeof host.setMinimized !== 'function' || typeof host.isMinimized !== 'function') continue;
     var s = _sessionCache[k];
-    var inDeck = _deck.indexOf(k) >= 0;
+    var front = k === boardCurrentKey() && _deck.indexOf(k) >= 0;
     if (cardOthersDefaultFolded(s)) {
       if (open.indexOf(k) >= 0 || _expanded.has(k)) continue;
       _ownerFolded[k] = 1;
       if (host.isMinimized(k)) {
-        // In the deck it is folded for its detail card: plain one line now, so closing the detail card keeps the default.
-        if (!inDeck) continue;
+        // In front it is folded for its detail card: plain one line now, so closing the detail card keeps the default.
+        if (!front) continue;
         host.setMinimized(k, false);
       }
       host.setMinimized(k, true);
@@ -12111,7 +12122,7 @@ function boardOwnerDefaults() {
       delete _ownerFolded[k];
       if (!host.isMinimized(k) || shut.indexOf(k) >= 0 || cardStarDefaultFolded(s, _cardCol[k], now)) continue;
       host.setMinimized(k, false);
-      if (inDeck) host.setMinimized(k, true, { untilRestore: true });
+      if (front) host.setMinimized(k, true, { untilRestore: true });
     }
   }
 }
@@ -20945,11 +20956,9 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   // (or comes to the front); a switch between cards slides in from its side.
   var deckDir = panelOpen && panelSessionKey && panelSessionKey !== sessionKey
     ? (_deck.indexOf(sessionKey) < 0 || _deck.indexOf(sessionKey) > _deck.indexOf(panelSessionKey) ? 1 : -1) : 0;
-  // .prd/34 D7: a card whose detail card joins the deck goes to one line on its board (until it leaves the deck). A
-  // card already in the deck coming to the front (‹ ›, its title again) keeps what the reader made of it since.
-  var joining = _deck.indexOf(sessionKey) < 0;
+  // .prd/34 D7 (SSOT_4): the detail card joins the deck or comes to the front; the board's folds follow once the panel
+  // is open (boardSyncDetailFold, below).
   deckAdd(sessionKey);
-  if (joining) boardFoldForDetail(sessionKey);
   // The intent of this opening: true is the 작업 로그 landing, as before.
   _panelLand = focusWorkLog === true ? 'worklog' : (focusWorkLog || '');
   _panelLanded = false;
@@ -21069,8 +21078,10 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   layoutBeforeChange();
   panel.show();
   panelOpen = true;
-  // .prd/34 D5: the card in front wears the ring on its board — now that the panel is open.
+  // .prd/34 D5: the card in front wears the ring on its board — now that the panel is open. D7 (SSOT_4): it alone is
+  // on one line; the card that was in front comes back as it was.
   syncBoardCurrent();
+  boardSyncDetailFold();
   paintDefaultsScope();
   panel.setAttribute('label', document.getElementById('panel-title').textContent);
   syncPanelWidth();
@@ -22481,6 +22492,7 @@ function closePanel() {
   panelSessionKey = null;
   panelConvId = null;
   syncBoardCurrent();
+  boardSyncDetailFold();
   _rb = null;
   _rbPick = null;
   paintDefaultsScope();

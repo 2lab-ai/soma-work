@@ -1328,6 +1328,8 @@ describe('the detail deck — the title opens a detail card, its card goes to on
         'boardRestoreFromDetail',
         'boardNoteReaderFold',
         'boardFoldDeck',
+        'boardCurrentKey',
+        'boardSyncDetailFold',
         'wireInbox',
       ],
       ['_deck', '_panelOpenWaiting', '_detailUnfolded'],
@@ -1356,8 +1358,8 @@ describe('the detail deck — the title opens a detail card, its card goes to on
       },
       [
         'var panelOpen = false, panelSessionKey = null, _expanded = new Set();',
-        "function openPanel(k) { if (!_sessionCache[k]) return; log.push('open ' + k); var joining = _deck.indexOf(k) < 0; deckAdd(k); if (joining) boardFoldForDetail(k); panelOpen = true; panelSessionKey = k; }",
-        "function closePanel() { log.push('close'); if (panelSessionKey) deckRemove(panelSessionKey); panelOpen = false; panelSessionKey = null; }",
+        "function openPanel(k) { if (!_sessionCache[k]) return; log.push('open ' + k); deckAdd(k); panelSessionKey = k; panelOpen = true; boardSyncDetailFold(); }",
+        "function closePanel() { log.push('close'); if (panelSessionKey) deckRemove(panelSessionKey); panelOpen = false; panelSessionKey = null; boardSyncDetailFold(); }",
         'function state() { return { deck: _deck.slice(), front: panelSessionKey, open: panelOpen, expanded: Array.from(_expanded) }; }',
       ],
     );
@@ -1384,17 +1386,29 @@ describe('the detail deck — the title opens a detail card, its card goes to on
     };
   };
 
-  it('the title opens the detail card in front, the deck keeps the opening order, each card goes to one line', () => {
+  it('the title opens the detail card in front, the deck keeps the opening order; only the front card is on one line (SSOT_4)', () => {
     const w = world();
     w.title('A');
     expect(w.m.state()).toEqual({ deck: ['A'], front: 'A', open: true, expanded: [] });
+    expect(w.folded()).toEqual({ A: 'detail' });
     w.title('B');
     expect(w.m.state()).toEqual({ deck: ['A', 'B'], front: 'B', open: true, expanded: [] });
-    expect(w.folded()).toEqual({ A: 'detail', B: 'detail' });
+    // A's detail card waits behind: A is back as it was before its title folded it.
+    expect(w.folded()).toEqual({ B: 'detail' });
     expect(w.log).toEqual(['open A', 'open B']);
-    // A one-line card's title brings its detail card back to the front.
+    // A's title again brings its detail card to the front: A folds, B comes back.
     w.title('A');
     expect(w.m.state()).toMatchObject({ deck: ['A', 'B'], front: 'A' });
+    expect(w.folded()).toEqual({ A: 'detail' });
+  });
+
+  it('a card opened in place comes back open when another title takes the front (SSOT_4: its earlier state)', () => {
+    const w = world();
+    w.toggle('A'); // ▽: A open in place
+    w.title('A'); // its detail card: A on one line, still open underneath
+    w.title('B');
+    expect(w.folded()).toEqual({ B: 'detail' });
+    expect(w.m.state().expanded).toEqual(['A']); // A back open, as it was
   });
 
   it('▽ / △ open and close a card in place only — no detail card opens, none leaves', () => {
@@ -1441,17 +1455,27 @@ describe('the detail deck — the title opens a detail card, its card goes to on
     expect(w.m.state()).toMatchObject({ deck: [], front: null, open: false });
   });
 
-  it('a card the reader brought back with + while its detail card waits in the deck stays back when ‹ › bring it forward (review)', () => {
+  it('a card the reader brought back with + while its detail card is in the deck stays back when ‹ › bring it forward again (review)', () => {
     const w = world();
     w.title('A');
-    w.title('B');
-    w.minimize('A'); // A in the deck, folded for its detail card: the reader's + brings it back
+    w.minimize('A'); // A in front, folded for its detail card: the reader's + brings it back
+    expect(w.folded()).toEqual({});
+    w.title('B'); // B in front
     expect(w.folded()).toEqual({ B: 'detail' });
-    w.page(0); // ‹ to A
+    w.page(0); // ‹ to A: not folded again; B comes back
     expect(w.m.state().front).toBe('A');
-    expect(w.folded()).toEqual({ B: 'detail' }); // not folded again
-    w.m.closeDetailCard(); // A leaves the deck: nothing to undo
+    expect(w.folded()).toEqual({});
+    w.m.closeDetailCard(); // A leaves the deck: nothing to undo; B in front again folds
     expect(w.folded()).toEqual({ B: 'detail' });
+  });
+
+  it('a card the reader folded with − stays folded when its detail card goes behind or leaves (SSOT_4)', () => {
+    const w = world();
+    w.title('A');
+    w.minimize('A'); // + (the detail fold lifts)
+    w.minimize('A'); // − : the reader's fold now
+    w.title('B'); // A behind: restore() undoes only a detail fold
+    expect(w.folded()).toEqual({ A: 'reader', B: 'detail' });
   });
 
   it('▽ on a one-line deck card opens it in place and it stays open through a repaint; the deck is unchanged (review)', () => {
@@ -1490,9 +1514,9 @@ describe('the detail deck — the title opens a detail card, its card goes to on
     expect(w.m.state().front).toBe('C');
     w.page(1);
     expect(w.m.state().front).toBe('B');
-    // Going round never changes the deck or the cards' folds.
+    // Going round never changes the deck; the front card is the one on one line (SSOT_4).
     expect(w.m.state()).toMatchObject({ deck: ['A', 'B', 'C'], expanded: [] });
-    expect(w.folded()).toEqual({ A: 'detail', B: 'detail', C: 'detail' });
+    expect(w.folded()).toEqual({ B: 'detail' });
     // The front card again, a place past the end, or a session gone since the nav was drawn: nothing opens.
     const opened = w.log.length;
     w.page(1);
@@ -1506,20 +1530,20 @@ describe('the detail deck — the title opens a detail card, its card goes to on
 
   it('the shipped openPanel / closePanel / deckRemove / wireInbox / Escape / cron drawer do their part of the deck', () => {
     const open = clientFn('openPanel');
-    // In the deck and its card folded before anything else of the opening; the nav painted once it is open.
-    // A card joining the deck folds; one already in it coming to the front keeps what the reader made of it.
-    expect(open).toContain(
-      'var joining = _deck.indexOf(sessionKey) < 0;\n  deckAdd(sessionKey);\n  if (joining) boardFoldForDetail(sessionKey);',
-    );
-    expect(open.indexOf('boardFoldForDetail(sessionKey);')).toBeLessThan(open.indexOf('panelSessionKey = sessionKey;'));
-    // The ring follows once the panel is open (boardCurrentKey reads panelOpen).
+    // In the deck first; the nav painted once it is open.
+    expect(open).toContain('deckAdd(sessionKey);');
+    expect(open).not.toContain('var joining');
+    // The ring and the front card's fold (SSOT_4) follow once the panel is open (boardCurrentKey reads panelOpen).
     expect(open).toContain('panelOpen = true;\n  // .prd/34 D5');
     expect(open.indexOf('syncBoardCurrent();')).toBeGreaterThan(open.indexOf('panelOpen = true;'));
+    expect(open).toContain('syncBoardCurrent();\n  boardSyncDetailFold();');
     expect(open).toContain('renderDeckNav(deckDir);');
     expect(open.indexOf('renderDeckNav(deckDir);')).toBeGreaterThan(open.indexOf('panelOpen = true;'));
     const close = clientFn('closePanel');
     expect(close).toContain('if (closingKey) deckRemove(closingKey);');
-    expect(close).toContain('panelSessionKey = null;\n  panelConvId = null;\n  syncBoardCurrent();');
+    expect(close).toContain(
+      'panelSessionKey = null;\n  panelConvId = null;\n  syncBoardCurrent();\n  boardSyncDetailFold();',
+    );
     expect(close).toContain('renderDeckNav(0);');
     expect(clientFn('deckRemove')).toContain('boardRestoreFromDetail(key);');
     // The title is the one place a board card opens its detail card; ▽ never does — no bring-to-front there.
