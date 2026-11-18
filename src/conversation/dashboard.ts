@@ -11955,39 +11955,31 @@ function inboxPaint(host) {
 // ── Task card window controls (.prd/34) ──
 // A card the reader folded to one line (−) stays folded in this browser; the fold that comes with a detail card
 // (the title, any openPanel) is the element's own and is not kept. Newest last, at most CARD_MIN_MAX.
-var CARD_MIN_KEY = 'soma-card-min';
+// Read fresh from storage each time — another dashboard tab may have written since (review); the page's own copy
+// stands in only while storage is behind it (a write that failed) or cannot be read.
 var CARD_MIN_MAX = 300;
-var _cardMin = null;
-function cardMinList() {
-  if (_cardMin) return _cardMin.slice();
-  _cardMin = [];
-  try {
-    var raw = JSON.parse(localStorage.getItem(CARD_MIN_KEY) || '[]');
-    if (Array.isArray(raw)) _cardMin = raw.filter(function(k) { return typeof k === 'string' && k; }).slice(-CARD_MIN_MAX);
-  } catch (e) { _cardMin = []; }
-  return _cardMin.slice();
+var _cardPrefs = { min: { key: 'soma-card-min', list: null, behind: false }, unfold: { key: 'soma-card-unfold', list: null, behind: false } };
+function cardPrefList(p) {
+  if (!p.behind) {
+    try {
+      var raw = JSON.parse(localStorage.getItem(p.key) || '[]');
+      p.list = Array.isArray(raw) ? raw.filter(function(k) { return typeof k === 'string' && k; }).slice(-CARD_MIN_MAX) : [];
+    } catch (e) { if (!p.list) p.list = []; }
+  }
+  return (p.list || []).slice();
 }
-function cardMinSave(key, on) {
-  var list = cardMinList().filter(function(k) { return k !== key; });
+function cardPrefPut(p, key, on) {
+  var list = cardPrefList(p).filter(function(k) { return k !== key; });
   if (on) list.push(key);
-  _cardMin = list.slice(-CARD_MIN_MAX);
-  try { localStorage.setItem(CARD_MIN_KEY, JSON.stringify(_cardMin)); } catch (e) { /* storage full or off: this page still has it */ }
-  // The reader's + is kept too: a card that starts on one line by default (a starred card a day old) stays open.
-  var open = cardUnfoldList().filter(function(k) { return k !== key; });
-  if (!on) open.push(key);
-  _cardUnfold = open.slice(-CARD_MIN_MAX);
-  try { localStorage.setItem(CARD_UNFOLD_KEY, JSON.stringify(_cardUnfold)); } catch (e) { /* as above */ }
+  p.list = list.slice(-CARD_MIN_MAX);
+  try { localStorage.setItem(p.key, JSON.stringify(p.list)); p.behind = false; } catch (e) { p.behind = true; }
 }
-var CARD_UNFOLD_KEY = 'soma-card-unfold';
-var _cardUnfold = null;
-function cardUnfoldList() {
-  if (_cardUnfold) return _cardUnfold.slice();
-  _cardUnfold = [];
-  try {
-    var raw = JSON.parse(localStorage.getItem(CARD_UNFOLD_KEY) || '[]');
-    if (Array.isArray(raw)) _cardUnfold = raw.filter(function(k) { return typeof k === 'string' && k; }).slice(-CARD_MIN_MAX);
-  } catch (e) { _cardUnfold = []; }
-  return _cardUnfold.slice();
+function cardMinList() { return cardPrefList(_cardPrefs.min); }
+// The reader's + is kept too: a card that starts on one line by default (a starred card a day old) stays open.
+function cardUnfoldList() { return cardPrefList(_cardPrefs.unfold); }
+function cardMinSave(key, on) {
+  cardPrefPut(_cardPrefs.min, key, on);
+  cardPrefPut(_cardPrefs.unfold, key, !on);
 }
 // SSOT_2 T11: a starred card is never put to sleep or archived, so it would stay at full size for ever. A day after
 // it last moved it starts on one line (its TL;DR still shows) — not while it works or waits on someone.
@@ -12055,16 +12047,20 @@ function boardFoldDeck(host) {
     if (_cardHost[k] === host && !_detailUnfolded[k]) boardFoldForDetail(k);
   }
 }
-// A card the reader folded to one line (not one folded for its detail card, whose detail card shows the decision).
-function boardReaderFolded(key) {
+// A decision on this card is out of sight: the card is on one line and its detail card is not the one in front —
+// the reader folded it, or its detail card waits behind another (review P1).
+function boardDecisionHidden(key) {
   var host = _cardHost[key];
-  return !!host && typeof host.isMinimized === 'function' && host.isMinimized(key) && _deck.indexOf(key) < 0;
+  if (!host || typeof host.isMinimized !== 'function' || !host.isMinimized(key)) return false;
+  return !(panelOpen && panelSessionKey === key);
 }
-// A new decision unfolds it (.prd/34 D9): the reader's fold was for what the card said before; it is not kept.
+// A new decision unfolds it (.prd/34 D9): the fold was for what the card said before. The reader's fold is not kept;
+// a card whose detail card waits in the deck stays open through repaints until it leaves the deck.
 function boardUnfoldForDecision(key) {
   var host = _cardHost[key];
   if (host && typeof host.setMinimized === 'function') host.setMinimized(key, false);
-  cardMinSave(key, false);
+  if (_deck.indexOf(key) >= 0) _detailUnfolded[key] = 1;
+  else cardMinSave(key, false);
 }
 // The title of a card on its element (in the element's open shadow root), or null: where focus goes back after its
 // detail card closes when the control that opened it is gone.
@@ -12215,6 +12211,8 @@ function wireInbox(host) {
       if (launch) ntOpenLaunch(launch);
       return;
     }
+    // The title folds the card again for its detail card: a + the reader pressed while it waited in the deck is over.
+    boardNoteReaderFold(key, true);
     openPanel(key);
   });
   // − / ▢ (.prd/34 D8): the reader's fold is kept in this browser.
@@ -16730,8 +16728,8 @@ function autoOpenDecisions() {
       continue;
     }
     if (_autoOpened[key] === sig) continue;
-    // .prd/34 D9: a card the reader folded to one line hides the decision even when it is open.
-    var folded = boardReaderFolded(key);
+    // .prd/34 D9: a card on one line hides the decision even when it is open (unless its detail card is in front).
+    var folded = boardDecisionHidden(key);
     // Open already (and on view): nothing to do for this decision.
     if (_expanded.has(key) && !folded) {
       _autoOpened[key] = sig;
@@ -20904,9 +20902,12 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   _treeMaxN = null;
   // The control that opened it gets focus back on close (not a control inside the panel).
   var opener = document.activeElement;
-  // A board card's title is in its element's shadow root: the deepest focused control is the one to come back to.
-  while (opener && opener.shadowRoot && opener.shadowRoot.activeElement) opener = opener.shadowRoot.activeElement;
-  if (opener && opener !== document.body && !(opener.closest && opener.closest('#slide-panel'))) _panelReturnFocus = opener;
+  // Not a control in the panel (checked on the outer element: closest() does not leave a shadow root). A board card's
+  // title is in its element's shadow root: the deepest focused control is the one to come back to.
+  if (opener && opener !== document.body && !(opener.closest && opener.closest('#slide-panel'))) {
+    while (opener.shadowRoot && opener.shadowRoot.activeElement) opener = opener.shadowRoot.activeElement;
+    _panelReturnFocus = opener;
+  }
   // Spec 12 §4.3: the agent whose tasks and work log the panel shows ('' = main).
   _panelAgent = agentId ? String(agentId) : '';
   // A layout without the 에이전트 tab shows one agent, the main one — it has no strip to lead back from another (a

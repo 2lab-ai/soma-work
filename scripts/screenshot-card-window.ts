@@ -194,18 +194,10 @@ async function panel(page: Page): Promise<{ open: boolean; key: string | null; r
   });
   return { ...state, rect };
 }
+// Playwright's click pierces the element's open shadow root and scrolls the control on screen (a phone's sideways
+// board), as a reader would.
 async function press(page: Page, key: string, what: 'min' | 'detail' | 'expand') {
-  const box = await page.evaluate(
-    ([k, w]) => {
-      const b = ((window as any).__card(k) as HTMLElement).querySelector(`[data-win="${w}"]`) as HTMLElement;
-      // A phone's board scrolls its columns sideways: bring the control on screen first, as a reader would.
-      b.scrollIntoView({ block: 'center', inline: 'center' });
-      const r = b.getBoundingClientRect();
-      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-    },
-    [key, what],
-  );
-  await page.mouse.click(box.x, box.y);
+  await page.click(`li.ib-card[data-card="${key}"] [data-win="${what}"]`);
 }
 async function shot(page: Page, name: string) {
   await page.screenshot({ path: path.join(OUT, name) });

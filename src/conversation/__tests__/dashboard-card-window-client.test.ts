@@ -60,10 +60,22 @@ describe('the reader’s one-line cards are kept in this browser (D8)', () => {
   type Min = { cardMinList(): string[]; cardMinSave(key: string, on: boolean): void };
   const min = (ls: ReturnType<typeof storage>) =>
     load<Min>(
-      ['cardMinList', 'cardMinSave', 'cardUnfoldList'],
-      ['CARD_MIN_KEY', 'CARD_MIN_MAX', '_cardMin', 'CARD_UNFOLD_KEY', '_cardUnfold'],
+      ['cardPrefList', 'cardPrefPut', 'cardMinList', 'cardMinSave', 'cardUnfoldList'],
+      ['CARD_MIN_MAX', '_cardPrefs'],
       { localStorage: ls },
     );
+
+  it('reads storage each time: a fold another dashboard tab saved is kept, not overwritten (review)', () => {
+    const ls = storage();
+    const tabA = min(ls);
+    const tabB = min(ls);
+    expect(tabA.cardMinList()).toEqual([]);
+    expect(tabB.cardMinList()).toEqual([]);
+    tabA.cardMinSave('A', true);
+    tabB.cardMinSave('B', true);
+    expect(JSON.parse(ls.items['soma-card-min'])).toEqual(['A', 'B']);
+    expect(tabA.cardMinList()).toEqual(['A', 'B']);
+  });
 
   it('saves a fold, drops an unfold, newest last; a fresh page reads it back', () => {
     const ls = storage();
@@ -105,8 +117,16 @@ describe('a starred card a day old starts on one line (SSOT_2 T11)', () => {
   type Seeds = { cardMinSeeds(cols: unknown): string[]; cardMinSave(k: string, on: boolean): void };
   const page = (ls: ReturnType<typeof storage>, cache: Record<string, unknown>, col: Record<string, string>) =>
     load<Seeds>(
-      ['cardMinList', 'cardMinSave', 'cardUnfoldList', 'cardStarDefaultFolded', 'cardMinSeeds'],
-      ['CARD_MIN_KEY', 'CARD_MIN_MAX', '_cardMin', 'CARD_UNFOLD_KEY', '_cardUnfold', 'STAR_FOLD_MS'],
+      [
+        'cardPrefList',
+        'cardPrefPut',
+        'cardMinList',
+        'cardMinSave',
+        'cardUnfoldList',
+        'cardStarDefaultFolded',
+        'cardMinSeeds',
+      ],
+      ['CARD_MIN_MAX', '_cardPrefs', 'STAR_FOLD_MS'],
       { localStorage: ls, _sessionCache: cache, _cardCol: col, Date: { now: () => NOW, parse: Date.parse } },
     );
   const at = (h: number) => new Date(NOW - h * H).toISOString();
@@ -238,29 +258,70 @@ describe('a detail card folds its board card and undoes only that fold (D7)', ()
     expect(calls.map((c) => c[1])).toEqual(['A', 'B']);
   });
 
-  it('a new decision unfolds a card the reader folded — not one folded for its detail card (D9, review)', () => {
+  // The real autoOpenDecisions with the real fold helpers (review: execute the transition, not the source text).
+  const decisions = (o: { folded: string[]; expanded: string[]; deck: string[]; front: string | null }) => {
     const calls: unknown[][] = [];
+    const folded = new Set(o.folded);
     const el = {
-      isMinimized: (k: string) => k !== 'OPEN',
-      setMinimized: (...a: unknown[]) => calls.push(['setMinimized', ...a]),
+      isMinimized: (k: string) => folded.has(k),
+      setMinimized: (k: string, on: boolean) => {
+        calls.push(['setMinimized', k, on]);
+        if (on) folded.add(k);
+        else folded.delete(k);
+      },
+      reveal: (k: string, opts: unknown) => calls.push(['reveal', k, opts]),
     };
-    const saved: unknown[][] = [];
-    const m = load<{ boardReaderFolded(k: string): boolean; boardUnfoldForDecision(k: string): void }>(
-      ['boardReaderFolded', 'boardUnfoldForDecision'],
-      [],
-      { _cardHost: { A: el, D: el, OPEN: el }, _deck: ['D'], cardMinSave: (...a: unknown[]) => saved.push(a) },
+    const cache: Record<string, unknown> = { A: { key: 'A', sig: 'q2' }, B: { key: 'B', sig: 'q1' } };
+    const m = load<{ autoOpenDecisions(): void }>(
+      ['boardDecisionHidden', 'boardUnfoldForDecision', 'autoOpenDecisions'],
+      ['_detailUnfolded'],
+      {
+        _sessionCache: cache,
+        decisionSigOf: (s: { sig: string }) => s.sig,
+        _autoOpened: { A: 'q1' }, // A's earlier decision was opened; q2 is new
+        _expanded: new Set(o.expanded),
+        viewerOwns: () => true,
+        isSiblingSession: () => false,
+        _cardHost: { A: el, B: el },
+        _cardCol: { A: 'waiting', B: 'waiting' },
+        autoOpenWhenDefined: () => {},
+        _deck: o.deck,
+        panelOpen: o.front !== null,
+        panelSessionKey: o.front,
+        cardMinSave: (...a: unknown[]) => calls.push(['cardMinSave', ...a]),
+      },
     );
-    expect(m.boardReaderFolded('A')).toBe(true);
-    expect(m.boardReaderFolded('D')).toBe(false); // in the deck: its detail card shows the decision
-    expect(m.boardReaderFolded('OPEN')).toBe(false);
-    expect(m.boardReaderFolded('NONE')).toBe(false);
-    m.boardUnfoldForDecision('A');
-    expect(calls).toEqual([['setMinimized', 'A', false]]);
-    expect(saved).toEqual([['A', false]]);
-    const auto = clientFn('autoOpenDecisions');
-    expect(auto).toContain('var folded = boardReaderFolded(key);');
-    expect(auto).toContain('if (_expanded.has(key) && !folded) {');
-    expect(auto).toContain('if (folded) boardUnfoldForDecision(key);');
+    return { m, calls, folded };
+  };
+
+  it('a new decision on a card the reader folded unfolds it, clears the saved fold and reveals once (D9, review)', () => {
+    const d = decisions({ folded: ['A'], expanded: ['A'], deck: [], front: null });
+    d.m.autoOpenDecisions();
+    expect(d.calls.filter((c) => c[1] === 'A')).toEqual([
+      ['setMinimized', 'A', false],
+      ['cardMinSave', 'A', false],
+      ['reveal', 'A', { open: true, scroll: false }],
+    ]);
+    // The same decision on the next poll: nothing again.
+    const before = d.calls.length;
+    d.m.autoOpenDecisions();
+    expect(d.calls.filter((c) => c[1] === 'A')).toHaveLength(3);
+    expect(d.calls.length).toBe(before);
+  });
+
+  it('a decision on a card whose detail card waits behind another unfolds it; one in front is left (review P1)', () => {
+    const behind = decisions({ folded: ['A'], expanded: ['A'], deck: ['A', 'B'], front: 'B' });
+    behind.m.autoOpenDecisions();
+    expect(behind.calls.filter((c) => c[1] === 'A')).toEqual([
+      ['setMinimized', 'A', false],
+      ['reveal', 'A', { open: true, scroll: false }],
+    ]);
+    expect(behind.folded.has('A')).toBe(false);
+    const front = decisions({ folded: ['A'], expanded: ['A'], deck: ['A'], front: 'A' });
+    front.m.autoOpenDecisions();
+    // Its detail card shows the decision: the board card stays as it is.
+    expect(front.calls.filter((c) => c[1] === 'A')).toEqual([]);
+    expect(front.folded.has('A')).toBe(true);
   });
 
   it('every way a detail card opens folds its card; every way it leaves the deck undoes it; a decision opened in place opens none', () => {
