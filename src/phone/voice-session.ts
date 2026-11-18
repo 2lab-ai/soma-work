@@ -35,6 +35,12 @@ const HANGUP_TAIL_MS = 600;
 /** After the time-up cue the agent gets this long to say goodbye before the line is cut. */
 const TIME_UP_GRACE_MS = 25_000;
 /**
+ * Talking over the agent interrupts it only after this much speech. Shorter sounds over it — "네", "아, 예", a
+ * hello, a cough — are not an interruption (a real call cut the agent six times for them).
+ */
+const BARGE_IN_MS = 600;
+
+/**
  * The speech engine is woken at most this often. It slows down after a few idle seconds (VoiceClient.warm), so the
  * wake-up goes out once the other side's words are transcribed — ~1 s before the reply's first sentence arrives.
  */
@@ -97,8 +103,14 @@ export class CallRun {
 
   private generating = false;
   private dropTurn = false;
-  /** Words heard while a dropped reply was still ending: they go to the model together once it has ended. */
+  /** Words that wait for the reply being written to end (dropped or not): sent together once it has. */
   private pendingPeer: string[] = [];
+  /** Speech began over the agent: it interrupts once it has said {@link BARGE_IN_MS} worth (pauses not counted). */
+  private bargeArmed = false;
+  /** The agent was talking when the current utterance began. */
+  private startedOverAgent = false;
+  /** Transcriptions under way: words waiting for a reply go with theirs. */
+  private sttInFlight = 0;
   private turnText = '';
   private turnStartAt = 0;
   private firstTokenAt = 0;
@@ -166,15 +178,51 @@ export class CallRun {
         // The other side is talking: no silence timer, and the next quiet spell starts with a fresh nudge.
         this.clearSilence();
         this.silenceNudged = false;
-        if (this.released && this.agentSpeaking()) this.bargeIn();
+        this.startedOverAgent = this.released && this.agentSpeaking();
+        this.bargeArmed = this.startedOverAgent;
       } else if (ev.type === 'utterance') {
+        // All of it may have come in one packet: judge it as a whole before letting go of the arm.
+        if (this.bargeArmed && ev.speechMs >= BARGE_IN_MS) this.interrupt();
+        this.bargeArmed = false;
         const first = this.peerUtterances++ === 0;
-        if (!this.released) this.release('상대의 첫 말이 끝남');
-        void this.transcribe(ev.pcm, ev.totalMs, first);
-      } else if (ev.type === 'noise' && !this.released) {
-        this.release('상대가 조용해서 첫 마디 시작');
+        const releasedOpening = !this.released;
+        if (releasedOpening) this.release('상대의 첫 말이 끝남');
+        // A backchannel (short, begun over the agent) and the hello that released the opening leave what is being
+        // said alone.
+        const keepReply = releasedOpening || (this.startedOverAgent && ev.speechMs < BARGE_IN_MS);
+        void this.transcribe(ev.pcm, ev.totalMs, first, keepReply);
+      } else if (ev.type === 'noise') {
+        this.bargeArmed = false;
+        if (!this.released) this.release('상대가 조용해서 첫 마디 시작');
+        else if (!this.flushPending()) this.armSilenceIfIdle(); // its start cleared the quiet-line timer
       }
     }
+    // Speech over the agent interrupts it once it has said enough to be meant — loud time only: the quiet the
+    // recogniser waits through at the end of a short "네" does not make it longer.
+    if (this.bargeArmed && this.vad.speechMsSoFar >= BARGE_IN_MS) this.interrupt();
+  }
+
+  /**
+   * The other side has said enough over the agent to mean it. What plays stops; a reply still being written is
+   * dropped even when nothing of it plays right now (between two of its sentences).
+   */
+  private interrupt(): void {
+    this.bargeArmed = false;
+    if (this.agentSpeaking()) this.bargeIn();
+    else if (this.generating && !this.hangupRequested) this.dropReply();
+  }
+
+  /**
+   * Words that waited for a reply to end go to the model — unless the other side is still talking or being
+   * recognised: then they go together with those words (hear). Returns whether they were sent.
+   */
+  private flushPending(): boolean {
+    if (!this.pendingPeer.length || this.generating || this.hangupRequested || this.ended) return false;
+    if (this.vad.speaking || this.sttInFlight > 0) return false;
+    const words = this.pendingPeer.join(' ');
+    this.pendingPeer = [];
+    this.sendToDialog(words);
+    return true;
   }
 
   feedDtmf(digits: string): void {
@@ -346,8 +394,22 @@ export class CallRun {
    * - a reply still being written is dropped (interrupted), and the words go to the model once that turn has
    *   ended, so they are answered together with what came before;
    * - a reply already playing is cut.
+   * Not every sound over the agent is a new thought: a backchannel ("네", "아, 예" — short, begun while the agent
+   * talked) and the hello whose end released the opening leave what is being said alone; they reach the model
+   * after the current reply.
    */
-  private hear(text: string): void {
+  private hear(text: string, keepReply = false): void {
+    if (!this.generating && this.pendingPeer.length) {
+      // Words that waited for the last reply go with these.
+      text = [...this.pendingPeer, text].join(' ');
+      this.pendingPeer = [];
+    }
+    if (keepReply) {
+      // Not a correction or a new thought: what is being said goes on, and the words reach the model after it.
+      if (this.generating) this.pendingPeer.push(text);
+      else this.sendToDialog(text);
+      return;
+    }
     if (this.generating) {
       this.pendingPeer.push(text);
       if (!this.dropTurn) {
@@ -372,23 +434,27 @@ export class CallRun {
 
   // ── hearing ─────────────────────────────────────────────────
 
-  private async transcribe(pcm: Buffer, audioMs: number, first = false): Promise<void> {
+  private async transcribe(pcm: Buffer, audioMs: number, first = false, keepReply = false): Promise<void> {
     const at = this.now();
     let text = '';
     let ms = 0;
+    this.sttInFlight++;
     try {
       const t = await this.deps.voice.transcribe(pcm16ToWav(pcm, LINE_SAMPLE_RATE));
       text = t.text;
       ms = t.ms;
     } catch (err) {
+      this.sttInFlight--;
       this.fail('stt', err);
-      this.armSilenceIfIdle();
+      if (!this.flushPending()) this.armSilenceIfIdle();
       return;
     }
+    this.sttInFlight--;
     if (this.ended) return;
     this.work({ kind: 'stt', at, text, ms, audioMs });
     if (!text) {
-      this.armSilenceIfIdle(); // a cough or line noise: nothing for the model, but the line is quiet again
+      // A cough or line noise: nothing for the model, but the line is quiet again (or words waited for this).
+      if (!this.flushPending()) this.armSilenceIfIdle();
       return;
     }
     this.deps.update((r) => {
@@ -408,7 +474,7 @@ export class CallRun {
       this.armSilenceIfIdle();
       return;
     }
-    this.hear(text);
+    this.hear(text, keepReply);
   }
 
   // ── thinking ────────────────────────────────────────────────
@@ -477,10 +543,9 @@ export class CallRun {
           this.dropTurn = false;
           this.turnText = '';
           if (this.pendingPeer.length && !this.hangupRequested && !this.ended) {
-            // Words heard while that reply was being dropped: answered now, all together.
-            const words = this.pendingPeer.join(' ');
-            this.pendingPeer = [];
-            this.sendToDialog(words);
+            // Words that waited for this reply: answered now, all together — or with the words the other side is
+            // still saying or being recognised for, if any (flushPending).
+            this.flushPending();
           } else if (this.hangupRequested) {
             this.dropAfterHangup = true;
             this.finishWhenQuiet();
