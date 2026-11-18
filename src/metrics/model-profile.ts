@@ -230,9 +230,9 @@ export const GPT_5_6_SDK_BLOCKING_LIMIT = sdkBlockingLimitFor(GPT_5_6_CONTEXT_WI
  * resolves the `astra` / `gpt-6` aliases to it (backend probe 2026-09-07).
  * Upstream, generation 6 also grew sol and luna tiers (llmux catalog,
  * 2026-09-22). soma-work declares only `gpt-6-astra` statically; the other
- * gen-6 tiers reach users through the llmux catalog overlay. Generation 6.1
- * (`gpt-6.1-sol`, `gpt-6.1-terra`) is NOT matched here — each 6.1 id is a
- * declared POLICY_PROFILES row.
+ * gen-6 tiers reach users through the llmux catalog overlay. Generations 6.1
+ * (`gpt-6.1-sol`, `gpt-6.1-terra`) and 6.2 (`gpt-6.2-sol`, `gpt-6.2-astra`)
+ * are NOT matched here — each of their ids is a declared POLICY_PROFILES row.
  *
  * The lookahead pins the pattern to the generation boundary: it matches
  * `gpt-6`, `gpt-6-astra` and `gpt-6-astra[1m]`, but NOT `gpt-60` or
@@ -248,9 +248,10 @@ export function isGpt6Model(model: string): boolean {
 
 /**
  * gpt-6 context window: 272k — the openai/codex model catalog value
- * (context_window 272000 for both gpt-6-astra and gpt-6.1-sol), the same class
+ * (context_window 272000 for gpt-6-astra and gpt-6.2-astra), the same class
  * as gpt-5.5's 272k input cap and NOT gpt-5.6's 372k. Do NOT raise this
- * without re-checking the catalog.
+ * without re-checking the catalog. (gpt-6.1-sol also sat at 272000 until the
+ * catalog raised it to 500000 on 2026-11-17; it now has its own 500k row.)
  */
 export const GPT_6_CONTEXT_WINDOW = 272_000;
 
@@ -402,19 +403,23 @@ const POLICY_PROFILES: readonly ModelProfile[] = [
     compactHeadroom: DEFAULT_COMPACT_HEADROOM,
   },
   {
-    // Bare gpt-6.1-sol: same 272k catalog window as Astra, same numbers.
-    // This row is what sizes it — GPT_6_RE does not match `gpt-6.1-*`. The
-    // `[1m]` variant (the `sol` shorthand target) uses the shared GPT 1M
-    // policy in the suffix branch.
+    // Bare gpt-6.1-sol: 500k since 2026-11-17, when the openai/codex
+    // models.json raised its context_window from 272000 to 500000 (commit
+    // 6c0cee5; the Codex models page: "GPT-6.1 Sol uses a default context
+    // window of 500,000 tokens"). Until then it carried Astra's 272k / 249k /
+    // 240k. Same numbers as the gpt-6.1-terra row below (477k block, 450k
+    // auto-compact — see there for why 450k). This row is what sizes it —
+    // GPT_6_RE does not match `gpt-6.1-*`. The `[1m]` variant (the `gpt-6.1`
+    // shorthand target) uses the shared GPT 1M policy in the suffix branch.
     modelId: 'gpt-6.1-sol',
-    contextWindow: GPT_6_CONTEXT_WINDOW,
-    sdkBlockingLimit: GPT_6_SDK_BLOCKING_LIMIT,
-    autoCompactTokens: GPT_6_AUTO_COMPACT_TOKENS,
+    contextWindow: 500_000,
+    sdkBlockingLimit: sdkBlockingLimitFor(500_000),
+    autoCompactTokens: 450_000,
     compactHeadroom: DEFAULT_COMPACT_HEADROOM,
   },
   {
     // Bare gpt-6.1-terra: 500k — the openai/codex models.json context_window
-    // (NOT the 272k of gpt-6.1-sol / gpt-6-astra). GPT_6_RE does not match
+    // (NOT the 272k of gpt-6-astra / gpt-6.2-astra). GPT_6_RE does not match
     // `gpt-6.1-*`, so without this row the bare id would fall to the catalog
     // window or the 200k fallback. Numbers follow the one other declared
     // 500k row, grok-4.6: the SDK formula gives a 477k blocking limit, and
@@ -430,6 +435,31 @@ const POLICY_PROFILES: readonly ModelProfile[] = [
     contextWindow: 500_000,
     sdkBlockingLimit: sdkBlockingLimitFor(500_000),
     autoCompactTokens: 450_000,
+    compactHeadroom: DEFAULT_COMPACT_HEADROOM,
+  },
+  {
+    // Bare gpt-6.2-sol (2026-11-17): 500k — the openai/codex models.json
+    // context_window. Same numbers as gpt-6.1-terra (477k block, 450k
+    // auto-compact). GPT_6_RE does not match `gpt-6.2-*`, so without this row
+    // the bare id would fall to the catalog window or the 200k fallback. The
+    // `[1m]` variant (the `sol` / `gpt-6.2` shorthand target) uses the shared
+    // GPT 1M policy in the suffix branch.
+    modelId: 'gpt-6.2-sol',
+    contextWindow: 500_000,
+    sdkBlockingLimit: sdkBlockingLimitFor(500_000),
+    autoCompactTokens: 450_000,
+    compactHeadroom: DEFAULT_COMPACT_HEADROOM,
+  },
+  {
+    // Bare gpt-6.2-astra (2026-11-17): 272k — the openai/codex models.json
+    // context_window, the same as gpt-6-astra, so the same gen-6 numbers
+    // (249k block, 240k auto-compact). Declared because GPT_6_RE does not
+    // match `gpt-6.2-*`. The `[1m]` variant (the `astra` shorthand target)
+    // uses the shared GPT 1M policy in the suffix branch.
+    modelId: 'gpt-6.2-astra',
+    contextWindow: GPT_6_CONTEXT_WINDOW,
+    sdkBlockingLimit: GPT_6_SDK_BLOCKING_LIMIT,
+    autoCompactTokens: GPT_6_AUTO_COMPACT_TOKENS,
     compactHeadroom: DEFAULT_COMPACT_HEADROOM,
   },
   {

@@ -462,6 +462,29 @@ describe('agent spend — calls the transcript recorded with no usage (llmux mod
     expect(sanitizeAgentRegistry(JSON.parse(JSON.stringify(reg)))?.agents[0].spendFinal).toBe(true);
   });
 
+  it('2026-11-18 price rows — a spend sealed under version 6 (gpt-6.2 at the fallback rate) is re-read', () => {
+    // gpt-6.2-sol / gpt-6.2-astra had no price row before version 7 and were
+    // booked at the Sonnet fallback; the bump unseals those spends.
+    expect(SPEND_CALC_VERSION).toBeGreaterThanOrEqual(7);
+    const reg = holder().agents;
+    if (!reg) throw new Error('holder() has an agent registry');
+    const a = reg.agents[0];
+    a.spend = {
+      inputTokens: 1,
+      outputTokens: 1,
+      cacheReadTokens: 1,
+      cacheCreateTokens: 0,
+      costUsd: 0.1,
+      calls: 2,
+      version: 6,
+      model: 'gpt-6.2-astra[1m]',
+    };
+    a.spendFinal = true;
+    expect(sanitizeAgentRegistry(JSON.parse(JSON.stringify(reg)))?.agents[0].spendFinal).toBeUndefined();
+    a.spend.version = SPEND_CALC_VERSION;
+    expect(sanitizeAgentRegistry(JSON.parse(JSON.stringify(reg)))?.agents[0].spendFinal).toBe(true);
+  });
+
   it('review #472 — every read stamps the current calculation version, and a long zero run stays linear', async () => {
     const lines = [assistant('m0', 'gpt-6-astra', [10, 1, 90, 0])];
     for (let i = 1; i <= 20_000; i++) lines.push(assistant(`m${i}`, 'gpt-6-astra', [0, 0, 0, 0]));

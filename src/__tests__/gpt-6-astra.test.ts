@@ -7,8 +7,9 @@
  * Upstream generation 6 later grew sol and luna tiers (2026-09-22); soma-work
  * declares only astra statically, and the other tiers reach users through the
  * llmux catalog overlay. It is served through llmux's codex backend group
- * (llmux forwards the slug verbatim and resolves the `astra` / `gpt-6`
- * aliases).
+ * (llmux forwards the slug verbatim). The `astra` shorthand selected it until
+ * 2026-11-18, when it moved to gpt-6.2-astra[1m] (gpt-6-2.test.ts); the
+ * version-pinned `gpt-6` / `gpt6` spellings still select gpt-6-astra[1m].
  *
  * Two load-bearing contracts:
  *   1. gpt-6-astra is user-SELECTABLE and the DEFAULT stays gpt-5.6-sol —
@@ -87,26 +88,28 @@ describe('gpt-6-astra — release wiring', () => {
     expect(MODEL_ALIASES.gpt).toBe('gpt-5.6-sol');
   });
 
-  it('astra / gpt-6 / gpt6 aliases point at the [1m] id (the 1M-opt-in default)', () => {
-    // A user typing `astra` / `gpt-6` / `gpt6` gets the 1M window — the bare
-    // 272k id is still selectable via its literal spelling, but shorthand must
-    // NOT silently hand a fifth of the window the user expects.
-    expect(MODEL_ALIASES.astra).toBe('gpt-6-astra[1m]');
+  it('gpt-6 / gpt6 aliases point at the [1m] id (the 1M-opt-in default)', () => {
+    // A user typing `gpt-6` / `gpt6` gets the 1M window — the bare 272k id is
+    // still selectable via its literal spelling, but shorthand must NOT
+    // silently hand a fifth of the window the user expects.
     expect(MODEL_ALIASES['gpt-6']).toBe('gpt-6-astra[1m]');
     expect(MODEL_ALIASES.gpt6).toBe('gpt-6-astra[1m]');
+    // `astra` follows the newest astra (gpt-6.2-astra since 2026-11-18,
+    // gpt-6-2.test.ts); the version-pinned `gpt-6` spellings stay here.
+    expect(MODEL_ALIASES.astra).toBe('gpt-6.2-astra[1m]');
     // The older generations must NOT be silently upgraded.
     expect(MODEL_ALIASES['gpt5.6']).toBe('gpt-5.6-sol');
     expect(MODEL_ALIASES['gpt5.5']).toBe('gpt-5.5');
-    // `sol` follows the newest sol generation (gpt-6.1-sol), not gpt-6-astra.
-    expect(MODEL_ALIASES.sol).toBe('gpt-6.1-sol[1m]');
+    // `sol` follows the newest sol generation (gpt-6.2-sol), not gpt-6-astra.
+    expect(MODEL_ALIASES.sol).toBe('gpt-6.2-sol[1m]');
   });
 
   it('resolveModelInput resolves the aliases to the [1m] variant, canonical stays bare', () => {
     const store = makeStore();
     // Literal canonical id — the caller explicitly asked for the 272k profile.
     expect(store.resolveModelInput('gpt-6-astra')).toBe('gpt-6-astra');
-    // Shorthand — the 1M-opt-in variant.
-    expect(store.resolveModelInput('astra')).toBe('gpt-6-astra[1m]');
+    // Shorthand — the 1M-opt-in variant. (`astra` now selects gpt-6.2-astra[1m].)
+    expect(store.resolveModelInput('astra')).toBe('gpt-6.2-astra[1m]');
     expect(store.resolveModelInput('  GPT-6 ')).toBe('gpt-6-astra[1m]');
     expect(store.resolveModelInput('gpt6')).toBe('gpt-6-astra[1m]');
     // Literal [1m] spelling round-trips as itself (allow-list membership).
@@ -115,21 +118,22 @@ describe('gpt-6-astra — release wiring', () => {
     expect(store.resolveModelInput('gpt')).toBe('gpt-5.6-sol');
   });
 
-  it('astra[1m] shorthand resolves to gpt-6-astra[1m] (matches sol[1m] rule)', () => {
+  it('astra[1m] shorthand resolves to the newest astra [1m] id (matches sol[1m] rule)', () => {
     // Regression: the tier-shorthand + `[1m]` spelling must resolve — the same
-    // rule as `sol[1m]` → `gpt-6.1-sol[1m]` and `opus[1m]` → `claude-opus-5-5[1m]`.
+    // rule as `sol[1m]` → `gpt-6.2-sol[1m]` and `opus[1m]` → `claude-opus-5-5[1m]`.
+    // It selected gpt-6-astra[1m] until 2026-11-18, gpt-6.2-astra[1m] since.
     // Without an explicit `astra[1m]` alias entry, resolution falls through the
     // canonical policy (no row), AVAILABLE_MODELS (no match), MODEL_ALIASES (no
     // match), and the llmux catalog overlay (which advertises `astra` but not
     // `astra[1m]`), leaving a user-visible "unknown model" for a spelling that
     // is otherwise valid muscle-memory input.
     const store = makeStore();
-    expect(store.resolveModelInput('astra[1m]')).toBe('gpt-6-astra[1m]');
+    expect(store.resolveModelInput('astra[1m]')).toBe('gpt-6.2-astra[1m]');
     // Case/whitespace symmetry, mirroring the other alias assertions above.
-    expect(store.resolveModelInput('  ASTRA[1M] ')).toBe('gpt-6-astra[1m]');
+    expect(store.resolveModelInput('  ASTRA[1M] ')).toBe('gpt-6.2-astra[1m]');
     // Also present in the exported alias table itself, so downstream consumers
     // that read MODEL_ALIASES directly see the mapping.
-    expect(MODEL_ALIASES['astra[1m]']).toBe('gpt-6-astra[1m]');
+    expect(MODEL_ALIASES['astra[1m]']).toBe('gpt-6.2-astra[1m]');
   });
 
   it('coerce round-trips gpt-6-astra AND gpt-6-astra[1m]; nonsense falls back to sol', () => {

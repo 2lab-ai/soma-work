@@ -1,23 +1,24 @@
 /**
  * Locks the gpt-6.1-sol wiring, added 2026-10-14.
  *
- * `gpt-6.1-sol` (display "GPT-6.1 Sol") is the newest gpt sol generation. Per
- * the openai/codex model catalog its context_window is 272000 — the same class
- * as gpt-6-astra — and the published 1,050,000 maximum is reached through the
- * `[1m]` opt-in. It is served through llmux's codex backend group: llmux
- * forwards the slug verbatim and strips one trailing `[1m]` before forwarding.
+ * `gpt-6.1-sol` (display "GPT-6.1 Sol") is generation 6.1's sol. Per the
+ * openai/codex model catalog its context_window is 500000 since 2026-11-17
+ * (models.json 6c0cee5; it was 272000, the class of gpt-6-astra), and the
+ * published 1,050,000 maximum is reached through the `[1m]` opt-in. It is
+ * served through llmux's codex backend group: llmux forwards the slug
+ * verbatim and strips one trailing `[1m]` before forwarding.
  *
  * Load-bearing contracts:
- *   1. The `sol` / `sol[1m]` / `gpt-6.1` shorthands select `gpt-6.1-sol[1m]` —
- *      a family shorthand always lands on the newest `[1m]` row (same rule as
- *      `astra` → `gpt-6-astra[1m]`, `fable` → `claude-fable-5-2[1m]`). The
- *      upstream gateway moved its own `sol` alias to gpt-6.1-sol on 2026-10-06.
+ *   1. The `gpt-6.1` generation shorthand selects `gpt-6.1-sol[1m]`. The `sol`
+ *      / `sol[1m]` family shorthands selected it from 2026-10-14 and moved to
+ *      the newest sol, `gpt-6.2-sol[1m]`, on 2026-11-18 (gpt-6-2.test.ts) —
+ *      a family shorthand always lands on the newest `[1m]` row.
  *   2. The DEFAULT stays gpt-5.6-sol — the `gpt` alias is intentionally NOT
  *      bumped, and the literal gpt-5.6-sol ids stay selectable.
- *   3. Bare `gpt-6.1-sol` is a DECLARED policy row (the `[1m]` id takes the
- *      shared GPT 1M suffix rule), so it never drops to the 200k fallback or
- *      to a catalog window, and pricing never falls through to the
- *      Sonnet-rate fallback.
+ *   3. Bare `gpt-6.1-sol` is a DECLARED policy row with the gpt-6.1-terra
+ *      numbers (500k / 477k / 450k; the `[1m]` id takes the shared GPT 1M
+ *      suffix rule), so it never drops to the 200k fallback or to a catalog
+ *      window, and pricing never falls through to the Sonnet-rate fallback.
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -67,10 +68,11 @@ describe('gpt-6.1-sol — release wiring', () => {
     expect(MODEL_ALIASES.gpt).toBe('gpt-5.6-sol');
   });
 
-  it('sol / sol[1m] / gpt-6.1 aliases point at the newest [1m] row', () => {
-    expect(MODEL_ALIASES.sol).toBe('gpt-6.1-sol[1m]');
-    expect(MODEL_ALIASES['sol[1m]']).toBe('gpt-6.1-sol[1m]');
+  it('gpt-6.1 stays on the 6.1 [1m] row; sol / sol[1m] moved to gpt-6.2-sol[1m]', () => {
     expect(MODEL_ALIASES['gpt-6.1']).toBe('gpt-6.1-sol[1m]');
+    // The family shorthands follow the newest sol (gpt-6-2.test.ts).
+    expect(MODEL_ALIASES.sol).toBe('gpt-6.2-sol[1m]');
+    expect(MODEL_ALIASES['sol[1m]']).toBe('gpt-6.2-sol[1m]');
     // Version-pinned gpt-5.6 spellings must NOT be silently upgraded.
     expect(MODEL_ALIASES['gpt-5.6']).toBe('gpt-5.6-sol');
     expect(MODEL_ALIASES['gpt5.6']).toBe('gpt-5.6-sol');
@@ -79,33 +81,33 @@ describe('gpt-6.1-sol — release wiring', () => {
     expect(MODEL_ALIASES.luna).toBe('gpt-6-luna[1m]');
   });
 
-  it('resolveModelInput resolves the shorthands to gpt-6.1-sol[1m]', () => {
+  it('resolveModelInput resolves the gpt-6.1 shorthand to gpt-6.1-sol[1m]', () => {
     const store = makeStore();
-    expect(store.resolveModelInput('sol')).toBe('gpt-6.1-sol[1m]');
-    expect(store.resolveModelInput('sol[1m]')).toBe('gpt-6.1-sol[1m]');
     expect(store.resolveModelInput('gpt-6.1')).toBe('gpt-6.1-sol[1m]');
     // Case/whitespace symmetry.
-    expect(store.resolveModelInput('  SOL ')).toBe('gpt-6.1-sol[1m]');
-    expect(store.resolveModelInput('  SOL[1M] ')).toBe('gpt-6.1-sol[1m]');
     expect(store.resolveModelInput(' GPT-6.1 ')).toBe('gpt-6.1-sol[1m]');
+    // `sol` no longer selects 6.1.
+    expect(store.resolveModelInput('sol')).toBe('gpt-6.2-sol[1m]');
+    expect(store.resolveModelInput('  SOL[1M] ')).toBe('gpt-6.2-sol[1m]');
   });
 
   it('accepts both literal ids as themselves', () => {
     const store = makeStore();
-    // Literal bare id — the caller explicitly asked for the 272k profile.
+    // Literal bare id — the caller explicitly asked for the 500k profile.
     expect(store.resolveModelInput('gpt-6.1-sol')).toBe('gpt-6.1-sol');
     expect(store.resolveModelInput('gpt-6.1-sol[1m]')).toBe('gpt-6.1-sol[1m]');
     expect(store.resolveModelInput('GPT-6.1-SOL[1M]')).toBe('gpt-6.1-sol[1m]');
   });
 
-  it('static aliases win over an llmux catalog that advertises `sol` on the bare id', () => {
-    // Live scenario: llmux advertises `gpt-6.1-sol` with alias `sol`. The
-    // shorthand must still land on the `[1m]` row, not the 272k bare id.
+  it('static aliases win over a stale llmux catalog that still advertises `sol` on gpt-6.1-sol', () => {
+    // An llmux that has not moved its `sol` alias yet (it did on 2026-11-18)
+    // advertises `gpt-6.1-sol` with alias `sol`. The static shorthand wins and
+    // lands on the newest `[1m]` row; the bare 6.1 literal stays itself.
     modelCatalog.__testSeed([
       { id: 'gpt-6.1-sol', aliases: ['sol'], name: 'GPT-6.1 Sol', efforts: [], max_context: 400_000, group: 'codex' },
     ]);
     const store = makeStore();
-    expect(store.resolveModelInput('sol')).toBe('gpt-6.1-sol[1m]');
+    expect(store.resolveModelInput('sol')).toBe('gpt-6.2-sol[1m]');
     expect(store.resolveModelInput('gpt-6.1-sol')).toBe('gpt-6.1-sol');
   });
 
@@ -127,28 +129,29 @@ describe('gpt-6.1-sol — release wiring', () => {
 
   it('renders the curated display labels for both variants', () => {
     const store = makeStore();
-    expect(store.getModelDisplayName('gpt-6.1-sol')).toBe('GPT-6.1 Sol (272k)');
+    expect(store.getModelDisplayName('gpt-6.1-sol')).toBe('GPT-6.1 Sol (500k)');
     expect(store.getModelDisplayName('gpt-6.1-sol[1m]')).toBe('GPT-6.1 Sol (1M)');
   });
 });
 
 describe('gpt-6.1-sol — canonical profile', () => {
-  it('bare id is a DECLARED policy row: 272k / 249k / 240k', () => {
+  it('bare id is a DECLARED policy row: 500k / 477k / 450k (272k / 249k / 240k until 2026-11-17)', () => {
     expect(CANONICAL_MODEL_IDS).toContain('gpt-6.1-sol');
-    const p = resolveModelProfile('gpt-6.1-sol');
-    expect(p.modelId).toBe('gpt-6.1-sol');
-    expect(p.contextWindow).toBe(272_000);
-    expect(p.sdkBlockingLimit).toBe(249_000);
-    expect(p.autoCompactTokens).toBe(240_000);
-    expect(p.compactHeadroom).toBe(DEFAULT_COMPACT_HEADROOM);
+    expect(resolveModelProfile('gpt-6.1-sol')).toEqual({
+      modelId: 'gpt-6.1-sol',
+      contextWindow: 500_000,
+      sdkBlockingLimit: 477_000,
+      autoCompactTokens: 450_000,
+      compactHeadroom: DEFAULT_COMPACT_HEADROOM,
+    });
   });
 
-  it('bare id matches gpt-6-astra numbers', () => {
+  it('bare id matches the gpt-6.1-terra numbers — the same 500k catalog window', () => {
     const sol = resolveModelProfile('gpt-6.1-sol');
-    const astra = resolveModelProfile('gpt-6-astra');
-    expect(sol.contextWindow).toBe(astra.contextWindow);
-    expect(sol.sdkBlockingLimit).toBe(astra.sdkBlockingLimit);
-    expect(sol.autoCompactTokens).toBe(astra.autoCompactTokens);
+    const terra = resolveModelProfile('gpt-6.1-terra');
+    expect(sol.contextWindow).toBe(terra.contextWindow);
+    expect(sol.sdkBlockingLimit).toBe(terra.sdkBlockingLimit);
+    expect(sol.autoCompactTokens).toBe(terra.autoCompactTokens);
   });
 
   it('[1m] id derives the shared GPT 1M profile (no canonical row)', () => {
@@ -160,21 +163,23 @@ describe('gpt-6.1-sol — canonical profile', () => {
   });
 
   it('registry delegates resolve the same numbers', () => {
-    expect(resolveContextWindow('gpt-6.1-sol')).toBe(272_000);
-    expect(resolveAutoCompactTokens('gpt-6.1-sol')).toBe(240_000);
+    expect(resolveContextWindow('gpt-6.1-sol')).toBe(500_000);
+    expect(resolveAutoCompactTokens('gpt-6.1-sol')).toBe(450_000);
     expect(resolveContextWindow('gpt-6.1-sol[1m]')).toBe(1_000_000);
     expect(resolveAutoCompactTokens('gpt-6.1-sol[1m]')).toBe(600_000);
   });
 
   it('declared trigger is reachable — not clamped by the session policy', () => {
-    expect(safeMaxAutoCompactTokens('gpt-6.1-sol')).toBe(240_000);
+    // 477,000 − 9,000 headroom = 468,000 ≥ 450,000.
+    expect(safeMaxAutoCompactTokens('gpt-6.1-sol')).toBe(468_000);
+    expect(safeMaxAutoCompactTokens('gpt-6.1-sol')).toBeGreaterThanOrEqual(450_000);
   });
 
-  it('a bigger catalog window does not override the declared 272k', () => {
+  it('a different catalog window does not override the declared 500k', () => {
     modelCatalog.__testSeed([
       { id: 'gpt-6.1-sol', aliases: ['sol'], name: 'GPT-6.1 Sol', efforts: [], max_context: 400_000, group: 'codex' },
     ]);
-    expect(resolveContextWindow('gpt-6.1-sol')).toBe(272_000);
+    expect(resolveContextWindow('gpt-6.1-sol')).toBe(500_000);
   });
 
   it('compatibility tier accepts the bare id and does not reject the [1m] id', () => {

@@ -17,8 +17,8 @@ import {
 
 describe('model-registry', () => {
   describe('PRICING_VERSION', () => {
-    it('should be 2026-11-10 (Fable 5.2 / gpt-6.1-terra / gpt-6 sol+luna / grok rows)', () => {
-      expect(PRICING_VERSION).toBe('2026-11-10');
+    it('should be 2026-11-18 (gpt-6.2-sol / gpt-6.2-astra rows)', () => {
+      expect(PRICING_VERSION).toBe('2026-11-18');
     });
   });
 
@@ -125,6 +125,10 @@ describe('model-registry', () => {
       ['gpt-6-luna[1m]', [0.1, 0.5, 0.01, 0, 0]],
       ['gpt-6.1-terra', [1, 5, 0.05, 0, 0]],
       ['gpt-6.1-terra[1m]', [1, 5, 0.05, 0, 0]],
+      ['gpt-6.2-sol', [2, 10, 0.1, 0, 0]],
+      ['gpt-6.2-sol[1m]', [2, 10, 0.1, 0, 0]],
+      ['gpt-6.2-astra', [8, 40, 0.4, 0, 0]],
+      ['gpt-6.2-astra[1m]', [8, 40, 0.4, 0, 0]],
       ['grok-4.7', [2, 6, 0.5, 0, 0]],
       ['grok-4.7[1m]', [2, 6, 0.5, 0, 0]],
       // The Grok Build subscription id shares the grok-4.7 row by substring.
@@ -148,6 +152,15 @@ describe('model-registry', () => {
       expect(getModelSpec('gpt-6.1-sol').pricing.cacheReadPerMTok).toBe(0.1);
       expect(getModelSpec('gpt-6-astra').pricing.inputPerMTok).toBe(10);
       expect(getModelSpec('gpt-6-astra[1m]').pricing.inputPerMTok).toBe(10);
+    });
+
+    it('the gen-6 rows do not swallow gpt-6.2 ids (`gpt-6-` vs `gpt-6.`), nor 6.2 the older ids', () => {
+      // Before the 6.2 rows these ids matched nothing and fell to the Sonnet fallback.
+      expect(getModelSpec('gpt-6.2-sol').pricing.cacheReadPerMTok).toBe(0.1);
+      expect(getModelSpec('gpt-6.2-astra').pricing.inputPerMTok).toBe(8);
+      expect(getModelSpec('gpt-6-astra').pricing.inputPerMTok).toBe(10);
+      expect(getModelSpec('gpt-6-sol').pricing.cacheReadPerMTok).toBe(0.2);
+      expect(getModelSpec('gpt-6.1-sol').pricing.inputPerMTok).toBe(2);
     });
 
     it('returns fallback for unknown model', () => {

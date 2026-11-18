@@ -61,13 +61,13 @@ describe('gpt-5.6 family — release wiring', () => {
     expect(AVAILABLE_MODELS as readonly string[]).toContain('gpt-5.6-sol[1m]');
   });
 
-  it('resolves the literal [1m] id (the `sol[1m]` shorthand moved to gpt-6.1-sol)', () => {
+  it('resolves the literal [1m] id (the `sol[1m]` shorthand follows the newest sol)', () => {
     const store = makeStore();
     // Since 2026-10-14 the `sol` / `sol[1m]` shorthands follow the newest sol
-    // generation (gpt-6.1-sol[1m], pinned in gpt-6-1-sol.test.ts). The 5.6
-    // [1m] profile stays selectable by its literal id.
-    expect(MODEL_ALIASES['sol[1m]']).toBe('gpt-6.1-sol[1m]');
-    expect(store.resolveModelInput('sol[1m]')).toBe('gpt-6.1-sol[1m]');
+    // generation (gpt-6.2-sol[1m] since 2026-11-18, pinned in gpt-6-2.test.ts).
+    // The 5.6 [1m] profile stays selectable by its literal id.
+    expect(MODEL_ALIASES['sol[1m]']).toBe('gpt-6.2-sol[1m]');
+    expect(store.resolveModelInput('sol[1m]')).toBe('gpt-6.2-sol[1m]');
     expect(store.resolveModelInput('gpt-5.6-sol[1m]')).toBe('gpt-5.6-sol[1m]');
     expect(coerceToAvailableModel('gpt-5.6-sol[1M]')).toBe('gpt-5.6-sol[1m]');
     expect(store.getModelDisplayName('gpt-5.6-sol[1m]')).toBe('GPT-5.6 Sol (1M)');
@@ -75,8 +75,8 @@ describe('gpt-5.6 family — release wiring', () => {
 
   it('resolves the gpt/tier aliases; legacy bare gpt-5.6 spelling maps to sol', () => {
     expect(MODEL_ALIASES.gpt).toBe('gpt-5.6-sol');
-    // `sol` follows the newest sol generation, not 5.6 (see gpt-6-1-sol.test.ts).
-    expect(MODEL_ALIASES.sol).toBe('gpt-6.1-sol[1m]');
+    // `sol` follows the newest sol generation, not 5.6 (see gpt-6-2.test.ts).
+    expect(MODEL_ALIASES.sol).toBe('gpt-6.2-sol[1m]');
     // `terra` follows the newest terra generation too (see gpt-6-1-terra.test.ts).
     expect(MODEL_ALIASES.terra).toBe('gpt-6.1-terra[1m]');
     // `luna` follows the newest luna (gpt-6-luna[1m]) since 2026-11-10; 5.6 luna stays literal.

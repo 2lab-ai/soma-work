@@ -250,14 +250,18 @@ source of truth for any model not listed here:
 | `claude-opus-5` (bare, no `[1m]`) | 200,000 | none — falls back to the legacy per-user percentage below |
 | `gpt-5.6-sol[1m]` (literal id only) | 1,000,000 | 600,000 |
 | `gpt-5.6-sol` (bare; the default, alias `gpt`) | 372,000 | 340,000 |
-| `gpt-6-astra[1m]` (aliases `astra`, `astra[1m]`, `gpt-6`, `gpt6`) | 1,000,000 | 600,000 |
+| `gpt-6-astra[1m]` (version-pinned aliases `gpt-6`, `gpt6`) | 1,000,000 | 600,000 |
 | `gpt-6-astra` (bare literal only) | 272,000 | 240,000 |
 | `gpt-6-luna[1m]` (aliases `luna`, `luna[1m]`) | 1,000,000 | 600,000 |
 | `gpt-6-luna` (bare literal only) | 272,000 | 240,000 |
-| `gpt-6.1-sol[1m]` (aliases `sol`, `sol[1m]`, `gpt-6.1`) | 1,000,000 | 600,000 |
-| `gpt-6.1-sol` (bare literal only) | 272,000 | 240,000 |
+| `gpt-6.1-sol[1m]` (version-pinned alias `gpt-6.1`) | 1,000,000 | 600,000 |
+| `gpt-6.1-sol` (bare literal only; 500k since 2026-11-18, was 272k) | 500,000 | 450,000 |
 | `gpt-6.1-terra[1m]` (aliases `terra`, `terra[1m]`) | 1,000,000 | 600,000 |
 | `gpt-6.1-terra` (bare literal only) | 500,000 | 450,000 |
+| `gpt-6.2-sol[1m]` (aliases `sol`, `sol[1m]`, `gpt-6.2`; since 2026-11-18) | 1,000,000 | 600,000 |
+| `gpt-6.2-sol` (bare literal only) | 500,000 | 450,000 |
+| `gpt-6.2-astra[1m]` (aliases `astra`, `astra[1m]`; since 2026-11-18) | 1,000,000 | 600,000 |
+| `gpt-6.2-astra` (bare literal only) | 272,000 | 240,000 |
 | `grok-4.7` (the representative grok: dashboard `grok[1m]`, featured model button; `grok` resolves through the llmux catalog to the same pin) | 500,000 | 450,000 |
 | `grok-4.6` (literal id) | 500,000 | 450,000 |
 
