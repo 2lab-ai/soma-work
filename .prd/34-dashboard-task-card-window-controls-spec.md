@@ -62,6 +62,8 @@ SSOT·의도·diff: [`card-window/ssot.md`](card-window/ssot.md)
 - **D7 — 상세 카드 ⇔ 한 줄.** 상세 카드가 열리면(제목, 딥 링크, "관리 →" · 계획 직접 입력 등 `openPanel`을 부르는 모든 길) 그 카드는 보드에서 한 줄이 된다 — "상세 카드에서 줄였음"으로 기억한다. 상세 카드가 덱에서 빠지면(✕ · Esc · 시트 배경 · 세션 교체) 그렇게 줄어든 카드만 원래대로 돌아온다. 그 사이 사람이 − · + · ▽를 누른 카드는 사람의 선택을 따른다(되돌리지 않는다).
 - **D8 — 저장.** 사람이 −로 줄인 카드는 이 브라우저에 저장된다(`localStorage` `soma-card-min`, 최근 300개). 상세 카드로 줄어든 것은 저장하지 않는다(덱은 새로 고침을 넘지 않는다).
 - **D9 — 그대로인 것.** 결정 대기 카드를 페이지가 스스로 제자리 펼침하는 것(`autoOpenDecisions`, 상세 카드는 안 연다), 별, 파일 칩 · 링크 · 후속 작업 · 에픽 자식 줄(각자 자기 일), 덱 ‹ › 넘기기, 폰(<840px)의 전체 화면 시트.
+- **D11 — 한 줄이어도 TL;DR은 보인다 (SSOT_2-1).** TL;DR이 있는 카드는 한 줄로 접혀도 머리 아래에 TL;DR 상자를 둔다(라이브러리 `.ib-min-tldr`, 카드의 rows에 TL;DR이 있을 때만). TL;DR의 ×(`ui-dismiss` → `tldrDismiss`, 이 브라우저에 그 TL;DR을 지웠다고 저장)를 누르면 상자가 빠지고 그제서야 머리 한 줄이다. 포커스는 그 카드의 제목으로 간다.
+- **D12 — 하루 지난 즐겨찾기는 한 줄로 시작 (SSOT_2-2).** 즐겨찾기 카드는 휴면 · 보관되지 않아 보드에 계속 남는다. 마지막으로 움직인 지(`lastActivity`) 24시간이 지났고 일하는 중도 응답 필요도 아니면, 보드가 그 카드를 처음 그릴 때 한 줄(+ TL;DR, D11)로 시작한다(`cardMinSeeds` → `data.minimized`). 사람이 +로 펼치면 `soma-card-unfold`에 저장되어 기본보다 앞선다(다시 −를 누르면 지워진다). 열어 둔 화면에서 24시간을 넘는 순간 접지는 않는다(다음에 그릴 때).
 - **D10 — 라이브러리 경계.** 버튼 · 상태 · 애니메이션은 `@2lab.ai/ui` `<ui-agent-inbox>`의 opt-in(`data.controls = 'window'`)이다. 다른 소비자는 지금 그대로(면 = 토글). soma-work는 보드 · CRON 줄의 모든 요소에 켠다.
 
 ## 3. 라이브러리 계약 (`@2lab.ai/ui` 0.43.0)
@@ -71,6 +73,7 @@ SSOT·의도·diff: [`card-window/ssot.md`](card-window/ssot.md)
 | `data.controls: 'window'` | 모든 카드 머리에 왼쪽 버튼(`data-win="min"`, `aria-pressed` = 한 줄) · 제목 버튼(`data-win="detail"`) · 오른쪽 캐럿(`data-win="expand"`, `aria-expanded`, `aria-controls`). 면은 `role="button"`이 아니다. 본문이 없는 카드(스켈레톤 · 시작 중)는 캐럿이 없다 |
 | `data.minimized: string[]` | 처음 그려질 때 한 줄로 시작하는 카드(이후엔 사람의 선택) |
 | `data.current: string` | 강조 테두리 + 제목 `aria-current="true"`인 카드 |
+| 한 줄의 상태 · TL;DR | 한 줄 카드의 머리에 상태 점(낭독기는 상태 낱말). TL;DR이 있으면 머리 아래 TL;DR 상자(×까지) |
 | `ui-minimize` `{ cardId, minimized }` | 왼쪽 버튼 · 한 줄에서 ▽. 취소 가능 |
 | `ui-detail` `{ cardId }` | 제목. 취소 가능. 취소되지 않으면 카드는 한 줄이 되고 "상세 카드에서 줄였음"이 된다 |
 | `ui-toggle` `{ cardId, expanded }` | 캐럿 · Esc. 지금과 같다 |
@@ -106,7 +109,7 @@ SSOT·의도·diff: [`card-window/ssot.md`](card-window/ssot.md)
 
 ## 6. 검증
 
-실측(2026-11-18, `@2lab.ai/ui` 0.43.0 로컬 빌드를 설치한 soma-work 실서버 + Chromium, `scripts/screenshot-card-window.ts`): **27/27** — 1440 보드(라이트) · 1440 다크(감소된 모션) · 1280 목록 보기 · 390 폰.
+실측(2026-11-18, `@2lab.ai/ui` 0.43.0 로컬 빌드를 설치한 soma-work 실서버 + Chromium, `scripts/screenshot-card-window.ts`): **30/30** — 1440 보드(라이트) · 1440 다크(감소된 모션) · 1280 목록 보기 · 390 폰.
 
 | 시나리오 | 실측 |
 |---|---|
@@ -117,6 +120,7 @@ SSOT·의도·diff: [`card-window/ssot.md`](card-window/ssot.md)
 | 6 사람이 줄인 카드 | ✕ 뒤에도 42px |
 | 8 면의 글 | 눌러도 카드 · 패널 그대로 |
 | 9 감소된 모션 | `is-hop` 없음, 애니메이션 0개, 바로 180° |
+| 11 즐겨찾기 · TL;DR (SSOT_2) | 30시간 지난 즐겨찾기 카드가 한 줄로 시작하고 TL;DR 상자(79px)를 머리 아래에 둔다(카드 128px). TL;DR × → 42px. + → 펼침, `soma-card-unfold`에 저장, 새로 고침 뒤에도 펼친 채(82px) |
 | 목록 · 폰 | 목록 보기(카드 폭 1232px) 118 → 42px. 390px: 제목 → 전체 화면 시트(머리 x 0 · 폭 390), ✕ → 카드 118px로 복원 |
 
 캡처: 보통 · 한 줄 · 제목 호버 · 점프 150/330/430ms · 제자리 펼침 · 상세 한 장/두 장 · 닫은 뒤 · 다크(감소된 모션) 상세.

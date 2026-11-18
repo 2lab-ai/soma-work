@@ -11946,7 +11946,7 @@ function inboxPaint(host) {
   // .prd/34: window controls — − one line, the title opens the detail card, ▽ opens the card in place.
   host.data = {
     columns: columns, load: p.load, announce: p.announce, expanded: open, strings: BOARD_STRINGS, openLabel: false,
-    controls: 'window', minimized: cardMinList(), current: boardCurrentKey(),
+    controls: 'window', minimized: cardMinSeeds(p.cols), current: boardCurrentKey(),
   };
   boardFoldDeck(host);
   if (typeof syncCardFinish === 'function') syncCardFinish();
@@ -11972,6 +11972,49 @@ function cardMinSave(key, on) {
   if (on) list.push(key);
   _cardMin = list.slice(-CARD_MIN_MAX);
   try { localStorage.setItem(CARD_MIN_KEY, JSON.stringify(_cardMin)); } catch (e) { /* storage full or off: this page still has it */ }
+  // The reader's + is kept too: a card that starts on one line by default (a starred card a day old) stays open.
+  var open = cardUnfoldList().filter(function(k) { return k !== key; });
+  if (!on) open.push(key);
+  _cardUnfold = open.slice(-CARD_MIN_MAX);
+  try { localStorage.setItem(CARD_UNFOLD_KEY, JSON.stringify(_cardUnfold)); } catch (e) { /* as above */ }
+}
+var CARD_UNFOLD_KEY = 'soma-card-unfold';
+var _cardUnfold = null;
+function cardUnfoldList() {
+  if (_cardUnfold) return _cardUnfold.slice();
+  _cardUnfold = [];
+  try {
+    var raw = JSON.parse(localStorage.getItem(CARD_UNFOLD_KEY) || '[]');
+    if (Array.isArray(raw)) _cardUnfold = raw.filter(function(k) { return typeof k === 'string' && k; }).slice(-CARD_MIN_MAX);
+  } catch (e) { _cardUnfold = []; }
+  return _cardUnfold.slice();
+}
+// SSOT_2 T11: a starred card is never put to sleep or archived, so it would stay at full size for ever. A day after
+// it last moved it starts on one line (its TL;DR still shows) — not while it works or waits on someone.
+var STAR_FOLD_MS = 24 * 60 * 60 * 1000;
+function cardStarDefaultFolded(s, col, now) {
+  if (!s || s.starred !== true || col === 'waiting') return false;
+  if (s.activityState === 'working' || s.activityState === 'waiting') return false;
+  var last = Date.parse(String(s.lastActivity));
+  return Number.isFinite(last) && now - last >= STAR_FOLD_MS;
+}
+// What an element starts on one line (it reads each card once while the card is on it): the reader's folds, and the
+// starred cards a day old the reader has not brought back with +.
+function cardMinSeeds(cols) {
+  var out = cardMinList();
+  var open = cardUnfoldList();
+  var now = Date.now();
+  function add(keys) {
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      if (out.indexOf(k) < 0 && open.indexOf(k) < 0 && cardStarDefaultFolded(_sessionCache[k], _cardCol[k], now)) out.push(k);
+    }
+  }
+  (cols || []).forEach(function(c) {
+    add(c.keys || []);
+    (c.groups || []).forEach(function(g) { add(g.keys || []); });
+  });
+  return out;
 }
 // The card whose detail card is in front (its board card wears the ring), or ''.
 function boardCurrentKey() {

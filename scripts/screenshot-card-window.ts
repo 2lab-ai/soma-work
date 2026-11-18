@@ -34,6 +34,8 @@ const M = 60_000;
 const KEY_A = 'mock-inst::work:C501:1700000000.000100';
 const KEY_B = 'mock-inst::work:C502:1700000000.000200';
 const KEY_C = 'mock-inst::work:C503:1700000000.000300';
+// SSOT_2: a starred card whose work last moved 30 hours ago, with an Executive Summary TL;DR.
+const KEY_D = 'mock-inst::work:C504:1700000000.000400';
 
 function session(key: string, title: string, channel: string, state: string, summary: string) {
   return {
@@ -72,7 +74,15 @@ const BOARD = {
     ),
     session(KEY_B, 'dev 로그 문제 확인', 'C502', 'working', '배포 로그에서 재시작 원인을 찾는다.'),
   ],
-  idle: [session(KEY_C, '릴리즈 노트 정리', 'C503', 'idle', '지난주 머지된 PR을 묶어 노트를 쓴다.')],
+  idle: [
+    session(KEY_C, '릴리즈 노트 정리', 'C503', 'idle', '지난주 머지된 PR을 묶어 노트를 쓴다.'),
+    {
+      ...session(KEY_D, '분기 지표 대시보드', 'C504', 'idle', '분기 지표를 한 화면에 모은다.'),
+      starred: true,
+      lastActivity: new Date(NOW - 30 * 60 * M).toISOString(),
+      esTldr: { lines: ['지표 6개를 한 화면에 모았다.', '다음: 알림 기준 정하기.'], at: NOW - 30 * 60 * M },
+    },
+  ],
 };
 const TURNS = [
   {
@@ -437,6 +447,49 @@ async function motionRun(browser: import('playwright').Browser) {
       c: c7.rect,
     },
   );
+
+  // S11 (SSOT_2) — the starred card a day old starts on one line with its TL;DR; the TL;DR's × makes it one line;
+  // + brings it back and a reload keeps it open.
+  const d0 = await cardState(page, KEY_D);
+  const tl = await page.evaluate((k) => {
+    const box = ((window as any).__card(k) as HTMLElement).querySelector('.ib-min-tldr') as HTMLElement | null;
+    const r = box?.getBoundingClientRect();
+    return box && r
+      ? { shown: getComputedStyle(box).display !== 'none', h: Math.round(r.height), text: box.innerText }
+      : null;
+  }, KEY_D);
+  check(
+    d0.min && !!tl && tl.shown && tl.h > 30 && /지표 6개/.test(tl.text) && d0.rect.h > 44,
+    'S11 a starred card 30 h old starts on one line, its TL;DR under the head',
+    { card: d0.rect, tldr: tl },
+  );
+  await shot(page, '11-starred-tldr.png');
+  const xBox = await page.evaluate((k) => {
+    const x = ((window as any).__card(k) as HTMLElement).querySelector(
+      '.ib-min-tldr [data-dismiss="tldr"]',
+    ) as HTMLElement;
+    x.scrollIntoView({ block: 'center' });
+    const r = x.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  }, KEY_D);
+  await page.mouse.click(xBox.x, xBox.y);
+  await sleep(500);
+  const d1 = await cardState(page, KEY_D);
+  check(d1.min && d1.rect.h <= 44, 'S11 the TL;DR × → truly one line', { before: d0.rect, after: d1.rect });
+  await shot(page, '11-starred-one-line.png');
+  await press(page, KEY_D, 'min');
+  await sleep(450);
+  await page.reload();
+  await page.waitForSelector(`li.ib-card[data-card="${KEY_D}"] [data-win="detail"]`);
+  await sleep(500);
+  const d2 = await cardState(page, KEY_D);
+  const unfold = await page.evaluate(() => localStorage.getItem('soma-card-unfold'));
+  // The reader's + list holds every card they brought back (A from S2 too).
+  const unfolded = JSON.parse(unfold || '[]') as string[];
+  check(!d2.min && unfolded.includes(KEY_D), 'S11 + → open, and a reload keeps it open', {
+    card: d2.rect,
+    unfold,
+  });
 
   // S8
   const sum = await page.evaluate((k) => {

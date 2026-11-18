@@ -59,7 +59,11 @@ function storage(seed: Record<string, string> = {}, opts: { failWrite?: boolean 
 describe('the reader’s one-line cards are kept in this browser (D8)', () => {
   type Min = { cardMinList(): string[]; cardMinSave(key: string, on: boolean): void };
   const min = (ls: ReturnType<typeof storage>) =>
-    load<Min>(['cardMinList', 'cardMinSave'], ['CARD_MIN_KEY', 'CARD_MIN_MAX', '_cardMin'], { localStorage: ls });
+    load<Min>(
+      ['cardMinList', 'cardMinSave', 'cardUnfoldList'],
+      ['CARD_MIN_KEY', 'CARD_MIN_MAX', '_cardMin', 'CARD_UNFOLD_KEY', '_cardUnfold'],
+      { localStorage: ls },
+    );
 
   it('saves a fold, drops an unfold, newest last; a fresh page reads it back', () => {
     const ls = storage();
@@ -95,6 +99,45 @@ describe('the reader’s one-line cards are kept in this browser (D8)', () => {
   });
 });
 
+describe('a starred card a day old starts on one line (SSOT_2 T11)', () => {
+  const H = 60 * 60 * 1000;
+  const NOW = Date.UTC(2026, 10, 18, 4, 0, 0);
+  type Seeds = { cardMinSeeds(cols: unknown): string[]; cardMinSave(k: string, on: boolean): void };
+  const page = (ls: ReturnType<typeof storage>, cache: Record<string, unknown>, col: Record<string, string>) =>
+    load<Seeds>(
+      ['cardMinList', 'cardMinSave', 'cardUnfoldList', 'cardStarDefaultFolded', 'cardMinSeeds'],
+      ['CARD_MIN_KEY', 'CARD_MIN_MAX', '_cardMin', 'CARD_UNFOLD_KEY', '_cardUnfold', 'STAR_FOLD_MS'],
+      { localStorage: ls, _sessionCache: cache, _cardCol: col, Date: { now: () => NOW, parse: Date.parse } },
+    );
+  const at = (h: number) => new Date(NOW - h * H).toISOString();
+  const cache = {
+    OLD: { starred: true, activityState: 'idle', lastActivity: at(25) },
+    FRESH: { starred: true, activityState: 'idle', lastActivity: at(23) },
+    PLAIN: { starred: false, activityState: 'idle', lastActivity: at(100) },
+    WAITS: { starred: true, activityState: 'idle', lastActivity: at(30) },
+    RUNS: { starred: true, activityState: 'working', lastActivity: at(30) },
+    DAY: { starred: true, activityState: 'idle', lastActivity: at(48) },
+  };
+  const col = { OLD: 'idle', FRESH: 'idle', PLAIN: 'idle', WAITS: 'waiting', RUNS: 'working', DAY: 'done' };
+  const cols = [{ keys: ['OLD', 'FRESH', 'PLAIN', 'WAITS', 'RUNS'] }, { keys: [], groups: [{ keys: ['DAY'] }] }];
+
+  it('only starred cards past 24 h that neither work nor wait — in a column or a DONE day', () => {
+    expect(page(storage(), cache, col).cardMinSeeds(cols)).toEqual(['OLD', 'DAY']);
+  });
+
+  it('the reader’s + keeps it open (saved); their − folds it again; their own folds come first', () => {
+    const ls = storage({ 'soma-card-min': '["PLAIN"]' });
+    const m = page(ls, cache, col);
+    expect(m.cardMinSeeds(cols)).toEqual(['PLAIN', 'OLD', 'DAY']);
+    m.cardMinSave('OLD', false); // +
+    expect(JSON.parse(ls.items['soma-card-unfold'])).toEqual(['OLD']);
+    expect(page(ls, cache, col).cardMinSeeds(cols)).toEqual(['PLAIN', 'DAY']);
+    m.cardMinSave('OLD', true); // −
+    expect(JSON.parse(ls.items['soma-card-unfold'])).toEqual([]);
+    expect(page(ls, cache, col).cardMinSeeds(cols)).toEqual(['PLAIN', 'OLD', 'DAY']);
+  });
+});
+
 describe('every board element gets the window controls, the one-line cards and the card in front', () => {
   it('inboxPaint hands controls: window, minimized and current with the columns', () => {
     const host: Record<string, unknown> = {
@@ -104,7 +147,7 @@ describe('every board element gets the window controls, the one-line cards and t
       _expanded: new Set(['B']),
       _cardData: { A: { id: 'A', title: 'a', status: 'running' }, B: { id: 'B', title: 'b', status: 'running' } },
       BOARD_STRINGS: {},
-      cardMinList: () => ['A'],
+      cardMinSeeds: () => ['A'],
       boardCurrentKey: () => 'B',
       syncCardFinish: () => {},
     });

@@ -8,7 +8,12 @@ Status: in-progress (라운드 1 — 구현 · 리시트 끝, 라이브러리 �
 |---|---|---|---|---|
 | WU1 | 라이브러리 창 버튼 | 🟡 | `2lab-ai/ui` `feat/agent-inbox-window-controls` | `src/components/agent-inbox/{agent-inbox,styles,docs,agent-inbox.test}.ts`, 0.43.0. PR https://github.com/2lab-ai/ui/pull/84 — `npm run verify` 녹색(2,600), 새 테스트 13개 RED→GREEN. 머지 · npm 배포 대기(G1) |
 | WU2 | soma-work 연결 | 🟡 | `2lab-ai/soma-work` `feat/task-card-window-controls` | `dashboard.ts`(inboxPaint · wireInbox · openPanel · deckRemove · closePanel · closeDetailCard · 딥 링크 · 새 작업 카드 · autoOpenDecisions), 하네스 seam, 테스트 갱신. 대시보드 테스트 RED 15 → GREEN. draft PR https://github.com/2lab-ai/soma-work/pull/1349. `package.json`의 `@2lab.ai/ui` 0.43.0 올림은 G1 뒤 |
-| WU3 | 실브라우저 리시트 | 🟡 | WU2와 같음 | `scripts/screenshot-card-window.ts` 27/27(스펙 §6 표 — 1440 보드 · 다크 감소된 모션 · 1280 목록 · 390 폰). 배포 뒤 dev에서 다시 |
+| WU4 | SSOT_2 — 한 줄 TL;DR · 하루 지난 즐겨찾기 | 🟡 | WU1 · WU2와 같음 | 라이브러리 `.ib-min-tldr`(RED 1 → GREEN), soma-work `cardMinSeeds` · `cardStarDefaultFolded` · `soma-card-unfold`(RED 5 → GREEN). 스펙 D11 · D12 |
+| WU3 | 실브라우저 리시트 | 🟡 | WU2와 같음 | `scripts/screenshot-card-window.ts` 30/30(스펙 §6 표 — 1440 보드 · 다크 감소된 모션 · 1280 목록 · 390 폰 · 즐겨찾기 TL;DR). 배포 뒤 dev에서 다시 |
+
+## 리뷰 (2026-11-18, astra 1회) — 반영
+
+P0 없음. P1 "0.43.0 배포 전 머지하면 상세 카드를 열 길이 없다" = G1(draft · 머지 금지 표시). P2 7건 반영: 한 줄 카드의 상태(점 + 낭독), 초기 접힘은 카드가 보드에 있는 동안 한 번, TL;DR × 뒤 포커스는 제목(라이브러리 3a96980); 새 결정이 사람이 접은 카드를 펼침, ‹ ›로 돌아온 카드를 다시 접지 않음(덱에 들어갈 때만), 다시 그려도 덱의 접힘 유지(필터 · CRON 레인), 상세 카드를 닫으면 제목으로 포커스(soma-work aae9c876).
 
 ## 열린 gap
 
