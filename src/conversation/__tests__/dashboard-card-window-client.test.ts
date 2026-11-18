@@ -287,7 +287,7 @@ describe('a detail card folds its board card and undoes only that fold (D7)', ()
   });
 
   // The real autoOpenDecisions with the real fold helpers (review: execute the transition, not the source text).
-  type Decisions = { autoOpenDecisions(): void; setFront(k: string | null): void };
+  type Decisions = { autoOpenDecisions(): void; boardFoldDeck(host: unknown): void; setFront(k: string | null): void };
   const decisions = (o: { folded: string[]; expanded: string[]; deck: string[]; front: string | null }) => {
     const calls: unknown[][] = [];
     const folded = new Set(o.folded);
@@ -302,7 +302,14 @@ describe('a detail card folds its board card and undoes only that fold (D7)', ()
     };
     const cache: Record<string, unknown> = { A: { key: 'A', sig: 'q2' }, B: { key: 'B', sig: 'q1' } };
     const m = load<Decisions>(
-      ['boardDetailInFront', 'boardDecisionHidden', 'boardUnfoldForDecision', 'autoOpenDecisions'],
+      [
+        'boardCurrentKey',
+        'boardDecisionHidden',
+        'boardUnfoldForDecision',
+        'autoOpenDecisions',
+        'boardFoldForDetail',
+        'boardFoldDeck',
+      ],
       ['_detailUnfolded'],
       {
         _sessionCache: cache,
@@ -323,7 +330,7 @@ describe('a detail card folds its board card and undoes only that fold (D7)', ()
         exports: 'setFront: function (k) { panelOpen = k !== null; panelSessionKey = k; }',
       },
     );
-    return { m, calls, folded };
+    return { m, calls, folded, el };
   };
 
   it('a new decision on a card the reader folded unfolds it, clears the saved fold and reveals once (D9, review)', () => {
@@ -361,6 +368,15 @@ describe('a detail card folds its board card and undoes only that fold (D7)', ()
     expect(titleOnly.calls.filter((c) => c[1] === 'A')).toEqual([]);
     titleOnly.m.autoOpenDecisions(); // recorded: the next poll does nothing either
     expect(titleOnly.calls.filter((c) => c[1] === 'A')).toEqual([]);
+  });
+
+  it('a card behind in the deck that a decision unfolded stays open through the next repaint (review)', () => {
+    const d = decisions({ folded: ['A', 'B'], expanded: ['A'], deck: ['A', 'B'], front: 'B' });
+    d.m.autoOpenDecisions();
+    expect(d.folded.has('A')).toBe(false);
+    d.m.boardFoldDeck(d.el); // the next inboxPaint: the deck's folds are applied again
+    expect(d.folded.has('A')).toBe(false); // the decision's unfold holds until A leaves the deck
+    expect(d.folded.has('B')).toBe(true); // B, in front and never unfolded, is folded as before
   });
 
   it('a decision seen in its detail card is not opened on the board when the reader moves to another detail card (review)', () => {

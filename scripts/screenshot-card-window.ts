@@ -7,7 +7,7 @@
  * position claim leaves its coordinates).
  *
  *   S1  each card head: − · title · (★) · ▽, the face is no button
- *   S2  − → one line (≤ 44px tall), ▢; saved — a reload keeps it; ▢ → back
+ *   S2  − → one line (≤ 44px tall), +; saved — a reload keeps it; + → back
  *   S3  title hover: accent underline + the side-panel glyph slides in
  *   S4  ▽ → the body opens in place, no detail card; the hop: mid-air (up, bigger), dust after landing, lands as △ (180°)
  *   S5  title → one line + ring, its detail card on the right; a second title → that one in front, the ring moves
@@ -15,9 +15,17 @@
  *   S7  a card the reader folded stays one line after its detail card closes
  *   S8  a press on the face's text opens nothing
  *   S9  reduced motion: ▽ turns without the hop
+ *   S10 the list view (1280) and a phone (390): −, title → detail card (a full-screen sheet on the phone), ✕
+ *   S11 a starred card a day old starts on one line with its TL;DR; the TL;DR's × → one line; + is kept (SSOT_2)
+ *   S12 ▽ on a one-line card whose detail card is open: open in place through a repaint, the detail card stays
+ *   S13 a deck card hidden by the search and shown again keeps its detail fold; the reader's + stays
+ *   S14 keyboard: Enter on a title → its detail card; Esc → focus back on that title
  *
  * Run from the repo root (keeps state out of the checkout):
  *   SOMA_CONFIG_DIR=$TMP/cfg SOMA_INSTANCE_DIR=$TMP/inst CONVERSATION_VIEWER_TOKEN=t npx tsx scripts/screenshot-card-window.ts [outDir]
+ * A deployed build instead of this checkout: run a copy of this file from a scratch folder whose
+ * src/conversation/web-server.js is a symlink to the bundle's dist/conversation/web-server.js (Node follows the
+ * link, so the bundle's own modules and its installed @2lab.ai/ui serve the page) — .prd/card-window/loop.md.
  */
 
 import * as fs from 'node:fs';
@@ -260,7 +268,7 @@ async function motionRun(browser: import('playwright').Browser) {
   await press(page, KEY_A, 'min');
   await sleep(450);
   const a3 = await cardState(page, KEY_A);
-  check(!a3.min && a3.rect.h === a0.rect.h, 'S2 ▢ → back as it was', { before: a0.rect, after: a3.rect });
+  check(!a3.min && a3.rect.h === a0.rect.h, 'S2 + → back as it was', { before: a0.rect, after: a3.rect });
 
   // S3
   await page.hover(`li.ib-card[data-card="${KEY_B}"] [data-win="detail"]`);
