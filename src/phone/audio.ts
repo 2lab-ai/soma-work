@@ -93,11 +93,6 @@ export class EnergyVad {
     return this.inSpeech;
   }
 
-  /** Loud time of the utterance under way (0 when none): what it has said so far, its pauses not counted. */
-  get speechMsSoFar(): number {
-    return this.inSpeech ? this.speechFrames * FRAME_MS : 0;
-  }
-
   /**
    * Feed PCM16 LE 8 kHz audio of any length. `agentSpeaking` raises the bar while the agent's own voice may be
    * echoing back. Returns the events the audio produced, in order.
