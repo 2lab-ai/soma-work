@@ -181,6 +181,8 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
     // `[1m]` variant (2026-11-10, the `terra` shorthand target) follow sol.
     // Sonnet 5.5 / Haiku 5.5 (bare + `[1m]`) and gpt-6-luna (+ `[1m]`) join
     // on 2026-11-10 as the `sonnet` / `haiku` / `luna` targets (#1120).
+    // gpt-6.2-sol and gpt-6.2-astra (+ `[1m]`, 2026-11-18, the new `sol` /
+    // `astra` shorthand targets) follow terra.
     // Historical entries MUST survive every bump.
     expect([...AVAILABLE_MODELS]).toEqual([
       'claude-fable-5-2',
@@ -221,6 +223,10 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       'gpt-6.1-sol[1m]',
       'gpt-6.1-terra',
       'gpt-6.1-terra[1m]',
+      'gpt-6.2-sol',
+      'gpt-6.2-sol[1m]',
+      'gpt-6.2-astra',
+      'gpt-6.2-astra[1m]',
       'grok-4.7',
       'grok-4.6',
     ]);
@@ -237,7 +243,7 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
     expect(AVAILABLE_MODELS as readonly string[]).toContain('claude-fable-5');
   });
 
-  it('MODEL_ALIASES has exactly the 48 expected key→value mappings', () => {
+  it('MODEL_ALIASES has exactly the 49 expected key→value mappings', () => {
     // `fable` / `fable[1m]` → the newest fable's literal 1M id (Fable 5.2
     // since 2026-11-10). `opus` / `opus[1m]` follow "latest opus" semantics →
     // Opus 5.5, and both land on the `[1m]` variant because that is the id
@@ -276,11 +282,14 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       'gpt5.5': 'gpt-5.5',
       'gpt-5.6': 'gpt-5.6-sol',
       'gpt5.6': 'gpt-5.6-sol',
-      // `sol` / `sol[1m]` / `gpt-6.1` follow the newest sol generation and
-      // land on its `[1m]` row (2026-10-14) — gpt-5.6-sol stays reachable by
-      // literal id and the pinned `gpt-5.6` / `gpt5.6` aliases above.
-      sol: 'gpt-6.1-sol[1m]',
-      'sol[1m]': 'gpt-6.1-sol[1m]',
+      // `sol` / `sol[1m]` follow the newest sol generation and land on its
+      // `[1m]` row (gpt-6.2-sol since 2026-11-18; gpt-6.1-sol from
+      // 2026-10-14). The generation spellings `gpt-6.2` / `gpt-6.1` stay on
+      // their own generation's sol — gpt-5.6-sol stays reachable by literal
+      // id and the pinned `gpt-5.6` / `gpt5.6` aliases above.
+      sol: 'gpt-6.2-sol[1m]',
+      'sol[1m]': 'gpt-6.2-sol[1m]',
+      'gpt-6.2': 'gpt-6.2-sol[1m]',
       'gpt-6.1': 'gpt-6.1-sol[1m]',
       // `terra` / `terra[1m]` follow the newest terra generation and land
       // on its `[1m]` row (2026-11-10) — gpt-5.6-terra stays reachable by
@@ -289,16 +298,18 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       'terra[1m]': 'gpt-6.1-terra[1m]',
       luna: 'gpt-6-luna[1m]',
       'luna[1m]': 'gpt-6-luna[1m]',
-      // gpt-6 (2026-09-07): selectable aliases only — `gpt` above still
-      // points at gpt-5.6-sol, so the default is unchanged. Shorthand
-      // aliases resolve to the `[1m]` opt-in id (same rule as `opus` /
-      // `fable`) so a user typing `astra` doesn't silently get a fifth of
-      // the window they meant; the bare 272k id stays selectable via its
-      // literal spelling. `astra[1m]` mirrors the `sol[1m]` precedent — the
-      // tier shorthand + explicit `[1m]` spelling is real muscle-memory
-      // input and the llmux catalog only advertises the bare `astra`.
-      astra: 'gpt-6-astra[1m]',
-      'astra[1m]': 'gpt-6-astra[1m]',
+      // `astra` / `astra[1m]` follow the newest astra generation
+      // (gpt-6.2-astra since 2026-11-18; gpt-6-astra from 2026-09-07) and
+      // resolve to the `[1m]` opt-in id (same rule as `opus` / `fable`) so a
+      // user typing `astra` doesn't silently get a fifth of the window they
+      // meant; the bare 272k ids stay selectable via their literal
+      // spellings. `astra[1m]` mirrors the `sol[1m]` precedent — the tier
+      // shorthand + explicit `[1m]` spelling is real muscle-memory input and
+      // the llmux catalog only advertises the bare `astra`. The gpt-6
+      // generation spellings stay pinned to gpt-6-astra[1m]; `gpt` above
+      // still points at gpt-5.6-sol, so the default is unchanged.
+      astra: 'gpt-6.2-astra[1m]',
+      'astra[1m]': 'gpt-6.2-astra[1m]',
       'gpt-6': 'gpt-6-astra[1m]',
       gpt6: 'gpt-6-astra[1m]',
       'opus[1m]': 'claude-opus-5-5[1m]',
@@ -796,7 +807,8 @@ describe('model input resolution — accepted / rejected / unknown', () => {
     expect(store.resolveModelInput('opus')).toBe('claude-opus-5-5[1m]');
     expect(store.resolveModelInput('opus[1m]')).toBe('claude-opus-5-5[1m]');
     expect(store.resolveModelInput('opus-5')).toBe('claude-opus-5');
-    expect(store.resolveModelInput('sol[1m]')).toBe('gpt-6.1-sol[1m]');
+    expect(store.resolveModelInput('sol[1m]')).toBe('gpt-6.2-sol[1m]');
+    expect(store.resolveModelInput('astra')).toBe('gpt-6.2-astra[1m]');
     expect(store.resolveModelInput('terra')).toBe('gpt-6.1-terra[1m]');
     expect(store.resolveModelInput('grok-4.6')).toBe('grok-4.6');
   });

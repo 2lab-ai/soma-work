@@ -127,7 +127,10 @@ describe('Dashboard — model picker payload', () => {
     expect(by('opus[1m]').price).toEqual({ input: 4, output: 20 }); // Opus 5.5 official rates
     // `sonnet[1m]` is Sonnet 5.5 since 2026-11-10 (#1120): $2 / $10.
     expect(by('sonnet[1m]').price).toEqual({ input: 2, output: 10 });
-    expect(by('astra[1m]').price).toEqual({ input: 10, output: 50 });
+    // `astra[1m]` is gpt-6.2-astra[1m] since 2026-11-18: $8 / $40 (was gpt-6-astra's $10 / $50).
+    expect(by('astra[1m]').price).toEqual({ input: 8, output: 40 });
+    // `sol[1m]` is gpt-6.2-sol[1m] since 2026-11-18: $2 / $10.
+    expect(by('sol[1m]').price).toEqual({ input: 2, output: 10 });
     // The representative grok is grok-4.7 since 2026-11-10; it has its own registry row ($2 / $6).
     expect(by('grok[1m]').price).toEqual({ input: 2, output: 6 });
     // The rest of the contract is untouched.

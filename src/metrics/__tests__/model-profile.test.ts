@@ -77,7 +77,12 @@ const POLICY_TABLE: TableRow[] = [
   { modelId: 'claude-opus-5', contextWindow: 200_000, sdkBlockingLimit: 177_000, autoCompactTokens: undefined },
   { modelId: 'gpt-5.6-sol[1m]', contextWindow: 1_000_000, sdkBlockingLimit: 977_000, autoCompactTokens: 600_000 },
   { modelId: 'gpt-5.6-sol', contextWindow: 372_000, sdkBlockingLimit: 349_000, autoCompactTokens: 340_000 },
+  { modelId: 'gpt-6-astra', contextWindow: 272_000, sdkBlockingLimit: 249_000, autoCompactTokens: 240_000 },
+  // gpt-6.1-sol was 272k / 249k / 240k until the codex catalog raised it to 500k on 2026-11-17.
+  { modelId: 'gpt-6.1-sol', contextWindow: 500_000, sdkBlockingLimit: 477_000, autoCompactTokens: 450_000 },
   { modelId: 'gpt-6.1-terra', contextWindow: 500_000, sdkBlockingLimit: 477_000, autoCompactTokens: 450_000 },
+  { modelId: 'gpt-6.2-sol', contextWindow: 500_000, sdkBlockingLimit: 477_000, autoCompactTokens: 450_000 },
+  { modelId: 'gpt-6.2-astra', contextWindow: 272_000, sdkBlockingLimit: 249_000, autoCompactTokens: 240_000 },
   { modelId: 'grok-4.6', contextWindow: 500_000, sdkBlockingLimit: 477_000, autoCompactTokens: 450_000 },
 ];
 
@@ -126,7 +131,10 @@ describe('resolveModelProfile — canonical policy table', () => {
 describe('resolveModelProfile — shared GPT 1M policy', () => {
   it.each([
     'gpt-6-astra[1m]',
+    'gpt-6.1-sol[1m]',
     'gpt-6.1-terra[1m]',
+    'gpt-6.2-sol[1m]',
+    'gpt-6.2-astra[1m]',
     'gpt-5.6-sol[1m]',
     'gpt-5.6-terra[1m]',
     'gpt-5.6-luna[1m]',

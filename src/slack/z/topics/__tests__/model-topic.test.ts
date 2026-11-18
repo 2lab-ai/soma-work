@@ -137,20 +137,35 @@ describe('model-topic.applyModel', () => {
     expect(userSettingsStore.getUserDefaultModel('U_TERRA61')).toBe('gpt-6.1-terra[1m]');
   });
 
-  it('resolves and persists `sol` as the newest sol [1m] id gpt-6.1-sol[1m]', async () => {
-    const r = await applyModel({ userId: 'U_SOL61', value: 'sol' });
+  it('resolves and persists `sol` as the newest sol [1m] id gpt-6.2-sol[1m]', async () => {
+    const r = await applyModel({ userId: 'U_SOL62', value: 'sol' });
     expect(r.ok).toBe(true);
-    expect(r.description).toContain('gpt-6.1-sol[1m]');
+    expect(r.description).toContain('gpt-6.2-sol[1m]');
     const { userSettingsStore } = await import('../../../../user-settings-store');
-    expect(userSettingsStore.getUserDefaultModel('U_SOL61')).toBe('gpt-6.1-sol[1m]');
+    expect(userSettingsStore.getUserDefaultModel('U_SOL62')).toBe('gpt-6.2-sol[1m]');
   });
 
-  it('resolves and persists `sol[1m]` as gpt-6.1-sol[1m]', async () => {
-    const r = await applyModel({ userId: 'U_SOL61_1M', value: 'sol[1m]' });
+  it('resolves and persists `sol[1m]` as gpt-6.2-sol[1m]', async () => {
+    const r = await applyModel({ userId: 'U_SOL62_1M', value: 'sol[1m]' });
     expect(r.ok).toBe(true);
-    expect(r.description).toContain('gpt-6.1-sol[1m]');
+    expect(r.description).toContain('gpt-6.2-sol[1m]');
     const { userSettingsStore } = await import('../../../../user-settings-store');
-    expect(userSettingsStore.getUserDefaultModel('U_SOL61_1M')).toBe('gpt-6.1-sol[1m]');
+    expect(userSettingsStore.getUserDefaultModel('U_SOL62_1M')).toBe('gpt-6.2-sol[1m]');
+  });
+
+  it('resolves and persists `astra` as the newest astra [1m] id gpt-6.2-astra[1m]', async () => {
+    const r = await applyModel({ userId: 'U_ASTRA62', value: 'astra' });
+    expect(r.ok).toBe(true);
+    expect(r.description).toContain('gpt-6.2-astra[1m]');
+    const { userSettingsStore } = await import('../../../../user-settings-store');
+    expect(userSettingsStore.getUserDefaultModel('U_ASTRA62')).toBe('gpt-6.2-astra[1m]');
+  });
+
+  it('the version-pinned `gpt-6.1` still persists gpt-6.1-sol[1m]', async () => {
+    const r = await applyModel({ userId: 'U_SOL61', value: 'gpt-6.1' });
+    expect(r.ok).toBe(true);
+    const { userSettingsStore } = await import('../../../../user-settings-store');
+    expect(userSettingsStore.getUserDefaultModel('U_SOL61')).toBe('gpt-6.1-sol[1m]');
   });
 
   // --- Fake `grok-*[1m]`: rejected, never normalized ---

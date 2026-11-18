@@ -2,7 +2,7 @@
  * Unified model registry — single source of truth for pricing, context windows, and max output.
  * Source: https://docs.anthropic.com/en/docs/about-claude/models (claude rows); each non-claude
  * row names its own source.
- * Last updated: 2026-11-10 (Fable 5.2, gpt-6.1-terra, gpt-6-sol / gpt-6-luna and grok rows)
+ * Last updated: 2026-11-18 (gpt-6.2-sol and gpt-6.2-astra rows)
  */
 
 import { resolveModelProfile } from './model-profile';
@@ -39,7 +39,7 @@ export {
   stripOneMSuffix,
 } from './model-profile';
 
-export const PRICING_VERSION = '2026-11-10';
+export const PRICING_VERSION = '2026-11-18';
 
 export interface ModelPricingSpec {
   inputPerMTok: number;
@@ -238,15 +238,16 @@ const MODEL_REGISTRY: [pattern: string, spec: ModelSpec][] = [
       maxOutput: 128_000,
     },
   ],
-  // OpenAI gpt-6.1-sol — the newest sol generation ($2 in / $10 out / $0.10
+  // OpenAI gpt-6.1-sol — generation 6.1's sol ($2 in / $10 out / $0.10
   // cache-read per MTok, OpenAI standard-tier rates). OpenAI also lists a
   // $2.50 cache-write rate and llmux carries it (`llmux/src/pricing.rs`
   // `GPT_6_1_SOL` = ModelPrice::new(2.0, 10.0, 0.10, 2.5)), but llmux reports
   // cache_creation_input_tokens as 0 on the codex wire
   // (`llmux/src/provider/responses.rs`, cache_write_tokens mapping), so the
-  // write rate never applies here — both cache-write fields stay 0. 272k
-  // window — the openai/codex model catalog value (context_window 272000);
-  // the `[1m]` twin reaches 1M.
+  // write rate never applies here — both cache-write fields stay 0. 500k
+  // window — the openai/codex model catalog value since 2026-11-17
+  // (context_window 272000 → 500000, models.json 6c0cee5); the `[1m]` twin
+  // reaches 1M.
   // Context numbers are policy and live in model-profile.ts; this row is
   // pricing. No other pattern in this table is a substring of `gpt-6.1-sol`,
   // and it is a substring of no other id, so first-wins cannot misattribute.
@@ -260,7 +261,7 @@ const MODEL_REGISTRY: [pattern: string, spec: ModelSpec][] = [
         cache5minWritePerMTok: 0,
         cache1hrWritePerMTok: 0,
       },
-      contextWindow: 272_000,
+      contextWindow: 500_000,
       maxOutput: 128_000,
     },
   ],
@@ -287,6 +288,61 @@ const MODEL_REGISTRY: [pattern: string, spec: ModelSpec][] = [
         cache1hrWritePerMTok: 0,
       },
       contextWindow: 500_000,
+      maxOutput: 128_000,
+    },
+  ],
+  // OpenAI gpt-6.2-sol (released 2026-11-17) — the newest sol generation:
+  // $2 in / $10 out / $0.10 cache read per MTok, the same Standard rates as
+  // 6.1-sol (OpenAI model page
+  // https://developers.openai.com/api/docs/models/gpt-6.2-sol and the
+  // pricing page, read 2026-11-18). OpenAI's $2.50 30-minute cache-write rate
+  // never applies here — llmux reports no cache-creation tokens on the codex
+  // wire — so both cache-write fields stay 0, like every codex row. The
+  // >272k-input long-context surcharge (2x input and cache, 1.5x output) is
+  // not modeled here, although llmux prices it per request since 2026-11-12,
+  // so a long sol turn reads cheaper here than in llmux. 500k window — the
+  // openai/codex models.json context_window; the `[1m]` twin reaches 1M.
+  // Context numbers are policy and live in model-profile.ts. Before this row
+  // the id matched nothing and was priced at FALLBACK_SPEC's Sonnet rates:
+  // `gpt-6-sol` and `gpt-6.1-sol` are not substrings of it (`gpt-6.2-` vs
+  // `gpt-6-` / `gpt-6.1-`), and it is a substring of no other known id.
+  [
+    'gpt-6.2-sol',
+    {
+      pricing: {
+        inputPerMTok: 2,
+        outputPerMTok: 10,
+        cacheReadPerMTok: 0.1,
+        cache5minWritePerMTok: 0,
+        cache1hrWritePerMTok: 0,
+      },
+      contextWindow: 500_000,
+      maxOutput: 128_000,
+    },
+  ],
+  // OpenAI gpt-6.2-astra (released 2026-11-17) — the newest astra
+  // generation: $8 in / $40 out / $0.40 cache read per MTok, cheaper than
+  // gpt-6-astra's $10 / $50 / $1 (OpenAI model page
+  // https://developers.openai.com/api/docs/models/gpt-6.2-astra and the
+  // pricing page, read 2026-11-18). OpenAI's $10 30-minute cache-write rate
+  // never applies on the codex wire, so both cache-write fields stay 0. The
+  // >272k-input long-context surcharge is not modeled. 272k window — the
+  // openai/codex models.json context_window; the `[1m]` twin reaches 1M.
+  // `gpt-6-astra` is not a substring of it (`gpt-6.2-` vs `gpt-6-`), so
+  // without this row it fell to FALLBACK_SPEC. The pattern also covers
+  // OpenAI's API-only `gpt-6.2-astra-law` configuration, which OpenAI prices
+  // at the same Standard rates.
+  [
+    'gpt-6.2-astra',
+    {
+      pricing: {
+        inputPerMTok: 8,
+        outputPerMTok: 40,
+        cacheReadPerMTok: 0.4,
+        cache5minWritePerMTok: 0,
+        cache1hrWritePerMTok: 0,
+      },
+      contextWindow: 272_000,
       maxOutput: 128_000,
     },
   ],

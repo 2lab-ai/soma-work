@@ -25,7 +25,7 @@ export interface PricingCatalog {
 export interface HostPricing {
   /** The host prices `model` itself (the SDK does not know it). */
   hostPriced(model: string): boolean;
-  /** `calculateTokenCost` with the catalog alias resolved (`astra` → `gpt-6-astra[1m]`). */
+  /** `calculateTokenCost` with the catalog alias resolved (`astra` → `gpt-6.2-astra[1m]`). */
   calculateTokenCost(
     model: string | undefined,
     inputTokens: number,
