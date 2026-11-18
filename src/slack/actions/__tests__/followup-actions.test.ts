@@ -1580,34 +1580,6 @@ describe('against the real queue and dispatcher', () => {
     return { queue, dispatcher, requests, respond, refresh, runDrain, click };
   }
 
-  it('accepts the shipped FollowupQueue and FollowupDispatcher as its injected ports', () => {
-    // A COMPILE-TIME assertion with a runtime witness: `deps` is annotated, so
-    // any drift between the real classes and the declared ports (e.g. `sendNow`
-    // making `expectedTurnEpoch` required) fails the type gate here rather than
-    // at the host wiring site.
-    const queue = new FollowupQueue();
-    const dispatcher = new FollowupDispatcher({
-      queue,
-      dispatch: async () => ({ result: 'safe' }),
-      interrupt: () => {},
-      authorizeInterrupt: () => ({ allowed: true }),
-      authorizeDispatch: () => ({ allowed: true }),
-    });
-    const deps: FollowupActionsDeps = {
-      queue,
-      dispatcher,
-      cancelSteered: async () => 'failed',
-      getSessionByKey: () => session(),
-      canInterrupt: () => true,
-      refresh: () => {},
-      runDrain: () => {},
-    };
-    expect(deps.queue).toBe(queue);
-    expect(deps.dispatcher).toBe(dispatcher);
-    expect(typeof deps.dispatcher.sendNow).toBe('function');
-    expect(deps.dispatcher.isBusy(SESSION_KEY)).toBe(false);
-  });
-
   it('passes the ORIGINAL author through and the clicker only as requestedBy', async () => {
     const h = realHarness();
     const enqueued = h.queue.enqueue(SESSION_KEY, {

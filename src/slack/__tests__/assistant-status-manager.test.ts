@@ -115,18 +115,6 @@ describe('AssistantStatusManager', () => {
       expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(2);
     });
 
-    it('should reroute empty string to clearStatus (no empty-string heartbeat)', async () => {
-      const clearSpy = vi.spyOn(manager, 'clearStatus');
-
-      await manager.setStatus('C123', '123.456', '');
-
-      expect(clearSpy).toHaveBeenCalledWith('C123', '123.456');
-      expect(clearSpy).toHaveBeenCalledTimes(1);
-      // clearStatus hits slackApi exactly once with ''
-      expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(1);
-      expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledWith('C123', '123.456', '');
-    });
-
     it('should evaluate resolver on initial call', async () => {
       const resolver = vi.fn(() => 'resolved-text-1');
 

@@ -4,14 +4,12 @@
  * Trace: docs/archive/features/dispatch-safe-stop/trace.md (v3) §S2 — 8 tests covering
  * 4 drift sites + cleanup robustness + activation predicate.
  *
- * Focuses on the surfaces that can be tested without a full dispatch-service
- * mock: Site C (runDispatch forceWorkflow), Site D (initialize forceWorkflow).
- * Sites A (dispatchWorkflow catch) and B (in-flight wait-timeout) are
- * structurally tested via the DispatchAbortError surface at the error class
- * level (handoff-budget.ts pattern).
+ * Site C (runDispatch forceWorkflow), and Site A (dispatchWorkflow catch) with
+ * a failing classifier from a mocked dispatch service — its AD-2 activation
+ * rule (safe-stop vs default drift).
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../../user-settings-store', () => ({
   userSettingsStore: {
@@ -23,6 +21,9 @@ vi.mock('../../../user-settings-store', () => ({
   DEFAULT_MODEL: 'claude-opus-4-8[1m]',
 }));
 
+vi.mock('../../../dispatch-service', () => ({ getDispatchService: vi.fn() }));
+
+import { getDispatchService } from '../../../dispatch-service';
 import { DispatchAbortError } from '../../dispatch-abort';
 import { SessionInitializer } from '../session-initializer';
 
@@ -55,11 +56,18 @@ function buildInitializer(options: { transitionReturns?: boolean } = {}) {
     needsDispatch: vi.fn().mockReturnValue(true),
     transitionToMain,
     saveSessions: vi.fn(),
+    setActivityState: vi.fn(),
+  };
+  const slackApi = {
+    addReaction: vi.fn().mockResolvedValue(undefined),
+    removeReaction: vi.fn().mockResolvedValue(undefined),
+    postMessage: vi.fn().mockResolvedValue({ ts: 'dispatch_ts' }),
+    updateMessage: vi.fn().mockResolvedValue(undefined),
   };
 
   const sessionInitializer = new SessionInitializer({
     claudeHandler: mockClaudeHandler as any,
-    slackApi: {} as any,
+    slackApi: slackApi as any,
     messageValidator: {} as any,
     workingDirManager: {} as any,
     reactionManager: {} as any,
@@ -73,7 +81,7 @@ function buildInitializer(options: { transitionReturns?: boolean } = {}) {
     return s;
   };
 
-  return { sessionInitializer, mockClaudeHandler, primeSession, transitionToMain };
+  return { sessionInitializer, mockClaudeHandler, primeSession, transitionToMain, slackApi };
 }
 
 describe('runDispatch forceWorkflow — Site C (#698)', () => {
@@ -119,36 +127,67 @@ describe('runDispatch forceWorkflow — Site C (#698)', () => {
   });
 });
 
-describe('DispatchAbortError activation predicate — AD-2 semantic regression', () => {
-  // These tests verify the predicate logic without exercising the full
-  // dispatchWorkflow pipeline. The predicate is:
-  //   shouldSafeStop = session.handoffContext !== undefined || forcedWorkflowHint !== undefined
+describe('dispatch failure → safe-stop vs default drift — AD-2 activation (#698)', () => {
+  // A classifier failure safe-stops (DispatchAbortError) only when the session
+  // entered through a z-handoff (handoffContext) or the caller forced a
+  // workflow hint; otherwise the session drifts to `default` as before.
+  function failingClassifier() {
+    vi.mocked(getDispatchService).mockReturnValue({
+      getModel: vi.fn().mockReturnValue('claude-haiku'),
+      isReady: vi.fn().mockReturnValue(true),
+      dispatch: vi.fn().mockRejectedValue(new Error('classifier exploded')),
+    } as any);
+  }
 
-  it('T2.10 session with handoffContext set → predicate returns true (would safe-stop)', () => {
-    const session: any = { handoffContext: { chainId: 'abc' } };
-    const forcedWorkflowHint: string | undefined = undefined;
-    const shouldSafeStop = session?.handoffContext !== undefined || forcedWorkflowHint !== undefined;
-    expect(shouldSafeStop).toBe(true);
+  it('T2.10 session with handoffContext → DispatchAbortError(classifier-failed) and the safe-stop panel text', async () => {
+    failingClassifier();
+    const { sessionInitializer, primeSession, transitionToMain, slackApi } = buildInitializer();
+    primeSession('C1', 't10', { handoffContext: { chainId: 'abc', handoffKind: 'plan-to-work' } });
+
+    const err = await sessionInitializer.runDispatch('C1', 't10', 'continue the plan').catch((e) => e);
+
+    expect(err).toBeInstanceOf(DispatchAbortError);
+    expect((err as DispatchAbortError).reason).toBe('classifier-failed');
+    expect((err as DispatchAbortError).handoffContext?.chainId).toBe('abc');
+    expect(slackApi.updateMessage).toHaveBeenCalledWith('C1', 'dispatch_ts', expect.stringContaining('safe-stop'));
+    expect(transitionToMain).not.toHaveBeenCalled();
   });
 
-  it('T2.11 session without handoffContext + no hint → predicate returns false (would drift to default)', () => {
-    const session: any = {};
-    const forcedWorkflowHint: string | undefined = undefined;
-    const shouldSafeStop = session?.handoffContext !== undefined || forcedWorkflowHint !== undefined;
-    expect(shouldSafeStop).toBe(false);
+  it('T2.11 session without handoffContext + no hint → drifts to the default workflow (no throw)', async () => {
+    failingClassifier();
+    const { sessionInitializer, primeSession, transitionToMain, slackApi } = buildInitializer();
+    primeSession('C1', 't11');
+
+    await expect(sessionInitializer.runDispatch('C1', 't11', 'fix the login bug')).resolves.toBeUndefined();
+
+    expect(transitionToMain).toHaveBeenCalledWith('C1', 't11', 'default', expect.any(String));
+    expect(slackApi.updateMessage).toHaveBeenCalledWith(
+      'C1',
+      'dispatch_ts',
+      expect.stringContaining('*Workflow:* `default`'),
+    );
   });
 
-  it('T2.12 session without handoffContext + forcedWorkflowHint set → predicate returns true (would safe-stop)', () => {
-    const session: any = {};
-    const forcedWorkflowHint: string | undefined = 'pr-review';
-    const shouldSafeStop = session?.handoffContext !== undefined || forcedWorkflowHint !== undefined;
-    expect(shouldSafeStop).toBe(true);
+  it('T2.12 session without handoffContext + forcedWorkflowHint → DispatchAbortError naming the hinted workflow', async () => {
+    failingClassifier();
+    const { sessionInitializer, primeSession, transitionToMain } = buildInitializer();
+    primeSession('C1', 't12');
+
+    const err = await (sessionInitializer as any)
+      .dispatchWorkflow('C1', 't12', 'https://github.com/x/y/pull/1', 'C1:t12', 'pr-review')
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(DispatchAbortError);
+    expect((err as DispatchAbortError).workflow).toBe('pr-review');
+    expect(transitionToMain).not.toHaveBeenCalled();
   });
 
-  it('T2.13 session undefined + no hint → predicate returns false (safe — no session to protect)', () => {
-    const session: any = undefined;
-    const forcedWorkflowHint: string | undefined = undefined;
-    const shouldSafeStop = session?.handoffContext !== undefined || forcedWorkflowHint !== undefined;
-    expect(shouldSafeStop).toBe(false);
+  it('T2.13 no session + no hint → drifts to default (nothing to protect, no throw)', async () => {
+    failingClassifier();
+    const { sessionInitializer, transitionToMain } = buildInitializer();
+
+    await expect(sessionInitializer.runDispatch('C1', 't13', 'hello')).resolves.toBeUndefined();
+
+    expect(transitionToMain).toHaveBeenCalledWith('C1', 't13', 'default', expect.any(String));
   });
 });

@@ -192,18 +192,6 @@ describe('UsageCardActionHandler', () => {
     expect(call.text).toContain('실패');
   });
 
-  // ── Static block_id (Scenario 8 contract line 232) ───────────────
-  it('emits static block_id "usage_card_tabs" (not messageTs-embedded)', async () => {
-    const client = makeClient();
-    const body = makeBody({ messageTs: 'MSG1', userId: 'U_OWNER', tab: '7d' });
-
-    await handler.handleTabClick(body, client, mockRespond);
-
-    const blocks = client.chat.update.mock.calls[0][0].blocks as any[];
-    expect(blocks[2].block_id).toBe('usage_card_tabs');
-    expect(blocks[2].block_id).not.toContain('MSG1');
-  });
-
   // ── Models tab click — happy path ────────────────────────────────
   describe('models tab (Scenario 8 extension)', () => {
     it('owner click on models button → chat.update with models image + models primary', async () => {

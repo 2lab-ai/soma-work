@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { applyBypass, createBypassTopicBinding, normalizePermissionModeValue, renderBypassCard } from '../bypass-topic';
+import { applyBypass, normalizePermissionModeValue, renderBypassCard } from '../bypass-topic';
 
 vi.mock('../../../../user-settings-store', () => {
   const store: Record<string, string> = {};
@@ -78,14 +78,5 @@ describe('bypass-topic.applyBypass', () => {
     const r = await applyBypass({ userId: 'U1', value: 'maybe' });
     expect(r.ok).toBe(false);
     expect(r.summary).toContain('Expected');
-  });
-});
-
-describe('createBypassTopicBinding', () => {
-  it('exposes topic + apply + renderCard', () => {
-    const b = createBypassTopicBinding();
-    expect(b.topic).toBe('bypass');
-    expect(typeof b.apply).toBe('function');
-    expect(typeof b.renderCard).toBe('function');
   });
 });

@@ -227,17 +227,6 @@ describe('SummaryService', () => {
       expect(result).toBeNull();
     });
 
-    // Trace: S3, Section 3c
-    it('displayOnThread() sets summaryBlocks on actionPanel', () => {
-      const service = new SummaryService();
-      const session = makeSession();
-      service.displayOnThread(session, 'Test summary text');
-
-      expect(session.actionPanel!.summaryBlocks).toBeDefined();
-      expect(Array.isArray(session.actionPanel!.summaryBlocks)).toBe(true);
-      expect(session.actionPanel!.summaryBlocks!.length).toBeGreaterThan(0);
-    });
-
     it('displayOnThread() produces valid Block Kit structure with divider + section', () => {
       const service = new SummaryService();
       const session = makeSession();
@@ -369,13 +358,6 @@ describe('SummaryService', () => {
         expect(lower).toMatch(/command|commit/); // commands run or commits made
         // And it must explicitly tell the model to be specific/concrete.
         expect(lower).toMatch(/specific|concrete/);
-      });
-
-      it('does NOT cap the work-summary section at 1-2 sentences', () => {
-        // The previous prompt said "Status: ... (1-2 sentences)" which forced
-        // a generic abstract status. The new prompt must not cap the work
-        // recap that tightly.
-        expect(SUMMARY_PROMPT).not.toMatch(/1-?2 sentences?/i);
       });
 
       it('keeps the no-tools / no-external-calls guard', () => {

@@ -53,21 +53,31 @@ describe('WebhookHandler', () => {
     );
   });
 
-  it('test posts to registered URL', async () => {
+  it('test posts a test payload to the registered URL and reports the HTTP status', async () => {
     const handler = new WebhookHandler();
+    // A public IP literal skips the DNS lookup, so no network is touched.
+    const url = 'https://93.184.216.34/hook';
+    await handler.execute(createCtx(`webhook register ${url}`));
 
-    // First register a URL
-    const registerCtx = createCtx('webhook register https://example.com/hook');
-    await handler.execute(registerCtx);
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 204 });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const testCtx = createCtx('webhook test');
+      const result = await handler.execute(testCtx);
 
-    // Then test it — note: this will attempt a real fetch in test,
-    // but we accept the test may fail on network; the key contract is the response message
-    const testCtx = createCtx('webhook test');
-    const result = await handler.execute(testCtx);
-
-    expect(result.handled).toBe(true);
-    // Either success or failure message, both are valid test results
-    expect(testCtx.say).toHaveBeenCalled();
+      expect(result.handled).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [calledUrl, init] = fetchMock.mock.calls[0];
+      expect(calledUrl).toBe(url);
+      expect(init).toMatchObject({ method: 'POST', redirect: 'error' });
+      expect(JSON.parse(init.body)).toMatchObject({ event: 'turn_completed', userId: 'U123' });
+      expect(testCtx.say).toHaveBeenCalledWith({
+        text: '✅ 테스트 웹훅 발송 성공 (HTTP 204)',
+        thread_ts: '123.456',
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('test fails when no URL registered', async () => {
@@ -92,15 +102,5 @@ describe('WebhookHandler', () => {
 
     const settings = userSettingsStore.getUserSettings('U123');
     expect(settings?.notification?.webhookUrl).toBe('https://example.com/hook');
-  });
-
-  it('register URL maps to settings.notification.webhookUrl', async () => {
-    const handler = new WebhookHandler();
-    const url = 'https://my-server.com/webhook';
-    const ctx = createCtx(`webhook register ${url}`);
-    await handler.execute(ctx);
-
-    const settings = userSettingsStore.getUserSettings('U123');
-    expect(settings?.notification?.webhookUrl).toBe(url);
   });
 });

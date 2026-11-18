@@ -36,48 +36,38 @@ describe('TodoDisplayManager', () => {
     manager = new TodoDisplayManager(slackApi as any, todoManager as any, reactionManager as any);
   });
 
-  it('handleTodoUpdate uses slackApi.updateMessage for existing todo message', async () => {
-    const say = vi.fn().mockResolvedValue({ ts: '999.888' });
-    (manager as any).todoMessages.set('session-1', '111.222');
-
-    await manager.handleTodoUpdate(
-      {
-        todos: [{ id: 'todo-1', content: 'Do it', status: 'in_progress', priority: 'high' }],
-      },
+  const update = (status: 'pending' | 'in_progress' | 'completed', say: ReturnType<typeof vi.fn>) =>
+    manager.handleTodoUpdate(
+      { todos: [{ id: 'todo-1', content: 'Do it', status, priority: 'high' }] },
       'session-1',
       'session-id',
       'C123',
       '999.888',
-      say,
+      say as any,
       0,
     );
 
+  it('the first todo update posts the list; the next edits that message instead of posting again', async () => {
+    const say = vi.fn().mockResolvedValue({ ts: '111.222' });
+
+    await update('pending', say);
+    expect(say).toHaveBeenCalledWith({ text: 'todo list', thread_ts: '999.888' });
+
+    await update('in_progress', say);
     expect(slackApi.updateMessage).toHaveBeenCalledWith('C123', '111.222', 'todo list');
-    expect(say).not.toHaveBeenCalled();
+    expect(say).toHaveBeenCalledTimes(1);
   });
 
-  it('handleTodoUpdate falls back to say when slackApi.updateMessage fails', async () => {
-    const say = vi.fn().mockResolvedValue({ ts: '222.333' });
+  it('an edit that fails falls back to posting the list again', async () => {
+    const say = vi.fn().mockResolvedValueOnce({ ts: '111.222' }).mockResolvedValueOnce({ ts: '222.333' });
     slackApi.updateMessage.mockRejectedValue(new Error('ratelimited'));
-    (manager as any).todoMessages.set('session-1', '111.222');
 
-    await manager.handleTodoUpdate(
-      {
-        todos: [{ id: 'todo-1', content: 'Do it', status: 'completed', priority: 'high' }],
-      },
-      'session-1',
-      'session-id',
-      'C123',
-      '999.888',
-      say,
-      0,
-    );
+    await update('pending', say);
+    await update('completed', say);
 
     expect(slackApi.updateMessage).toHaveBeenCalledWith('C123', '111.222', 'todo list');
-    expect(say).toHaveBeenCalledWith({
-      text: 'todo list',
-      thread_ts: '999.888',
-    });
+    expect(say).toHaveBeenCalledTimes(2);
+    expect(say).toHaveBeenLastCalledWith({ text: 'todo list', thread_ts: '999.888' });
   });
 });
 

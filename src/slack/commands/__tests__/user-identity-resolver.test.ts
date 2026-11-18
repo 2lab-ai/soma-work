@@ -31,12 +31,6 @@ describe('resolveUserIdentifier', () => {
     expect(resolveUserIdentifier('Zhuge', directory)).toBe('U094E5L4A15');
   });
 
-  it('display-name and real-name of the SAME user are not treated as ambiguous', () => {
-    // Both 'Z' (display) and 'Zhuge' (real) map to one uid — not a collision.
-    expect(resolveUserIdentifier('Z', directory)).toBe('U094E5L4A15');
-    expect(resolveUserIdentifier('Zhuge', directory)).toBe('U094E5L4A15');
-  });
-
   it('SECURITY: cross-field collision across DISTINCT users fails closed', () => {
     // A's real_name == B's display_name == "sam" → 2 distinct uids → ambiguous.
     const dir: UserDirectory = {

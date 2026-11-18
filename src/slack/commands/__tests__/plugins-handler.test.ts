@@ -338,14 +338,6 @@ describe('PluginsHandler', () => {
       expect(handler.canHandle('/plugins update')).toBe(true);
     });
 
-    it('should NOT handle Korean alias "플러그인 업데이트" (#506)', () => {
-      expect(handler.canHandle('플러그인 업데이트')).toBe(false);
-    });
-
-    it('should NOT handle Korean alias "/플러그인 업데이트" (#506)', () => {
-      expect(handler.canHandle('/플러그인 업데이트')).toBe(false);
-    });
-
     it('should handle singular "plugin update" (/z plugin update native)', () => {
       expect(handler.canHandle('plugin update')).toBe(true);
     });

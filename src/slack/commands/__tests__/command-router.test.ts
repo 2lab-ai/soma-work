@@ -439,11 +439,11 @@ describe('CommandRouter — effort/rate regression guard (already canonical)', (
 });
 
 /**
- * Issue #530: retired / non-canonical bare forms must fall through as
- * `handled: false` — NO tombstone hint ("더 이상 사용되지 않습니다") is ever
- * emitted from the router.
+ * Issue #530: a bare word that only resembles a command (not the canonical
+ * form a handler accepts) is not swallowed by the router — it falls through as
+ * `handled: false` with no reply, so the message reaches the model.
  */
-describe('CommandRouter — non-canonical bare input falls through (no tombstone #530)', () => {
+describe('CommandRouter — non-canonical bare input falls through to the model (#530)', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
   });
@@ -462,37 +462,13 @@ describe('CommandRouter — non-canonical bare input falls through (no tombstone
 
     const result = await router.route(ctx);
 
-    // 1. Handled must be false (no tombstone short-circuit).
     expect(result.handled).toBe(false);
-    // 2. `say` must NOT emit the tombstone hint text.
-    for (const call of say.mock.calls) {
-      const payload = call[0] as { text?: string };
-      expect(payload?.text ?? '').not.toContain('더 이상 사용되지 않습니다');
-    }
+    expect(say).not.toHaveBeenCalled();
+    expect(deps.slackApi.postSystemMessage).not.toHaveBeenCalled();
   }
-
-  it('bare "commands" (retired) falls through', async () => {
-    await assertFallsThrough('commands');
-  });
 
   it('bare "prompt" (non-canonical) falls through', async () => {
     await assertFallsThrough('prompt');
-  });
-
-  it('bare "플러그인 업데이트" (Korean retired alias) falls through', async () => {
-    await assertFallsThrough('플러그인 업데이트');
-  });
-
-  it('bare "nextcct" (retired) falls through', async () => {
-    await assertFallsThrough('nextcct');
-  });
-
-  it('bare "servers" (retired) falls through', async () => {
-    await assertFallsThrough('servers');
-  });
-
-  it('bare "credentials" (retired) falls through', async () => {
-    await assertFallsThrough('credentials');
   });
 
   it('bare "persona clear" (not parser-supported) falls through', async () => {

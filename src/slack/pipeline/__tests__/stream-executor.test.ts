@@ -113,228 +113,8 @@ vi.mock('../../../token-manager', () => ({
 }));
 
 import { getVerbosityFlags, LOG_DETAIL, LOG_MINIMAL, OutputFlag } from '@soma/slack/output-flags';
-import type { Continuation } from '../../../types';
 import { userSettingsStore } from '../../../user-settings-store';
-import { type ExecuteResult, StreamExecutor } from '../stream-executor';
-
-describe('Continuation type', () => {
-  it('should have correct shape with prompt and resetSession', () => {
-    const continuation: Continuation = {
-      prompt: 'Use load skill with this saved context',
-      resetSession: true,
-    };
-
-    expect(continuation.prompt).toBe('Use load skill with this saved context');
-    expect(continuation.resetSession).toBe(true);
-  });
-
-  it('should allow resetSession to be optional', () => {
-    const continuation: Continuation = {
-      prompt: 'next prompt',
-    };
-
-    expect(continuation.prompt).toBe('next prompt');
-    expect(continuation.resetSession).toBeUndefined();
-  });
-
-  it('should allow resetSession to be false', () => {
-    const continuation: Continuation = {
-      prompt: 'next prompt',
-      resetSession: false,
-    };
-
-    expect(continuation.resetSession).toBe(false);
-  });
-});
-
-describe('ExecuteResult type', () => {
-  it('should have success and messageCount', () => {
-    const result: ExecuteResult = {
-      success: true,
-      messageCount: 5,
-    };
-
-    expect(result.success).toBe(true);
-    expect(result.messageCount).toBe(5);
-    expect(result.continuation).toBeUndefined();
-  });
-
-  it('should allow continuation to be defined', () => {
-    const result: ExecuteResult = {
-      success: true,
-      messageCount: 3,
-      continuation: {
-        prompt: 'load prompt',
-        resetSession: true,
-      },
-    };
-
-    expect(result.success).toBe(true);
-    expect(result.continuation).toBeDefined();
-    expect(result.continuation?.prompt).toBe('load prompt');
-    expect(result.continuation?.resetSession).toBe(true);
-  });
-
-  it('should represent failed execution', () => {
-    const result: ExecuteResult = {
-      success: false,
-      messageCount: 0,
-    };
-
-    expect(result.success).toBe(false);
-    expect(result.messageCount).toBe(0);
-  });
-});
-
-describe('Continuation pattern flow', () => {
-  /**
-   * This test documents the expected continuation loop behavior in handleMessage
-   */
-  it('should demonstrate continuation loop logic', () => {
-    // Simulated execute results for renew flow
-    const executeResults: ExecuteResult[] = [
-      // First call: save command completes with continuation
-      {
-        success: true,
-        messageCount: 2,
-        continuation: {
-          prompt: 'Use load skill with saved context...',
-          resetSession: true,
-        },
-      },
-      // Second call: load completes, no continuation
-      {
-        success: true,
-        messageCount: 1,
-        continuation: undefined,
-      },
-    ];
-
-    let resultIndex = 0;
-    let sessionResetCalled = false;
-    let lastPrompt: string | undefined;
-
-    // Simulate the continuation loop from handleMessage
-    const simulateLoop = (initialText: string) => {
-      let currentText: string | undefined = initialText;
-
-      while (true) {
-        const result = executeResults[resultIndex++];
-        lastPrompt = currentText;
-
-        if (!result.continuation) break;
-
-        if (result.continuation.resetSession) {
-          sessionResetCalled = true;
-        }
-
-        currentText = result.continuation.prompt;
-      }
-    };
-
-    // Run the simulated loop
-    simulateLoop('Use save skill');
-
-    // Verify the loop behaved correctly
-    expect(resultIndex).toBe(2); // Both executes were called
-    expect(sessionResetCalled).toBe(true); // Session was reset
-    expect(lastPrompt).toBe('Use load skill with saved context...'); // Last prompt was from continuation
-  });
-
-  it('should handle single execution without continuation', () => {
-    const executeResult: ExecuteResult = {
-      success: true,
-      messageCount: 1,
-      continuation: undefined,
-    };
-
-    let loopCount = 0;
-
-    // Simulate single-iteration loop
-    const simulateLoop = () => {
-      while (true) {
-        loopCount++;
-        if (!executeResult.continuation) break;
-      }
-    };
-
-    simulateLoop();
-
-    expect(loopCount).toBe(1); // Only one iteration
-  });
-
-  it('should handle failed save without continuation', () => {
-    // When save fails, no continuation should be returned
-    const result: ExecuteResult = {
-      success: true, // Stream itself succeeded
-      messageCount: 1,
-      continuation: undefined, // But no continuation because save failed
-    };
-
-    expect(result.success).toBe(true);
-    expect(result.continuation).toBeUndefined();
-  });
-});
-
-describe('buildRenewContinuation result format', () => {
-  /**
-   * Documents the expected format of the continuation from buildRenewContinuation
-   */
-  it('should produce correct load prompt format', () => {
-    // Simulated save result
-    const saveResult = {
-      success: true,
-      id: 'save_20260128_123456',
-      dir: '/saves/2026-01',
-      summary: 'PR review discussion',
-      files: [
-        { name: 'context.md', content: '# Context\n## Summary\nDiscussion about PR review' },
-        { name: 'todos.md', content: '# TODOs\n- Review changes' },
-      ],
-    };
-
-    // Build expected prompt (matching buildRenewContinuation logic)
-    const saveContent = saveResult.files
-      .map((file) => {
-        return `--- ${file.name} ---\n${file.content}`;
-      })
-      .join('\n\n');
-
-    const expectedPrompt = `Use 'local:load' skill with this saved context:
-<save>
-${saveContent}
-</save>
-
-Continue with that context. If unsure what to do next, call 'oracle' agent for guidance.`;
-
-    // Verify format
-    expect(expectedPrompt).toContain('--- context.md ---');
-    expect(expectedPrompt).toContain('--- todos.md ---');
-    expect(expectedPrompt).toContain('<save>');
-    expect(expectedPrompt).toContain('</save>');
-    expect(expectedPrompt).toContain("Use 'local:load' skill");
-  });
-
-  it('should create continuation with resetSession true', () => {
-    const continuation: Continuation = {
-      prompt: 'load prompt here',
-      resetSession: true,
-    };
-
-    // This is the key property - resetSession must be true for renew flow
-    expect(continuation.resetSession).toBe(true);
-  });
-
-  it('should allow forceWorkflow to be defined on continuation', () => {
-    const continuation: Continuation = {
-      prompt: 'new https://github.com/acme/repo/pull/1',
-      resetSession: true,
-      forceWorkflow: 'pr-review',
-    };
-
-    expect(continuation.forceWorkflow).toBe('pr-review');
-  });
-});
+import { StreamExecutor } from '../stream-executor';
 
 describe('updateToolCallMessage', () => {
   it('uses slackApi.updateMessage', async () => {
@@ -3755,183 +3535,172 @@ describe('onSummaryTimerFire — render trigger after summary display', () => {
     expect(mockThreadPanel.updatePanel).not.toHaveBeenCalled();
   });
 
-  it('aborted fork skips display and cleans up controller from map', async () => {
-    const mockSummaryService = {
-      execute: vi.fn().mockResolvedValue(null), // aborted execute returns null
-      displayOnThread: vi.fn(),
-      clearDisplay: vi.fn(),
-    };
+  it('C-6: a summary fork that never answers is aborted after 60s (summary-timeout) and shows nothing', async () => {
+    vi.useFakeTimers();
+    try {
+      let signal: AbortSignal | undefined;
+      const mockSummaryService = {
+        execute: vi.fn((_s: unknown, sig: AbortSignal) => {
+          signal = sig;
+          return new Promise<string | null>(() => {});
+        }),
+        displayOnThread: vi.fn(),
+        clearDisplay: vi.fn(),
+      };
+      const mockThreadPanel = { updatePanel: vi.fn().mockResolvedValue(undefined) };
+      const executor = new StreamExecutor({ summaryService: mockSummaryService, threadPanel: mockThreadPanel } as any);
 
-    const executor = new StreamExecutor({
-      summaryService: mockSummaryService,
-    } as any);
+      const fire = (executor as any).onSummaryTimerFire({ isActive: true, actionPanel: {} }, 'C123:t456');
+      await vi.advanceTimersByTimeAsync(59_000);
+      expect(signal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(fire).resolves.toBeUndefined();
 
-    const session = { isActive: true, actionPanel: {} } as any;
-    const sessionKey = 'C123:t456';
-
-    await (executor as any).onSummaryTimerFire(session, sessionKey);
-
-    // Controller should be cleaned up after completion
-    expect((executor as any).summaryAbortControllers.has(sessionKey)).toBe(false);
-    expect(mockSummaryService.displayOnThread).not.toHaveBeenCalled();
+      expect(signal?.aborted).toBe(true);
+      expect(signal?.reason).toBe('summary-timeout');
+      expect(mockSummaryService.displayOnThread).not.toHaveBeenCalled();
+      expect(mockThreadPanel.updatePanel).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it('CAS: slow summary A does not delete faster summary B controller', async () => {
-    let resolveA: (v: string | null) => void;
-    const promiseA = new Promise<string | null>((r) => {
-      resolveA = r;
-    });
-
+  it('CAS: a slow summary A finishing late does not unhook the newer summary B (cleanup still aborts B)', async () => {
+    let resolveA!: (v: string | null) => void;
+    const signals: AbortSignal[] = [];
     const mockSummaryService = {
       execute: vi
         .fn()
-        .mockReturnValueOnce(promiseA) // first call: slow summary A
-        .mockResolvedValueOnce('Summary B text'), // second call: fast summary B
+        .mockImplementationOnce((_s: unknown, sig: AbortSignal) => {
+          signals.push(sig);
+          return new Promise<string | null>((r) => {
+            resolveA = r;
+          });
+        })
+        .mockImplementationOnce((_s: unknown, sig: AbortSignal) => {
+          signals.push(sig);
+          return new Promise<string | null>((_r, reject) => {
+            sig.addEventListener('abort', () => reject(new Error('aborted')));
+          });
+        }),
       displayOnThread: vi.fn(),
       clearDisplay: vi.fn(),
     };
-    const mockThreadPanel = { updatePanel: vi.fn().mockResolvedValue(undefined) };
-
     const executor = new StreamExecutor({
       summaryService: mockSummaryService,
-      threadPanel: mockThreadPanel,
+      requestCoordinator: { removeController: vi.fn() },
+      toolEventProcessor: { cleanup: vi.fn() },
+      toolTracker: { scheduleCleanup: vi.fn() },
     } as any);
-
     const session = { isActive: true, actionPanel: {} } as any;
     const sessionKey = 'C123:t456';
 
-    // Fire A (will hang on promiseA)
     const fireA = (executor as any).onSummaryTimerFire(session, sessionKey);
-
-    // Fire B immediately (overwrites controller in map)
     const fireB = (executor as any).onSummaryTimerFire(session, sessionKey);
-    await fireB; // B completes first
-
-    // Now resolve A
-    resolveA!(null);
+    await Promise.resolve();
+    resolveA(null); // A ends after B started
     await fireA;
 
-    // Key assertion: A's completion should NOT have deleted B's controller
-    // Since B already completed and cleaned up its own controller, map should be empty
-    expect((executor as any).summaryAbortControllers.has(sessionKey)).toBe(false);
+    await (executor as any).cleanup(session, sessionKey);
+    await fireB;
+
+    expect(signals[0].aborted).toBe(false);
+    expect(signals[1].aborted).toBe(true);
+    expect(signals[1].reason).toBe('summary-cleanup');
+    expect(mockSummaryService.displayOnThread).not.toHaveBeenCalled();
   });
 });
 
 describe('StreamExecutor — summary abort on new input and cleanup', () => {
-  it('new user input aborts in-flight summary controller', () => {
-    const executor = new StreamExecutor({} as any);
-    const sessionKey = 'C123:t456';
-
-    // Simulate an in-flight summary by directly setting a controller
-    const ac = new AbortController();
-    (executor as any).summaryAbortControllers.set(sessionKey, ac);
-
-    expect(ac.signal.aborted).toBe(false);
-
-    // Simulate what the new-input path does
-    const pending = (executor as any).summaryAbortControllers.get(sessionKey);
-    if (pending) {
-      pending.abort();
-      (executor as any).summaryAbortControllers.delete(sessionKey);
-    }
-
-    expect(ac.signal.aborted).toBe(true);
-    expect((executor as any).summaryAbortControllers.has(sessionKey)).toBe(false);
+  afterEach(() => {
+    vi.clearAllMocks();
   });
 
-  it('cleanup aborts in-flight summary controller', () => {
+  /** A summary fork that runs until it is aborted; records the signal it was handed. */
+  function hangingSummaryService() {
+    const signals: AbortSignal[] = [];
+    const service = {
+      execute: vi.fn((_s: unknown, sig: AbortSignal) => {
+        signals.push(sig);
+        return new Promise<string | null>((_r, reject) => {
+          sig.addEventListener('abort', () => reject(new Error('aborted')));
+        });
+      }),
+      displayOnThread: vi.fn(),
+      clearDisplay: vi.fn(),
+    };
+    return { signals, service };
+  }
+
+  it('new user input aborts the in-flight summary and clears the shown one', async () => {
+    // The turn stops at the email gate — after the summary abort it pins.
+    vi.mocked(userSettingsStore.getUserEmail).mockReturnValue('');
+    const { signals, service } = hangingSummaryService();
     const executor = new StreamExecutor({
+      claudeHandler: { setActivityState: vi.fn(), clearSessionId: vi.fn() },
+      fileHandler: { formatFilePrompt: vi.fn().mockResolvedValue(''), cleanupTempFiles: vi.fn() },
+      toolEventProcessor: { cleanup: vi.fn() },
+      statusReporter: { getStatusEmoji: vi.fn().mockReturnValue('thinking_face') },
+      reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined), cleanup: vi.fn() },
+      contextWindowManager: { cleanup: vi.fn() },
+      toolTracker: { scheduleCleanup: vi.fn() },
+      todoDisplayManager: { cleanupSession: vi.fn(), cleanup: vi.fn() },
+      actionHandlers: {},
+      requestCoordinator: { removeController: vi.fn() },
+      slackApi: {
+        getUserProfile: vi.fn().mockResolvedValue({ email: '', displayName: '' }),
+        getClient: vi.fn().mockReturnValue({}),
+        deleteMessage: vi.fn().mockResolvedValue(undefined),
+      },
+      assistantStatusManager: {
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        clearStatus: vi.fn().mockResolvedValue(undefined),
+        bumpEpoch: vi.fn().mockReturnValue(1),
+      },
+      summaryService: service,
+    } as any);
+    const session: any = { sessionId: 'sess_1', ownerId: 'U_TEST', logVerbosity: LOG_DETAIL, usage: {} };
+
+    const fire = (executor as any).onSummaryTimerFire(session, 'C123:thread123');
+    await executor.execute({
+      session,
+      sessionKey: 'C123:thread123',
+      userName: 'testuser',
+      workingDirectory: '/tmp/test',
+      abortController: new AbortController(),
+      processedFiles: [],
+      text: 'hello',
+      channel: 'C123',
+      threadTs: 'thread123',
+      user: 'U_TEST',
+      say: vi.fn().mockResolvedValue({ ts: 'msg_ts' }),
+    } as any);
+    await fire;
+
+    expect(signals).toHaveLength(1);
+    expect(signals[0].aborted).toBe(true);
+    expect(signals[0].reason).toBe('summary-superseded');
+    expect(service.clearDisplay).toHaveBeenCalledWith(session);
+    expect(service.displayOnThread).not.toHaveBeenCalled();
+  });
+
+  it('turn cleanup aborts the in-flight summary', async () => {
+    const { signals, service } = hangingSummaryService();
+    const executor = new StreamExecutor({
+      summaryService: service,
       requestCoordinator: { removeController: vi.fn() },
       toolEventProcessor: { cleanup: vi.fn() },
+      toolTracker: { scheduleCleanup: vi.fn() },
     } as any);
-    const sessionKey = 'C123:t456';
+    const session = { isActive: true, actionPanel: {} } as any;
 
-    const ac = new AbortController();
-    (executor as any).summaryAbortControllers.set(sessionKey, ac);
+    const fire = (executor as any).onSummaryTimerFire(session, 'C123:t456');
+    await (executor as any).cleanup(session, 'C123:t456');
+    await fire;
 
-    // The cleanup method reads the map and aborts
-    const pending = (executor as any).summaryAbortControllers.get(sessionKey);
-    if (pending) {
-      pending.abort();
-      (executor as any).summaryAbortControllers.delete(sessionKey);
-    }
-
-    expect(ac.signal.aborted).toBe(true);
-    expect((executor as any).summaryAbortControllers.has(sessionKey)).toBe(false);
-  });
-});
-
-// === Issue #391: Continuation loop should not transition to idle ===
-
-describe('Issue #391: Continuation idle transition skip', () => {
-  it('should not transition to idle when continuation exists', () => {
-    // This test documents the expected behavior:
-    // When a toolContinuation is set, the activity state should NOT be changed
-    // to idle between turns — it should remain 'working' throughout the continuation loop.
-
-    type ActivityTransition = { state: string; reason: string };
-    const transitions: ActivityTransition[] = [];
-
-    // Simulate the state transition logic from stream-executor.ts line 768
-    const simulateEndOfTurn = (hasPendingChoice: boolean, hasContinuation: boolean) => {
-      if (!hasContinuation) {
-        const newState = hasPendingChoice ? 'waiting' : 'idle';
-        transitions.push({ state: newState, reason: hasPendingChoice ? 'pending_choice' : 'turn_complete' });
-      }
-      // If hasContinuation, no state transition — stays 'working'
-    };
-
-    // Turn 1: has continuation → no idle transition
-    simulateEndOfTurn(false, true);
-    expect(transitions).toHaveLength(0); // No transition recorded
-
-    // Turn 2: no continuation → transitions to idle
-    simulateEndOfTurn(false, false);
-    expect(transitions).toHaveLength(1);
-    expect(transitions[0].state).toBe('idle');
-
-    // Verify: with pending choice and no continuation → waiting
-    transitions.length = 0;
-    simulateEndOfTurn(true, false);
-    expect(transitions).toHaveLength(1);
-    expect(transitions[0].state).toBe('waiting');
-
-    // Verify: with pending choice AND continuation → continuation wins, no transition
-    transitions.length = 0;
-    simulateEndOfTurn(true, true);
-    expect(transitions).toHaveLength(0);
-  });
-
-  it('should demonstrate no dashboard flicker during continuation loop', () => {
-    // Simulate a 3-turn continuation loop and track activity states
-    const activityStates: string[] = ['working']; // Initial state from line 324
-
-    const simulateTurnEnd = (hasContinuation: boolean) => {
-      if (!hasContinuation) {
-        activityStates.push('idle');
-      }
-      // With continuation: no state change, 'working' persists
-    };
-
-    const simulateTurnStart = () => {
-      // stream-executor.ts:324 — only if state changed
-      if (activityStates[activityStates.length - 1] !== 'working') {
-        activityStates.push('working');
-      }
-    };
-
-    // Turn 1: has continuation
-    simulateTurnEnd(true);
-    simulateTurnStart(); // No-op since still 'working'
-    // Turn 2: has continuation
-    simulateTurnEnd(true);
-    simulateTurnStart(); // No-op since still 'working'
-    // Turn 3: no continuation (final)
-    simulateTurnEnd(false);
-
-    // Expected: working → idle (only at the very end)
-    // No intermediate idle states that would cause dashboard flicker
-    expect(activityStates).toEqual(['working', 'idle']);
+    expect(signals[0].aborted).toBe(true);
+    expect(signals[0].reason).toBe('summary-cleanup');
+    expect(service.displayOnThread).not.toHaveBeenCalled();
   });
 });
 
@@ -5332,6 +5101,132 @@ describe('stream-executor — epoch guard wiring (issue #688)', () => {
     expect(result.success).toBe(true);
     expect(result.continuation).toBeUndefined();
   });
+
+  // Turn-end surface guarantee (exhaustive-paths.md §B-1/§B-6/§C-3/§C-5) on the real execute() path:
+  // a hung Slack/file dependency is bounded, a renew failure ends in one truthful card, and a session
+  // closed mid-stream stops the turn with a tagged reason (never an untagged, silent abort).
+  describe('turn-end surface guarantee (execute e2e)', () => {
+    it('C-3: a threadPanel.beginTurn that never settles holds the turn for 5s at most, then the query runs', async () => {
+      vi.useFakeTimers();
+      try {
+        const deps = createDeps(() => toolFlowStream('Read'));
+        deps.threadPanel.beginTurn.mockImplementation(() => new Promise(() => {}));
+        const executor = new StreamExecutor(deps);
+        const done = executor.execute(createParams(vi.fn().mockResolvedValue({ ts: 'msg_ts' })));
+
+        await vi.advanceTimersByTimeAsync(4_900);
+        expect(deps.claudeHandler.streamAgentEvents).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(200);
+        const result = await done;
+
+        expect(deps.claudeHandler.streamAgentEvents).toHaveBeenCalledTimes(1);
+        expect(result.success).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('C-5: a temp-file cleanup that never settles cannot block the terminal card — endTurn first, then a 3s bound', async () => {
+      vi.useFakeTimers();
+      try {
+        const deps = createDeps(() => toolFlowStream('Read'));
+        deps.fileHandler.cleanupTempFiles.mockImplementation(() => new Promise(() => {}));
+        const executor = new StreamExecutor(deps);
+        let settled = false;
+        const done = executor
+          .execute({
+            ...createParams(vi.fn().mockResolvedValue({ ts: 'msg_ts' })),
+            processedFiles: [{ path: '/tmp/test/a.png', name: 'a.png', mimetype: 'image/png' }],
+          })
+          .finally(() => {
+            settled = true;
+          });
+
+        await vi.advanceTimersByTimeAsync(2_900);
+        expect(deps.fileHandler.cleanupTempFiles).toHaveBeenCalledTimes(1);
+        expect(deps.threadPanel.endTurn).toHaveBeenCalledWith(expect.any(String), 'completed');
+        expect(deps.threadPanel.endTurn.mock.invocationCallOrder[0]).toBeLessThan(
+          deps.fileHandler.cleanupTempFiles.mock.invocationCallOrder[0],
+        );
+        expect(settled).toBe(false);
+
+        await vi.advanceTimersByTimeAsync(200);
+        expect((await done).success).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('B-6: a failed renew ends the turn with one Exception card ("Renew 작업이 실패했습니다."), never WorkflowComplete', async () => {
+      const deps = createDeps(() => toolFlowStream('Read'));
+      deps.turnNotifier = { notify: vi.fn().mockResolvedValue(undefined) };
+      deps.threadPanel.isCompletionMarkerActive = vi.fn().mockReturnValue(false);
+      const executor = new StreamExecutor(deps);
+      const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+      const params = createParams(say);
+      params.session.renewState = 'pending_save'; // the turn produced no save_result → renew fails
+
+      await executor.execute(params);
+      await new Promise((r) => setTimeout(r, 0));
+
+      const categories = deps.turnNotifier.notify.mock.calls.map((c: any[]) => c[0].category);
+      expect(categories).toEqual(['Exception']);
+      expect(deps.turnNotifier.notify.mock.calls[0][0].message).toBe('Renew 작업이 실패했습니다.');
+      expect(say).toHaveBeenCalledWith(
+        expect.objectContaining({ text: expect.stringContaining('Renew cancelled'), thread_ts: 'thread42' }),
+      );
+    });
+
+    it('B-1: a session closed before the tool call stops the turn with the ghost-session reason', async () => {
+      const deps = createDeps(() => toolFlowStream('Read'));
+      const executor = new StreamExecutor(deps);
+      const params = createParams(vi.fn().mockResolvedValue({ ts: 'msg_ts' }));
+      deps.claudeHandler.streamAgentEvents.mockImplementation(() =>
+        toAgentEvents(
+          (async function* () {
+            params.session.terminated = true; // closed while the model streams
+            yield* toolFlowStream('Read');
+          })(),
+        ),
+      );
+
+      await executor.execute(params).catch(() => undefined);
+
+      expect(params.abortController.signal.aborted).toBe(true);
+      expect(params.abortController.signal.reason).toBe('ghost-session');
+      expect(deps.toolEventProcessor.handleToolUse).not.toHaveBeenCalled();
+    });
+
+    it('B-1: a session closed between the tool call and its result stops the turn with the ghost-session reason', async () => {
+      const deps = createDeps(() => toolFlowStream('Read'));
+      const params = createParams(vi.fn().mockResolvedValue({ ts: 'msg_ts' }));
+      deps.toolEventProcessor.handleToolUse.mockImplementation(async () => {
+        params.session.terminated = true;
+      });
+      const executor = new StreamExecutor(deps);
+
+      await executor.execute(params).catch(() => undefined);
+
+      expect(params.abortController.signal.aborted).toBe(true);
+      expect(params.abortController.signal.reason).toBe('ghost-session');
+      expect(deps.toolEventProcessor.handleToolResult).not.toHaveBeenCalled();
+    });
+
+    it('B-1: a session closed during the tool-call status write stops the turn with the ghost-session reason', async () => {
+      const deps = createDeps(() => toolFlowStream('Read'));
+      const params = createParams(vi.fn().mockResolvedValue({ ts: 'msg_ts' }));
+      deps.threadPanel.setStatus.mockImplementation(async (_s: unknown, _k: string, patch: { agentPhase?: string }) => {
+        if (patch?.agentPhase === '도구 실행 중') params.session.terminated = true;
+      });
+      const executor = new StreamExecutor(deps);
+
+      await executor.execute(params).catch(() => undefined);
+
+      expect(params.abortController.signal.aborted).toBe(true);
+      expect(params.abortController.signal.reason).toBe('ghost-session');
+      expect(deps.toolEventProcessor.handleToolUse).not.toHaveBeenCalled();
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -5487,247 +5382,6 @@ describe('StreamExecutor — P5 B5 race (issue #720)', () => {
     });
     return { buildCompletionEvent: () => snapshotPromise, resolveSnapshot };
   }
-
-  it('#720 (a) closeStream resolves BEFORE snapshot → TurnSurface.end awaits → B5 posts exactly once when enrichment lands', async () => {
-    // Dynamic import so the test file doesn't pull in TurnSurface at top
-    // level (the rest of the suite is stream-executor-only). Matches the
-    // lazy-import pattern used elsewhere for surface-adjacent tests.
-    const { TurnSurface } = await import('../../turn-surface');
-    type TurnCompletionEventT = import('../../../turn-notifier').TurnCompletionEvent;
-
-    const { buildCompletionEvent, resolveSnapshot } = createSnapshot<TurnCompletionEventT>();
-
-    const client: any = {
-      chat: {
-        startStream: vi.fn().mockResolvedValue({ ts: 's1' }),
-        appendStream: vi.fn().mockResolvedValue(undefined),
-        stopStream: vi.fn().mockResolvedValue(undefined),
-        postMessage: vi.fn().mockResolvedValue({ ts: 'p1' }),
-        update: vi.fn().mockResolvedValue(undefined),
-      },
-    };
-    const blockKit = { send: vi.fn().mockResolvedValue(undefined) };
-    const surface = new TurnSurface({
-      slackApi: { getClient: () => client } as any,
-      slackBlockKitChannel: blockKit as any,
-      isCompletionMarkerActive: () => true,
-    } as any);
-
-    const ctx = {
-      channelId: 'C1',
-      threadTs: 't1.0',
-      sessionKey: 'C1:t1.0',
-      turnId: 'C1:t1.0:720-a',
-      buildCompletionEvent,
-    };
-    await surface.begin(ctx as any);
-
-    // end() proceeds through closeStream + clearStatus, then parks at the
-    // snapshot await. The snapshot is still pending.
-    let endSettled = false;
-    const endPromise = surface.end(ctx.turnId, 'completed').finally(() => {
-      endSettled = true;
-    });
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    // Lock-in: end() MUST still be pending — proves the await is real.
-    // A sync-read regression (e.g., `evt = state.ctx.buildCompletionEvent()
-    // as TurnCompletionEvent`) would have let end() resolve by now.
-    expect(endSettled).toBe(false);
-    expect(blockKit.send).not.toHaveBeenCalled();
-
-    // Enrichment lands LATE — matches the PR #711 timing where
-    // fetchAndStoreUsage finishes after stopStream.
-    const evt: TurnCompletionEventT = {
-      category: 'WorkflowComplete',
-      userId: 'U1',
-      channel: 'C1',
-      threadTs: 't1.0',
-      sessionTitle: 'S',
-      durationMs: 100,
-    };
-    resolveSnapshot(evt);
-
-    await endPromise;
-    expect(endSettled).toBe(true);
-    expect(blockKit.send).toHaveBeenCalledTimes(1);
-    expect(blockKit.send).toHaveBeenCalledWith(evt);
-  });
-
-  it('#720 (b) enrichAndResolve rejects → resolver(undefined) → B5 not emitted', async () => {
-    const { TurnSurface } = await import('../../turn-surface');
-    type TurnCompletionEventT = import('../../../turn-notifier').TurnCompletionEvent;
-
-    const { buildCompletionEvent, resolveSnapshot } = createSnapshot<TurnCompletionEventT>();
-
-    const client: any = {
-      chat: {
-        startStream: vi.fn().mockResolvedValue({ ts: 's1' }),
-        appendStream: vi.fn().mockResolvedValue(undefined),
-        stopStream: vi.fn().mockResolvedValue(undefined),
-        postMessage: vi.fn().mockResolvedValue({ ts: 'p1' }),
-        update: vi.fn().mockResolvedValue(undefined),
-      },
-    };
-    const blockKit = { send: vi.fn().mockResolvedValue(undefined) };
-    const surface = new TurnSurface({
-      slackApi: { getClient: () => client } as any,
-      slackBlockKitChannel: blockKit as any,
-      isCompletionMarkerActive: () => true,
-    } as any);
-
-    const ctx = {
-      channelId: 'C1',
-      threadTs: 't1.0',
-      sessionKey: 'C1:t1.0',
-      turnId: 'C1:t1.0:720-b',
-      buildCompletionEvent,
-    };
-    await surface.begin(ctx as any);
-
-    // Simulate stream-executor's `.catch` rail: enrich rejects, the chain's
-    // catch handler calls `resolveSnapshot(undefined)`.
-    resolveSnapshot(undefined);
-
-    await surface.end(ctx.turnId, 'completed');
-
-    expect(blockKit.send).not.toHaveBeenCalled();
-  });
-
-  it('#720 (c) decoupling lock-in: turnNotifier undefined + capability active → enrich still resolves snapshot → B5 posts once', async () => {
-    // This test encodes the codex P1 decoupling requirement: event
-    // construction MUST NOT be gated on `if (this.deps.turnNotifier)`. A
-    // capability-active run without a turnNotifier (harness / tests /
-    // misconfigured DI) must still produce a snapshot so TurnSurface emits
-    // B5. We simulate stream-executor's post-stream chain inline — the
-    // exact production control flow minus execute()'s 3000-line setup.
-    const { TurnSurface } = await import('../../turn-surface');
-    type TurnCompletionEventT = import('../../../turn-notifier').TurnCompletionEvent;
-
-    const { buildCompletionEvent, resolveSnapshot } = createSnapshot<TurnCompletionEventT>();
-
-    // Cast to a union type so TS keeps `notify` visible inside the truthy
-    // branch even though the runtime value is always `undefined` — the
-    // whole point of this test is "what happens when turnNotifier is absent
-    // but the chain still has to run."
-    type Notifier = { notify: (evt: TurnCompletionEventT) => void };
-    const turnNotifier: Notifier | undefined = undefined as Notifier | undefined;
-
-    // The event construction lives OUTSIDE the (absent) turnNotifier guard.
-    // If a future refactor re-couples construction to turnNotifier, this
-    // test fails because `resolveSnapshot` never fires.
-    const evt: TurnCompletionEventT = {
-      category: 'WorkflowComplete',
-      userId: 'U1',
-      channel: 'C1',
-      threadTs: 't1.0',
-      sessionTitle: 'S',
-      durationMs: 100,
-    };
-    const enrichAndResolve = async (): Promise<TurnCompletionEventT> => evt;
-
-    // Mirror the production chain in stream-executor.execute():
-    //   enrichAndResolve()
-    //     .then((e) => { resolveSnapshot(e); if (turnNotifier) notify(e) })
-    //     .catch(() => resolveSnapshot(undefined))
-    const chainP = enrichAndResolve()
-      .then((e) => {
-        resolveSnapshot(e);
-        if (turnNotifier) {
-          turnNotifier.notify(e);
-        }
-      })
-      .catch(() => resolveSnapshot(undefined));
-
-    const client: any = {
-      chat: {
-        startStream: vi.fn().mockResolvedValue({ ts: 's1' }),
-        appendStream: vi.fn().mockResolvedValue(undefined),
-        stopStream: vi.fn().mockResolvedValue(undefined),
-        postMessage: vi.fn().mockResolvedValue({ ts: 'p1' }),
-        update: vi.fn().mockResolvedValue(undefined),
-      },
-    };
-    const blockKit = { send: vi.fn().mockResolvedValue(undefined) };
-    const surface = new TurnSurface({
-      slackApi: { getClient: () => client } as any,
-      slackBlockKitChannel: blockKit as any,
-      isCompletionMarkerActive: () => true,
-    } as any);
-
-    const ctx = {
-      channelId: 'C1',
-      threadTs: 't1.0',
-      sessionKey: 'C1:t1.0',
-      turnId: 'C1:t1.0:720-c',
-      buildCompletionEvent,
-    };
-    await surface.begin(ctx as any);
-    await chainP;
-    await surface.end(ctx.turnId, 'completed');
-
-    // turnNotifier was undefined — no fan-out call.
-    // B5 still posted exactly once via the SlackBlockKitChannel path.
-    expect(blockKit.send).toHaveBeenCalledTimes(1);
-    expect(blockKit.send).toHaveBeenCalledWith(evt);
-  });
-
-  it('#720 (f) contract lock-in: resolveSnapshot called twice (evt, then undefined) — snapshot retains first value → B5 posts with evt', async () => {
-    // Guards against a future refactor that adds a `finally → resolveSnapshot
-    // (undefined)` safety-net (the codex P1-1 anti-pattern). ECMA Promise
-    // semantics silently drop the second resolve, but the SNAPSHOT is what
-    // matters: TurnSurface.end awaits the Promise and sees whatever the
-    // FIRST resolve produced. This test proves that invariant: once the
-    // .then rail resolves with the event, a subsequent .catch-rail
-    // `resolveSnapshot(undefined)` is a no-op and B5 still posts.
-    const { TurnSurface } = await import('../../turn-surface');
-    type TurnCompletionEventT = import('../../../turn-notifier').TurnCompletionEvent;
-
-    const { buildCompletionEvent, resolveSnapshot } = createSnapshot<TurnCompletionEventT>();
-
-    const evt: TurnCompletionEventT = {
-      category: 'WorkflowComplete',
-      userId: 'U1',
-      channel: 'C1',
-      threadTs: 't1.0',
-      sessionTitle: 'S',
-      durationMs: 100,
-    };
-
-    // First call wins — second is a no-op (Promise resolve is idempotent).
-    resolveSnapshot(evt);
-    resolveSnapshot(undefined);
-
-    const client: any = {
-      chat: {
-        startStream: vi.fn().mockResolvedValue({ ts: 's1' }),
-        appendStream: vi.fn().mockResolvedValue(undefined),
-        stopStream: vi.fn().mockResolvedValue(undefined),
-        postMessage: vi.fn().mockResolvedValue({ ts: 'p1' }),
-        update: vi.fn().mockResolvedValue(undefined),
-      },
-    };
-    const blockKit = { send: vi.fn().mockResolvedValue(undefined) };
-    const surface = new TurnSurface({
-      slackApi: { getClient: () => client } as any,
-      slackBlockKitChannel: blockKit as any,
-      isCompletionMarkerActive: () => true,
-    } as any);
-
-    const ctx = {
-      channelId: 'C1',
-      threadTs: 't1.0',
-      sessionKey: 'C1:t1.0',
-      turnId: 'C1:t1.0:720-f',
-      buildCompletionEvent,
-    };
-    await surface.begin(ctx as any);
-    await surface.end(ctx.turnId, 'completed');
-
-    expect(blockKit.send).toHaveBeenCalledTimes(1);
-    expect(blockKit.send).toHaveBeenCalledWith(evt);
-  });
 
   it('#720 (g) concurrent end() during snapshot await is idempotent (state.closing short-circuits second call)', async () => {
     // New 3s await window between "enter end()" and "return" widens the
@@ -5899,27 +5553,6 @@ describe('turn-end surface guarantee — P0 holes', () => {
     expect(event.message).toBe('세션이 종료되어 턴이 중단되었습니다.');
   });
 
-  it('B-1 source: both onToolUse and onToolResult self-aborts tag the reason', async () => {
-    // Source-level assertion — the two callback sites that previously called
-    // `abortController.abort()` untagged are the documented holes. Failing
-    // this test means a future regression silently drops a turn-end card
-    // when `session.terminated` is observed mid-stream.
-    const { readFile } = await import('node:fs/promises');
-    const path = await import('node:path');
-    // `__dirname` is the cjs-compatible seam — vitest supplies it whether the
-    // file resolves as ESM or CJS, and tsc's `module: commonjs` chokes on
-    // `import.meta.url` here.
-    const src = await readFile(
-      path.resolve(__dirname, '../../../../packages/slack/src/pipeline/stream-executor.ts'),
-      'utf8',
-    );
-
-    const matches = Array.from(src.matchAll(/abortController\.abort\('ghost-session'/g));
-    // Four sites: onToolUse and onToolResult each check before and again after
-    // their status-write awaits (a delete can land during the await).
-    expect(matches.length).toBe(4);
-  });
-
   // -------------------------------------------------------------------------
   // B-2: unknown-reason abort → defense-in-depth notify
   //
@@ -6037,115 +5670,45 @@ describe('turn-end surface guarantee — P0 holes', () => {
   });
 
   // -------------------------------------------------------------------------
-  // B-6: renew failure must surface as `category: 'Exception'`, not the
-  // misleading 🟢 `WorkflowComplete`. Pre-fix: the `.then(notify)` rail
-  // fired BEFORE buildRenewContinuation ran, so a renew failure produced
-  // 🟢 + a plain ⚠️ text reading half-finished. Post-fix: the renew
-  // outcome is settled BEFORE the category is computed; on failure the
-  // single terminal card is the Exception. Trace: exhaustive-paths.md §B-6.
-  //
-  // Source-level invariant test — the runtime path requires a full SDK
-  // mock that the rest of this suite avoids. The structural guarantee
-  // we depend on is: the `renewFailed` decision lives in the
-  // category-computation block, not downstream of `.then(notify)`.
+  // C-4: a hung user-facing error post must not block handleError's
+  // downstream lifecycle (temp-file cleanup, the retry decision it returns).
+  // Trace: exhaustive-paths.md §C-4. (C-3/C-5/B-1/B-6 run through execute()
+  // in `turn-end surface guarantee (execute e2e)`; C-6 in onSummaryTimerFire.)
   // -------------------------------------------------------------------------
 
-  it('B-6 source: renewFailed override sits BEFORE determineTurnCategory', async () => {
-    const { readFile } = await import('node:fs/promises');
-    const path = await import('node:path');
-    const src = await readFile(
-      path.resolve(__dirname, '../../../../packages/slack/src/pipeline/stream-executor.ts'),
-      'utf8',
-    );
+  it('C-4: an error-detail post that never settles holds handleError for 3s at most, then cleanup still runs', async () => {
+    vi.useFakeTimers();
+    try {
+      const deps = createExecutorDeps();
+      const executor = new StreamExecutor(deps);
+      const say = vi.fn(() => new Promise(() => {}));
+      let settled = false;
+      const done = (executor as any)
+        .handleError(
+          new Error('generic failure'),
+          { ownerId: 'U_OWNER' } as any,
+          'C123:thread123',
+          'C123',
+          'thread123',
+          [{ path: '/tmp/test/a.png', name: 'a.png' }],
+          say,
+        )
+        .finally(() => {
+          settled = true;
+        });
 
-    // The `renewFailed` flag must be declared before the category const.
-    const renewFailedIdx = src.indexOf('renewFailed = !renewContinuation');
-    const categoryIdx = src.indexOf("category: TurnCategory = renewFailed ? 'Exception'");
-    const determineIdx = src.indexOf('determineTurnCategory({');
+      await vi.advanceTimersByTimeAsync(2_900);
+      expect(say).toHaveBeenCalledTimes(1);
+      expect(settled).toBe(false);
+      expect(deps.fileHandler.cleanupTempFiles).not.toHaveBeenCalled();
 
-    expect(renewFailedIdx).toBeGreaterThan(0);
-    expect(categoryIdx).toBeGreaterThan(0);
-    expect(determineIdx).toBeGreaterThan(0);
-
-    // Renew settles first, then determineTurnCategory(...), then the
-    // override line assembles them. If a future refactor moves the
-    // renew block back below the notify rail, this test fails.
-    expect(renewFailedIdx).toBeLessThan(determineIdx);
-    expect(determineIdx).toBeLessThan(categoryIdx);
+      await vi.advanceTimersByTimeAsync(200);
+      await done;
+      expect(deps.fileHandler.cleanupTempFiles).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
-
-  // -------------------------------------------------------------------------
-  // C-3 / C-4 / C-6 — hang-path timeouts.
-  //
-  // Behavioral coverage for the runWithTimeout helper itself lives in
-  // src/slack/pipeline/__tests__/run-with-timeout.test.ts. Here we pin
-  // the source-level invariant that the executor wires runWithTimeout
-  // at the three audited hang sites — beginTurn, say(errorDetails), and
-  // summaryService.execute. A future refactor that drops one of these
-  // wrappers fails this test.
-  // -------------------------------------------------------------------------
-
-  it('C-3 source: threadPanel.beginTurn is wrapped in runWithTimeout (5s)', async () => {
-    const { readFile } = await import('node:fs/promises');
-    const path = await import('node:path');
-    const src = await readFile(
-      path.resolve(__dirname, '../../../../packages/slack/src/pipeline/stream-executor.ts'),
-      'utf8',
-    );
-
-    // The pre-fix shape was `await this.deps.threadPanel?.beginTurn(turnContext);` —
-    // that exact unwrapped pattern must NOT reappear.
-    expect(src).not.toMatch(/await\s+this\.deps\.threadPanel\?\.beginTurn\(turnContext\)\s*;/);
-
-    // The new shape calls runWithTimeout with the canonical label.
-    expect(src).toMatch(/what: 'threadPanel\.beginTurn'/);
-    expect(src).toMatch(/runWithTimeout\(/);
-  });
-
-  it('C-4 source: handleError say(errorDetails) is wrapped in runWithTimeout', async () => {
-    const { readFile } = await import('node:fs/promises');
-    const path = await import('node:path');
-    const src = await readFile(
-      path.resolve(__dirname, '../../../../packages/slack/src/pipeline/stream-executor.ts'),
-      'utf8',
-    );
-
-    expect(src).toMatch(/what: 'handleError say\(errorDetails\)'/);
-  });
-
-  it('C-6 source: summaryService.execute is wrapped in runWithTimeout with abort onTimeout', async () => {
-    const { readFile } = await import('node:fs/promises');
-    const path = await import('node:path');
-    const src = await readFile(
-      path.resolve(__dirname, '../../../../packages/slack/src/pipeline/stream-executor.ts'),
-      'utf8',
-    );
-
-    expect(src).toMatch(/what: 'summaryService\.execute'/);
-    // The onTimeout callback aborts the controller with the dedicated tag.
-    expect(src).toMatch(/abortController\.abort\('summary-timeout'\)/);
-  });
-
-  it('B-6 source: legacy renew block downstream of notify rail is removed', async () => {
-    const { readFile } = await import('node:fs/promises');
-    const path = await import('node:path');
-    const src = await readFile(
-      path.resolve(__dirname, '../../../../packages/slack/src/pipeline/stream-executor.ts'),
-      'utf8',
-    );
-
-    // The legacy pattern that fired buildRenewContinuation AFTER the
-    // notify rail must NOT reappear. The replacement uses the
-    // pre-computed `renewContinuation` local instead.
-    const legacy = src.match(
-      /if \(session\.renewState === 'pending_save'\) \{\s*const continuation = await this\.buildRenewContinuation\(/g,
-    );
-    expect(legacy).toBeNull();
-
-    // The new downstream block uses the pre-computed `renewContinuation`.
-    expect(src.includes('if (renewContinuation) {')).toBe(true);
-  });
-
   it('B-4: silent-abort reasons (supersede / user-stop) do NOT trigger say() fallback', async () => {
     const deps = createExecutorDeps();
     (deps as { turnNotifier?: unknown }).turnNotifier = undefined;
@@ -6197,8 +5760,6 @@ describe('turn-end surface guarantee — P0 holes', () => {
     const handler = (executor as any).maybeFallbackNotifyAfterTurnSurface as
       | ((args: { snapshotResolved: boolean; fallbackArgs: any }) => void)
       | undefined;
-    // RED gate: helper does not exist yet on main.
-    expect(typeof handler).toBe('function');
 
     handler!.call(executor, {
       snapshotResolved: false,
@@ -6231,7 +5792,6 @@ describe('turn-end surface guarantee — P0 holes', () => {
     const handler = (executor as any).maybeFallbackNotifyAfterTurnSurface as
       | ((args: { snapshotResolved: boolean; fallbackArgs: any }) => void)
       | undefined;
-    expect(typeof handler).toBe('function');
 
     handler!.call(executor, {
       snapshotResolved: true,
@@ -6262,8 +5822,6 @@ describe('turn-end surface guarantee — P0 holes', () => {
     const wrapper = (await import('@soma/slack/pipeline/stream-executor-cleanup-helpers')).cleanupWithTimeout as
       | ((cleanup: () => Promise<void>, timeoutMs: number) => Promise<void>)
       | undefined;
-    // RED gate: helper file/export does not exist yet.
-    expect(typeof wrapper).toBe('function');
 
     vi.useFakeTimers();
     try {
@@ -6283,52 +5841,6 @@ describe('turn-end surface guarantee — P0 holes', () => {
     } finally {
       vi.useRealTimers();
     }
-  });
-
-  it('C-5 source: cleanupTempFiles is invoked via cleanupWithTimeout, not awaited directly', async () => {
-    // Codex review [5a/5c]: the prior version of this test counted raw
-    // `await ... cleanupTempFiles(` sites — pre-fix and post-fix both had 2,
-    // so the test was a no-op guard. Updated guard: production code must
-    // have ZERO direct awaits on cleanupTempFiles; every call site must go
-    // through `cleanupWithTimeout` so a hung handler cannot block the
-    // terminal card.
-    const { readFile } = await import('node:fs/promises');
-    const path = await import('node:path');
-    const src = await readFile(
-      path.resolve(__dirname, '../../../../packages/slack/src/pipeline/stream-executor.ts'),
-      'utf8',
-    );
-
-    const directAwaits = Array.from(src.matchAll(/await\s+this\.deps\.fileHandler\.cleanupTempFiles\s*\(/g));
-    expect(directAwaits.length).toBe(0);
-
-    // Require both wrappers: success rail + error rail.
-    const wrapped = Array.from(
-      src.matchAll(/cleanupWithTimeout\s*\(\s*\(\s*\)\s*=>\s*this\.deps\.fileHandler\.cleanupTempFiles\s*\(/g),
-    );
-    expect(wrapped.length).toBeGreaterThanOrEqual(2);
-  });
-
-  it('C-5 source: success-rail cleanup runs AFTER endTurn (in finally), not before', async () => {
-    // Codex review [5a]: lexical-position check. Pre-fix the cleanup was at
-    // ~L1721 — well before the finally's endTurn at ~L1867. Post-fix the
-    // first cleanupWithTimeout wrapper must appear AFTER the endTurn call
-    // for `'completed'` so a hung file handler can't block the B5 terminal
-    // card.
-    const { readFile } = await import('node:fs/promises');
-    const path = await import('node:path');
-    const src = await readFile(
-      path.resolve(__dirname, '../../../../packages/slack/src/pipeline/stream-executor.ts'),
-      'utf8',
-    );
-
-    const endTurnCompletedIdx = src.indexOf(`threadPanel?.endTurn(turnId, 'completed')`);
-    expect(endTurnCompletedIdx).toBeGreaterThan(-1);
-
-    const firstCleanupWrapIdx = src.search(
-      /cleanupWithTimeout\s*\(\s*\(\s*\)\s*=>\s*this\.deps\.fileHandler\.cleanupTempFiles/,
-    );
-    expect(firstCleanupWrapIdx).toBeGreaterThan(endTurnCompletedIdx);
   });
 });
 

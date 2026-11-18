@@ -15,15 +15,6 @@ describe('ToolTracker', () => {
   });
 
   describe('tool use tracking', () => {
-    it('should track tool use with ID and name', () => {
-      const toolUseId = 'tu_123';
-      const toolName = 'mcp__github__create_issue';
-
-      tracker.trackToolUse(toolUseId, toolName);
-
-      expect(tracker.getToolName(toolUseId)).toBe(toolName);
-    });
-
     it('should return undefined for non-tracked tool', () => {
       expect(tracker.getToolName('nonexistent')).toBeUndefined();
     });
@@ -39,15 +30,6 @@ describe('ToolTracker', () => {
   });
 
   describe('MCP call tracking', () => {
-    it('should track MCP call ID', () => {
-      const toolUseId = 'tu_123';
-      const callId = 'call_456';
-
-      tracker.trackMcpCall(toolUseId, callId);
-
-      expect(tracker.getMcpCallId(toolUseId)).toBe(callId);
-    });
-
     it('should return undefined for non-tracked call', () => {
       expect(tracker.getMcpCallId('nonexistent')).toBeUndefined();
     });

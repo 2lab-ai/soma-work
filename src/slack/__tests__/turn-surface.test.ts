@@ -2186,29 +2186,6 @@ describe('TurnSurface', () => {
       expect(surface._getTurnStateSnapshot(ctx.turnId)).toBeUndefined();
     });
 
-    it('PHASE<5 regression: capability returning false (raw<5) → no send (legacy behavior preserved)', async () => {
-      const client = makeClient();
-      const channel = makeBlockKitChannel();
-      const surface = new TurnSurface({
-        slackApi: makeSlackApi(client),
-        slackBlockKitChannel: channel as any,
-        // Capability correctly reports false when raw<5.
-        isCompletionMarkerActive: () => false,
-      } as any);
-
-      const ctx = {
-        channelId: 'C1',
-        threadTs: 't1.0',
-        sessionKey: 'C1:t1.0',
-        turnId: 'C1:t1.0:b5-legacy',
-        buildCompletionEvent: () => Promise.resolve(makeEvent()),
-      };
-      await surface.begin(ctx as any);
-      await surface.end(ctx.turnId, 'completed');
-
-      expect(channel.send).not.toHaveBeenCalled();
-    });
-
     // -------------------------------------------------------------------------
     // Issue #720 — P5 B5 race fix (Promise snapshot + await + 3s timeout)
     //

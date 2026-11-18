@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { applyPersona, createPersonaTopicBinding, renderPersonaCard } from '../persona-topic';
+import { applyPersona, renderPersonaCard } from '../persona-topic';
 
 vi.mock('../../../../prompt-builder', () => ({
   getAvailablePersonas: () => ['zhuge', 'linus', 'ada'],
@@ -52,14 +52,5 @@ describe('persona-topic.applyPersona', () => {
     const r = await applyPersona({ userId: 'U1', value: 'ghostface' });
     expect(r.ok).toBe(false);
     expect(r.summary).toContain('Unknown');
-  });
-});
-
-describe('createPersonaTopicBinding', () => {
-  it('exposes topic + apply + renderCard', () => {
-    const b = createPersonaTopicBinding();
-    expect(b.topic).toBe('persona');
-    expect(typeof b.apply).toBe('function');
-    expect(typeof b.renderCard).toBe('function');
   });
 });

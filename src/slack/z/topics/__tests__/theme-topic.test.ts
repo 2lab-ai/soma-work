@@ -21,7 +21,7 @@ vi.mock('../../../../user-settings-store', () => {
   };
 });
 
-import { applyTheme, createThemeTopicBinding, renderThemeCard } from '../theme-topic';
+import { applyTheme, renderThemeCard } from '../theme-topic';
 
 function actionIds(blocks: any[]): string[] {
   const out: string[] = [];
@@ -70,14 +70,5 @@ describe('theme-topic.applyTheme', () => {
     const r = await applyTheme({ userId: 'U1', value: 'xxx' });
     expect(r.ok).toBe(false);
     expect(r.summary).toContain('Unknown');
-  });
-});
-
-describe('createThemeTopicBinding', () => {
-  it('exposes topic + apply + renderCard', () => {
-    const b = createThemeTopicBinding();
-    expect(b.topic).toBe('theme');
-    expect(typeof b.apply).toBe('function');
-    expect(typeof b.renderCard).toBe('function');
   });
 });

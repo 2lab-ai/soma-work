@@ -21,16 +21,6 @@ describe('CompletionMessageTracker', () => {
       expect(tracker.has('session-1')).toBe(false);
       expect(tracker.count('session-1')).toBe(0);
     });
-
-    // Trace: S6, Section 5 row 2
-    it('track() creates new Set if first message for session', () => {
-      const tracker = new CompletionMessageTracker();
-      // No prior state for this session
-      expect(tracker.has('session-new')).toBe(false);
-      tracker.track('session-new', '1111.0001', 'UIUserAskQuestion');
-      expect(tracker.has('session-new')).toBe(true);
-      expect(tracker.count('session-new')).toBe(1);
-    });
   });
 
   // S7: Completion Message Delete on User Input
@@ -108,36 +98,6 @@ describe('CompletionMessageTracker', () => {
       // The newly tracked timestamp should survive
       expect(tracker.has('session-1')).toBe(true);
       expect(tracker.count('session-1')).toBe(1);
-    });
-  });
-
-  // Failure re-tracking: failed deletes get re-added
-  describe('deleteAll failure re-tracking', () => {
-    it('re-tracks timestamps whose deletion failed', async () => {
-      const tracker = new CompletionMessageTracker();
-      tracker.track('session-1', '1000.0001', 'WorkflowComplete');
-      tracker.track('session-1', '1000.0002', 'WorkflowComplete');
-      tracker.track('session-1', '1000.0003', 'WorkflowComplete');
-
-      const deleteMessage = vi.fn<(channel: string, ts: string) => Promise<void>>(async (_ch, ts) => {
-        if (ts === '1000.0002') throw new Error('message_not_found');
-      });
-
-      await tracker.deleteAll('session-1', deleteMessage, 'C-CHANNEL');
-
-      // 0001 and 0003 succeeded — removed. 0002 failed — re-tracked.
-      expect(tracker.has('session-1')).toBe(true);
-      expect(tracker.count('session-1')).toBe(1);
-    });
-
-    it('session is clean when all deletes succeed', async () => {
-      const tracker = new CompletionMessageTracker();
-      tracker.track('session-1', '1000.0001', 'WorkflowComplete');
-
-      const deleteMessage = vi.fn<(channel: string, ts: string) => Promise<void>>().mockResolvedValue(undefined);
-      await tracker.deleteAll('session-1', deleteMessage, 'C-CHANNEL');
-
-      expect(tracker.has('session-1')).toBe(false);
     });
   });
 

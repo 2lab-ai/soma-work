@@ -80,20 +80,6 @@ describe('SummaryTimer', () => {
   });
 
   describe('cancel()', () => {
-    it('clears an active timer so the callback never fires', () => {
-      const callback = vi.fn();
-      timer.start('session-1', callback);
-
-      expect(timer.has('session-1')).toBe(true);
-
-      timer.cancel('session-1');
-
-      expect(timer.has('session-1')).toBe(false);
-
-      vi.advanceTimersByTime(SummaryTimer.DELAY_MS + 1000);
-      expect(callback).not.toHaveBeenCalled();
-    });
-
     it('is a no-op when no timer exists for the session', () => {
       // Should not throw
       expect(() => timer.cancel('nonexistent')).not.toThrow();

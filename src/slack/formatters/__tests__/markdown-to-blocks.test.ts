@@ -88,16 +88,8 @@ describe('markdownToBlocks', () => {
     expect(boldElement).toBeDefined();
   });
 
-  it('provides fallback text on empty input', () => {
-    const result = markdownToBlocks('');
-    expect(result.fallbackText).toBe('');
-    expect(result.blocks.length).toBe(0);
-  });
-
-  it('always provides fallback text', () => {
-    const result = markdownToBlocks('# Hello\n\nWorld');
-    expect(result.fallbackText).toBeTruthy();
-    expect(typeof result.fallbackText).toBe('string');
+  it('empty input yields no blocks, no overflow and an empty fallback text', () => {
+    expect(markdownToBlocks('')).toEqual({ blocks: [], overflow: [], fallbackText: '' });
   });
 
   it('handles complex Claude-like output', () => {
@@ -225,14 +217,7 @@ describe('markdownToBlocks header sanitization', () => {
   });
 });
 
-describe('markdownToBlocks error handling', () => {
-  it('returns empty blocks with fallback on invalid input', () => {
-    // null/undefined-like edge cases
-    const result = markdownToBlocks('');
-    expect(result.blocks).toEqual([]);
-    expect(result.overflow).toEqual([]);
-  });
-
+describe('markdownToBlocks fallback text', () => {
   it('always provides usable fallback text', () => {
     const md = '# Hello\n\n**World** with `code`';
     const result = markdownToBlocks(md);
@@ -243,11 +228,11 @@ describe('markdownToBlocks error handling', () => {
 });
 
 describe('estimatePayloadSize', () => {
-  it('returns byte size of JSON-serialized blocks', () => {
-    const blocks = [{ type: 'section', text: { type: 'mrkdwn', text: 'hello' } }];
-    const size = estimatePayloadSize(blocks);
-    expect(size).toBeGreaterThan(0);
-    expect(size).toBe(new TextEncoder().encode(JSON.stringify(blocks)).byteLength);
+  it('returns the UTF-8 byte size of the JSON-serialized blocks', () => {
+    // `[{"type":"section","text":{"type":"mrkdwn","text":"hello"}}]` is 60 bytes.
+    expect(estimatePayloadSize([{ type: 'section', text: { type: 'mrkdwn', text: 'hello' } }])).toBe(60);
+    // Bytes, not characters: the 2 Hangul syllables are 3 bytes each (57 ASCII bytes + 6).
+    expect(estimatePayloadSize([{ type: 'section', text: { type: 'mrkdwn', text: '안녕' } }])).toBe(61);
   });
 
   it('returns 2 for empty array (JSON "[]")', () => {
@@ -259,16 +244,15 @@ describe('markdownToBlocks section text truncation', () => {
   it('truncates section text exceeding 3000 chars to 3000 with ellipsis', () => {
     // Create markdown that produces a section block with very long text.
     // We use a plain paragraph — the library converts it to a section block.
-    const longParagraph = 'word '.repeat(700); // ~3500 chars
+    const longParagraph = 'word '.repeat(700); // 3500 chars
     const result = markdownToBlocks(longParagraph);
 
-    // Find any section block
-    const sectionBlock = result.blocks.find((b) => b.type === 'section');
-    if (sectionBlock) {
-      expect(sectionBlock.text.text.length).toBeLessThanOrEqual(3000);
-    }
-    // The converter might use rich_text instead — that's also acceptable
-    // as long as no block exceeds limits
+    expect(result.blocks).toHaveLength(1);
+    const [sectionBlock] = result.blocks;
+    expect(sectionBlock.type).toBe('section');
+    expect(sectionBlock.text.text).toHaveLength(3000);
+    expect(sectionBlock.text.text.startsWith('word word ')).toBe(true);
+    expect(sectionBlock.text.text.endsWith('...')).toBe(true);
   });
 });
 

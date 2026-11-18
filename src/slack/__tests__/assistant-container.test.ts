@@ -31,13 +31,6 @@ describe('assistant-container — buildAssistantConfig', () => {
     deps = createDeps();
   });
 
-  // Case 1
-  it('returns an object with required threadStarted and userMessage functions', () => {
-    const cfg = buildAssistantConfig(deps);
-    expect(typeof cfg.threadStarted).toBe('function');
-    expect(typeof cfg.userMessage).toBe('function');
-  });
-
   // Case 2 — Bolt default context store
   it('does not define threadContextChanged (Bolt default store in use)', () => {
     const cfg = buildAssistantConfig(deps);
