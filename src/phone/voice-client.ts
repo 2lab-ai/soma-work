@@ -37,12 +37,16 @@ export interface VoiceClient {
   speak(text: string, signal?: AbortSignal): Promise<SpeechStream>;
   /**
    * Wake the speech engine: it answers ~0.8 s slower after a few idle seconds (measured: 1.4 s vs 0.6 s to the first
-   * byte). A one-word synthesis whose audio is dropped. Best effort — never throws.
+   * byte). A one-word synthesis whose audio is dropped; one at a time, given up after a few seconds or when `signal`
+   * aborts. Best effort — never throws.
    */
-  warm?(): Promise<void> | void;
+  warm?(signal?: AbortSignal): Promise<void> | void;
 }
 
 type FetchLike = typeof fetch;
+
+/** A warm-up the engine has not finished in this long is dropped (the word takes ~0.6 s). */
+const WARM_TIMEOUT_MS = 5_000;
 
 export class VoiceServiceError extends Error {
   constructor(
@@ -57,6 +61,7 @@ export class VoiceServiceError extends Error {
 export function createVoiceClient(cfg: VoiceConfig, fetchImpl: FetchLike = fetch): VoiceClient {
   const base = cfg.url.replace(/\/+$/, '');
   const auth: Record<string, string> = cfg.token ? { authorization: `Bearer ${cfg.token}` } : {};
+  let warming: Promise<void> | null = null;
 
   return {
     async transcribe(wav, signal) {
@@ -78,15 +83,22 @@ export function createVoiceClient(cfg: VoiceConfig, fetchImpl: FetchLike = fetch
     },
 
     speak,
-    async warm() {
-      try {
-        const s = await speak('네');
-        for await (const _ of s.chunks) {
-          // dropped: the request only wakes the engine
+    warm(signal) {
+      // One in flight: a stalled service never piles up wake-ups.
+      warming ??= (async () => {
+        try {
+          const deadline = AbortSignal.timeout(WARM_TIMEOUT_MS);
+          const s = await speak('네', signal ? AbortSignal.any([signal, deadline]) : deadline);
+          for await (const _ of s.chunks) {
+            // dropped: the request only wakes the engine
+          }
+        } catch {
+          // best effort: the next real sentence pays the cold start instead
+        } finally {
+          warming = null;
         }
-      } catch {
-        // best effort: the next real sentence pays the cold start instead
-      }
+      })();
+      return warming;
     },
   };
 

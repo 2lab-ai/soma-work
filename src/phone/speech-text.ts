@@ -11,7 +11,10 @@
 const SENTENCE_END = /[.!?…。！？\n]/;
 const MIN_SENTENCE_CHARS = 6;
 const LONG_SENTENCE_CHARS = 120;
-/** A turn's first chunk may end at a comma from this many characters on ("네," is no clause). */
+/**
+ * A turn's first chunk may end at a comma followed by a space, from this many characters on ("네," is no clause;
+ * "123,456" is one number).
+ */
 const FIRST_CLAUSE_CHARS = 10;
 
 export class SentenceSplitter {
@@ -29,8 +32,11 @@ export class SentenceSplitter {
       const length = i + 1 - start;
       const atEnd = SENTENCE_END.test(ch) && length >= MIN_SENTENCE_CHARS;
       const comma = ch === ',' || ch === '，';
-      const atComma =
-        comma && (length > LONG_SENTENCE_CHARS || (this.turnStart && out.length === 0 && length >= FIRST_CLAUSE_CHARS));
+      // A clause ends at a comma with a space after it; "123,456원" has none. The next character may not have
+      // arrived yet: then the comma waits for the next piece.
+      const clause =
+        this.turnStart && out.length === 0 && length >= FIRST_CLAUSE_CHARS && /\s/.test(this.buffer[i + 1] ?? '');
+      const atComma = comma && (length > LONG_SENTENCE_CHARS || clause);
       if (!atEnd && !atComma) continue;
       // Keep runs of closing marks ("?!", "...") with the sentence they end.
       let end = i + 1;

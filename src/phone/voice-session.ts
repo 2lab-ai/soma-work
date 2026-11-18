@@ -108,6 +108,8 @@ export class CallRun {
   private silenceTimer: unknown = null;
   private silenceNudged = false;
   private lastWarmAt = Number.NEGATIVE_INFINITY;
+  /** Cancels a warm-up still running when the call ends. */
+  private readonly warmAbort = new AbortController();
 
   constructor(plan: CallRunPlan, deps: CallRunDeps) {
     this.callId = plan.callId;
@@ -182,6 +184,7 @@ export class CallRun {
     if (this.ended) return;
     this.ended = true;
     this.synthAbort?.abort('call-ended');
+    this.warmAbort.abort('call-ended');
     this.queue = [];
     for (const t of this.timers) this.clearTimer(t);
     this.timers.clear();
@@ -331,7 +334,8 @@ export class CallRun {
     const now = this.now();
     if (now - this.lastWarmAt < WARM_EVERY_MS) return;
     this.lastWarmAt = now;
-    void Promise.resolve(this.deps.voice.warm()).catch(() => undefined);
+    // Not awaited: the transcript goes to the dialog now, the wake-up runs beside it.
+    void Promise.resolve(this.deps.voice.warm(this.warmAbort.signal)).catch(() => undefined);
   }
 
   // ── hearing ─────────────────────────────────────────────────
