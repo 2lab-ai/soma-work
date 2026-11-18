@@ -2291,5 +2291,6 @@
   "권한 표가 이미 있습니다": "A permission map already exists",
   "마지막 수준은 지울 수 없습니다 — 표가 비면 server-tools가 모든 유저에게 열립니다(#1170). 다른 도구의 수준을 먼저 두세요": "The last level cannot be removed — an empty map opens server-tools to every user (#1170). Set another tool's level first",
   "⚠️ 허락을 저장하지 못했습니다. 요청은 그대로 열려 있으니 잠시 뒤 다시 눌러 주세요.": "⚠️ The grant could not be saved. The request is still open — press the button again shortly.",
-  "⚠️ 이미 처리된 요청의 카드입니다. 같은 요청이 다시 왔다면 가장 최근 카드에서 답하세요.": "⚠️ This card belongs to a request that was already answered. If the same request came again, answer it on the latest card."
+  "⚠️ 이미 처리된 요청의 카드입니다. 같은 요청이 다시 왔다면 가장 최근 카드에서 답하세요.": "⚠️ This card belongs to a request that was already answered. If the same request came again, answer it on the latest card.",
+  "값이 비어 있습니다 (줄바꿈뿐)": "The value is empty (only a line break)"
 }

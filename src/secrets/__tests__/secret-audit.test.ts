@@ -19,6 +19,13 @@ describe('secret-audit', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  it('skips a ledger line that is valid JSON but not a record (null, a number)', () => {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, SECRET_AUDIT_FILE), 'null\n5\n"x"\n');
+    appendSecretAudit({ actor: 'U_ADMIN', action: 'secret.create', name: 'gh-token' }, dir, new Date(3_000));
+    expect(lastSecretChanges(dir).get('gh-token')).toMatchObject({ actor: 'U_ADMIN', action: 'secret.create' });
+  });
+
   it('appends one 0600 line per change and keeps only the known fields', () => {
     appendSecretAudit({ actor: 'U_ADMIN', action: 'secret.create', name: 'gh-token' }, dir, new Date(1_000));
     // A caller that slips a value in (a bug) still never writes it.

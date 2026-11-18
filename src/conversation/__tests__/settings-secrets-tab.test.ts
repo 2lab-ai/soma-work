@@ -140,6 +140,31 @@ describe('비밀 tab — list', () => {
     expect(els['sc-body'].innerHTML).toContain('gh-token');
     expect(els['sc-body'].innerHTML).not.toContain('>unused<');
   });
+
+  it('typing in the filter keeps what the admin was typing into the add and replace boxes', () => {
+    const { api, els } = page({
+      adminMode: true,
+      inputs: {
+        'sc-name': { value: 'new-key' },
+        'sc-value': { value: 'half-typed' },
+        'sc-replace-value': { value: 'new value' },
+      },
+    });
+    // A repaint makes new boxes, as the browser does when innerHTML is set.
+    let html = '';
+    Object.defineProperty(els['sc-body'], 'innerHTML', {
+      get: () => html,
+      set: (v: string) => {
+        html = v;
+        for (const id of ['sc-name', 'sc-value', 'sc-replace-value']) els[id] = { value: '' };
+      },
+    });
+    els['sc-filter'].value = 'gh';
+    api.renderSecrets();
+    expect(els['sc-name'].value).toBe('new-key');
+    expect(els['sc-value'].value).toBe('half-typed');
+    expect(els['sc-replace-value'].value).toBe('new value');
+  });
 });
 
 describe('비밀 tab — changes', () => {

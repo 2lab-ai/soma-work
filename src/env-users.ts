@@ -98,8 +98,10 @@ export function loadEnvironments(configFile: string = CONFIG_FILE): Environment[
   } catch (error) {
     // A config that stops parsing (a half-written edit) must not drop the environment gate: keep the last
     // environments read from this file. server-tools keeps its last servers on the same failure.
+    // Never the message: a JSON parse error quotes the text around the fault — a literal credential in a bad edit.
     logger.warn('config.json unreadable while resolving environments — keeping the last ones read', {
-      error: (error as Error)?.message ?? String(error),
+      error: (error as Error)?.name ?? 'Error',
+      code: (error as NodeJS.ErrnoException)?.code,
     });
     return cache && cache.file === configFile ? cache.envs : [];
   }

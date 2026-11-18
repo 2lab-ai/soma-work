@@ -116,6 +116,7 @@ export function lastSecretChanges(dataDir: string = DATA_DIR): Map<string, Secre
     } catch {
       continue; // a torn line, or the cut at the start of the tail
     }
+    if (!row || typeof row !== 'object') continue; // valid JSON that is not a record (`null`, a number)
     if (typeof row.name !== 'string' || typeof row.at !== 'string' || typeof row.actor !== 'string') continue;
     if (typeof row.action !== 'string' || !row.action.startsWith('secret.')) continue;
     out.set(row.name, { at: row.at, actor: row.actor, action: row.action as SecretAuditAction });
