@@ -378,6 +378,29 @@ describe('CallRun — conversation', () => {
     expect(s.dialog().sent.slice(before)).toEqual(['시간이랑 장소 알려 주세요']);
   });
 
+  it('newer words stop a reply that is playing its first sentence while the rest is still being written', async () => {
+    const { run, record, dialog, call } = await talking();
+    run.feedAudio(tone(600, 0.3));
+    run.feedAudio(quiet(800));
+    await settleAll();
+    run.feedAudio(tone(200, 0.3)); // the caller starts again before the reply makes a sound
+    dialog().emit({ type: 'text_delta', text: '네, 회의 두 개 확인했어요. 그리고 ' }); // no turn_end: still writing
+    await settleAll();
+    expect(call.frames).toBeGreaterThan(0); // its first sentence plays over the caller
+    const before = dialog().sent.length;
+    run.feedAudio(tone(400, 0.3));
+    run.feedAudio(quiet(800)); // "잠깐만요" is transcribed
+    await settleAll();
+    expect(call.cleared).toBeGreaterThanOrEqual(1);
+    expect(dialog().interrupted).toBe(1);
+    expect(dialog().sent.length).toBe(before); // not before the dropped turn has ended
+    const agentLines = record.transcript.filter((l) => l.role === 'agent');
+    expect(agentLines[agentLines.length - 1]).toMatchObject({ text: '네, 회의 두 개 확인했어요.', interrupted: true });
+    dialog().emit({ type: 'turn_end', isError: true, message: 'interrupted' });
+    await settleAll();
+    expect(dialog().sent.slice(before)).toEqual(['잠깐만요']);
+  });
+
   it('newer words stop a reply that started playing while the caller was still talking', async () => {
     const { run, record, dialog, call, clock } = await talking();
     run.feedAudio(tone(600, 0.3));

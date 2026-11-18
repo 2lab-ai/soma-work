@@ -202,6 +202,7 @@ describe('TimeStretcher', () => {
 
   it('refuses a sample rate it cannot work at, instead of looping forever', () => {
     expect(() => new TimeStretcher(1, 1.5)).toThrow(RangeError);
+    expect(() => new TimeStretcher(192000, 1.5)).toThrow(RangeError); // its search would cost ~19x 44.1 kHz
     expect(() => new TimeStretcher(44100, 0)).toThrow(RangeError);
   });
 
@@ -219,6 +220,17 @@ describe('TimeStretcher', () => {
     expect(Math.abs(crossingsPerSecond(out) - pitchIn) / pitchIn).toBeLessThan(0.05);
     const dbIn = rmsDbfs(input);
     expect(Math.abs(rmsDbfs(out) - dbIn)).toBeLessThan(1.5);
+  });
+
+  it('slows down too: at 0.5 it takes twice the time, same pitch, same loudness, however it is chunked', () => {
+    const input = voiced(1500);
+    const out = stretch(input, 0.5);
+    expect(ms(out)).toBeGreaterThan(3000 * 0.97);
+    expect(ms(out)).toBeLessThan(3000 * 1.03);
+    const pitchIn = crossingsPerSecond(input);
+    expect(Math.abs(crossingsPerSecond(out) - pitchIn) / pitchIn).toBeLessThan(0.05);
+    expect(Math.abs(rmsDbfs(out) - rmsDbfs(input))).toBeLessThan(1.5);
+    expect(stretch(input, 0.5, [999, 7, 4096]).equals(out)).toBe(true);
   });
 
   it('gives the same audio however the stream is chunked (odd byte splits included)', () => {

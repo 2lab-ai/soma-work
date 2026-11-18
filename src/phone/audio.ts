@@ -239,9 +239,12 @@ export class StreamResampler {
   }
 }
 
-/** Sample rates a {@link TimeStretcher} accepts (a 20 ms window then holds at least 160 samples). */
+/**
+ * Sample rates a {@link TimeStretcher} accepts: a 20 ms window holds at least 160 samples, and the search work per
+ * second (it grows with the square of the rate) stays near what 44.1 kHz needs (0.2 s of CPU per 10 s of audio).
+ */
 export const MIN_STRETCH_RATE = 8000;
-export const MAX_STRETCH_RATE = 192000;
+export const MAX_STRETCH_RATE = 48000;
 
 /**
  * Faster speech at the same pitch, for mono PCM16 LE (WSOLA: overlap-add of 20 ms windows taken `speed` times
@@ -253,7 +256,6 @@ export const MAX_STRETCH_RATE = 192000;
 export class TimeStretcher {
   private readonly n: number;
   private readonly hop: number;
-  private readonly tolerance: number;
   private readonly window: Float32Array;
   private input: number[] = [];
   /** Absolute index of input[0]. */
@@ -280,7 +282,6 @@ export class TimeStretcher {
     if (!(Number.isFinite(speed) && speed > 0)) throw new RangeError(`TimeStretcher: speed ${speed} is not positive`);
     this.n = 2 * Math.round(sampleRate * 0.01); // 20 ms, even
     this.hop = this.n / 2;
-    this.tolerance = Math.round(sampleRate * 0.01);
     this.window = new Float32Array(this.n);
     for (let i = 0; i < this.n; i++) this.window[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / this.n);
   }
@@ -313,7 +314,7 @@ export class TimeStretcher {
   private makeFrames(final: boolean): void {
     const n = this.n;
     const hop = this.hop;
-    const tolerance = this.tolerance;
+    const tolerance = hop; // ±10 ms
     for (;;) {
       const nominal = Math.round(this.frame * hop * this.speed);
       if (final ? nominal >= this.total : nominal + tolerance + n > this.total || this.prevPos + hop + n > this.total) {
