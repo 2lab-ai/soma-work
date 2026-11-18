@@ -58,12 +58,7 @@ export interface ZTopicBinding {
    * Re-render the topic's setting card. Invoked on `z_help_nav_<topic>`.
    * Must return Block Kit blocks ready for replace().
    */
-  renderCard(args: {
-    userId: string;
-    issuedAt: number;
-    /** The bot client of the clicked surface — a topic that uploads files (an image card) needs the same bot. */
-    client?: WebClient;
-  }): Promise<RenderResult>;
+  renderCard(args: { userId: string; issuedAt: number }): Promise<RenderResult>;
   /**
    * Optional: handle an `z_setting_<topic>_open_modal` click → push a
    * `views.open` payload. Receives trigger_id + callback_id guidance.
@@ -104,11 +99,12 @@ export interface RenderResult {
   text?: string;
   blocks: any[];
   /**
-   * The same card without its uploaded image, for senders that can retry
-   * (`deliverImageCard`): Slack can refuse a just-uploaded file with
+   * The same card without its uploaded image, for senders that see a refusal and
+   * can retry (`deliverImageCard`): Slack can refuse a just-uploaded file with
    * `invalid_blocks` for a moment. Absent = `blocks` carry no such image.
-   * `ZRespond.replace` swallows send errors, so this path relies on the
-   * uploader's readiness wait (`slackImageUploader`).
+   * `ZRespond.replace` cannot see a refusal (it swallows errors, and a response_url
+   * answers 200 either way), so `renderCard` here gets no uploader and its cards
+   * are text.
    */
   fallbackBlocks?: ZBlock[];
 }
@@ -264,7 +260,7 @@ export class ZSettingsActionHandler {
       // branches), replace the card with a freshly rendered topic card
       // instead of the generic confirmation card.
       if (result.rerender === 'topic') {
-        const card = await binding.renderCard({ userId, issuedAt: Date.now(), client });
+        const card = await binding.renderCard({ userId, issuedAt: Date.now() });
         await zRespond.replace({ text: card.text, blocks: card.blocks });
         return;
       }
@@ -349,7 +345,6 @@ export class ZSettingsActionHandler {
       const { blocks, text } = await binding.renderCard({
         userId: body?.user?.id ?? '',
         issuedAt: Date.now(),
-        client,
       });
       await zRespond.replace({ text, blocks });
     } catch (err) {

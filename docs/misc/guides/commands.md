@@ -78,8 +78,9 @@ for everyone — admins included:
   one line per provider.
 - **Per-account detail is a separate report** — on the picture card the
   account list and its paging are gone; **📋 계정별 리포트** posts a second
-  picture as a new message in the card's thread (to the clicker only when the
-  card is ephemeral): every account, one row — state with an icon and a label,
+  picture as a new message in the card's thread (an ephemeral card gets an
+  ephemeral reply to the clicker, in the card's parent thread when it has one):
+  every account, one row — state with an icon and a label,
   plan, weekly remaining bar, model-scoped (Fable) remaining, when it refills
   (when a block lifts, else the weekly reset), in-flight requests and the
   reading's age. Rows run usable → blocked → weekly used up → held. Any viewer
@@ -89,8 +90,14 @@ for everyone — admins included:
   When the render or upload fails, the card is the text card below. When Slack
   refuses the just-uploaded file (`invalid_blocks`), the post is retried three
   times and then the text card is sent; the report falls back to text rows the
-  same way. Admin mode keeps the paged account rows with their controls under
-  the picture, without the per-provider text summary.
+  same way. A send that fails without Slack's answer (a timeout, a lost
+  response) is not followed by a second post — the first one may have landed.
+  The picture goes only where a refusal is visible: a posted card (`auth`,
+  `/z auth`, its buttons, modal submissions). An ephemeral card and the auth
+  button of the `/z` help card are replaced through a response_url or a replace
+  that cannot report a refused image, so they stay text. Admin mode keeps the
+  paged account rows with their controls under the picture, without the
+  per-provider text summary.
 
 - **Grouped by provider** — Claude → Codex → Grok, then any other groups
   alphabetically; within a group, accounts follow the scheduler's selection

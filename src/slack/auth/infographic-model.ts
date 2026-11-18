@@ -154,7 +154,6 @@ export interface AuthInfographic {
   groups: GroupInfographic[];
   /** Providers without plan windows: not in the totals. */
   others: { label: string; accounts: number }[];
-  oldestRefreshAt?: number;
 }
 
 /** Accounts of `group`, in the order the capacity view built its units. */
@@ -251,13 +250,11 @@ export function buildAuthInfographic(status: LlmuxStatus, view: CapacityView, no
   const others = [...groupAccounts(status.accounts ?? [])]
     .filter(([group]) => !planGroups.has(group))
     .map(([group, accounts]) => ({ label: providerLabel(group), accounts: accounts.length }));
-  const refreshes = view.groups.flatMap((g) => (g.oldestRefreshAt !== undefined ? [g.oldestRefreshAt] : []));
   return {
     nowS: Math.floor(nowMs / 1000),
     ...(status.version ? { version: status.version } : {}),
     groups: view.groups.map((g) => groupInfographic(g, accountsOf(status, g.group), nowMs)),
     others,
-    ...(refreshes.length ? { oldestRefreshAt: Math.min(...refreshes) } : {}),
   };
 }
 
@@ -378,7 +375,12 @@ function planRow(account: LlmuxAccount, unit: CapacityUnit, current: boolean, no
 function rawRow(account: LlmuxAccount, name: string, current: boolean, nowMs: number): AccountReportRow {
   // No scoped column here: such a provider can list a window per model, and picking the first would be arbitrary.
   const { scoped: _scoped, ...row } = baseRow(account, name, current, nowMs);
-  if (account.status === 'auth_failed' || account.blocked || account.status === 'cooldown') {
+  if (
+    account.status === 'auth_failed' ||
+    account.status === 'paused' ||
+    account.status === 'cooldown' ||
+    account.blocked
+  ) {
     const h = heldLabel(account);
     return { ...row, state: h.state, stateLabel: h.label };
   }

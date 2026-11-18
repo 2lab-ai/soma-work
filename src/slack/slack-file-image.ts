@@ -118,21 +118,35 @@ export interface ImageCardBlocks {
 }
 
 export interface DeliverImageCardOptions {
-  /** Sends of the image blocks before the fallback (default 3). */
-  attempts?: number;
-  /** Wait between image-block sends (default 500 ms). */
-  delayMs?: number;
-  /** Which failures a retry can fix (default: Slack `invalid_blocks`). */
+  /** Which failures another send of the image blocks can fix (default: Slack `invalid_blocks`). */
   retryOn?: (err: unknown) => boolean;
+  /**
+   * Which failures may be followed by the text fallback (default: a Slack platform
+   * rejection — `err.data.error` set — which proves nothing was posted). A transport
+   * error (timeout, lost response) may hide a delivered message, so an append-only
+   * send propagates it instead of posting a second message. In-place updates
+   * (`chat.update`, a replace) are idempotent and pass `() => true`.
+   */
+  fallbackOn?: (err: unknown) => boolean;
   sleep?: (ms: number) => Promise<void>;
 }
 
+/** Sends of the image blocks before the fallback, and the wait between them. */
+const IMAGE_SEND_ATTEMPTS = 3;
+const IMAGE_SEND_DELAY_MS = 500;
+
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** Slack answered and refused the request: a platform error carries its code. */
+export function isSlackRejection(err: unknown): boolean {
+  return typeof (err as { data?: { error?: unknown } } | null | undefined)?.data?.error === 'string';
+}
 
 /**
  * Send `card.blocks`; while Slack refuses them with a retryable error, wait and
- * send again; then send `card.fallbackBlocks`. A card without a fallback is sent
- * once, unchanged. Throws only when the fallback send fails too.
+ * send again; then, when the failure allows it, send `card.fallbackBlocks`. A card
+ * without a fallback is sent once, unchanged. Throws the image failure when no
+ * fallback may follow it, and the fallback's failure when that send fails too.
  */
 export async function deliverImageCard<T>(
   card: ImageCardBlocks,
@@ -140,19 +154,20 @@ export async function deliverImageCard<T>(
   opts: DeliverImageCardOptions = {},
 ): Promise<T> {
   if (!card.fallbackBlocks) return send(card.blocks);
-  const attempts = opts.attempts ?? 3;
   const retryOn = opts.retryOn ?? isInvalidBlocksError;
+  const fallbackOn = opts.fallbackOn ?? isSlackRejection;
   const sleep = opts.sleep ?? defaultSleep;
   let lastError: unknown;
-  for (let attempt = 0; attempt < attempts; attempt++) {
+  for (let attempt = 0; attempt < IMAGE_SEND_ATTEMPTS; attempt++) {
     try {
       return await send(card.blocks);
     } catch (err) {
       lastError = err;
       if (!retryOn(err)) break;
-      if (attempt < attempts - 1) await sleep(opts.delayMs ?? 500);
+      if (attempt < IMAGE_SEND_ATTEMPTS - 1) await sleep(IMAGE_SEND_DELAY_MS);
     }
   }
+  if (!fallbackOn(lastError)) throw lastError;
   logger.warn('image card refused; sending the text fallback', {
     error: (lastError as { data?: { error?: string } })?.data?.error ?? (lastError as Error)?.message,
   });

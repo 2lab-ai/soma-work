@@ -1,7 +1,8 @@
 /**
  * [📋 계정별 리포트] — the per-account detail the `auth` card no longer lists
  * (2026-11-18). Posted as a NEW message in the card's thread (append-only), so
- * the card keeps its one-glance picture.
+ * the card keeps its one-glance picture; for an ephemeral card, an ephemeral
+ * message to the clicker in the card's parent thread.
  *
  * Picture first (`infographic-svg.ts` account report, uploaded by the clicking
  * surface's bot); when it cannot be made or Slack refuses it, the read-only text
@@ -16,7 +17,6 @@ import { getLlmuxAccountTiers } from '../../config';
 import { buildCapacityView } from '../../conversation/capacity-view';
 import { Logger } from '../../logger';
 import { deliverImageCard, slackImageUploader } from '../slack-file-image';
-import type { ZBlock } from '../z/types';
 import { buildAccountReportTextBlocks } from './builder';
 import { buildAccountReport, describeAccountReport } from './infographic-model';
 import { renderAuthReportPng } from './infographic-publish';
@@ -25,10 +25,10 @@ const logger = new Logger('AuthAccountReport');
 
 export interface AuthReportTarget {
   channel: string;
-  /** The thread the card lives in (or the card itself when it is top-level). */
-  threadTs: string;
-  /** Set when the card is ephemeral: the report goes back through `respond`, to the clicker only. */
-  respond?: (msg: Record<string, unknown>) => Promise<unknown>;
+  /** The thread to reply in: the card's thread, or the card itself when it is a top-level message. */
+  threadTs?: string;
+  /** Set when the card is ephemeral: the report is an ephemeral message to this user only. */
+  ephemeralTo?: string;
 }
 
 const TEXT = '📋 계정별 상세';
@@ -37,8 +37,8 @@ async function reportPicture(
   client: WebClient,
   status: LlmuxStatus,
   nowMs: number,
-  header: ZBlock,
-): Promise<ZBlock[] | undefined> {
+  header: unknown,
+): Promise<unknown[] | undefined> {
   try {
     const view = buildCapacityView(status, getLlmuxAccountTiers(), nowMs);
     const report = buildAccountReport(status, view, nowMs);
@@ -60,10 +60,17 @@ export async function postAuthAccountReport(args: {
   userId: string;
 }): Promise<void> {
   const { client, target, userId } = args;
+  const thread = target.threadTs ? { thread_ts: target.threadTs } : {};
   const send = (blocks: unknown[], text = TEXT) =>
-    target.respond
-      ? target.respond({ response_type: 'ephemeral', replace_original: false, text, blocks })
-      : client.chat.postMessage({ channel: target.channel, thread_ts: target.threadTs, text, blocks: blocks as never });
+    target.ephemeralTo
+      ? client.chat.postEphemeral({
+          channel: target.channel,
+          user: target.ephemeralTo,
+          ...thread,
+          text,
+          blocks: blocks as never,
+        })
+      : client.chat.postMessage({ channel: target.channel, ...thread, text, blocks: blocks as never });
 
   try {
     if (getAuthMode() !== 'llmux') {
@@ -79,22 +86,10 @@ export async function postAuthAccountReport(args: {
       return;
     }
     const nowMs = Date.now();
-    const epoch = Math.floor(nowMs / 1000);
-    const header: ZBlock = {
-      type: 'context',
-      elements: [
-        {
-          type: 'mrkdwn',
-          text: `📋 *계정별 상세* · <@${userId}> 요청 · <!date^${epoch}^{date_short_pretty} {time}|${new Date(nowMs).toISOString()}>`,
-        },
-      ],
-    };
-    const textBlocks = buildAccountReportTextBlocks(
-      status,
-      nowMs,
-      (header.elements as Array<{ text: string }>)[0].text,
-    );
-    const picture = await reportPicture(client, status, nowMs, header);
+    const header = `📋 *계정별 상세* · <@${userId}> 요청 · <!date^${Math.floor(nowMs / 1000)}^{date_short_pretty} {time}|${new Date(nowMs).toISOString()}>`;
+    // The text rows open with this header as a context block; the picture reuses it.
+    const textBlocks = buildAccountReportTextBlocks(status, nowMs, header);
+    const picture = await reportPicture(client, status, nowMs, textBlocks[0]);
     await deliverImageCard(
       picture ? { blocks: picture, fallbackBlocks: textBlocks } : { blocks: textBlocks },
       (blocks) => send(blocks),

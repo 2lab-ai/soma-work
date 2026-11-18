@@ -29,6 +29,13 @@ vi.mock('../../../auth/llmux-client', () => ({
   LlmuxClientError: class extends Error {},
 }));
 
+// Navigation and authorization only: the picture path has its own suite
+// (infographic-card.test.ts). A real resvg render per click made this suite slow under load.
+vi.mock('../infographic-publish', () => ({
+  renderAuthSummaryPng: vi.fn(async () => Buffer.from('png')),
+  renderAuthReportPng: vi.fn(async () => Buffer.from('png')),
+}));
+
 import { switchLlmuxAccount } from '../../../auth/llmux-client';
 import { AuthHandler } from '../../commands/auth-handler';
 import { createAuthTopicBinding } from '../../z/topics/auth-topic';

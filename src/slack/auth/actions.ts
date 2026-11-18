@@ -141,13 +141,18 @@ async function rerenderCard(args: {
   refreshUsage?: boolean;
   banner?: string;
 }): Promise<void> {
+  // The picture goes only where a refusal is visible: `chat.update` on a posted
+  // message. An ephemeral card is replaced through its response_url, which answers
+  // 200 even when Slack drops the blocks — that card stays text.
+  const body = args.body as Parameters<typeof renderInPlace>[0]['body'];
+  const pictureSurface = classifyRenderInPlaceSurface(body) === 'message';
   const card = await renderAuthCard({
     userId: args.userId,
     issuedAt: Date.now(),
     viewerMode: args.viewerMode,
     page: args.page,
     refreshUsage: args.refreshUsage,
-    uploadImage: slackImageUploader(args.client),
+    ...(pictureSurface ? { uploadImage: slackImageUploader(args.client) } : {}),
   });
   if (args.banner) {
     const banner = { type: 'section', text: { type: 'mrkdwn', text: args.banner } };
@@ -155,13 +160,14 @@ async function rerenderCard(args: {
     card.fallbackBlocks?.unshift(banner);
   }
   // renderInPlace logs and reports a failed update instead of throwing: a failed
-  // picture card is retried, then the text card goes out (deliverImageCard).
+  // picture card is retried, then the text card goes out (deliverImageCard). An
+  // update replaces the same message, so falling back after any failure is safe.
   try {
     await deliverImageCard(
       card,
       async (blocks) => {
         const result = await renderInPlace({
-          body: args.body as Parameters<typeof renderInPlace>[0]['body'],
+          body,
           client: args.client,
           respond: args.respond,
           text: card.text ?? '🔐 Auth',
@@ -171,7 +177,7 @@ async function rerenderCard(args: {
         if (!result.ok && result.surface !== 'unknown') throw new Error('auth card update did not land');
         return result;
       },
-      { retryOn: () => true },
+      { retryOn: () => true, fallbackOn: () => true },
     );
   } catch (err) {
     logger.warn(`auth card re-render failed: ${(err as Error).message}`);
@@ -203,8 +209,11 @@ async function rerenderCardAt(
       card.fallbackBlocks?.unshift(section);
     }
     const { channel, ts } = surface;
-    await deliverImageCard(card, (blocks) =>
-      client.chat.update({ channel, ts, text: card.text ?? '🔐 Auth', blocks: blocks as never }),
+    // An update replaces the same message: any failure may fall back to the text card.
+    await deliverImageCard(
+      card,
+      (blocks) => client.chat.update({ channel, ts, text: card.text ?? '🔐 Auth', blocks: blocks as never }),
+      { fallbackOn: () => true },
     );
   } catch (err) {
     logger.warn(`auth card update failed: ${(err as Error).message}`);
@@ -320,7 +329,7 @@ export function registerAuthActions(app: App): void {
 
   // ── Account report (any viewer: identity is visible to all, #803) ──
   // A NEW message in the card's thread — the card itself keeps its picture.
-  app.action(AUTH_ACTION_IDS.report, async ({ ack, body, client, respond }) => {
+  app.action(AUTH_ACTION_IDS.report, async ({ ack, body, client }) => {
     await ack();
     try {
       const userId = actorId(body);
@@ -331,18 +340,19 @@ export function registerAuthActions(app: App): void {
         message?: { ts?: string; thread_ts?: string };
       };
       const channel = b.container?.channel_id ?? b.channel?.id;
-      const threadTs = b.container?.thread_ts ?? b.message?.thread_ts ?? b.container?.message_ts ?? b.message?.ts;
-      if (!channel || !threadTs) return;
+      if (!channel) return;
+      const parentTs = b.container?.thread_ts ?? b.message?.thread_ts;
       const ephemeral =
         classifyRenderInPlaceSurface(body as Parameters<typeof renderInPlace>[0]['body']) === 'ephemeral';
+      // A posted card: reply in its thread (or under the card itself). An ephemeral
+      // card: back to the clicker only, in the card's parent thread when it has one —
+      // an ephemeral message cannot be a thread root.
+      const threadTs = ephemeral ? parentTs : (parentTs ?? b.container?.message_ts ?? b.message?.ts);
+      if (!ephemeral && !threadTs) return;
       await postAuthAccountReport({
         client,
         userId,
-        target: {
-          channel,
-          threadTs,
-          ...(ephemeral && respond ? { respond: respond as (msg: Record<string, unknown>) => Promise<unknown> } : {}),
-        },
+        target: { channel, ...(threadTs ? { threadTs } : {}), ...(ephemeral ? { ephemeralTo: userId } : {}) },
       });
     } catch (err) {
       logger.error('auth_account_report failed', err);

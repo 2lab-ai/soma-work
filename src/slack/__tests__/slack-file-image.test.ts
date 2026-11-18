@@ -8,6 +8,8 @@ import { deliverImageCard, extractFileId, isInvalidBlocksError, slackImageUpload
 
 const invalidBlocks = () =>
   Object.assign(new Error('An API error occurred: invalid_blocks'), { data: { error: 'invalid_blocks' } });
+const platform = (code: string) =>
+  Object.assign(new Error(`An API error occurred: ${code}`), { data: { error: code } });
 const noSleep = async () => {};
 const card = { blocks: [{ type: 'image' }], fallbackBlocks: [{ type: 'section' }] };
 
@@ -39,18 +41,31 @@ describe('deliverImageCard', () => {
     expect(send.mock.calls[send.mock.calls.length - 1]?.[0]).toBe(card.fallbackBlocks);
   });
 
-  it('falls back at once on an error that a retry cannot fix', async () => {
-    const send = vi.fn().mockRejectedValueOnce(new Error('channel_not_found')).mockResolvedValue('text');
+  it('falls back at once on another Slack rejection (nothing was posted)', async () => {
+    const send = vi.fn().mockRejectedValueOnce(platform('too_many_attachments')).mockResolvedValue('text');
     await expect(deliverImageCard(card, send, { sleep: noSleep })).resolves.toBe('text');
     expect(send).toHaveBeenCalledTimes(2);
     expect(send.mock.calls[1][0]).toBe(card.fallbackBlocks);
   });
 
+  it('propagates a transport failure instead of posting a second message (the first may have landed)', async () => {
+    const send = vi.fn().mockRejectedValueOnce(new Error('socket hang up')).mockResolvedValue('text');
+    await expect(deliverImageCard(card, send, { sleep: noSleep })).rejects.toThrow('socket hang up');
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('an in-place update may fall back after any failure (fallbackOn)', async () => {
+    const send = vi.fn().mockRejectedValueOnce(new Error('update did not land')).mockResolvedValue('text');
+    await expect(deliverImageCard(card, send, { sleep: noSleep, fallbackOn: () => true })).resolves.toBe('text');
+    expect(send.mock.calls[1][0]).toBe(card.fallbackBlocks);
+  });
+
   it('throws when the fallback fails too', async () => {
     const send = vi.fn(async () => {
-      throw new Error('channel_not_found');
+      throw platform('channel_not_found');
     });
     await expect(deliverImageCard(card, send, { sleep: noSleep })).rejects.toThrow('channel_not_found');
+    expect(send).toHaveBeenCalledTimes(2);
   });
 });
 

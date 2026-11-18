@@ -141,7 +141,7 @@ describe('buildAuthInfographic — when more comes back', () => {
       acct({ name: 'claude:ai1@c', group: 'claude', seven_day: w(0.1, D), last_refresh_ms: (NOW_S - 2 * H) * 1000 }),
       acct({ name: 'claude:ai2@c', group: 'claude', seven_day: w(0.1, D), last_refresh_ms: (NOW_S - 9 * D) * 1000 }),
     ]);
-    expect(info.oldestRefreshAt).toBe(NOW_S - 9 * D);
+    expect(info.groups[0].oldestRefreshAt).toBe(NOW_S - 9 * D);
   });
 });
 
@@ -191,5 +191,17 @@ describe('buildAccountReport — every account, one row', () => {
     ]);
     expect(grok.rows[0].week).toBeCloseTo(0.7, 6);
     expect(grok.rows[0].plan).toBeUndefined();
+  });
+
+  it('holds a provider account paused by status alone (no blocked reason)', () => {
+    const { status, view } = build([
+      acct({ name: 'grok:ai@c', group: 'grok', type: 'grok', seven_day: w(0.3, 2 * D) }),
+      acct({ name: 'grok:z@c', group: 'grok', type: 'grok', status: 'paused', seven_day: w(0.1, 2 * D) }),
+    ]);
+    const [grok] = buildAccountReport(status, view, NOW_MS).groups;
+    expect(grok.rows.map((r) => [r.name, r.state, r.stateLabel])).toEqual([
+      ['ai', 'usable', '사용 가능'],
+      ['z', 'held', '일시정지'],
+    ]);
   });
 });

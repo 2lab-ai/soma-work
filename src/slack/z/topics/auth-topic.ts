@@ -28,7 +28,7 @@ import {
 import { buildAuthInfographic, describeAuthInfographic } from '../../auth/infographic-model';
 import { renderAuthSummaryPng } from '../../auth/infographic-publish';
 import { AUTH_ACTION_IDS } from '../../auth/views';
-import { type SlackImageUploader, slackImageUploader } from '../../slack-file-image';
+import type { SlackImageUploader } from '../../slack-file-image';
 import type { ZBlock } from '../types';
 import { renderCctCard } from './cct-topic';
 
@@ -240,11 +240,8 @@ export function createAuthTopicBinding(): ZTopicBinding {
       if (!mode) return { ok: false, summary: `❌ Unknown auth mode: \`${args.value}\` (expected llmux|cct)` };
       return applyAuthMode({ userId: args.userId, mode });
     },
-    renderCard: (args) =>
-      renderAuthCard({
-        userId: args.userId,
-        issuedAt: args.issuedAt,
-        ...(args.client ? { uploadImage: slackImageUploader(args.client) } : {}),
-      }),
+    // No uploader: ZRespond.replace cannot see Slack refusing a fresh image, so the
+    // `/z` help-card surface stays text; its [Refresh] posts through renderInPlace.
+    renderCard: (args) => renderAuthCard({ userId: args.userId, issuedAt: args.issuedAt }),
   };
 }
