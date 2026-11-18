@@ -2499,6 +2499,9 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
       await tm.init();
+      // Every profile sync (fire-and-forget or explicit) goes through this method; awaiting
+      // its promises waits for a sync to finish instead of sleeping and hoping it has.
+      const sync = vi.spyOn(tm, 'refreshOAuthProfile');
       const slot = await tm.addSlot({
         name: 'setup-p',
         kind: 'setup_token',
@@ -2519,7 +2522,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         },
         true,
       );
-      await new Promise((r) => setTimeout(r, 10));
+      await Promise.allSettled(sync.mock.results.map((r) => r.value));
       // Clear profile the attach-triggered fetch wrote so we can observe the
       // guard rejecting the stale generation's write cleanly.
       await store.mutate((snap: any) => {
@@ -2531,6 +2534,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       const { promise: gate, release: resolveGated } = holdGate<unknown>({ fetchedAt: 0 });
       fetchOAuthProfileMock.mockImplementation(async () => gate);
       const inFlight = tm.refreshOAuthProfile(slot.keyId);
+      const syncsBeforeReattach = sync.mock.results.length;
       // Detach, then re-attach under a new generation. We swap the mock to a
       // no-network resolver for the attach-triggered sync so it doesn't
       // deadlock on the gate.
@@ -2549,7 +2553,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         },
         true,
       );
-      await new Promise((r) => setTimeout(r, 10));
+      await Promise.allSettled(sync.mock.results.slice(syncsBeforeReattach).map((r) => r.value));
       // Now release the stale generation's fetch. Its write must be rejected
       // because the current attachedAt belongs to the new generation.
       resolveGated({ fetchedAt: 42, email: 'stale@gen.com' });
@@ -2602,14 +2606,15 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
       await tm.init();
+      const sync = vi.spyOn(tm, 'refreshOAuthProfile');
       const slot = await tm.addSlot({
         name: 'p4',
         kind: 'oauth_credentials',
         credentials: makeOAuthCreds(),
         acknowledgedConsumerTosRisk: true,
       });
-      // Drain the fire-and-forget profile sync triggered by addSlot.
-      await new Promise((r) => setTimeout(r, 10));
+      // Drain the fire-and-forget profile sync triggered by addSlot (await it, not a sleep).
+      await Promise.allSettled(sync.mock.results.map((r) => r.value));
       // Seed a known profile so we can assert it stays put after the failure.
       await store.mutate((snap: any) => {
         const target = snap.registry.slots.find((s: any) => s.keyId === slot.keyId);
