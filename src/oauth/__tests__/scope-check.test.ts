@@ -1,11 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { hasRequiredScopes, missingScopes, REQUIRED_OAUTH_SCOPES } from '../scope-check';
+import { hasRequiredScopes, missingScopes } from '../scope-check';
 
 describe('scope-check', () => {
-  it('exposes REQUIRED_OAUTH_SCOPES containing user:profile', () => {
-    expect(REQUIRED_OAUTH_SCOPES).toContain('user:profile');
-  });
-
   describe('hasRequiredScopes', () => {
     it('returns true when all required scopes are present', () => {
       expect(hasRequiredScopes(['user:profile'])).toBe(true);
@@ -34,7 +30,7 @@ describe('scope-check', () => {
     });
 
     it('returns all required scopes for empty input', () => {
-      expect(missingScopes([])).toEqual([...REQUIRED_OAUTH_SCOPES]);
+      expect(missingScopes([])).toEqual(['user:profile']);
     });
 
     it('ignores unrelated extra scopes', () => {

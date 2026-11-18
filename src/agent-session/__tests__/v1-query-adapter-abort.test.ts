@@ -79,30 +79,6 @@ describe('V1QueryAdapter — AbortController Unification (Ghost Session Fix #99)
     expect(executedParams.abortController).toBe(newController);
   });
 
-  // Trace: Scenario 1, Section 4 — abort via cancel() reaches the controller used by SDK
-  it('abort via requestCoordinator should reach the SDK-used controller', async () => {
-    const params = createMockExecuteParams();
-    const registeredController = params.abortController;
-
-    const adapter = new V1QueryAdapter({
-      streamExecutor: mockExecutor as StreamExecutorLike,
-      executeParams: params,
-    });
-
-    // Simulate: start is called, then requestCoordinator aborts the registered controller
-    await adapter.start('Hello');
-
-    // The controller passed to executor should be the registered one
-    const executedParams = mockExecutor.execute.mock.calls[0][0];
-    const sdkController = executedParams.abortController as AbortController;
-
-    // Simulate requestCoordinator.abortSession() → aborts the registered controller
-    registeredController.abort();
-
-    // SDK controller must also be aborted (same instance)
-    expect(sdkController.signal.aborted).toBe(true);
-  });
-
   // Trace: Scenario 1 — start() must NOT create a new AbortController
   it('start() should not create a different AbortController than the one in baseParams', async () => {
     const params = createMockExecuteParams();

@@ -69,20 +69,12 @@ describe('A2tService — status management', () => {
     expect(cfg.enabled).toBe(true);
   });
 
-  it('accepts custom config', () => {
-    const service = new A2tService({
-      model: 'tiny',
-      device: 'cuda',
-      computeType: 'float16',
-      minMemoryMb: 500,
-      pythonPath: '/usr/bin/python3.11',
-    });
-    const cfg = (service as any).config;
-    expect(cfg.model).toBe('tiny');
-    expect(cfg.device).toBe('cuda');
-    expect(cfg.computeType).toBe('float16');
-    expect(cfg.minMemoryMb).toBe(500);
-    expect(cfg.pythonPath).toBe('/usr/bin/python3.11');
+  it('initialize() enforces the configured memory floor and python path, not the defaults', async () => {
+    const floor = new A2tService({ minMemoryMb: 999_999_999 });
+    await expect(floor.initialize()).rejects.toThrow('999999999MB required');
+
+    const python = new A2tService({ pythonPath: '/nonexistent/custom-python3', minMemoryMb: 1 });
+    await expect(python.initialize()).rejects.toThrow("Python not found at '/nonexistent/custom-python3'");
   });
 
   it('initialize() rejects when memory insufficient', async () => {

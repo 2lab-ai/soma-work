@@ -60,9 +60,4 @@ describe('packages/slack ⟂ Claude SDK boundary (epic #1023 P4, acceptance gate
     }
     expect(offenders, `SDK import(s) found in packages/slack:\n${JSON.stringify(offenders, null, 2)}`).toEqual([]);
   });
-
-  it('stream-processor.ts specifically is SDK-free (the load-bearing former offender)', () => {
-    const src = fs.readFileSync(path.join(SLACK_SRC, 'stream-processor.ts'), 'utf8');
-    expect(findSdkImports(src)).toEqual([]);
-  });
 });

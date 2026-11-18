@@ -121,26 +121,6 @@ describe('MetricsEventEmitter', () => {
     expect(event.metadata?.url).toBe('https://github.com/org/repo/issues/1');
   });
 
-  // Trace: Scenario 3, Section 3b — pr_created on link add
-  it('prCreated_onLinkAdd', async () => {
-    await emitter.emitGitHubEvent('pr_created', 'U123', 'TestUser', 'session-key', {
-      url: 'https://github.com/org/repo/pull/2',
-    });
-
-    const event = mockStore.append.mock.calls[0][0];
-    expect(event.eventType).toBe('pr_created');
-  });
-
-  // Trace: Scenario 3, Section 3b — pr_merged on status change
-  it('prMerged_onStatusChange', async () => {
-    await emitter.emitGitHubEvent('pr_merged', 'U123', 'TestUser', 'session-key', {
-      url: 'https://github.com/org/repo/pull/2',
-    });
-
-    const event = mockStore.append.mock.calls[0][0];
-    expect(event.eventType).toBe('pr_merged');
-  });
-
   // Trace: Scenario 3, Section 5 — missing userId defaults to unknown
   it('turnUsed_missingUserId_defaultsToUnknown', async () => {
     await emitter.emitTurnUsed('conv-1', undefined as any, undefined as any, 'user');

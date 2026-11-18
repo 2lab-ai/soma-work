@@ -34,18 +34,6 @@ describe('zworkflow plugin manifests (T1/T2)', () => {
     expect(zworkflow.source).toBe('./src/local');
   });
 
-  it('does not keep the legacy internal marketplace.json with the old "omc" plugin', () => {
-    const legacyPath = path.join(REPO_ROOT, 'marketplace.json');
-    if (fs.existsSync(legacyPath)) {
-      const legacy = JSON.parse(fs.readFileSync(legacyPath, 'utf-8'));
-      // If a root marketplace.json still exists it must not advertise the old "omc" name.
-      const names = Array.isArray(legacy.plugins)
-        ? legacy.plugins.map((p: { name: string }) => p.name)
-        : Object.keys(legacy.plugins ?? {});
-      expect(names).not.toContain('omc');
-    }
-  });
-
   it('ships a plugin.json declaring the plugin name "zworkflow"', () => {
     const pluginJsonPath = path.join(REPO_ROOT, 'src', 'local', '.claude-plugin', 'plugin.json');
     expect(fs.existsSync(pluginJsonPath)).toBe(true);

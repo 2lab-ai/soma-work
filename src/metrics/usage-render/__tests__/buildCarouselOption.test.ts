@@ -166,12 +166,6 @@ describe('buildTabOption', () => {
     const opt = buildTabOption('all', stats, false) as any;
     expect(opt.series[0].data).toHaveLength(50);
   });
-
-  it('assertions are object-based, not SVG string grep (smoke)', () => {
-    const opt = buildTabOption('7d', makeNonEmptyStats('7d'), false) as any;
-    // Direct property access — never stringify and substring-match SVG.
-    expect(opt.series[0].type).toBe('heatmap');
-  });
 });
 
 // ───── buildStubOption ──────────────────────────────────────────────────

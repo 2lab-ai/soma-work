@@ -19,8 +19,9 @@ const MB = 1024 * 1024;
 describe('availableMemoryMb — memory the OS can give a new worker', () => {
   it('on macOS counts free + inactive + speculative pages from vm_stat', () => {
     const mb = availableMemoryMb({ platform: 'darwin', vmStat: () => VM_STAT });
-    expect(mb).toBeCloseTo(((132678 + 2481856 + 58112) * 16384) / MB, 0);
-    expect(mb).toBeGreaterThan(40_000);
+    // (132678 + 2481856 + 58112) pages * 16 KiB = 41,760.09 MB. The result is max(os.freemem(), that), so on a host
+    // with more live free memory it may be higher — never lower.
+    expect(mb).toBeGreaterThanOrEqual(41_760.09 - 0.5);
   });
 
   it('on macOS falls back to os.freemem() when vm_stat fails', () => {

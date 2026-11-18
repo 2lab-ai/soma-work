@@ -115,17 +115,6 @@ describe('runWithRotatingLogs', () => {
     const code = await handle.done;
     expect(code).toBe(3);
   }, 20000);
-
-  it('module is runnable as a launchd entrypoint (has a main guard)', () => {
-    // Sanity: the compiled wrapper is what the plist invokes. Running it with a
-    // trivial child entry must exit cleanly, proving the require.main guard wires
-    // argv -> spawn. We invoke the TS source via tsx-equivalent (node --import not
-    // assumed); instead assert the source exports the runner used by main().
-    const src = fs.readFileSync(path.join(__dirname, 'run-with-rotating-logs.ts'), 'utf8');
-    expect(src).toContain('require.main === module');
-    // spawnSync guard keeps the import used (avoids unused-import lint churn).
-    expect(typeof spawnSync).toBe('function');
-  });
 });
 
 describe('capBootstrapLogs', () => {

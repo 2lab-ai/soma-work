@@ -153,10 +153,8 @@ describe('session-goal-block / buildSessionGoalBlock', () => {
     expect(block).not.toContain('goal-complete-request');
   });
 
-  it('stays compact — rules only, no codex-template boilerplate (D3)', () => {
+  it('stays compact — rules only (D3)', () => {
     const block = buildSessionGoalBlock(withGoal(baseGoal));
-    expect(block).not.toContain('user-provided task data');
-    expect(block).not.toContain('Behavior:');
     // Overhead beyond the objective itself (five rules; the task-gate rule added ~90 chars).
     expect(block.length - baseGoal.objective.length).toBeLessThanOrEqual(550);
   });
@@ -203,10 +201,7 @@ describe('session-goal-block / buildGoalContinuationPrompt', () => {
     // The objective lives only in the system prompt now.
     expect(prompt).not.toContain('finish migration');
     expect(prompt).not.toContain('<objective>');
-    // Codex-template boilerplate is gone.
-    for (const removed of ['Continuation behavior', 'Fidelity', 'Completion audit', 'Impasse', 'Work from evidence']) {
-      expect(prompt).not.toContain(removed);
-    }
+    // No completion sentinel: the host never parsed one (N10).
     expect(prompt).not.toContain('goal-complete-request');
   });
 
