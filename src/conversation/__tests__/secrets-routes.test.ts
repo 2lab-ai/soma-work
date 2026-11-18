@@ -128,6 +128,8 @@ describe('secrets routes (secret-access WU1)', () => {
         updatedBy: 'U_ADMIN',
         updatedByName: 'U_ADMIN', // no settings row for the id in this test: the id stands in
         usages: [{ server: 'dev2', path: 'github.token' }],
+        // WU2: who may use it beyond admins (no grant yet; dev2 is not an environment server here)
+        access: { direct: [], environments: [] },
       },
     ]);
     // Configuration names a secret the store does not hold: shown so the admin can add it.
@@ -183,5 +185,111 @@ describe('secrets routes (secret-access WU1)', () => {
     const { 'x-csrf-token': _csrf, ...h } = await admin();
     expect((await call('PUT', '/api/secrets/x', h, { value: 'v' })).status).toBe(403);
     expect(fs.existsSync(path.join(secretsDir, 'x'))).toBe(false);
+  });
+});
+
+describe('secrets routes — who may use each secret (secret-access WU2)', () => {
+  let stopWebServer: any;
+  let inject: any;
+  let routes: typeof import('../secrets-routes');
+  let root: string;
+  let dataDir: string;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'secrets-grants-'));
+    dataDir = process.env.DATA_DIR as string;
+    fs.rmSync(dataDir, { recursive: true, force: true });
+    fs.mkdirSync(dataDir, { recursive: true });
+    const configFile = path.join(root, 'config.json');
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({
+        'server-tools': {
+          dev2: { envUser: 'env:acme-dev2', github: { token: { $secret: 'gh-token' } } },
+        },
+      }),
+    );
+    const webServer = await import('../web-server');
+    stopWebServer = webServer.stopWebServer;
+    inject = webServer.injectWebServer;
+    routes = await import('../secrets-routes');
+    routes.setSecretsPathsForTests({ secretsDir: path.join(root, 'secrets'), dataDir, configFile });
+    routes.setSecretsUserSourceForTests(() => [
+      { userId: 'U_A', slackDisplayName: '에이', accepted: true },
+      { userId: 'U_B', slackName: 'bee', accepted: true },
+      { userId: 'U_WAIT', slackDisplayName: '대기', accepted: false },
+    ]);
+    const grants = await import('../../user-skill-grants-store');
+    grants.grantEnvironment('env:acme-dev2', 'U_B');
+    await webServer.startWebServer({ listen: false });
+  }, 60_000);
+
+  afterEach(async () => {
+    routes.setSecretsPathsForTests(null);
+    routes.setSecretsUserSourceForTests(null);
+    await stopWebServer();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  async function admin() {
+    const { issueSlackToken } = await import('../oauth');
+    const token = issueSlackToken({ slackUserId: 'U_ADMIN', email: 'a@slack.local', name: 'U_ADMIN' });
+    const sso = await inject({ method: 'GET', url: `/auth/sso?token=${encodeURIComponent(token)}` });
+    const cookie = String(sso.headers['set-cookie']).split(';')[0];
+    const me = JSON.parse((await inject({ method: 'GET', url: '/auth/me', headers: { cookie } })).body);
+    return { cookie, 'x-csrf-token': me.csrfToken as string, 'content-type': 'application/json', 'x-admin-mode': 'on' };
+  }
+  async function call(method: string, url: string, headers: Record<string, string>, payload?: unknown) {
+    const res = await inject({ method, url, headers, ...(payload === undefined ? {} : { payload }) });
+    return { status: res.statusCode as number, body: JSON.parse(res.body || 'null') };
+  }
+
+  it('lists who may use a secret — directly and through an environment — and the users to pick from', async () => {
+    const h = await admin();
+    await call('PUT', '/api/secrets/gh-token', h, { value: 'v' });
+    const list = await call('GET', '/api/secrets', h);
+    expect(list.body.users).toEqual([
+      { id: 'U_B', name: 'bee' },
+      { id: 'U_A', name: '에이' },
+    ]);
+    expect(list.body.secrets[0].access).toEqual({
+      direct: [],
+      environments: [{ id: 'env:acme-dev2', server: 'dev2', users: ['U_B'] }],
+    });
+  });
+
+  it('adds and removes a user, audits both, and refuses a user who is not accepted', async () => {
+    const h = await admin();
+    await call('PUT', '/api/secrets/gh-token', h, { value: 'v' });
+    const added = await call('POST', '/api/secrets/gh-token/grants', h, { userId: 'U_A', allow: true });
+    expect(added.status).toBe(200);
+    expect(added.body.access.direct).toEqual(['U_A']);
+    const grants = await import('../../user-skill-grants-store');
+    expect(grants.hasSecretGrant('gh-token', 'U_A')).toBe(true);
+    expect((await call('POST', '/api/secrets/gh-token/grants', h, { userId: 'U_WAIT', allow: true })).status).toBe(400);
+    const removed = await call('POST', '/api/secrets/gh-token/grants', h, { userId: 'U_A', allow: false });
+    expect(removed.body.access.direct).toEqual([]);
+    const actions = fs
+      .readFileSync(path.join(dataDir, 'secret-audit.jsonl'), 'utf-8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l))
+      .filter((r) => r.action.startsWith('grant.'))
+      .map((r) => [r.action, r.name, r.userId]);
+    expect(actions).toEqual([
+      ['grant.add', 'gh-token', 'U_A'],
+      ['grant.remove', 'gh-token', 'U_A'],
+    ]);
+  });
+
+  it('grant changes need the named admin with admin mode, and a valid name', async () => {
+    const h = await admin();
+    const { 'x-admin-mode': _mode, ...noMode } = h;
+    expect((await call('POST', '/api/secrets/gh-token/grants', noMode, { userId: 'U_A', allow: true })).status).toBe(
+      403,
+    );
+    expect((await call('POST', '/api/secrets/has%20space/grants', h, { userId: 'U_A', allow: true })).status).toBe(400);
+    expect((await call('POST', '/api/secrets/gh-token/grants', h, { userId: 'U_A' })).status).toBe(400);
   });
 });

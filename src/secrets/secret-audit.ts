@@ -16,7 +16,17 @@ export const SECRET_AUDIT_FILE = 'secret-audit.jsonl';
 /** How much of the ledger the 비밀 tab reads back for "last changed by" — the newest end. */
 const READ_TAIL_BYTES = 1024 * 1024;
 
-export type SecretAuditAction = 'secret.create' | 'secret.overwrite' | 'secret.delete';
+export type SecretAuditAction =
+  | 'secret.create'
+  | 'secret.overwrite'
+  | 'secret.delete'
+  /** An admin's answer to a secret-use card (secret-access WU2): this thread, never, or from now on. */
+  | 'use.once'
+  | 'use.deny'
+  | 'use.always'
+  /** A "who may use it" change on the 비밀 tab. */
+  | 'grant.add'
+  | 'grant.remove';
 
 export interface SecretAuditRecord {
   /** The admin's Slack id. */
@@ -24,9 +34,14 @@ export interface SecretAuditRecord {
   action: SecretAuditAction;
   /** The secret's name. */
   name: string;
+  /** Whose tools the answer or grant is about. */
+  userId?: string;
+  /** The server-tools tool and server a secret-use card was about. */
+  tool?: string;
+  server?: string;
 }
 
-const FIELDS = ['actor', 'action', 'name'] as const;
+const FIELDS = ['actor', 'action', 'name', 'userId', 'tool', 'server'] as const;
 
 /** Append one record. Throws when it cannot be written and synced — the caller decides what that means. */
 export function appendSecretAudit(record: SecretAuditRecord, dataDir: string = DATA_DIR, now: Date = new Date()): void {

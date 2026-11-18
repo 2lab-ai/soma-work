@@ -9565,7 +9565,7 @@ var _adminState = Object.create(null); // id → this page's answer (sending · 
 var _adminInboxOpen = false;
 var _adminPushSeq = 0; // WebSocket snapshots seen — a GET that started before a push is older than it
 var _adminInboxReturn = null;
-var ADMIN_KIND_LABEL = { env_skill: '환경 스킬', mcp_grant: 'MCP 권한', new_user: '새 사용자', bot_delete: '메시지 삭제', session_question: '에이전트 질문' };
+var ADMIN_KIND_LABEL = { env_skill: '환경 스킬', mcp_grant: 'MCP 권한', new_user: '새 사용자', bot_delete: '메시지 삭제', session_question: '에이전트 질문', secret_use: '비밀 사용' };
 // #1131 — several requests decided in one pass, and desktop alerts.
 var _adminSel = Object.create(null); // ids ticked for a decision together — kept across snapshots while still pending
 var _adminSeenEver = null; // every pending id this page has seen — the first load is the baseline (no desktop alert)

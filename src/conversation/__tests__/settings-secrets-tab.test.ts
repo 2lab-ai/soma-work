@@ -24,6 +24,12 @@ function load<T>(fns: string[], inject: Record<string, unknown> = {}): T {
 }
 
 const FNS = [
+  'scUserName',
+  'scChip',
+  'scAccess',
+  'scGrant',
+  'scAddGrant',
+  'scRemoveGrant',
   'esc',
   'escAttr',
   'scStatus',
@@ -53,10 +59,16 @@ function data() {
         updatedBy: 'U_ADMIN',
         updatedByName: '관리자님',
         usages: [{ server: 'dev2', path: 'github.token' }],
+        access: { direct: ['U_A'], environments: [{ id: 'env:acme-dev2', server: 'dev2', users: ['U_B'] }] },
       },
       { name: 'unused', updatedAt: '2026-11-17T01:00:00.000Z', usages: [] },
     ],
     missing: [{ name: 'gone', usages: [{ server: '<b>x</b>', path: 'web.logins.p.body.pw' }] }],
+    users: [
+      { id: 'U_A', name: '에이' },
+      { id: 'U_B', name: '비' },
+      { id: 'U_C', name: '씨' },
+    ],
   };
 }
 
@@ -285,5 +297,65 @@ describe('비밀 tab — opened by address', () => {
     s.api.showTab('secrets');
     expect(s.tabsEl.data?.value).toBe('secrets');
     expect(s.panels[1].hidden).toBe(false);
+  });
+});
+
+describe('비밀 tab — who may use it (secret-access WU2)', () => {
+  it('shows the environment holders read-only and the direct grants; editable with admin mode', () => {
+    const view = page({ adminMode: false });
+    view.api.renderSecrets();
+    const html: string = view.els['sc-body'].innerHTML;
+    expect(html).toContain('acme-dev2 환경 허락:');
+    expect(html).toContain('>비<');
+    expect(html).toContain('>에이<');
+    expect(html).not.toContain('scRemoveGrant');
+    expect(html).not.toContain('scAddGrant');
+
+    const edit = page({ adminMode: true });
+    edit.api.renderSecrets();
+    const editable: string = edit.els['sc-body'].innerHTML;
+    // one ✕ — the direct grant; the environment holder is edited on the environment
+    expect(editable.match(/onclick="scRemoveGrant\(this\)"/g)).toHaveLength(1);
+    // the picker of gh-token offers those not yet granted directly
+    const picker = /id="sc-pick-gh-token"[^>]*>(.*?)<\/select>/.exec(editable)![1];
+    expect(picker).toContain('U_B');
+    expect(picker).toContain('U_C');
+    expect(picker).not.toContain('value="U_A"');
+  });
+
+  it('adds and removes through POST …/grants and redraws from the answer', async () => {
+    const p = page({ adminMode: true, inputs: { 'sc-pick-gh-token': { value: 'U_C' } } });
+    p.apiWrite.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      data: { access: { direct: ['U_A', 'U_C'], environments: [] } },
+    });
+    await p.api.scAddGrant({ getAttribute: () => 'gh-token' });
+    expect(p.apiWrite).toHaveBeenCalledWith('POST', '/api/secrets/gh-token/grants', { userId: 'U_C', allow: true });
+    expect(p.els['sc-body'].innerHTML).toContain('>씨<');
+    p.apiWrite.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      data: { access: { direct: ['U_C'], environments: [] } },
+    });
+    await p.api.scRemoveGrant({ getAttribute: (k: string) => (k === 'data-name' ? 'gh-token' : 'U_A') });
+    expect(p.apiWrite).toHaveBeenLastCalledWith('POST', '/api/secrets/gh-token/grants', {
+      userId: 'U_A',
+      allow: false,
+    });
+    // redrawn from the answer: 에이 is no longer a direct chip and is offered in the picker again
+    const html: string = p.els['sc-body'].innerHTML;
+    const direct = /직접 허락\(앞으로 계속 자동 수락\):<\/span>(.*?)<\/div>/.exec(
+      html.split('sc-name">gh-token')[1],
+    )![1];
+    expect(direct).not.toContain('>에이<');
+    expect(direct).toContain('>씨<');
+    expect(/id="sc-pick-gh-token"[^>]*>(.*?)<\/select>/.exec(html)![1]).toContain('value="U_A"');
+  });
+
+  it('no pick sends nothing', async () => {
+    const p = page({ adminMode: true, inputs: { 'sc-pick-gh-token': { value: '' } } });
+    await p.api.scAddGrant({ getAttribute: () => 'gh-token' });
+    expect(p.apiWrite).not.toHaveBeenCalled();
   });
 });
