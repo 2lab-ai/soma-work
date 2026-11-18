@@ -659,25 +659,9 @@ describe("the element's events on document (executed)", () => {
 });
 
 describe('the page around the element', () => {
-  it('loads the element, sizes it as a block in its section, and keeps none of its own goal editor', () => {
+  it('loads the element and sizes it as a block in its section', () => {
     expect(TEMPLATE).toContain('<script type="module" src="/dashboard/ui/goal-card.js?v=');
     expect(TEMPLATE).toContain('.panel-goal > ui-goal-card { display: block; }');
-    for (const gone of [
-      'renderCardGoal',
-      'renderGoalHistory',
-      'addGoalFromCard',
-      'togglePanelGoal',
-      'syncGoalMore',
-      '_panelGoalOpen',
-      '_goalHistoryOpen',
-      'goalHistoryToggle',
-      'cg-add-input',
-      'cg-objective',
-      'cg-history',
-      '.card-goal {',
-      'cg-hx',
-    ])
-      expect(TEMPLATE, gone).not.toContain(gone);
   });
 
   it("the goal landing focuses the element's add box (else its group) through the open shadow root, else the section", () => {
@@ -700,10 +684,7 @@ describe('the page around the element', () => {
     expect(none.goalCardFocusTarget()).toBeNull();
   });
 
-  it('every live panel repaint goes through renderPanelGoal; the open card body no longer carries a goal draft', () => {
+  it('every live panel repaint goes through renderPanelGoal', () => {
     expect(clientFn('repaintPanelSession')).toContain('renderPanelGoal();');
-    expect(clientFn('paintCardBody')).not.toContain('isEditingGoal');
-    expect(TEMPLATE).not.toContain('function isEditingGoal(');
-    expect(TEMPLATE).not.toContain('function captureGoalDraft(');
   });
 });

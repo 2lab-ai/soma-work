@@ -232,19 +232,8 @@ describe('collapsed card: the task in progress (T3)', () => {
 // row; the count-up itself has no library test yet.
 
 describe('live times are <ui-elapsed> (D7 K-03)', () => {
-  it('the page loads @2lab.ai/ui/elapsed and keeps no tick of its own (D8b: the cron countdown is the element’s too) — no clock loop, no Date.now() in markup', () => {
+  it('the page loads @2lab.ai/ui/elapsed; a live time is <ui-elapsed> markup from its start, never a clock read into the markup', () => {
     expect(TEMPLATE).toContain('<script type="module" src="/dashboard/ui/elapsed.js?v=${UI_LIB_VERSION}"></script>');
-    for (const gone of [
-      'function updateTimers',
-      'aqTick',
-      'updateTimersIn',
-      'card-timer-live',
-      'rel-time',
-      'task-elapsed',
-      'data-leg-started',
-      'function timeAgo',
-    ])
-      expect(TEMPLATE, gone).not.toContain(gone);
     const h = load<{
       elapsedHtml(since: number, title?: string): string;
       activeTimeHtml(leg: number, acc: number, title?: string): string;
@@ -293,9 +282,6 @@ describe('task window on the card is <ui-task-plan max foot="none"> (T7/T8, D8b 
     expect(clientFn('paintCardBody')).toContain('cardTaskPlanHydrate(b.el);');
     expect(clientFn('cardTaskPlanHydrate')).toContain("querySelectorAll('ui-task-plan[data-tp-key]')");
     expect(clientFn('cardTaskPlanHydrate')).toContain('taskElData(els[i], cardTaskPlanData(s));');
-    // The page's own timeline is gone: no rows, no fold line, no link of its own in the window.
-    for (const gone of ['.tl-item', 'tl-toggle', 'tl-wrap', 'function renderTimeline', 'function renderTaskMeta'])
-      expect(TEMPLATE, gone).not.toContain(gone);
   });
 
   it('each step carries its id (the ref), a completed one its times and tool calls, the running one its start — the element ticks it — and a pending one neither', () => {

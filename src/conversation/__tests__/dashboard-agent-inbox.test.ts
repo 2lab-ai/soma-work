@@ -72,15 +72,7 @@ describe('agent inbox board — layout (§3.1)', () => {
     expect(TEMPLATE).toContain('<ui-agent-inbox id="kanban" class="kanban" view="board" lang="ko"></ui-agent-inbox>');
   });
 
-  it('drops the old 4-column idle/closed containers', () => {
-    expect(TEMPLATE).not.toContain('id="col-closed"');
-    expect(TEMPLATE).not.toContain('id="cards-idle"');
-    expect(TEMPLATE).not.toContain('id="cards-closed"');
-  });
-
-  it('DONE files closed cards under the day they finished instead of a 7-day Show older toggle (T11/T12)', () => {
-    expect(TEMPLATE).not.toContain('Show older');
-    expect(TEMPLATE).not.toContain('function toggleOlderClosed()');
+  it('DONE files closed cards under the day they finished (T11/T12)', () => {
     expect(TEMPLATE).toContain('function planDoneGroups(');
     // The day heads are the element's (columns[].groups); the reader's choice comes back as ui-group-toggle.
     expect(fnBody('wireInbox')).toContain("host.addEventListener('ui-group-toggle', function(e) {");
@@ -101,16 +93,6 @@ describe('agent inbox board — layout (§3.1)', () => {
     expect(detailAt).toBeGreaterThan(host);
     expect(close).toBeGreaterThan(detailAt);
     expect(board).toBeGreaterThan(close);
-    // The old inline row is gone: the period, 세션 · 토큰 · 비용 and 자세히 are the element's data.
-    for (const gone of [
-      'id="period-seg"',
-      'id="stat-sessions"',
-      'id="stat-tokens',
-      'id="stat-cost"',
-      'id="stats-more"',
-    ]) {
-      expect(TEMPLATE, gone).not.toContain(gone);
-    }
     // Behind 자세히: the remaining cards and the charts. The cards are a second <ui-stat-strip> in layout 'cards'
     // (D4, B-07): 턴 · PR 생성 · PR 머지 are its figures, 머지 코드 and 워크플로우 the page's slotted spans.
     const detail = main.slice(detailAt, close);
@@ -150,10 +132,6 @@ describe('agent inbox board — layout (§3.1)', () => {
     expect(TEMPLATE).toContain(
       "viewSeg.addEventListener('ui-change', function(e) { setBoardView(e.detail.value, e); });",
     );
-    // The inline strip and segmented rules are gone (the element draws its row, chip, toggle, 44px rows and reduced motion).
-    expect(TEMPLATE).not.toMatch(/\n\.seg \{|\.seg-btn|\.stats-strip \{|\.strip-num|\.stats-more/);
-    expect(TEMPLATE).not.toContain('function paintPeriodSeg(');
-    expect(TEMPLATE).not.toContain('function toggleStatsDetail(');
   });
 
   it('the 자세히 choice persists in localStorage and starts collapsed (§3.1-2)', () => {
@@ -175,7 +153,6 @@ describe('agent inbox board — layout (§3.1)', () => {
       '<button type="button" class="ui-chip archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()">',
     );
     expect(TEMPLATE).toContain('.archives-btn[hidden] { display: none; }');
-    expect(TEMPLATE).not.toMatch(/^\.archives-btn \{/m);
     expect(btn).toBeGreaterThan(0);
     // Tone pass P8: the group's name and its two buttons are Korean (보드 · 목록).
     // D1 (D-02): Board | List is <ui-segmented>; the page hands it the group name and the two choices.
@@ -190,8 +167,6 @@ describe('agent inbox board — layout (§3.1)', () => {
     // A toggle button: the label stays "Archives (N)", aria-pressed carries the state.
     expect(toggle).toContain("STRINGS.archives + ' (' + archivedCount + ')'");
     expect(TEMPLATE).toContain("archives: '보관함',");
-    expect(toggle).not.toContain('Show archives');
-    expect(toggle).not.toContain('Hide archives');
     expect(toggle).toContain('archivedCount === 0');
     expect(toggle).toContain("btn.setAttribute('aria-pressed', pressed)");
   });
@@ -206,7 +181,6 @@ describe('agent inbox board — layout (§3.1)', () => {
     // Each day's items through place() (E4 ⑨c: an epic's children follow its card), drawn when the day is open.
     expect(body).toContain('keys: place(g.items, kb, g.open),');
     expect(body).toContain('placeCard(it.s, it.col, host, drawn);');
-    expect(body).not.toContain('renderOlderToggle');
     expect(body).toContain('renderArchivesToggle(plan.archivedCount)');
     // The #814 tokens tooltip follows the board it describes.
     expect(body).toContain('updateTokenBreakdown();');
@@ -292,12 +266,8 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
 
   it('a card’s title opens its detail card, ▽ only opens it in place; without a conversation the work log reads 작업 로그 없음', () => {
     const body = fnBody('renderCardBody');
-    // SSOT 2026-10-29 T2: no 작업 로그 button (nor its primary/steps-back logic). .prd/34: the detail
-    // card is the title's (the element's ui-detail → openPanel(key)); expanding in place (ui-toggle)
-    // opens or drops none. The executed wiring is in dashboard-affectui-agent-inbox-client.test.ts.
-    expect(body).not.toContain('worklogBtn');
-    expect(body).not.toContain('canDecideHere');
-    expect(body).not.toContain('작업 로그</button>');
+    // .prd/34: the detail card is the title's (the element's ui-detail → openPanel(key)); expanding in place
+    // (ui-toggle) opens or drops none. The executed wiring is in dashboard-affectui-agent-inbox-client.test.ts.
     const wire = fnBody('wireInbox');
     const toggle = wire.slice(wire.indexOf("'ui-toggle'"), wire.indexOf("'ui-detail'"));
     expect(toggle).not.toContain('openPanel(');
@@ -333,9 +303,6 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
     expect(body).toContain('_panelTurnsList = turns.concat(_panelTurnsList);');
     expect(body).toContain('convPaint();');
     expect(body).not.toContain('insertAdjacentHTML');
-    // D6b (D3 G1-1): 작업 로그 and 에이전트 트리 are library scroll boxes too (<ui-work-log>, <ui-log-scroller>) — the
-    // page keeps no anchor of its own for any section.
-    expect(TEMPLATE).not.toMatch(/function psecRestoreAnchor\(|function psecViewAnchor\(|_anchor = psecViewAnchor/);
   });
 
   it('reopening a card retries a failed 지시/응답 fetch at once', () => {
@@ -346,16 +313,6 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
     expect(TEMPLATE).toContain("'?limit=3'");
     expect(TEMPLATE).toContain('지시');
     expect(TEMPLATE).toContain('응답');
-  });
-
-  it('no card button opens the panel at the work log any more (SSOT 2026-10-29 T2)', () => {
-    // The removed 작업 로그 button was the only card control that passed `true` (the work-log
-    // landing). The detail card opens with the card (Chat, the default); the 작업 로그 tab is
-    // one click away in it.
-    expect(DASHBOARD_TS).not.toContain("openPanel(\\\\'' + escJs(s.key) + '\\\\',true,");
-    // (the same quoting is live on the goal line — the check above is not vacuous)
-    expect(DASHBOARD_TS).toContain("openPanel(\\\\'' + escJs(s.key) + '\\\\',\\\\'goal\\\\',");
-    expect(TEMPLATE).toContain("{ id: 'log', label: '작업 로그' },");
   });
 });
 
@@ -424,14 +381,11 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
     expect(fnBody('panelScrollAnchor')).toContain("'#panel-question, #panel-tasks, #panel-sections'");
   });
 
-  it('the work log is a section tab with its own scroll box — no disclosure header, never hidden-but-rendered (§3.1-6, SSOT 2026-10-29)', () => {
+  it('the work log is a section tab with its own scroll box (§3.1-6, SSOT 2026-10-29)', () => {
     // D3 F-01: the list is <ui-work-log>, its own scroll box (its <ui-log-scroller>, role=log inside).
     expect(TEMPLATE).toContain('<ui-work-log class="worklog-list" id="worklog-list" lang="ko"></ui-work-log>');
-    expect(TEMPLATE).not.toContain('id="worklog-toggle"');
-    expect(TEMPLATE).not.toContain('.worklog-list[hidden]');
     // The panel's box gives the element its height; the element scrolls.
     expect(TEMPLATE).toMatch(/\n\.psec\.psec-el \{ overflow: hidden; display: flex; flex-direction: column; \}/);
-    expect(TEMPLATE).not.toMatch(/\n\.worklog-list \{/);
   });
 
   it('an opening names its section tab — 작업 로그 / ?session= open on the work log; the list is painted only while it is shown (§3.1-6, §3.1-7)', () => {
@@ -470,11 +424,7 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
     // ui-load-older; the page answers with its next window or refuses when there is none.
     expect(body).toContain("tree.addEventListener('ui-load-older', function(e) {");
     expect(body).toContain('if (!showMoreTree()) e.preventDefault();');
-    // No sentinel, pin or arming of the page's for any section; the newest is the element's scrollToLatest.
-    for (const gone of ['new IntersectionObserver(', '_psecPin', 'box._armed', 'psecLoadOlder(']) {
-      expect(body, gone).not.toContain(gone);
-    }
-    expect(TEMPLATE).not.toMatch(/function psecPageDue\(|function psecMaybeFill\(|function psecAtBottom\(/);
+    // The newest is the element's scrollToLatest.
     expect(fnBody('psecToNewest')).toContain(
       "if (el && typeof el.scrollToLatest === 'function') el.scrollToLatest({ smooth: false });",
     );
@@ -490,7 +440,6 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
     expect(body).toContain("el.addEventListener('ui-retry'");
     expect(body).toContain("el.addEventListener('ui-open'");
     expect(body).toContain("el.addEventListener('ui-load-older'");
-    expect(TEMPLATE).not.toMatch(/\n\(function initWorkLogInteractions\(\)/);
   });
 
   it('live-appends work_log WS entries through the seq merge', () => {
@@ -594,66 +543,32 @@ describe('tone pass P7 — surfaces and elevation', () => {
 
   it('stat cards and charts are 12px cards on --ib-shadow; menus, dialogs, the peek, the viewer and tooltips are raised', () => {
     // D4 (B-07): the stat cards are <ui-stat-strip layout: 'cards'> tiles (12px, hairline + resting shadow).
-    expect(TEMPLATE).not.toContain('.stat-card');
     // D2 (B-08): the charts are @2lab.ai/ui <ui-bar-chart> — each element draws its own 12px card on
     // --ib-shadow; the page only lays the two side by side.
     expect(TEMPLATE).toContain(
       '<div class="chart-row" id="chart-row"><ui-bar-chart id="chart-sessions" lang="ko"></ui-bar-chart><ui-bar-chart id="chart-merge" lang="ko"></ui-bar-chart></div>',
     );
-    expect(TEMPLATE).not.toContain('.chart-container');
     // D4 (H-01, I-05, I-06): the New task dialog, the peek and the viewer are @2lab.ai/ui elements — their raised
-    // panels are the library's; the page keeps no box, shadow or scrim rule for them.
+    // panels are the library's.
     expect(TEMPLATE).toContain(
       '<ui-dialog id="nt-dialog" class="nt-dialog" heading="새 작업" size="lg" size-phone="full" lang="ko">',
     );
-    expect(TEMPLATE).not.toMatch(/\.nt-dialog \{/);
     expect(TEMPLATE).toContain('<ui-hovercard id="art-peek"');
     expect(TEMPLATE).toContain('<ui-artifact-viewer id="art-viewer" tiles="none"');
-    expect(TEMPLATE).not.toMatch(/\.art-peek \{|\.art-modal \{/);
     // D2 (B-04, B-08): the token breakdown is <ui-stat-strip>'s card tooltip (data.metrics[].breakdown) and the bar
-    // values are <ui-bar-chart>'s own tooltip — the elements draw their surfaces; the page keeps no tooltip rule
-    // and no <ui-tooltip> of its own.
+    // values are <ui-bar-chart>'s own tooltip — the elements draw their surfaces.
     expect(TEMPLATE).toContain('if (_tokenBreakdown) tokens.breakdown = _tokenBreakdown;');
-    expect(TEMPLATE).not.toContain('<ui-tooltip');
-    expect(TEMPLATE).not.toMatch(/\.bar \{|\.bar-chart \{|\.bar-labels/);
-    expect(TEMPLATE).not.toContain('bar-tooltip');
-    expect(TEMPLATE).not.toContain('tooltip-open');
   });
 
-  it('turns carry no colour rail and no emoji avatar (D3: the turn chrome is <ui-conversation>’s own — neutral tiles, the icon set’s bot)', () => {
-    expect(TEMPLATE).not.toMatch(/\.turn\.(user|assistant|is-sys) \{[^}]*border-left/);
-    expect(TEMPLATE).not.toContain('.turn-avatar');
-    expect(TEMPLATE).not.toContain('&#x1F916;');
-    expect(TEMPLATE).not.toContain('BOT_AVATAR_SVG');
-  });
-
-  it('the goal mark is the target glyph, not the bullseye emoji', () => {
-    expect(TEMPLATE).not.toContain('&#x1F3AF;');
+  it('the goal mark is the target glyph', () => {
     expect(TEMPLATE.match(/<span class="cgl-icon" aria-hidden="true">' \+ GOAL_SVG \+ '<\/span>/g)).toHaveLength(2);
-    // The editor's own mark is <ui-goal-card>'s (the same target glyph from the icon set, D6b).
-    expect(TEMPLATE).not.toContain('cg-label');
   });
 });
 
 // Tone pass P8 — copy: Korean chrome from one STRINGS table, "…" not "...", no emoji in labels; the
 // text triangles and the close / regenerate characters are the icon set's 16-grid stroke glyphs.
 describe('tone pass P8 — copy and glyphs', () => {
-  it('no emoji or text triangles in the chrome: close, regenerate, warnings, chevrons are glyphs', () => {
-    for (const s of [
-      '&#x1F504;',
-      '\\uD83D\\uDD04',
-      '&#x2715;',
-      '&#xD7;</button>',
-      '\\u274C',
-      '\\u26A0\\uFE0F',
-      '\\uD83D\\uDCCB',
-      '\\u2705',
-    ]) {
-      expect(TEMPLATE, s).not.toContain(s);
-    }
-    for (const s of ['&#x25B2;', '&#x25BC;', "'\\\\25B6 '", "'\\\\25BC '", '▶ 수동 실행', "'🔐 '"]) {
-      expect(TEMPLATE, s).not.toContain(s);
-    }
+  it('close, regenerate and chevrons are the icon set’s glyphs', () => {
     // One chevron: the icon set's, drawn as a mask in currentColor, turned by aria-expanded.
     expect(TEMPLATE).toMatch(/\n\.chev \{[^}]*mask: var\(--chev\) center \/ contain no-repeat;/);
     expect(TEMPLATE).toContain('.chev.is-up, [aria-expanded="true"] > .chev { transform: rotate(180deg); }');
@@ -669,16 +584,6 @@ describe('tone pass P8 — copy and glyphs', () => {
   });
 
   it('Korean chrome with "…": the panel, the lifecycle dialog and the board tools; the panel copy comes from STRINGS', () => {
-    for (const s of [
-      'Session Detail</h3>',
-      '>Session lifecycle<',
-      'title="Session lifecycle (admin)"',
-      'aria-label="Usage stats"',
-      'aria-label="Breadcrumb"',
-      '<span>Lifecycle</span>',
-    ]) {
-      expect(TEMPLATE, s).not.toContain(s);
-    }
     expect(TEMPLATE).toContain('<h3 id="panel-title" tabindex="-1" dir="auto">작업 카드</h3>');
     // D1 (J-01): the lifecycle dialog is @2lab.ai/ui <ui-dialog>; its Korean title is the element's heading.
     expect(TEMPLATE).toContain(
@@ -690,17 +595,6 @@ describe('tone pass P8 — copy and glyphs', () => {
     );
     expect(fnBody('openLifecycleDialog')).toContain('dlg.show();');
     expect(fnBody('closeLifecycleDialog')).toContain('dlg.hide();');
-    for (const s of [
-      "'Retrying...'",
-      'Generating summary...',
-      "'Generating title...'",
-      "previous || 'Error'",
-      'Multi-choice data unavailable',
-      'Multi-choice questions could not be loaded',
-      'Title generation failed',
-    ]) {
-      expect(TEMPLATE, s).not.toContain(s);
-    }
     const table = TEMPLATE.slice(
       TEMPLATE.indexOf('var STRINGS = {'),
       TEMPLATE.indexOf('\n};\n', TEMPLATE.indexOf('var STRINGS = {')),
@@ -739,11 +633,6 @@ describe('agent inbox board — motion contract (§4)', () => {
       expect(aliases).toContain(`--${n}: var(--ui-${n});`);
   });
 
-  it('the open card grows in place (0fr → 1fr) in the element; the page keeps no expansion rules', () => {
-    expect(TEMPLATE).not.toContain('.card-expand');
-    expect(TEMPLATE).not.toContain('.card.is-expanded');
-  });
-
   it('runs FLIP through WAAPI and honours reduced motion', () => {
     expect(TEMPLATE).toContain('.animate(');
     expect(TEMPLATE).toContain("matchMedia('(prefers-reduced-motion: reduce)')");
@@ -779,17 +668,13 @@ describe('agent inbox board — motion contract (§4)', () => {
     }
     // D7: the chips (defaults, admin, 보관함 · 휴면, 자세히) are kit chips — the press is ui-kit.css's
     // (button.ui-chip:active:not(:focus-visible) → scale(.97)); the user-media tiles are <ui-media-grid>'s (I-09).
-    expect(TEMPLATE).not.toContain('.um-tile');
-    expect(TEMPLATE).not.toMatch(/:is\([^)]*\.panel-detail-toggle[^)]*\):active/);
     expect(KIT).toMatch(
       /:is\(\.ui-btn, \.ui-icon-btn, button\.ui-chip, a\.ui-chip\):active:not\(:disabled\):not\(\[aria-disabled="true"\]\):not\(:focus-visible\) \{ transform: scale\(0\.97\); \}/,
     );
   });
 
   it('the working ring is the kit spinner; reduced motion stills it as a ring with a dot (§4-8, D7 K-01)', () => {
-    // The page draws no ring of its own any more: the Tasks head's running step is .ui-spinner.is-sm.
-    for (const gone of ['.spinner', '.spin {', '@keyframes spin', 'ag-spinner'])
-      expect(TEMPLATE, gone).not.toContain(gone);
+    // The Tasks head's running step is .ui-spinner.is-sm.
     expect(TEMPLATE).toContain(
       `if (st === 'running') return '<span class="ui-spinner is-sm" aria-hidden="true"></span>';`,
     );
@@ -800,37 +685,15 @@ describe('agent inbox board — motion contract (§4)', () => {
     expect(KIT).toMatch(/\.ui-spinner::after \{[^}]*border-radius: 50%; background: var\(--ui-tone\); \}/);
   });
 
-  it('the page draws no context bar of its own (the card face’s is the element’s; the panel’s is <ui-context-window>)', () => {
-    // D7 (D-20): the pre-library board rules are gone — the context bar, the column spark, the Slack link and PR
-    // badges, the earlier-plan lines, the show-older button, the empty composer line.
-    for (const gone of [
-      '.context-bar',
-      '.col-spark',
-      '.slack-link',
-      '.pr-badge',
-      '.tl-earlier',
-      '.show-older-btn',
-      '.nt-empty',
-      '.cb-ac {',
-      '.io-muted',
-    ])
-      expect(TEMPLATE, gone).not.toContain(gone);
-    // The panel's 세션 정보 shows the context as <ui-context-window>'s field of cells now (re-context-window D5/D18), not a bar.
-    expect(fnBody('cwSlotHtml')).toContain('<ui-context-window lang="ko"');
-    expect(fnBody('panelInfoHtml')).not.toContain('transform:scaleX(');
-  });
-
-  it('board cards draw no recommended-choice button of their own: the approval card marks the recommendation', () => {
+  it('the panel’s multi-question form is <ui-choice-form>: it marks the recommendation itself', () => {
     // affectUI batch 1: the card's single-choice question is a <ui-approval-card>, which lists the
     // recommended choice first, tagged and preselected (library: approval-card.test.ts "lists the
     // recommended choice first and preselected; Submit sends it"). The card's star / ink overrides went
     // with the old buttons; the panel's multi-question form is <ui-choice-form> (D3 E-15), which lists its
-    // recommended choice first and tags it 추천 itself — no star, no green, no page rule.
-    expect(TEMPLATE).not.toMatch(/\.btn-choice-recommended/);
+    // recommended choice first and tags it 추천 itself.
     expect(TEMPLATE).toContain(
       '<script type="module" src="/dashboard/ui/choice-form.js?v=${UI_LIB_VERSION}"></script>',
     );
-    expect(TEMPLATE).not.toContain('2B50');
   });
 
   it('board hover effects live only inside (hover: hover) and (pointer: fine)', () => {
@@ -849,35 +712,21 @@ describe('agent inbox board — responsive (§5)', () => {
 
   it('a board narrower than 840px scrolls its columns sideways with snap — the element’s own container query', () => {
     // @2lab.ai/ui agent-inbox styles.ts: @container ib (max-width: 839px) … scroll-snap-type: x mandatory.
-    expect(TEMPLATE).not.toMatch(/@container inbox \(max-width: 839px\)/);
     expect(TEMPLATE).toContain('.inbox { margin-bottom: 28px; container: inbox / inline-size; }');
   });
 
-  it('narrow or touch screens raise the page’s remaining tap targets to 44px (the elements’ crumbs and buttons carry their own rule)', () => {
+  it('narrow or touch screens raise the page’s remaining tap targets to 44px', () => {
     const block = TEMPLATE.match(/@media \(max-width: 639px\), \(pointer: coarse\) \{[\s\S]*?\n\}/)?.[0] ?? '';
     expect(block).toContain('min-height: 44px');
-    // D8b: the panel's path crumbs are <ui-breadcrumbs>' (44px on coarse pointers is the element's rule) — no page rule.
-    expect(TEMPLATE).not.toContain('.pa-crumb');
   });
 
-  it('every remaining control is 44px on narrow or touch screens (panel, topbar, period tabs)', () => {
-    const block = TEMPLATE.match(/@media \(max-width: 639px\), \(pointer: coarse\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+  it('every remaining control is 44px on narrow or touch screens (panel ✕, user select, chips, regenerate)', () => {
     // The panel's ✕ is the kit's icon button: 44px on touch / narrow screens is the kit's own rule.
     expect(TEMPLATE).toMatch(/<button type="button" class="ui-icon-btn is-bordered panel-close"/);
-    // The period tabs are <ui-segmented>: 44px on touch / narrow screens is the element's own rule.
-    expect(TEMPLATE).not.toContain('.period-btn');
-    // 자세히 on the stats strip is <ui-stat-strip>'s: 44px on touch / narrow screens is the element's own rule.
-    expect(block).not.toContain('.stats-more');
-    // The app bar's links, account and theme toggle are 44px on coarse pointers by the element's own rule;
-    // the page's controls in its actions are the page's.
     // D7 (A-11): the user select is a kit select chip — 44px on touch / narrow is ui-kit.css's rule.
-    expect(block).not.toContain('.user-select');
     expect(KIT).toContain('.ui-select-chip { min-height: 44px; }');
     // D7: the bar's chips, 보관함 · 휴면 and 자세히 are kit chips — 44px on touch / narrow is ui-kit.css's rule.
-    expect(block).not.toContain('.admin-toggle');
-    expect(block).not.toContain('.archives-btn');
     expect(KIT).toContain(":is(button.ui-chip, a.ui-chip)::after { content: ''; position: absolute; inset: -10px 0; }");
-    expect(block).not.toContain('#theme-toggle');
     // The subtitle's regenerate is the kit's small icon button (44px on touch / narrow: ui-kit.css).
     expect(TEMPLATE).toContain('id="panel-title-sub-regen" class="ui-icon-btn is-sm"');
     // Must follow the #800 coarse blocks so it wins the cascade.

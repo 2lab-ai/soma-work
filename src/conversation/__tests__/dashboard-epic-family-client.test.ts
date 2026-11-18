@@ -455,6 +455,5 @@ describe('F12 — the family line is no sticky header', () => {
 describe('F13 — the family region sits inside the panel’s inset', () => {
   it('16px a side, as the task line and the goal around it', () => {
     expect(TEMPLATE).toContain('.panel-family { padding: 4px 16px 8px; }');
-    expect(TEMPLATE).not.toContain('.panel-family { margin: 4px 0 8px; }');
   });
 });

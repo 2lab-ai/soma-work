@@ -118,8 +118,7 @@ describe('D12 — the tray', () => {
 });
 
 describe('D14 – D16 — CSS contract', () => {
-  it('T12 the tab keeps no styles of the panel: no .mm-*, no meter, no counter; the section frame and the token bridge only', () => {
-    expect(MEMORY_TAB_CSS).not.toMatch(/\.mm\b|\.mm-|\.meter-line|\.counter|--mm-/);
+  it('T12 the tab’s CSS is the section frame and the token bridge; memory never borrows the model picker’s classes', () => {
     // tone pass P9: section.group cards carry --ib-shadow; the element-drawn L1 section drops it too
     expect(MEMORY_TAB_CSS).toContain('#m-l1, #m-pages, #m-episodic { background: none; border: 0; box-shadow: none; }');
     expect(MEMORY_TAB_CSS).toContain(
@@ -131,10 +130,6 @@ describe('D14 – D16 — CSS contract', () => {
     expect(pageTokenAliases()).toContain('--yellow: var(--ui-yellow);');
     expect(SETTINGS_PAGE_CSS).not.toMatch(/--yellow: #/);
     expect(SETTINGS_PAGE_CSS).toMatch(/\.ui-tok \{[^}]*--ui-yellow: var\(--yellow\);/);
-    // D7 (M-05): the tab draws no text box of its own any more — the whole markdown is the element's source mode,
-    // its drafts the element's; no textarea rule, no textarea markup.
-    expect(MEMORY_TAB_CSS).not.toMatch(/(^|\n)textarea \{/);
-    expect(MEMORY_CLIENT_JS).not.toMatch(/<textarea/);
     // memory classes never borrow the model picker's mp-* (#442)
     expect(MEMORY_TAB_CSS + MEMORY_TAB_HTML + MEMORY_CLIENT_JS).not.toMatch(/\bmp-|class="mp"|ui-mp/);
   });

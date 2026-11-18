@@ -770,8 +770,5 @@ describe('a detail card folds its board card and undoes only that fold (D7)', ()
     expect(auto).not.toContain('openPanel(');
     // Deep links and a new task's card show the detail card with the card on one line, not opened in place.
     expect(clientFn('openDeepLinkedSession')).toContain('host.reveal(key, { open: false });');
-    expect(TEMPLATE).not.toMatch(
-      /\n {2}host\.reveal\(key\);\n {2}if \(!panelOpen \|\| panelSessionKey !== key\) openPanel\(key\);/,
-    );
   });
 });

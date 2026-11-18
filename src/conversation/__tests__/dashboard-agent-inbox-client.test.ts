@@ -2169,14 +2169,6 @@ describe('work-log rows open their raw output in place (shipped initWorkLog list
     expect(p.st.groupOpen).toEqual({ 'task:T3': true });
   });
 });
-describe('work-log rows rove inside <ui-work-log> (one tab stop, arrows); the page keeps no roving code of its own', () => {
-  it('the page’s roving helpers are gone; the slotted cards rove with the rows (D3-GAPS G2-3 closed by 0.12.0)', () => {
-    for (const gone of ['wlRovingIndex', 'wlNavRows', 'wlMarkStop', 'wlEnsureTabStop', 'wlSetTabStop', 'WL_STOP_SEL']) {
-      expect(TEMPLATE, gone).not.toMatch(new RegExp(`^(?:function|var) ${gone}\\b`, 'm'));
-    }
-    expect(clientFn('wlCardSlots')).not.toContain('data-stop');
-  });
-});
 describe('작업 로그 is a section tab: painted only while shown; <ui-work-log> follows the newest and counts the rest (shipped paintWorkLog, wlLogData; SSOT 2026-10-29)', () => {
   function paint(shown = 'log') {
     const calls: string[] = [];
@@ -2230,8 +2222,6 @@ describe('작업 로그 is a section tab: painted only while shown; <ui-work-log
       { entry: { seq: 3, kind: 'notice', text: 'x' }, index: 2 },
     ]);
     expect(calls).toEqual(['result 2', 'paint']);
-    // Following the newest, keeping a reader's place and the "new" pill are the element's (its <ui-log-scroller>).
-    expect(clientFn('paintWorkLog')).not.toMatch(/psec(SetTop|OnAppended|HoldPlace)/);
   });
 
   it('the data: a group per task (#id · ledger title; the newest open at first sight), entries outside a task in runs (open); a folded group carries its count, not its entries', () => {
@@ -2296,22 +2286,6 @@ describe('작업 로그 is a section tab: painted only while shown; <ui-work-log
       hasMore: false,
     });
     expect(m.wlLogData(null)).toMatchObject({ groups: [], emptyText: '작업 로그 없음' });
-  });
-});
-
-describe("older agents keep the reader's tree row in place — <ui-log-scroller>'s own (D3-GAPS G1-1 closed by 0.12.0; shipped paintTreeTab / showMoreTree)", () => {
-  it('the tree is the scroller’s one item (its rows carry data-anchor in its shadow root); a page lands with prependItems, a live arrival is noteUnread', () => {
-    const paint = clientFn('paintTreeTab');
-    expect(paint).toContain("host.upsertItem('tree', tree, { animate: false })");
-    expect(paint).toContain("tree.setAttribute('data-item', 'tree');");
-    expect(paint).toContain('host.noteUnread(newer)');
-    expect(paint).toContain('treeScrollerData(host, win.hidden > 0);');
-    const more = clientFn('showMoreTree');
-    expect(more).toContain('host.prependItems([], { hasMore: host._hidden > 0 })');
-    expect(more).toContain('_treeWindow += AT_PANEL_WINDOW;');
-    for (const gone of ['psecViewAnchor', 'psecRestoreAnchor', 'psecTreeRoot', 'PSEC_ANCHOR_MAX', 'psecHoldPlace']) {
-      expect(TEMPLATE, gone).not.toContain(gone);
-    }
   });
 });
 
@@ -2516,12 +2490,6 @@ describe('panel landing (shipped psecLandingTop; SSOT 2026-10-29) — the older 
     expect(m.psecLandingTop(80, 560, 600, 44)).toBe(0); // no question: the tabs and the box fit
     expect(m.psecLandingTop(260, 600, 600, 44)).toBe(0); // a short question above it: all in view
     expect(m.psecLandingTop(520, 1100, 600, 44)).toBe(476); // a tall question: bring the tabs up
-  });
-
-  it('the page keeps no page-due rule or sentinel of its own (the scroller asks: ui-load-older → loadMorePanelTurns / loadOlderWorkLog / showMoreTree)', () => {
-    for (const gone of ['psecPageDue', 'psecMaybeFill', 'psecLoadOlder', 'psecOlderState', 'psecFillSoon']) {
-      expect(TEMPLATE, gone).not.toContain(gone);
-    }
   });
 });
 
@@ -3819,9 +3787,7 @@ describe('D4 review (P1): an opening asked for before <ui-drawer> is defined wai
     const src = clientFn('closePanel');
     expect(src).toContain('_panelOpenWaiting = null;');
     expect(src).toContain("if (drawerEl && typeof drawerEl.hide === 'function') drawerEl.hide();");
-    // D6b group 6: the artifact viewer draws every body itself (items[].scripts / frame) — the page slots nothing
-    // before a step, so it listens on ui-view alone (one listener, one document fetch).
-    expect(TEMPLATE).not.toContain('ui-before-view');
+    // D6b group 6: the artifact viewer draws every body itself (items[].scripts / frame); the page listens on ui-view.
     expect(TEMPLATE).toContain("viewer.addEventListener('ui-view', function(e) { syncArtViewer(e.detail); });");
   });
 

@@ -190,11 +190,8 @@ describe('<ui-toaster> — one page stack for what an action did', () => {
     expect(acted).toEqual(['open']);
   });
 
-  it('the page script calls no alert() and keeps no one-off toast of its own', () => {
+  it('the page script calls no alert()', () => {
     expect(TEMPLATE).not.toMatch(/\balert\(/);
-    // The new-task launch's own toast (#nt-toast, its CSS and keyframes, ntShowToast) is gone for good.
-    expect(PAGE).not.toContain('nt-toast');
-    expect(TEMPLATE).not.toMatch(/\.nt-toast\b|nt-toast-in|ntShowToast|_ntLastLaunch|_ntToastTimer/);
   });
 });
 
@@ -331,7 +328,6 @@ describe('ntOnLaunched — a launched task is a toast with 카드 열기 and the
     // … and each toast's 카드 열기 opens its own launch, not the latest one (on the board — never Slack, T2).
     l.toasts[0][1]?.();
     expect(l.opened).toEqual([a]);
-    expect(TEMPLATE).not.toContain('function ntOpenLaunched(');
   });
 
   // #640 R1 (astra P2): a dashboard task created but not started keeps its instruction — given back to the

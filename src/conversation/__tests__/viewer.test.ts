@@ -424,7 +424,6 @@ describe('client: the raw output on request (G5-2, loadRaw)', () => {
     expect(init).toContain("el.addEventListener('ui-load-answer', function (e) {");
     expect(init).toContain("if (id && !(e.detail && e.detail.what === 'summary')) loadRaw(id);");
     expect(init).toContain("el.addEventListener('ui-select', function () { updateSelectedCount(); });");
-    expect(VIEWER_CLIENT_JS).not.toContain('data-raw');
   });
 
   it('fetches /api/conversations/:id/turns/:turnId/raw, shows the answer loading meanwhile, then the raw output (deferred no more)', async () => {

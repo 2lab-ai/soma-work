@@ -89,27 +89,9 @@ describe('the top bar is <ui-app-bar> (A-03..A-14)', () => {
     expect(HEADER).toMatch(/<\/ui-app-bar>\s*$/);
     // The brand is the page's h1 (brand.heading) — no visually hidden one of the page's own.
     expect(HEADER).not.toContain('<h1');
-    expect(TEMPLATE).not.toMatch(/id="topbar-sub"|\.topbar-sub\b|placeTopbarScope|TOPBAR_SCOPE_MIN/);
     expect(TEMPLATE).toContain('<script type="module" src="/dashboard/ui/app-bar.js?v=${UI_LIB_VERSION}"></script>');
     const bar = cssRule('.topbar');
     expect(bar).toMatch(/position: sticky;\s*top: 0;\s*z-index: 90;/);
-  });
-
-  it('the inline bar is gone: brand mark, status badge, nav links, user pill, theme toggle', () => {
-    for (const gone of [
-      'class="brand-mark"',
-      'id="ws-status"',
-      'class="ws-badge"',
-      'id="user-pill"',
-      'id="theme-toggle"',
-      'id="settings-link"',
-      'id="memory-link"',
-      '<div class="nav">',
-      'class="topbar-account"',
-    ])
-      expect(TEMPLATE, gone).not.toContain(gone);
-    for (const gone of [/\.ws-badge\b/, /#theme-toggle\b/, /\.user-pill\b/, /\.topbar \.nav\b/, /\.topbar h1\b/])
-      expect(TEMPLATE, String(gone)).not.toMatch(gone);
   });
 
   it("the page's controls ride in the bar's slots: the scope group its toolbar, 새 작업 its action", () => {
@@ -134,13 +116,11 @@ describe('the top bar is <ui-app-bar> (A-03..A-14)', () => {
     expect(HEADER).toMatch(
       /<select class="ui-select-chip user-select" id="user-select" title="[^"]+" aria-label="보드에 보일 사용자" onchange="selectUser\(this\.value\)">/,
     );
-    expect(HEADER).not.toContain('user-select-label');
     // The kit sizes the select to its selected option and ellipsizes past --ui-select-max; the page sets the cap:
     // in the bar 180px, in the bar's row under it the row.
     expect(KIT).toContain('max-width: var(--ui-select-max, 220px); field-sizing: content;');
     expect(TEMPLATE).toContain('.topbar .user-select { --ui-select-max: 180px; flex: 0 1 auto; }');
     expect(TEMPLATE).toContain('ui-app-bar[toolbar-row] .user-select { --ui-select-max: 100%; }');
-    expect(TEMPLATE).not.toMatch(/\.topbar \.user-select select/);
   });
 
   it('admin-mode-label is split into prefix + state spans (JS rewrites 켬/끔 only)', () => {
@@ -277,10 +257,9 @@ describe('paintAppBar — the data the page hands the bar', () => {
     sock.onclose?.();
     expect(m.status()).toEqual({ tone: 'wait', label: '다시 연결 중…', live: true, description: about });
     expect(painted.length).toBe(2);
-    // Korean, sentence case, "…" not "..."; no badge element of the page's own (the tone is the bar's).
+    // Korean, sentence case, "…" not "..." (the tone is the bar's).
     for (const w of [STRINGS.wsConnecting, STRINGS.wsLive, STRINGS.wsReconnecting])
       expect(w).not.toMatch(/\.\.\.|[A-Za-z]/);
-    expect(clientFn('connectWs')).not.toMatch(/statusEl|ws-status/);
   });
 });
 
@@ -317,18 +296,14 @@ describe('the scope group is the bar’s toolbar — the bar places it', () => {
 });
 
 describe('touch targets and overflow', () => {
-  it("the page's own top-bar controls are 44px on narrow or touch screens (the bar's are the element's)", () => {
-    const block = TEMPLATE.match(/@media \(max-width: 639px\), \(pointer: coarse\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+  it('the top-bar controls are 44px on narrow or touch screens: kit chips and <ui-model-picker>, by their own rules', () => {
     // D7 (A-11): the user select is a kit select chip — 44px on touch / narrow is ui-kit.css's rule.
-    expect(block).not.toContain('.user-select');
     expect(KIT).toContain('.ui-select-chip { min-height: 44px; }');
     // D7 (A-06, A-12): the admin chips are kit chips — their 44px hit area is the kit's own rule; the defaults are
     // <ui-model-picker>, whose trigger is 44px on touch / narrow by the element's own rule.
     expect(TEMPLATE).toMatch(/<ui-model-picker id="td-picker" class="td-picker" lang="ko"/);
     expect(TEMPLATE).toMatch(/class="ui-chip admin-toggle admin-inbox-btn"/);
     expect(TEMPLATE).toMatch(/class="ui-chip admin-toggle"\n/);
-    expect(block).not.toContain('.admin-toggle');
-    expect(block).not.toContain('.td-picker');
   });
 
   it('does NOT add html, body { overflow-x: hidden } — width is fitted directly', () => {

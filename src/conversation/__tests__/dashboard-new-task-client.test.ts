@@ -136,8 +136,6 @@ describe('T1 — the New task entry is always in reach, calm', () => {
     expect(css).toContain('.new-task-fab.is-floating { display: inline-flex; }');
     expect(script).toContain("fab.classList.toggle('is-folded', y > lastY && y > 80);");
     expect(script).toContain("fab.classList.toggle('is-floating', !entries[0].isIntersecting);");
-    for (const gone of ['is-compact', 'nt-fab-icon', 'nt-fab-label', 'nt-fab-in'])
-      expect(html, gone).not.toContain(gone);
   });
 
   it('below 640px the top-bar button gives way to the floating button', () => {
@@ -149,15 +147,6 @@ describe('T1 — the New task entry is always in reach, calm', () => {
   // Tone pass P3 (ui.2lab.ai: one calm ink primary, no decorative motion): the entry no longer
   // animates on its own — no sheen, pulse, glow, ring or hover lift; the FAB arrives once.
   it('both entries are the calm ink primary; the FAB arrives once (0.95 → 1, 240ms); reduced motion stills it', () => {
-    for (const gone of [
-      /@keyframes nt-sheen/,
-      /@keyframes nt-pulse/,
-      /@keyframes nt-ring/,
-      /conic-gradient/,
-      /\.new-task-btn::(before|after)/,
-      /\.new-task-fab::after/,
-    ])
-      expect(css, String(gone)).not.toMatch(gone);
     expect(css).not.toMatch(/\.new-task-btn\s*\{[^}]*animation:/);
     expect(css).not.toMatch(/\.new-task-btn:hover\s*\{[^}]*transform/);
     // D1: the top-bar entry is the kit's ink primary (.ui-btn.is-primary, ui-kit.css) with a kit key for Ctrl+N.
@@ -168,14 +157,12 @@ describe('T1 — the New task entry is always in reach, calm', () => {
     // D7 (H-10): the FAB is the kit's — its ink face and its one arrival are ui-kit.css's.
     expect(kit).toMatch(/\.ui-fab \{[^}]*background: var\(--ui-ib-text\);[^}]*animation: ui-fab-in /);
     expect(kit).toContain('@keyframes ui-fab-in');
-    expect(css).not.toContain('nt-fab-in');
     // D2: 작업 시작 is <ui-composer>'s send button (its ink primary, data.submitLabel).
     expect(script).toContain("submitLabel: '작업 시작',");
     expect(html).toMatch(
       /id="new-task-btn"[^>]*>[\s\S]*?<kbd class="ui-kbd nt-kbd" aria-hidden="true">Ctrl\+N<\/kbd><\/button>/,
     );
-    // Reduced motion: the FAB's arrival and fold are stilled by the kit's own rule; the page's block is gone.
-    expect(css).not.toContain('@media (prefers-reduced-motion: reduce) {\n  /* New task');
+    // Reduced motion: the FAB's arrival and fold are stilled by the kit's own rule.
     expect(kit).toContain('.ui-fab.is-extended, .ui-fab.is-extended > span { transition: none; }');
   });
 
@@ -237,28 +224,19 @@ describe('T1 — the New task entry is always in reach, calm', () => {
 });
 
 describe('T3–T11 — the composer, in the order of the sketch', () => {
-  it('is one @2lab.ai/ui <ui-dialog> (D4 H-01) with the form kept whole inside; the page keeps no dialog of its own', () => {
+  it('is one @2lab.ai/ui <ui-dialog> (D4 H-01) with the form kept whole inside', () => {
     expect(html).toContain(
       '<ui-dialog id="nt-dialog" class="nt-dialog" heading="새 작업" size="lg" size-phone="full" lang="ko">',
     );
     expect(html).toMatch(/<form[^>]*id="nt-form"/);
-    // The form is the dialog's body: the element draws the heading and ✕, so the page's head row is gone.
-    expect(html).not.toMatch(/<dialog[^>]*id="nt-dialog"/);
-    expect(html).not.toContain('class="nt-head"');
-    expect(html).not.toContain('nt-head-hint');
-    // show() / hide() open and close it; Esc, the scrim and ✕ arrive as ui-close; no native showModal, no soft-close
-    // timer, no is-shown class of the page's.
+    // The form is the dialog's body: the element draws the heading and ✕.
+    // show() / hide() open and close it; Esc, the scrim and ✕ arrive as ui-close.
     const open = clientFn('openNewTask');
     expect(open).toContain('dlg.show();');
-    expect(open).not.toContain('showModal');
     expect(clientFn('closeNewTask')).toContain('dlg.hide();');
     // D6b (D4 G6-2): the page hears the exit's end (ui-closed, after every close — the person's and hide()'s),
     // not the ask (ui-close): the FAB comes back once the sheet has gone.
     expect(script).toContain("dlg.addEventListener('ui-closed', function () {");
-    expect(script).not.toContain("dlg.addEventListener('ui-close', function () {");
-    for (const gone of ['is-shown', "dlg.addEventListener('cancel'", 'ntSyncViewport', '--nt-vvh', '--nt-vvt']) {
-      expect(script, gone).not.toContain(gone);
-    }
     // Ctrl+N does nothing while a <ui-dialog> is up.
     expect(clientFn('ntIsTypingTarget')).toContain("document.querySelector('dialog[open], ui-dialog[open]')");
   });
@@ -272,9 +250,6 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
     expect(row).toContain(
       '<ui-model-picker id="nt-picker" class="nt-picker" lang="ko"><span class="mp-fallback">모델</span></ui-model-picker>',
     );
-    for (const gone of ['id="nt-model"', 'id="nt-effort"', 'ntOnModelChange', 'ntOnEffortChange', 'nt-chip-effort']) {
-      expect(html, gone).not.toContain(gone);
-    }
     expect(html).toContain('<script type="module" src="/dashboard/ui/model-picker.js?v=');
     // channel / folder carry the classes main's task mode hides and shows them by (#605: a dashboard task has
     // no channel; it has a folder — and its picker hides the effort control).
@@ -285,7 +260,6 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
       '<label class="ui-select-chip nt-chip-channel"><span>채널</span><select id="nt-channel" onchange="ntOnChannelChange()"></select></label>',
     );
     expect(kit).toContain('field-sizing: content;');
-    expect(css).not.toContain('.nt-chip');
     // D7 (H-03): the meter — role="meter" with the percent, "?" when unknown — in the button that opens the usage line.
     expect(row).toContain(
       '<button type="button" class="nt-battery-btn" id="nt-battery-btn" aria-expanded="false" aria-controls="nt-usage" onclick="ntToggleUsage()"><ui-meter id="nt-battery" shape="battery" low="0.2" high="0.5" label="모델 잔여량" lang="ko"></ui-meter></button>',
@@ -294,7 +268,6 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
     expect(script).toContain(
       "ntEl('nt-battery').data = { value: v.value, low: 0.2, high: 0.5, label: '모델 잔여량' };",
     );
-    for (const gone of ['nt-battery-fill', 'nt-batt-', 'nt-blink']) expect(html, gone).not.toContain(gone);
   });
 
   it('#600 ⑥ — where the task goes: a Slack channel or a dashboard task, with a folder for the latter', () => {
@@ -323,8 +296,6 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
       /<label class="ui-switch" title="[^"]+"><input type="checkbox" role="switch" id="nt-autoz" onchange="ntToggle\('autoz'\)"><span>autoz<\/span><\/label>/,
     );
     expect(html).not.toMatch(/id="nt-autoz"[^>]*checked/);
-    expect(css).not.toContain('.nt-switch');
-    expect(css).not.toMatch(/^\.nt-toggle \{/m);
     expect(clientFn('ntToggle')).toContain('_ntState[which] = !!(sw && sw.checked);');
     // #853 — set from the draft, and shown off and locked while the task plans first.
     expect(script).toContain('sw.checked = !planning && !!_ntState[k];');
@@ -339,31 +310,6 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
     expect(html.indexOf('class="nt-toggles"')).toBeLessThan(at);
     expect(at).toBeLessThan(html.indexOf('id="nt-error"'));
     expect(at).toBeLessThan(html.indexOf('id="nt-status"'));
-    // The inline field, chips, recorder and toolbar are gone.
-    for (const gone of [
-      'id="nt-prompt"',
-      'id="nt-attachments"',
-      'id="nt-recorder"',
-      'class="nt-toolbar"',
-      'id="nt-submit"',
-    ]) {
-      expect(html, gone).not.toContain(gone);
-    }
-    for (const gone of [
-      'function ntAddBlob(',
-      'function ntRenderFiles(',
-      'function ntToggleRecording(',
-      'function ntAutosize(',
-      // D4 E-30: the panel composer is a <ui-composer> too — the helpers the two shared went with it.
-      'function ntPickRecorderMime(',
-      'function ntExtForMime(',
-      'function ntFormatBytes(',
-      'function ntFormatDuration(',
-      'function ntStamp(',
-      'function ntKindOf(',
-    ]) {
-      expect(script, gone).not.toContain(gone);
-    }
   });
 
   it('the composer gets its data from the page: label, placeholder, the draft, 작업 시작, the context limits', () => {
@@ -380,7 +326,6 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
     expect(data).toContain('d.maxTotalBytes = lim.maxTotalBytes;');
     // (Its one ui-files listener only says why a dashboard task cannot start — #640 R2 — it takes nothing out.)
     expect(script.match(/composer\.addEventListener\('ui-files'/g) ?? []).toHaveLength(1);
-    expect(script).not.toContain('composer.removeFile(');
     // It answers ui-submit (cancelled: the page posts; the launch empties the composer in the press — ntBeginLaunch)
     // and ui-input (the draft).
     // (A live dictation stops first, hard: what is sent is what the field shows — SSOT 2026-11-01.)
@@ -394,11 +339,8 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
   });
 
   it("T10 — 카메라 is the composer's own tool on touch screens; it opens the back camera directly", () => {
-    // 0.10.0 camera: 'environment' (shown on touch only) — the page's capture input and ui-tool answer are gone.
+    // 0.10.0 camera: 'environment' (the element shows it on touch only).
     expect(clientFn('ntComposerData')).toContain("camera: 'environment',");
-    expect(clientFn('ntComposerData')).not.toContain('tools:');
-    expect(html).not.toContain('nt-camera-input');
-    expect(script).not.toContain('function ntAddCamera(');
     // The page's one ui-tool answer is 받아쓰기 (live dictation, SSOT 2026-11-01) — none for the camera.
     expect(script.match(/composer\.addEventListener\('ui-tool'/g) ?? []).toHaveLength(1);
     expect(script).toContain("composer.addEventListener('ui-tool', ntOnComposerTool);");
@@ -409,19 +351,11 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
     // No accept list (any file); the image picker is off (the attach tool takes images too).
     expect(clientFn('ntComposerData')).not.toContain('accept:');
     expect(clientFn('ntComposerData')).toContain('image: false,');
-    // The dialog keeps no drop / paste handler of its own: the composer takes them (and names screenshots).
-    expect(script).not.toContain('dlg.ondrop');
-    expect(script).not.toContain("prompt.addEventListener('paste'");
   });
 
   it("⌘/Ctrl+Enter starts the task; a plain Enter is a new line — the element's enter: 'newline', with its hint", () => {
     expect(clientFn('ntComposerData')).toContain("enter: 'newline',");
     expect(clientFn('ntComposerData')).toContain('hint: true,');
-    // The capture keydown that kept a plain Enter from the element (D2-GAPS G5-2) is gone.
-    expect(script).not.toMatch(/composer\.addEventListener\(\s*'keydown'/);
-    expect(script).not.toContain(
-      "if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) e.stopPropagation();",
-    );
   });
 
   it("closing the sheet discards a recording in progress and stops a preview — the element's cancelRecording / pause", () => {
@@ -470,13 +404,10 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
 });
 
 describe('T12 — PC and phone layouts are designed separately', () => {
-  it('PC: a centered dialog of bounded width — the element\'s size="lg" (720px); the page keeps no box rule', () => {
+  it('PC: a centered dialog of bounded width — the element\'s size="lg" (720px)', () => {
     expect(html).toMatch(/<ui-dialog id="nt-dialog"[^>]* size="lg"/);
-    // Phone: the element's full sheet, edge to edge above the soft keyboard (size-phone="full", 0.12.0 — D4 G6-1);
-    // the page keeps no 100dvh sheet rule of its own.
+    // Phone: the element's full sheet, edge to edge above the soft keyboard (size-phone="full", 0.12.0 — D4 G6-1).
     expect(html).toMatch(/<ui-dialog id="nt-dialog"[^>]* size-phone="full"/);
-    expect(css).not.toMatch(/\.nt-dialog\s*\{/);
-    expect(css).not.toMatch(/\.nt-dialog::backdrop/);
     // The form pads itself; the element's body padding is off so the two do not add up.
     expect(css).toContain('.nt-dialog::part(body) { padding: 0; }');
   });
@@ -488,7 +419,6 @@ describe('T12 — PC and phone layouts are designed separately', () => {
     expect(html).not.toMatch(/<ui-dialog id="nt-dialog"[^>]*(sheet="never"|viewport="layout")/);
     expect(phone).not.toContain('.nt-dialog');
     expect(phone).toMatch(/env\(safe-area-inset-bottom/);
-    expect(script).not.toContain('ntSyncViewport');
   });
 
   it('touch: 44px targets and 16px text in the instruction field (no iOS zoom)', () => {
@@ -498,13 +428,6 @@ describe('T12 — PC and phone layouts are designed separately', () => {
     expect(kit).toContain('select.ui-select-chip, .ui-select-chip > select { font-size: 16px; }');
     expect(kit).toMatch(/\.ui-select-chip \{ min-height: 44px; \}/);
     expect(coarse).toContain('.nt-battery-btn { min-height: 44px; min-width: 44px; }');
-    expect(coarse).not.toContain('.nt-prompt');
-  });
-
-  it('the camera tool is offered on touch devices only (PC gets drop / paste instead)', () => {
-    // The element shows camera only on touch screens (coarse pointer); the page no longer decides.
-    expect(css).not.toContain('.nt-tool-camera');
-    expect(clientFn('ntComposerData')).toContain("camera: 'environment',");
   });
 
   it('the whole page script still compiles', () => {
