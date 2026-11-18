@@ -1,6 +1,6 @@
 # 34 — 작업 카드 창 버튼: 한 줄 · 보통 · 펼침 · 상세 카드
 
-Status: shipped · 라운드 1 main `0a2476cf` · 라운드 2(D13 남의 카드 · D7 앞 카드만) main `abb592f9`(PR #1355 · #1358) · dev v0.3.81 · 2026-11-18 · main `0a2476cf`(PR #1349) · dev v0.3.79 · `@2lab.ai/ui` 0.43.0(ui PR #84 `cc51d50`) · 설계 기준 main `5c85d551`, `@2lab.ai/ui` 0.42.1
+Status: shipped · 2026-11-18 · 라운드 1 main `0a2476cf`(PR #1349, dev v0.3.79) · 라운드 2(D13 남의 카드 · D7 앞 카드만) main `abb592f9`(PR #1355 · #1358, dev v0.3.81) · `@2lab.ai/ui` 0.43.0(ui PR #84 `cc51d50`) · 설계 기준 main `5c85d551`, `@2lab.ai/ui` 0.42.1
 앞선 계약: [`15-dashboard-detail-deck-spec.md`](15-dashboard-detail-deck-spec.md) §2(상세 카드 덱),
 [`19-dashboard-view-mode-spec.md`](19-dashboard-view-mode-spec.md) T9(카드 면의 별)
 SSOT·의도·diff: [`card-window/ssot.md`](card-window/ssot.md)
@@ -126,8 +126,9 @@ SSOT·의도·diff: [`card-window/ssot.md`](card-window/ssot.md)
 | 4 제목 | 호버: 밑줄 · ⧉ 불투명도 1 · 커서 pointer · 툴팁 "상세 카드 열기". 누름: 카드 42px · 강조 테두리, 패널 머리 x 1001(카드 오른쪽 끝 652보다 오른쪽) |
 | 5 두 장 · ✕ | 덱 [B, A], 앞 A, 둘 다 42px · 강조는 A. ✕ → A 118px(보통으로), 앞 B. ✕ → B 241px(펼친 채로), 패널 닫힘 |
 | 6 사람이 줄인 카드 | ✕ 뒤에도 42px |
+| 7 한 줄 카드의 제목 (상세 카드가 안 보일 때) | 패널 닫힘 · 덱 비어 있음 → 제목 → 그 상세 카드가 앞(패널 x 1001), 카드는 42px 한 줄 + 강조 테두리(S7, 2026-11-18 추가) |
 | 8 면의 글 | 눌러도 카드 · 패널 그대로 |
-| 9 감소된 모션 | `is-hop` 없음, 애니메이션 0개, 바로 180° |
+| 9 감소된 모션 | `is-hop` 없음, 애니메이션 0개, 바로 180°. △ 다시 → 118px 보통으로(펼쳤을 때 241px), 캐럿 ▽(`none`), 상세 카드 안 열림(S9, 2026-11-18 추가) |
 | 11 즐겨찾기 · TL;DR (SSOT_2) | 30시간 지난 즐겨찾기 카드가 한 줄로 시작하고 TL;DR 상자(79px)를 머리 아래에 둔다(카드 128px). TL;DR × → 42px. + → 펼침, `soma-card-unfold`에 저장, 새로 고침 뒤에도 펼친 채(82px) |
 | 목록 · 폰 | 목록 보기(카드 폭 1232px) 118 → 42px. 390px: 제목 → 전체 화면 시트(머리 x 0 · 폭 390), ✕ → 카드 118px로 복원 |
 | S12 상세 카드가 열린 한 줄 카드의 ▽ | 제자리 펼침, 다시 그려도 펼친 채, 상세 카드는 그대로 |
