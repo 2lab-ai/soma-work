@@ -31,3 +31,31 @@ Loop: [`loop.md`](loop.md) · 라운드를 닫을 때마다 맨 아래에 블록
 리뷰: astra 1회(P0 없음, P1 = G1, P2 7건 반영 — 한 줄 카드의 상태 점, 초기 접힘은 한 번, TL;DR × 뒤 포커스, 새 결정이 접힌 카드를 펼침, ‹ ›로 돌아온 카드를 다시 접지 않음, 다시 그려도 덱의 접힘 유지, 상세 카드를 닫으면 제목으로 포커스). Review of Legends 5회: 1회 7건 · 2회 · 3회(P1 덱 앞 카드의 결정은 보드 카드를 건드리지 않음, P1 결정의 펼침은 사람의 +가 아님) · 4회(필수 통과, P2 저장 순서 · 앞 바뀐 뒤 결정 테스트 반영, 탭 사이 경쟁은 34 D8에 근거, P3 선택자 대체는 ES5 클라이언트라 안 함) · 5회(필수 통과, 모든 에이전트 "patch is correct". P2 다시 그림 테스트 · `boardDetailInFront` → `boardCurrentKey() === key`는 마감 PR `67b012ab`, 실패한 쓰기 뒤 맞추기는 탭 사이 경쟁과 같은 근거).
 
 결과: ui #84 `cc51d50` 머지 → 오너 npm 0.43.0 배포(G1) → soma-work #1349 0.43.0 올림 · ready → 리뷰 5회 → 머지 `0a2476cf` → dev 배포 run https://github.com/2lab-ai/soma-work/actions/runs/44264502709 (dev 호스트 한 대) → 배포 빌드로 리시트 34/34(34 §7). 남은 것: G2(detail-deck 리시트의 옛 셀렉터, 이 변경 전부터) — loop.md.
+
+## R2 — closed 2026-11-18
+
+- measured WU5✅ WU7✅ WU6✅ · result: 남의 작업 카드는 한 줄로 시작하고 사람의 −/+는 새로 고침을 넘어 유지(SSOT_3, D13) · 앞에 보이는 상세 카드의 카드만 한 줄, 앞이 바뀌면 그 전 카드는 원래 모습(SSOT_4, D7) · dev v0.3.81 `abb592f9` 배포 빌드 리시트 45/45 · closed rows: WU5, WU6, WU7 · commit/PR: https://github.com/2lab-ai/soma-work/pull/1355 (`df0fa25d`), https://github.com/2lab-ai/soma-work/pull/1358 (`abb592f9`), 마감 PR(이 블록)
+
+### Closed rows
+
+| ID | Source | Universe Item | Observable Acceptance | AS-IS Evidence | Status | Gap | Dispatch | Verification Evidence | Last Measured |
+|---|---|---|---|---|---|---|---|---|---|
+| WU5 | ssot T12 · T13 (SSOT_3) | 남의 카드 기본 한 줄, 사람의 −/+ 저장 · 새로 고침 유지, 안 건드리면 기본 | 34 D13, §6 S15 | 남의 카드도 82px 보통으로 시작(v0.3.79에서 S15 6개 실패) | ✅ | — | PR #1355 (Review of Legends 2회: 보는 사람이 바뀌면 양쪽으로 맞추기 · 게이트 리시트 · 시험 보강) | 단위 RED 4 → GREEN, 계정 바뀜 시험(변이 확인). 리시트 S15 9/9. dev v0.3.80 `ac6ac5fe`(다른 세션이 09:21 배포, #1355 포함): S15 9/9 — 남의 카드 42px · 내 카드 118px, + → 82px 저장 · 새로 고침 유지, − 저장 · 새로 고침 42px, `/auth/me` 늦게 + 상세 카드 열림 → ✕ 뒤에도 한 줄, 주인으로 로그인 → ✕ 뒤 82px | 2026-11-18 dev v0.3.80 `ac6ac5fe` |
+| WU7 | ssot T14 (SSOT_4) | 다른 카드의 제목 → 앞서 상세 카드로 한 줄이 된 카드는 그 전 모습 | 34 D7(바뀜), §5 5, §6 S5 · S13 | 덱의 모든 카드가 한 줄(v0.3.79 · v0.3.80에서 S5 · S13 실패) | ✅ | — | PR #1358 (Review of Legends 1회: 뒤 카드 계정 바뀜 시험은 마감 PR `777a71a1`) | 단위 `boardSyncDetailFold` · 앞만 다시 그림 · 덱 세계(제자리로 펼친 카드는 펼친 채로, 사람의 −는 그대로, ‹ ›) RED → GREEN. 리시트 S5: 둘째 제목 뒤 첫 카드 241px(펼친 채로 돌아옴). 배포 빌드 45/45 | 2026-11-18 dev v0.3.81 |
+| WU6 | — | dev 배포 · 배포 빌드 실측 | 배포 증명 + 리시트 전부 | — | ✅ | — | run https://github.com/2lab-ai/soma-work/actions/runs/44277138972 (dev 호스트 한 대) | `Deploy t3` 하나(dev 호스트 한 대) · `Verify` 성공 · 설치본 `version.json` commitHash = 머지 `abb592f9` · 번들의 `@2lab.ai/ui` 0.43.0 · 재시작 줄 `bot is running! [v0.3.81 (abb592f)]` 뒤 세션 시작 3개(서로 다른 sessionId), 거절 0. | 2026-11-18 dev v0.3.81 |
+
+### Round section (as it was in loop.md)
+
+## 라운드 2 — 계획 (2026-11-18, SSOT_3 · SSOT_4)
+
+AS-IS(실측, main `0a2476cf`): 남의 카드도 내 카드와 같이 보통 크기로 그려진다(`cardMinSeeds`는 사람의 − 와 하루 지난 즐겨찾기만). `/auth/me`는 보드와 따로 오고, 요소는 한 번 본 카드의 시작 접힘을 다시 읽지 않는다(`@2lab.ai/ui` `#minSeen`) — 보는 사람을 늦게 알면 시드만으로는 접히지 않는다. 덱의 모든 상세 카드의 카드가 보드에서 한 줄이었다(D7 라운드 1).
+
+| ID | 단위 | Status | 브랜치 · 워크트리 | 스코프 · 끝상태 확인 |
+|---|---|---|---|---|
+| WU5 | 남의 카드 기본 한 줄 + 저장(D13) | ✅ | `feat/card-window-others-fold` · PR #1355 머지 `df0fa25d` | `dashboard.ts` `cardOthersDefaultFolded` · `cardMinSeeds` · `boardOwnerDefaults`(양쪽, 리뷰) · `_applyUserPill`, 시험 하네스 seam. 단위 RED → GREEN, 리시트 S15 |
+| WU7 | 앞 상세 카드만 한 줄(D7, SSOT_4) | ✅ | `feat/card-window-front-only` · PR #1358 머지 `abb592f9` | `dashboard.ts` `boardSyncDetailFold` · `boardFoldDeck`(앞만) · `openPanel` · `closePanel` · `boardOwnerDefaults`(앞), 결정의 `_detailUnfolded` 제거. 덱 시험 갱신, 리시트 S5 · S6 · S13. #1355 리뷰 2회 시험 보강 |
+| WU6 | dev 배포 · 배포 빌드 실측 | ✅ | WU5 · WU7 머지 뒤 | run https://github.com/2lab-ai/soma-work/actions/runs/44277138972 → 배포 번들로 리시트 45/45 |
+
+리뷰: #1355 Review of Legends 2회(1회 P2 4건 — 보는 사람이 바뀌면 남의 카드 기본을 양쪽으로 맞춤 3건 · 늦은 인증 리시트 게이트 1건, 모두 반영. 2회 P2 2건 · P3 2건은 시험 · 정리라 #1358에서: 저장된 − 순서, 표시 모델 페이크, 겹치는 덮어쓰기 제거. P3 seam 제거는 안 함 — 진짜 `cardMinSeeds`를 부르는 묶음 넷이 깨진다). #1358 1회(P2 2건 · P3 1건 — 뒤 카드 계정 바뀜 시험과 남은 단언 정리는 마감 PR).
+
+결과: SSOT_3 → #1355 `df0fa25d` 머지(다른 세션의 dev 배포 v0.3.80에 들어가 S15 9/9) → SSOT_4 → #1358 `abb592f9` 머지 → dev 배포 run https://github.com/2lab-ai/soma-work/actions/runs/44277138972 → 배포 빌드 리시트 45/45(34 §7).

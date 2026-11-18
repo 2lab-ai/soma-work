@@ -1,16 +1,6 @@
 # loop — card-window 구현 드라이브
 
-Status: 라운드 2 진행(SSOT_3 — 남의 작업 카드 기본 한 줄) · 라운드 1 닫힘(2026-11-18, [`loop.done.md`](loop.done.md) R1) · 스펙 = [`../34-dashboard-task-card-window-controls-spec.md`](../34-dashboard-task-card-window-controls-spec.md) D13 · ssot = [`ssot.md`](ssot.md)
-
-## 라운드 2 — 계획 (2026-11-18, SSOT_3)
-
-AS-IS(실측, main `0a2476cf`): 남의 카드도 내 카드와 같이 보통 크기로 그려진다(`cardMinSeeds`는 사람의 − 와 하루 지난 즐겨찾기만). `/auth/me`는 보드와 따로 오고, 요소는 한 번 본 카드의 시작 접힘을 다시 읽지 않는다(`@2lab.ai/ui` `#minSeen`) — 보는 사람을 늦게 알면 시드만으로는 접히지 않는다.
-
-| ID | 단위 | Status | 브랜치 · 워크트리 | 스코프 · 끝상태 확인 |
-|---|---|---|---|---|
-| WU5 | 남의 카드 기본 한 줄 + 저장(D13) | 🟡 | `feat/card-window-others-fold` · `soma-work_20261118_card-window-others` | `dashboard.ts` `cardOthersDefaultFolded` · `cardMinSeeds` · `boardOwnerDefaults`(양쪽, 리뷰) · `_applyUserPill`, 시험 하네스 seam. 단위 RED → GREEN, 리시트 S15(시드 · + 저장 · 새로 고침 · − · 늦은 `/auth/me`) |
-| WU7 | 앞 상세 카드만 한 줄(D7, SSOT_4) | 🟡 | `feat/card-window-front-only` · `soma-work_20261118_card-window-front` | `dashboard.ts` `boardSyncDetailFold` · `boardFoldDeck`(앞만) · `openPanel` · `closePanel` · `boardOwnerDefaults`(앞), 결정의 `_detailUnfolded` 제거. 덱 시험 갱신, 리시트 S5 · S6 · S13. #1355 리뷰 2회 시험 보강(저장된 − · 표시 모델 페이크 · 늦은 인증 + 상세 카드 · 계정 바뀜) |
-| WU6 | dev 배포 · 배포 빌드 실측 | 🟡 | WU5 · WU7 머지 뒤 | dev 호스트 한 대 배포 → 배포 번들로 리시트 전부 |
+Status: 라운드 1 · 2 닫힘(2026-11-18, [`loop.done.md`](loop.done.md) R1 · R2) · 열린 것 G2 하나 · 스펙 = [`../34-dashboard-task-card-window-controls-spec.md`](../34-dashboard-task-card-window-controls-spec.md) (shipped) · ssot = [`ssot.md`](ssot.md)
 
 ## 열린 gap
 
