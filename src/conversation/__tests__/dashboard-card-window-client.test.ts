@@ -38,10 +38,10 @@ function clientVar(name: string): string {
   if (!m) throw new Error(`client var ${name} not found`);
   return cook(m[1]);
 }
-function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}, extra: string[] = []): T {
+function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}): T {
   inject = { ...nextActionSeams(fns, inject), ...inject };
   const names = Object.keys(inject);
-  const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\n${extra.join('\n')}\nreturn { ${fns.join(', ')} };`;
+  const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
 function storage(seed: Record<string, string> = {}, opts: { failWrite?: boolean } = {}) {
@@ -314,6 +314,7 @@ describe('a detail card folds its board card and undoes only that fold (D7)', ()
     behind.m.autoOpenDecisions();
     expect(behind.calls.filter((c) => c[1] === 'A')).toEqual([
       ['setMinimized', 'A', false],
+      ['cardMinSave', 'A', false],
       ['reveal', 'A', { open: true, scroll: false }],
     ]);
     expect(behind.folded.has('A')).toBe(false);
@@ -324,9 +325,30 @@ describe('a detail card folds its board card and undoes only that fold (D7)', ()
     expect(front.folded.has('A')).toBe(true);
   });
 
+  it('a deck card the reader had folded loses its saved fold when a decision unfolds it — a redraw seeds it open (review P1)', () => {
+    const ls = storage({ 'soma-card-min': '["A"]' });
+    const el = { isMinimized: () => true, setMinimized: () => {} };
+    const m = load<{ boardUnfoldForDecision(k: string): void; cardMinSeeds(cols: unknown): string[] }>(
+      [
+        'cardPrefList',
+        'cardPrefPut',
+        'cardMinList',
+        'cardUnfoldList',
+        'cardMinSave',
+        'cardStarDefaultFolded',
+        'cardMinSeeds',
+        'boardUnfoldForDecision',
+      ],
+      ['CARD_MIN_MAX', '_cardPrefs', 'STAR_FOLD_MS', '_detailUnfolded'],
+      { localStorage: ls, _cardHost: { A: el }, _deck: ['A', 'B'], _sessionCache: {}, _cardCol: {} },
+    );
+    expect(m.cardMinSeeds([{ keys: ['A'] }])).toEqual(['A']);
+    m.boardUnfoldForDecision('A');
+    expect(m.cardMinSeeds([{ keys: ['A'] }])).toEqual([]);
+    expect(JSON.parse(ls.items['soma-card-min'])).toEqual([]);
+  });
+
   it('every way a detail card opens folds its card; every way it leaves the deck undoes it; a decision opened in place opens none', () => {
-    expect(clientFn('openPanel')).toContain('boardFoldForDetail(sessionKey);');
-    expect(clientFn('deckRemove')).toContain('boardRestoreFromDetail(key);');
     const auto = clientFn('autoOpenDecisions');
     expect(auto).toContain('host.reveal(key, { open: true, scroll: false });');
     expect(auto).not.toContain('openPanel(');

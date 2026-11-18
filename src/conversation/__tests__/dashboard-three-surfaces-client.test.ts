@@ -1224,6 +1224,7 @@ describe('the detail deck — the title opens a detail card, its card goes to on
   // closePanel are cut down to their deck, fold and panel-state lines (pinned against the shipped source below).
   type Deck = {
     wireInbox(host: unknown): void;
+    boardFoldDeck(host: unknown): void;
     onDeckPage(e: unknown): void;
     deckDrop(key: string): void;
     closeDetailCard(): void;
@@ -1271,7 +1272,16 @@ describe('the detail deck — the title opens a detail card, its card goes to on
     const title = (key: string) => {
       if (send('ui-detail', { cardId: key }) && !fold.has(key)) fold.set(key, 'detail');
     };
-    // − / ▢: the reader's fold.
+    // ▽ on a card folded to one line: the element unfolds it (ui-minimize false) and opens it in place (ui-toggle).
+    const expandFromOneLine = (key: string) => {
+      if (!fold.has(key)) return;
+      if (!send('ui-minimize', { cardId: key, minimized: false })) return;
+      fold.delete(key);
+      if (!elOpen.has(key)) toggle(key);
+    };
+    // A repaint: the page re-asserts the deck's folds on the element (inboxPaint → boardFoldDeck).
+    const repaint = () => m.boardFoldDeck(host);
+    // − / +: the reader's fold.
     const minimize = (key: string) => {
       const on = !fold.has(key);
       if (!send('ui-minimize', { cardId: key, minimized: on })) return;
@@ -1297,6 +1307,7 @@ describe('the detail deck — the title opens a detail card, its card goes to on
         'boardFoldForDetail',
         'boardRestoreFromDetail',
         'boardNoteReaderFold',
+        'boardFoldDeck',
         'wireInbox',
       ],
       ['_deck', '_panelOpenWaiting', '_detailUnfolded'],
@@ -1335,7 +1346,22 @@ describe('the detail deck — the title opens a detail card, its card goes to on
     // hands it the keys with the data); the element steps and wraps round itself (its wrap attribute).
     const page = (index: number, keys = m.state().deck) =>
       m.onDeckPage({ currentTarget: { _keys: keys }, detail: { index, from: 0 } });
-    return { m, log, nav, toggle, title, minimize, folded, saved, cache, cardHost, host, page };
+    return {
+      m,
+      log,
+      nav,
+      toggle,
+      title,
+      minimize,
+      expandFromOneLine,
+      repaint,
+      folded,
+      saved,
+      cache,
+      cardHost,
+      host,
+      page,
+    };
   };
 
   it('the title opens the detail card in front, the deck keeps the opening order, each card goes to one line', () => {
@@ -1406,6 +1432,20 @@ describe('the detail deck — the title opens a detail card, its card goes to on
     expect(w.folded()).toEqual({ B: 'detail' }); // not folded again
     w.m.closeDetailCard(); // A leaves the deck: nothing to undo
     expect(w.folded()).toEqual({ B: 'detail' });
+  });
+
+  it('▽ on a one-line deck card opens it in place and it stays open through a repaint; the deck is unchanged (review)', () => {
+    const w = world();
+    w.title('A'); // A's detail card in front, A on one line
+    w.expandFromOneLine('A');
+    expect(w.folded()).toEqual({});
+    expect(w.m.state()).toEqual({ deck: ['A'], front: 'A', open: true, expanded: ['A'] });
+    w.repaint(); // a filter hid and showed it, or any board paint
+    expect(w.folded()).toEqual({});
+    expect(w.m.state().expanded).toEqual(['A']);
+    w.m.closeDetailCard(); // leaves the deck: nothing to undo, still open in place
+    expect(w.m.state()).toEqual({ deck: [], front: null, open: false, expanded: ['A'] });
+    expect(w.folded()).toEqual({});
   });
 
   it('deckDrop: a session gone from the board since it joined the deck is never the next front card', () => {

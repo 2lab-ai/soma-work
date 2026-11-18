@@ -12054,13 +12054,14 @@ function boardDecisionHidden(key) {
   if (!host || typeof host.isMinimized !== 'function' || !host.isMinimized(key)) return false;
   return !(panelOpen && panelSessionKey === key);
 }
-// A new decision unfolds it (.prd/34 D9): the fold was for what the card said before. The reader's fold is not kept;
-// a card whose detail card waits in the deck stays open through repaints until it leaves the deck.
+// A new decision unfolds it (.prd/34 D9): the fold was for what the card said before. A saved fold of the reader's
+// goes too — else the next element that draws the card (a filter, a CRON lane) seeds it folded again (review P1); a
+// card whose detail card waits in the deck stays open through repaints until it leaves the deck.
 function boardUnfoldForDecision(key) {
   var host = _cardHost[key];
   if (host && typeof host.setMinimized === 'function') host.setMinimized(key, false);
   if (_deck.indexOf(key) >= 0) _detailUnfolded[key] = 1;
-  else cardMinSave(key, false);
+  cardMinSave(key, false);
 }
 // The title of a card on its element (in the element's open shadow root), or null: where focus goes back after its
 // detail card closes when the control that opened it is gone.
@@ -12215,7 +12216,7 @@ function wireInbox(host) {
     boardNoteReaderFold(key, true);
     openPanel(key);
   });
-  // − / ▢ (.prd/34 D8): the reader's fold is kept in this browser.
+  // − / + (.prd/34 D8): the reader's fold is kept in this browser.
   host.addEventListener('ui-minimize', function(e) {
     if (e.target !== host || !e.detail) return;
     cardMinSave(String(e.detail.cardId), !!e.detail.minimized);

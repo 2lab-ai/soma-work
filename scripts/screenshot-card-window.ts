@@ -483,6 +483,27 @@ async function motionRun(browser: import('playwright').Browser) {
     unfold,
   });
 
+  // S12 (review) — ▽ on a one-line card whose detail card is open: open in place, still open after a repaint, the
+  // detail card stays.
+  await press(page, KEY_A, 'detail');
+  await page.waitForSelector('#slide-panel[open]');
+  await sleep(500);
+  await press(page, KEY_A, 'expand');
+  await sleep(600);
+  await page.evaluate('loadSessions()');
+  await sleep(1200);
+  const a12 = await cardState(page, KEY_A);
+  const p12 = await panel(page);
+  check(
+    a12.open && !a12.min && a12.expanded === 'true' && p12.open && p12.key === KEY_A,
+    'S12 ▽ on a one-line card with its detail card open: open in place through a repaint, the detail card stays',
+    { a: a12.rect, panel: p12 },
+  );
+  await page.click('#slide-panel .panel-close');
+  await sleep(600);
+  await press(page, KEY_A, 'expand'); // back to the normal view for S8
+  await sleep(500);
+
   // S8
   const sum = await page.evaluate((k) => {
     // The first row under the head (the summary, the task in progress…): text, not a control.
