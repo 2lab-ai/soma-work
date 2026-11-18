@@ -49,8 +49,9 @@ vi.mock('@soma/process-shared/stderr-logger.js', () => ({
 
 describe('BaseMcpServer', () => {
   // Trace: Scenario 1, Section 3a — defineTools called on list
-  it('calls defineTools() when listing tools', async () => {
+  it('answers ListTools with the tools the subclass defines', async () => {
     const { BaseMcpServer } = await import('./base-mcp-server.js');
+    const { Server } = (await import('@modelcontextprotocol/sdk/server/index.js')) as any;
 
     class TestServer extends BaseMcpServer {
       defineTools() {
@@ -61,15 +62,16 @@ describe('BaseMcpServer', () => {
       }
     }
 
-    const server = new TestServer('test-server');
-    const tools = server.defineTools();
-    expect(tools).toHaveLength(1);
-    expect(tools[0].name).toBe('test_tool');
+    new TestServer('test-server');
+    expect(await Server.getListHandler()()).toEqual({
+      tools: [{ name: 'test_tool', description: 'A test tool', inputSchema: { type: 'object' } }],
+    });
   });
 
   // Trace: Scenario 1, Section 3a — handleTool dispatches correctly
-  it('dispatches tool calls to handleTool()', async () => {
+  it('answers CallTool with what handleTool returns for that name and arguments', async () => {
     const { BaseMcpServer } = await import('./base-mcp-server.js');
+    const { Server } = (await import('@modelcontextprotocol/sdk/server/index.js')) as any;
 
     class TestServer extends BaseMcpServer {
       defineTools() {
@@ -80,9 +82,9 @@ describe('BaseMcpServer', () => {
       }
     }
 
-    const server = new TestServer('test-server');
-    const result = await server.handleTool('echo', { msg: 'hello' });
-    expect(result.content[0].text).toBe('echo:{"msg":"hello"}');
+    new TestServer('test-server');
+    const result = await Server.getCallHandler()({ params: { name: 'echo', arguments: { msg: 'hello' } } });
+    expect(result).toEqual({ content: [{ type: 'text', text: 'echo:{"msg":"hello"}' }] });
   });
 
   // Trace: Scenario 1, Section 3a — formatError returns consistent shape
@@ -112,8 +114,9 @@ describe('BaseMcpServer', () => {
   });
 
   // Trace: Scenario 1, Section 3a — unknown tool returns error
-  it('returns error for unknown tool names', async () => {
+  it('turns a tool that throws (an unknown name) into an error result instead of a failed request', async () => {
     const { BaseMcpServer } = await import('./base-mcp-server.js');
+    const { Server } = (await import('@modelcontextprotocol/sdk/server/index.js')) as any;
 
     class TestServer extends BaseMcpServer {
       defineTools() {
@@ -125,8 +128,9 @@ describe('BaseMcpServer', () => {
       }
     }
 
-    const server = new TestServer('test-server');
-    await expect(server.handleTool('nonexistent', {})).rejects.toThrow('Unknown tool: nonexistent');
+    new TestServer('test-server');
+    const result = await Server.getCallHandler()({ params: { name: 'nonexistent', arguments: {} } });
+    expect(result).toEqual({ content: [{ type: 'text', text: 'Error: Unknown tool: nonexistent' }], isError: true });
   });
 });
 
@@ -153,57 +157,6 @@ describe('formatError standardization', () => {
     const server = new TestServer('test');
     const result = server.testFormatError('tool', 'string error');
     expect(result.content[0].text).toBe('Error: string error');
-    expect(result.isError).toBe(true);
-  });
-
-  // Trace: Scenario 3, Section 3 — slack enriched shape (will be tested after slack-mcp decomposition)
-  it('slack-mcp formatError produces enriched JSON with slack_error field', async () => {
-    // This test will validate the slack-mcp override of formatError
-    // For now: RED — the SlackMcpServer with overridden formatError doesn't exist yet
-    const { BaseMcpServer } = await import('./base-mcp-server.js');
-
-    // Simulating what slack-mcp's override should produce
-    class SlackServer extends BaseMcpServer {
-      defineTools() {
-        return [];
-      }
-      async handleTool() {
-        return { content: [] };
-      }
-
-      protected override formatError(toolName: string, error: unknown) {
-        const slackErrorCode = (error as any)?.data?.error as string | undefined;
-        const isRateLimited = (error as any)?.status === 429 || slackErrorCode === 'ratelimited';
-        const message = error instanceof Error ? error.message : String(error);
-
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: JSON.stringify({
-                error: message,
-                ...(slackErrorCode ? { slack_error: slackErrorCode } : {}),
-                retryable: isRateLimited,
-              }),
-            },
-          ],
-          isError: true,
-        };
-      }
-
-      testFormatError(tool: string, error: unknown) {
-        return this.formatError(tool, error);
-      }
-    }
-
-    const server = new SlackServer('slack-mcp');
-    const slackError = Object.assign(new Error('rate limited'), { status: 429, data: { error: 'ratelimited' } });
-    const result = server.testFormatError('get_thread_messages', slackError);
-    const parsed = JSON.parse(result.content[0].text);
-
-    expect(parsed.error).toBe('rate limited');
-    expect(parsed.slack_error).toBe('ratelimited');
-    expect(parsed.retryable).toBe(true);
     expect(result.isError).toBe(true);
   });
 });
