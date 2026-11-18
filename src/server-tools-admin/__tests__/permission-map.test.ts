@@ -51,6 +51,22 @@ describe('permission-map', () => {
     expect(Object.keys(after)).toEqual(Object.keys(BASE));
   });
 
+  it('never removes the last level — an empty map is no map, and no map opens server-tools to everyone (#1170)', () => {
+    fs.writeFileSync(
+      file,
+      `${JSON.stringify({ 'server-tools': { permission: { logs: 'read' }, dev2: {} } }, null, 2)}\n`,
+    );
+    const before = fs.readFileSync(file, 'utf-8');
+    expect(() => setToolLevel(file, 'logs', null)).toThrow(expect.objectContaining({ statusCode: 409 }));
+    expect(fs.readFileSync(file, 'utf-8')).toBe(before);
+    // a level that is not there is not "the last one"
+    expect(setToolLevel(file, 'redis_query', null)).toEqual({ from: null, to: null });
+    // with two levels, one goes
+    setToolLevel(file, 'db_query', 'read');
+    expect(setToolLevel(file, 'logs', null)).toEqual({ from: 'read', to: null });
+    expect(readPermissionMap(file)).toEqual({ present: true, levels: { db_query: 'read' } });
+  });
+
   it('creates a map where there is none', () => {
     fs.writeFileSync(file, JSON.stringify({ 'server-tools': { dev2: {} } }));
     createPermissionMap(file, { db_query: 'read', logs: 'read' });

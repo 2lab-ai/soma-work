@@ -2288,5 +2288,8 @@
   "설정 파일을 다시 읽지 못했습니다": "Could not read the config file again",
   "그사이 설정 파일이 바뀌었습니다 — 새로 불러온 뒤 다시 하세요": "The config file changed in the meantime — reload and try again",
   "설정 파일을 쓰지 못했습니다 ({0})": "Could not write the config file ({0})",
-  "권한 표가 이미 있습니다": "A permission map already exists"
+  "권한 표가 이미 있습니다": "A permission map already exists",
+  "마지막 수준은 지울 수 없습니다 — 표가 비면 server-tools가 모든 유저에게 열립니다(#1170). 다른 도구의 수준을 먼저 두세요": "The last level cannot be removed — an empty map opens server-tools to every user (#1170). Set another tool's level first",
+  "⚠️ 허락을 저장하지 못했습니다. 요청은 그대로 열려 있으니 잠시 뒤 다시 눌러 주세요.": "⚠️ The grant could not be saved. The request is still open — press the button again shortly.",
+  "⚠️ 이미 처리된 요청의 카드입니다. 같은 요청이 다시 왔다면 가장 최근 카드에서 답하세요.": "⚠️ This card belongs to a request that was already answered. If the same request came again, answer it on the latest card."
 }

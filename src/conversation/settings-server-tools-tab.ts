@@ -66,7 +66,8 @@ async function loadServerTools() {
     var res = await fetch('/api/server-tools');
     var data = null;
     try { data = await res.json(); } catch (_e) {}
-    if (!res.ok) {
+    if (!res.ok || !data || !Array.isArray(data.tools) || !Array.isArray(data.servers) || !Array.isArray(data.toolGrants)) {
+      // Not loaded: the next time the tab is shown it asks again.
       el.innerHTML = '<div class="notice is-error" role="alert">' + esc((data && data.error) || ('서버 도구를 불러오지 못했습니다 (HTTP ' + res.status + ')')) + '</div>';
       return;
     }
@@ -76,6 +77,11 @@ async function loadServerTools() {
   } catch (_e) {
     el.innerHTML = '<div class="notice is-error" role="alert">서버 도구를 불러오지 못했습니다. 다시 시도하세요.</div>';
   }
+}
+// A change that was made but not written to the audit ledger says so (the server answers ok with a warning).
+function stOk(text, data) {
+  var warning = data && data.warning;
+  stStatus(text + (warning ? ' — ' + warning : ''), !!warning);
 }
 function stUserName(id) {
   var users = (_st && _st.users) || [];
@@ -206,11 +212,6 @@ function renderServerTools() {
   html += '<div class="st-box"><h3>서버 · 환경</h3>' + (cards ? '<div class="st-cards">' + cards + '</div>' : '<p class="lock">설정된 서버가 없습니다.</p>') + '</div>';
   el.innerHTML = html;
 }
-function stFindServer(name) {
-  var list = (_st && _st.servers) || [];
-  for (var i = 0; i < list.length; i++) if (list[i].name === name) return list[i];
-  return null;
-}
 async function stSetLevel(sel) {
   var tool = sel.getAttribute('data-tool');
   var level = sel.value || null;
@@ -220,7 +221,7 @@ async function stSetLevel(sel) {
     renderServerTools();
     return;
   }
-  stStatus(tool + ' 수준: ' + (level || '표에 없음(관리자만)') + (r.data && r.data.warning ? ' — ' + r.data.warning : ''), !!(r.data && r.data.warning));
+  stOk(tool + ' 수준: ' + (level || '표에 없음(관리자만)'), r.data);
   await loadServerTools();
 }
 async function stCreateMap() {
@@ -231,7 +232,7 @@ async function stCreateMap() {
     stStatus((r.status === 403 ? '권한이 없습니다: ' : '만들지 못했습니다: ') + r.error, true);
     return;
   }
-  stStatus('권한 표를 만들었습니다', false);
+  stOk('권한 표를 만들었습니다', r.data);
   await loadServerTools();
 }
 async function stAddGrant() {
@@ -248,7 +249,7 @@ async function stAddGrant() {
     return;
   }
   if (r.data && r.data.toolGrants) _st.toolGrants = r.data.toolGrants;
-  stStatus('허락했습니다: ' + stUserName(user) + ' — ' + level + ' · ' + duration, false);
+  stOk('허락했습니다: ' + stUserName(user) + ' — ' + level + ' · ' + duration, r.data);
   renderServerTools();
 }
 async function stRevokeGrant(btn) {
@@ -260,7 +261,7 @@ async function stRevokeGrant(btn) {
     return;
   }
   if (r.data && r.data.toolGrants) _st.toolGrants = r.data.toolGrants;
-  stStatus('거뒀습니다: ' + stUserName(user) + ' — ' + level, false);
+  stOk('거뒀습니다: ' + stUserName(user) + ' — ' + level, r.data);
   renderServerTools();
 }
 async function stEnvGrant(envId, server, userId, allow) {
@@ -273,7 +274,7 @@ async function stEnvGrant(envId, server, userId, allow) {
   for (var i = 0; i < list.length; i++) {
     if (list[i].envUser === envId && r.data && r.data.environmentUsers) list[i].environmentUsers = r.data.environmentUsers;
   }
-  stStatus((allow ? '환경을 허락했습니다: ' : '환경 허락을 뺐습니다: ') + stUserName(userId) + ' — ' + String(envId).replace(/^env:/, ''), false);
+  stOk((allow ? '환경을 허락했습니다: ' : '환경 허락을 뺐습니다: ') + stUserName(userId) + ' — ' + String(envId).replace(/^env:/, ''), r.data);
   renderServerTools();
 }
 async function stAddEnvUser(btn) {

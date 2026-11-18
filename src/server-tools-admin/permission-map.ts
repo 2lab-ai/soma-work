@@ -112,6 +112,13 @@ export function setToolLevel(
   const from: ToolLevel | null = before === 'read' || before === 'write' ? before : null;
   if (level === null) delete map[tool];
   else map[tool] = level;
+  // An empty map is no map: the loader drops it and server-tools opens to everyone (#1170). Never write one.
+  if (from !== null && !Object.values(map).some((v) => v === 'read' || v === 'write')) {
+    throw new PermissionMapError(
+      '마지막 수준은 지울 수 없습니다 — 표가 비면 server-tools가 모든 유저에게 열립니다(#1170). 다른 도구의 수준을 먼저 두세요',
+      409,
+    );
+  }
   // Same key order: `permission` stays where it was (first, when new — the documented shape).
   doc['server-tools'] = 'permission' in section ? { ...section, permission: map } : { permission: map, ...section };
   writeBack(configFile, text, doc, hooks);

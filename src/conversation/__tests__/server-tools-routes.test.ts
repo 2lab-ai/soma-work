@@ -216,6 +216,39 @@ describe('server-tools routes (secret-access WU3)', () => {
     ).toBe(404);
   });
 
+  it('refuses to remove the last level (an empty map would open server-tools to everyone)', async () => {
+    const h = await headers();
+    expect((await call('PUT', '/api/server-tools/permission/logs', h, { level: null })).status).toBe(200);
+    const last = await call('PUT', '/api/server-tools/permission/db_query', h, { level: null });
+    expect(last.status).toBe(409);
+    expect(last.body.error).toContain('#1170');
+    expect(JSON.parse(fs.readFileSync(configFile, 'utf-8'))['server-tools'].permission).toEqual({ db_query: 'read' });
+  });
+
+  it('every change route refuses a non-admin, an admin without admin mode, and a missing CSRF token', async () => {
+    const changes: Array<[string, string, unknown]> = [
+      ['PUT', '/api/server-tools/permission/logs', { level: 'write' }],
+      ['POST', '/api/server-tools/permission', {}],
+      ['POST', '/api/server-tools/grants', { userId: 'U_A', level: 'read', duration: '7d' }],
+      ['DELETE', '/api/server-tools/grants/U_A/read', undefined],
+      ['POST', '/api/server-tools/environments/env:acme-dev2/users', { userId: 'U_A', allow: true }],
+    ];
+    const before = fs.readFileSync(configFile, 'utf-8');
+    const nonAdmin = await headers('U_A');
+    const noMode = await headers('U_ADMIN', false);
+    const { 'x-csrf-token': _csrf, ...noCsrf } = await headers();
+    for (const [method, url, payload] of changes) {
+      for (const h of [nonAdmin, noMode, noCsrf]) {
+        expect((await call(method, url, h, payload)).status, `${method} ${url}`).toBe(403);
+      }
+    }
+    expect(fs.readFileSync(configFile, 'utf-8')).toBe(before);
+    const grants = await import('../../user-skill-grants-store');
+    expect(grants.environmentGrantees('env:acme-dev2')).toEqual(['U_B']);
+    expect((await call('GET', '/api/server-tools', await headers())).body.toolGrants).toEqual([]);
+    expect(fs.existsSync(path.join(dataDir, 'secret-audit.jsonl'))).toBe(false);
+  });
+
   it('a non-admin and an admin without admin mode are refused', async () => {
     expect((await call('GET', '/api/server-tools', await headers('U_A'))).status).toBe(403);
     const noMode = await headers('U_ADMIN', false);

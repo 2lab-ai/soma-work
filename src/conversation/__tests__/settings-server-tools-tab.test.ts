@@ -25,6 +25,7 @@ const FNS = [
   'escAttr',
   'scWhen',
   'stStatus',
+  'stOk',
   'stUserName',
   'stAccessText',
   'stLevelCell',
@@ -36,7 +37,6 @@ const FNS = [
   'stBanner',
   'stFilterText',
   'renderServerTools',
-  'stFindServer',
   'stSetLevel',
   'stCreateMap',
   'stAddGrant',
@@ -268,6 +268,56 @@ describe('서버 도구 tab — changes', () => {
     });
     expect(api.state().servers[0].environmentUsers).toEqual(['U_A']);
     expect(els['st-status'].textContent).toContain('비');
+  });
+});
+
+describe('서버 도구 tab — a change the ledger missed', () => {
+  const WARN = '바뀌었지만 감사 기록을 남기지 못했습니다';
+  it('every change says so when it was made but not audited', async () => {
+    const p = page({
+      adminMode: true,
+      map: 'missing',
+      inputs: {
+        'st-grant-user': { value: 'U_C' },
+        'st-grant-level': { value: 'read' },
+        'st-grant-duration': { value: '7d' },
+        'st-env-pick-dev2': { value: 'U_A' },
+      },
+    });
+    const warned = { ok: true, status: 200, data: { warning: WARN, toolGrants: [], environmentUsers: ['U_B'] } };
+    const steps: Array<() => Promise<void>> = [
+      () => p.api.stCreateMap(),
+      () => p.api.stAddGrant(),
+      () => p.api.stRevokeGrant({ getAttribute: (k: string) => (k === 'data-user' ? 'U_A' : 'read') }),
+      () => p.api.stAddEnvUser({ getAttribute: (k: string) => (k === 'data-env' ? 'env:acme-dev2' : 'dev2') }),
+      () => p.api.stSetLevel({ value: 'write', getAttribute: () => 'db_query' }),
+    ];
+    for (const step of steps) {
+      p.apiWrite.mockResolvedValueOnce(warned);
+      p.els['st-status'].textContent = '';
+      await step();
+      expect(p.els['st-status'].textContent).toContain(WARN);
+      expect(p.els['st-status'].className).toContain('is-error');
+    }
+  });
+});
+
+describe('서버 도구 tab — loading', () => {
+  it('an answer that is not the expected shape is a failed load the tab retries', async () => {
+    const els: Record<string, any> = { 'st-body': { innerHTML: '' } };
+    const fetch = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => null });
+    const api = new Function(
+      'document',
+      'fetch',
+      `var _st = null; var _stLoaded = false;
+${clientFn('esc')}
+${clientFn('renderServerTools')}
+${clientFn('loadServerTools')}
+return { loadServerTools, loaded: function () { return _stLoaded; } };`,
+    )({ getElementById: (id: string) => els[id] ?? null }, fetch);
+    await api.loadServerTools();
+    expect(api.loaded()).toBe(false);
+    expect(els['st-body'].innerHTML).toContain('불러오지 못했습니다');
   });
 });
 
