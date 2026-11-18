@@ -4,6 +4,7 @@ import { switchLlmuxAccount } from '../../auth/llmux-client';
 import { advertisedLlmuxBaseUrl, buildLlmuxKeyDmText } from '../../auth/llmux-key-info';
 import { describeTenantKey, ensureTenantKey } from '../../auth/llmux-tenant-keys';
 import { CommandParser } from '../command-parser';
+import { deliverImageCard, type FilesUploadClient, slackImageUploader } from '../slack-file-image';
 import { applyAuthMode, renderAuthCard } from '../z/topics/auth-topic';
 import type { CommandContext, CommandHandler, CommandResult } from './types';
 
@@ -15,6 +16,8 @@ export interface AuthHandlerDeps {
   slackApi?: {
     openDmChannel(userId: string): Promise<string>;
     postMessage(channel: string, text: string, options?: unknown): Promise<{ ts?: string; channel?: string }>;
+    /** This bot's client — uploads the card's summary picture (the same bot posts the card). */
+    getClient?(): FilesUploadClient;
   };
   userSettingsStore?: {
     getUserSettings(userId: string): { slackName?: string; email?: string } | undefined;
@@ -80,8 +83,17 @@ export class AuthHandler implements CommandHandler {
 
     // Status always starts in overview, including for admins. Management
     // controls require the renderer's explicit, authorized Admin mode action.
-    const { text: fallback, blocks } = await renderAuthCard({ userId: user, issuedAt: Date.now() });
-    await say({ text: fallback ?? '🔐 Auth', blocks, thread_ts: threadTs });
+    // The overview leads with the summary picture when this bot can upload it;
+    // Slack refusing the fresh file still lands the text card (deliverImageCard).
+    const client = this.deps?.slackApi?.getClient?.();
+    const card = await renderAuthCard({
+      userId: user,
+      issuedAt: Date.now(),
+      ...(client ? { uploadImage: slackImageUploader(client) } : {}),
+    });
+    await deliverImageCard(card, (blocks) =>
+      say({ text: card.text ?? '🔐 Auth', blocks: blocks as never, thread_ts: threadTs }),
+    );
     return { handled: true };
   }
 

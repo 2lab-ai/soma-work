@@ -6,6 +6,7 @@ import { renderCarousel as defaultRenderCarousel } from '../../metrics/usage-ren
 import { isSafeOperational, SlackPostError, SlackUploadError } from '../../metrics/usage-render/errors';
 import type { CarouselStats, TabId } from '../../metrics/usage-render/types';
 import { CommandParser } from '../command-parser';
+import { extractFileId, isInvalidBlocksError } from '../slack-file-image';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 import { buildCarouselBlocks } from './usage-carousel-blocks';
 import { defaultTabCache, type TabCache } from './usage-carousel-cache';
@@ -394,41 +395,4 @@ export function hasExtraCardArgs(text: string): boolean {
   const parts = trimmed.split(/\s+/).filter((p) => p.length > 0);
   // Expected shape: ['usage', 'card']; anything longer is a violation.
   return parts.length > 2;
-}
-
-/**
- * Defensive `filesUploadV2` response file-id extractor.
- *
- * Bolt v2 normalizes to a nested `{ files: [{ files: [{id}] }] }` shape, but
- * legacy Slack SDK responses use a flat `{ file: { id } }` or
- * `{ files: [{id}] }`. Probe all three before giving up.
- */
-function extractFileId(res: unknown): string {
-  const r = res as Record<string, unknown> | null | undefined;
-  if (r && Array.isArray(r.files) && r.files.length > 0) {
-    const first = r.files[0] as Record<string, unknown>;
-    if (first && Array.isArray(first.files) && (first.files as unknown[]).length > 0) {
-      const inner = (first.files as unknown[])[0] as Record<string, unknown>;
-      if (typeof inner?.id === 'string') return inner.id;
-    }
-    if (typeof first?.id === 'string') return first.id;
-  }
-  const f = r?.file as Record<string, unknown> | undefined;
-  if (typeof f?.id === 'string') return f.id;
-  throw new SlackUploadError('filesUploadV2 response missing file id', res);
-}
-
-/**
- * True if `err` is a Slack `invalid_blocks` API rejection. Retryable because
- * it usually indicates the freshly-uploaded file ID hasn't yet propagated
- * through Slack's internal file index.
- *
- * Only the structured `err.data.error` field is trusted — substring-matching
- * `err.message` was rejected because any wrapped error whose stringified
- * message happens to contain the literal (e.g. a log line or a different
- * upstream error) would spuriously trigger retry.
- */
-function isInvalidBlocksError(err: unknown): boolean {
-  const e = err as { data?: { error?: string } } | null | undefined;
-  return e?.data?.error === 'invalid_blocks';
 }

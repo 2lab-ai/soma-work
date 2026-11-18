@@ -28,6 +28,8 @@ export const AUTH_ACTION_IDS = {
   viewer: 'auth_view_mode',
   /** Account-list pagination. Value: JSON `{viewerMode,page}` (target page). */
   page: 'auth_page',
+  /** Post the per-account report picture into the card's thread (any viewer). */
+  report: 'auth_account_report',
   /** Dismiss the card (shared ZSettings chrome semantics). */
   cancel: 'z_setting_auth_cancel',
 } as const;
