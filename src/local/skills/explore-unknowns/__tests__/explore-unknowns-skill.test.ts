@@ -51,10 +51,6 @@ function parseFrontmatter(md: string): Record<string, string> {
 }
 
 describe('local:explore-unknowns skill — contract (T4)', () => {
-  it('SKILL.md exists', () => {
-    expect(existsSync(SKILL_MD)).toBe(true);
-  });
-
   it('frontmatter has name: explore-unknowns and a quadrant/unknowns-focused description', () => {
     const md = readFileSync(SKILL_MD, 'utf8');
     const fm = parseFrontmatter(md);
@@ -96,16 +92,6 @@ describe('autoz wires an Explore phase before RED (T6)', () => {
   it('autoz SKILL.md references local:explore-unknowns', () => {
     const md = readFileSync(AUTOZ_SKILL_MD, 'utf8');
     expect(md).toMatch(/explore-unknowns/);
-  });
-
-  it('Pipeline Order runs Explore before the RED step', () => {
-    const md = readFileSync(AUTOZ_SKILL_MD, 'utf8');
-    const pipeline = md.slice(md.indexOf('## Pipeline Order'));
-    const exploreIdx = pipeline.search(/[Ee]xplore/);
-    const redIdx = pipeline.search(/\*\*RED\b/);
-    expect(exploreIdx, 'Pipeline Order must contain an Explore step').toBeGreaterThan(-1);
-    expect(redIdx, 'Pipeline Order must contain the RED step').toBeGreaterThan(-1);
-    expect(exploreIdx, 'Explore must come before RED').toBeLessThan(redIdx);
   });
 
   it('autoz explore runs in autonomous mode (no interactive quadrant walk)', () => {

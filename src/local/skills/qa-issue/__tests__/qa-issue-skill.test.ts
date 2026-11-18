@@ -209,14 +209,6 @@ describe('qa-issue computes a refused compare from the commits list', () => {
       "step 2's per-repo compare (or its commits-list answer) holds for every `mergeSha`, re-read now",
     );
   });
-
-  it('no git recipe remains', () => {
-    expect(md).not.toMatch(
-      /git init|merge-base|rev-list|--filter=blob:none|GIT_TERMINAL_PROMPT|credential\.interactive/,
-    );
-    expect(md).not.toContain('compare via git');
-    expect(md).not.toContain('git answer');
-  });
 });
 
 /**

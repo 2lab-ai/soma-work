@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { UserChoice } from 'somalib/model-commands/session-types';
 import type { AskUserQuestionParams } from 'somalib/model-commands/types';
@@ -85,8 +85,12 @@ describe('UIAskUserQuestion caller templates', () => {
     });
   }
 
-  it('exports exactly 6 templates', () => {
-    expect(TEMPLATE_NAMES).toHaveLength(6);
+  it('ships exactly these 6 templates, so every shipped template runs through both gates', () => {
+    const shipped = readdirSync(join(__dirname, '..'))
+      .filter((f) => f.endsWith('.json'))
+      .sort();
+    expect(shipped).toEqual(TEMPLATE_NAMES.map((name) => `${name}.json`).sort());
+    expect(shipped).toHaveLength(6);
   });
 
   it('zcheck-pr-approve has 4 options (per zcheck/SKILL.md Step 4 spec)', () => {

@@ -37,10 +37,6 @@ function readSkill(): string {
 }
 
 describe('local:dimensional-drawing-motion skill — RED contract', () => {
-  it('SKILL.md exists', () => {
-    expect(existsSync(SKILL_MD)).toBe(true);
-  });
-
   it('frontmatter names the skill and carries EN + KO triggers', () => {
     const fm = parseFrontmatter(readSkill());
     expect(fm.name).toBe('dimensional-drawing-motion');

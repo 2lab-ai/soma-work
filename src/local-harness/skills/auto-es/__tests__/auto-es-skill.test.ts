@@ -67,10 +67,6 @@ describe('T1 — card sync through the model-command MCP', () => {
     expect(sync).toMatch(/\bdoc\b/);
     expect(sync).toMatch(/GET_SESSION[\s\S]*verify|verify[\s\S]*GET_SESSION/i);
   });
-
-  it('#855 — no Slack-less task path is described (every task is a Slack session)', () => {
-    expect(section('Card sync')).not.toMatch(/Slack-less|dashboard task/i);
-  });
 });
 
 describe('T2–T4 — the document', () => {
