@@ -221,6 +221,30 @@ describe('PhoneService', () => {
     await svc.stop();
   });
 
+  it('makes the short acknowledgments once when a line opens, in the line voice', async () => {
+    const said: string[] = [];
+    const { svc } = make(serverTools(), () => 'sk_test', {
+      voiceClientFor: () => ({
+        transcribe: async () => ({ text: '', ms: 0 }),
+        speak: async (text: string) => {
+          said.push(text);
+          return {
+            sampleRate: 8000,
+            headersMs: 0,
+            chunks: (async function* () {
+              yield Buffer.alloc(640);
+            })(),
+          };
+        },
+      }),
+    });
+    await svc.start();
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(said).toEqual(expect.arrayContaining(['네.', '아, 네.']));
+    await svc.stop();
+  });
+
   it('skips a section whose key does not resolve, and starts nothing without one', async () => {
     const bad = make(serverTools({ apiKey: { $secret: 'missing' } }));
     await bad.svc.start();

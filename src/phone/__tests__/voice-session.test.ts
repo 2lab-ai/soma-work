@@ -112,9 +112,14 @@ function fakeCall() {
     frames: 0,
     cleared: 0,
     hungUp: 0,
+    /** Peak level (0..1) of every frame sent (the identity codec: the frames are PCM). */
+    levels: [] as number[],
     emitted: [] as Array<[string, string]>,
-    sendAudio() {
+    sendAudio(b: Buffer) {
       call.frames++;
+      let m = 0;
+      for (let i = 0; i + 1 < b.length; i += 2) m = Math.max(m, Math.abs(b.readInt16LE(i)));
+      call.levels.push(m / 32767);
     },
     clearAudio() {
       call.cleared++;
@@ -135,6 +140,8 @@ function setup(
   stt: string[] = [],
   opts: {
     speakGate?: () => Promise<void>;
+    /** Length of the audio each synthesis returns. Default 400 ms. */
+    speakMs?: number;
     warm?: (signal?: AbortSignal) => Promise<void>;
     sttGate?: () => Promise<void>;
   } = {},
@@ -167,7 +174,7 @@ function setup(
     async speak(text) {
       spoken.push(text);
       await opts.speakGate?.();
-      const pcm = tone(400, 0.2); // 400 ms of speech per sentence = 20 frames of 160 B (identity codec)
+      const pcm = tone(opts.speakMs ?? 400, 0.2); // 400 ms of speech per sentence = 20 frames of 160 B (identity codec)
       return {
         sampleRate: RATE,
         headersMs: 1,
@@ -218,7 +225,10 @@ describe('CallRun — outbound opening', () => {
     expect(call.frames).toBe(0);
     clock.advance(1300);
     await settleAll();
-    expect(call.frames).toBe(80); // two sentences × 400 ms × 8 kHz × 2 B ÷ 160 B (the identity codec)
+    expect(call.frames).toBeGreaterThan(0); // sent in real time, a short lead ahead of playback …
+    expect(call.frames).toBeLessThan(80);
+    clock.advance(2000);
+    expect(call.frames).toBe(80); // … all of it: two sentences × 400 ms × 8 kHz × 2 B ÷ 160 B (the identity codec)
     expect(record.transcript.map((l) => [l.role, l.text])).toEqual([
       ['agent', '안녕하세요, 소마예요.'],
       ['agent', '잠깐 통화 괜찮으세요?'],
@@ -256,8 +266,9 @@ describe('CallRun — outbound opening', () => {
     expect(call.frames).toBe(0); // still talking: hold
     run.feedAudio(quiet(800)); // the hello ended → release now
     await settleAll();
+    clock.advance(1000);
     expect(call.frames).toBe(40);
-    expect(record.transcript.map((l) => l.role)).toEqual(['agent', 'peer']);
+    expect(record.transcript.map((l) => l.role)).toEqual(['peer', 'agent']); // the hello, then the opening it released
     expect(dialog().sent).toEqual([OPENING_CUE]); // "여보세요?" heard and logged, not a turn
   });
 });
@@ -290,8 +301,8 @@ describe('CallRun — conversation', () => {
     expect(record.work.find((w) => w.kind === 'stt')).toMatchObject({ text: '오늘 회의가 두 개 있어요.', ms: 5 });
   });
 
-  it('barge-in: stops playback, marks the cut line and interrupts a reply still being written', async () => {
-    const { run, record, dialog, call } = await talking();
+  it('barge-in: lowers the voice, then fades out and stops; marks the cut line and interrupts the reply', async () => {
+    const { run, record, dialog, call, clock } = await talking();
     run.feedAudio(quiet(300));
     run.feedAudio(tone(600, 0.3));
     run.feedAudio(quiet(800));
@@ -304,10 +315,15 @@ describe('CallRun — conversation', () => {
     run.feedAudio(tone(300, 0.6));
     await settleAll();
     expect(call.cleared).toBe(0);
-    // … talking over it for more than half a second is.
+    // … talking over it for more than half a second is: the voice fades out (it ends its word) and stops.
     run.feedAudio(tone(400, 0.6));
     await settleAll();
-    expect(call.cleared).toBe(1);
+    const atCut = call.frames;
+    clock.advance(3000);
+    await settleAll();
+    expect(call.frames - atCut).toBeLessThanOrEqual(10 + 15 + 1); // the lead already sent + a 300 ms fade
+    expect(call.levels[call.levels.length - 1]).toBeLessThan(0.1);
+    expect(call.cleared).toBe(0); // not cut dead
     expect(dialog().interrupted).toBe(1);
     expect(record.transcript.find((l) => l.text === '네, 회의 두 개 확인했어요.')?.interrupted).toBe(true);
     expect(record.work.some((w) => w.kind === 'event' && w.text.includes('끼어듦'))).toBe(true);
@@ -499,8 +515,10 @@ describe('CallRun — conversation', () => {
     slow = true; // its words will not be recognised in time
     s.run.feedAudio(Buffer.concat([tone(700, 0.6), quiet(800)])); // speech start and its end in one push
     await settleAll();
-    expect(call.cleared).toBe(1);
     expect(s.dialog().interrupted).toBe(1);
+    const atCut = call.frames;
+    s.clock.advance(3000);
+    expect(call.frames - atCut).toBeLessThanOrEqual(10 + 15 + 1); // faded out at once, the rest never sent
   });
 
   it('a "네" waiting for the reply is not answered on its own when a real interruption follows', async () => {
@@ -534,7 +552,10 @@ describe('CallRun — conversation', () => {
     expect(s.dialog().sent.length).toBe(before); // the "네" is not sent alone while the caller's words are pending
     heard();
     await settleAll();
-    expect(s.dialog().sent.slice(before)).toEqual(['네 아니 잠깐만요 장소를 바꿔야 해요']);
+    const sent = s.dialog().sent.slice(before);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatch(/^\[시스템: 상대가 끼어들어 네 말이 "[^"]*"에서 끊겼다/); // what was cut, for the model
+    expect(sent[0].endsWith('\n네 아니 잠깐만요 장소를 바꿔야 해요')).toBe(true);
   });
 
   it('a sound that interrupted nothing still leaves the line watched: the quiet-line nudge comes', async () => {
@@ -561,14 +582,15 @@ describe('CallRun — conversation', () => {
     run.feedAudio(tone(400, 0.3));
     run.feedAudio(quiet(800)); // "잠깐만요" is transcribed
     await settleAll();
-    expect(call.cleared).toBeGreaterThanOrEqual(1);
+    expect(record.work.some((w) => w.kind === 'event' && w.text.includes('말을 이어감'))).toBe(true);
     expect(dialog().interrupted).toBe(1);
     expect(dialog().sent.length).toBe(before); // not before the dropped turn has ended
     const agentLines = record.transcript.filter((l) => l.role === 'agent');
     expect(agentLines[agentLines.length - 1]).toMatchObject({ text: '네, 회의 두 개 확인했어요.', interrupted: true });
     dialog().emit({ type: 'turn_end', isError: true, message: 'interrupted' });
     await settleAll();
-    expect(dialog().sent.slice(before)).toEqual(['잠깐만요']);
+    expect(dialog().sent[dialog().sent.length - 1]).toContain('잠깐만요');
+    expect(dialog().sent.slice(before)).toHaveLength(1);
   });
 
   it('newer words stop a reply that started playing while the caller was still talking', async () => {
@@ -583,10 +605,19 @@ describe('CallRun — conversation', () => {
     run.feedAudio(tone(400, 0.3));
     run.feedAudio(quiet(800)); // "잠깐만요" is transcribed
     await settleAll();
-    expect(call.cleared).toBeGreaterThanOrEqual(1);
-    expect(dialog().sent[dialog().sent.length - 1]).toBe('잠깐만요');
+    const atCut = call.frames;
+    clock.advance(3000);
+    expect(call.frames - atCut).toBeLessThanOrEqual(10 + 15 + 1); // faded out, the rest never sent
+    // The model hears what was cut: the words go with a note of what the caller heard and what was not said.
+    const last = dialog().sent[dialog().sent.length - 1];
+    expect(last).toMatch(
+      /^\[시스템: 상대가 끼어들어 네 말이 "[^"]*"에서 끊겼다\. 못 한 말: "[^"]*시간도 알려 드릴까요\?"/,
+    );
+    expect(last.endsWith('\n잠깐만요')).toBe(true);
     const agentLines = record.transcript.filter((l) => l.role === 'agent');
-    expect(agentLines[agentLines.length - 1]).toMatchObject({ text: '시간도 알려 드릴까요?', interrupted: true });
+    // Only what started to sound is in the transcript: the cut piece is marked, the unheard one is not there.
+    expect(agentLines[agentLines.length - 1]).toMatchObject({ text: '네, 회의 두 개 확인했어요.', interrupted: true });
+    expect(agentLines.some((l) => l.text === '시간도 알려 드릴까요?')).toBe(false);
     expect(record.work.some((w) => w.kind === 'event' && w.text.includes('말을 이어감'))).toBe(true);
     clock.advance(1);
   });
@@ -701,6 +732,110 @@ describe('CallRun — a quiet line', () => {
     await settleAll();
     clock.advance(16_000);
     expect(dialog().sent[dialog().sent.length - 1]).toBe(SILENCE_CUE);
+  });
+});
+
+describe('CallRun — like a live call', () => {
+  /** Feed audio the way the line does (20 ms frames), moving the clock with it. */
+  function live(s: { run: { feedAudio(b: Buffer): void }; clock: Clock }, pcm: Buffer) {
+    for (let off = 0; off < pcm.length; off += 320) {
+      s.run.feedAudio(pcm.subarray(off, off + 320));
+      s.clock.advance(20);
+    }
+  }
+  async function answering(stt: string[], extra: { speakMs?: number; fillers?: CallRunPlan['fillers'] } = {}) {
+    const s = setup({ direction: 'inbound', fillers: extra.fillers }, stt, { speakMs: extra.speakMs });
+    s.run.begin();
+    const call = fakeCall();
+    s.run.attach(call as unknown as CallSessionLike);
+    s.dialog().reply('네, 말씀하세요.');
+    await settleAll();
+    // The greeting has played out (with the identity codec a 160 B frame holds 10 ms of PCM but plays as 20 ms).
+    s.clock.advance(2 * (extra.speakMs ?? 400) + 3000);
+    return { ...s, call };
+  }
+
+  it('a "네" over the agent lowers its voice at once and brings it back after; nothing is cut', async () => {
+    const s = await answering(['내일 회의 시간이요', '네'], { speakMs: 4000 });
+    live(s, tone(600, 0.3));
+    live(s, quiet(600));
+    await settleAll();
+    s.dialog().reply('내일 회의는 세 시예요.');
+    await settleAll();
+    live(s, quiet(1000)); // the answer plays at full voice
+    const full = Math.max(...s.call.levels.slice(-10));
+    live(s, tone(300, 0.6)); // "네" over it
+    live(s, quiet(200));
+    const ducked = Math.max(...s.call.levels.slice(-8));
+    expect(ducked).toBeLessThan(full * 0.5);
+    live(s, quiet(800)); // it was only a "네"
+    await settleAll();
+    const back = Math.max(...s.call.levels.slice(-5));
+    expect(back).toBeGreaterThan(full * 0.9);
+    expect(s.call.cleared).toBe(0);
+    expect(s.dialog().interrupted).toBe(0);
+    expect(s.record.transcript.filter((l) => l.role === 'agent').some((l) => l.interrupted)).toBe(false);
+  });
+
+  it('says a short acknowledgment the moment the caller stops, then the answer without a second "네"', async () => {
+    const fillers = [{ text: '네.', frames: [tone(20, 0.5), tone(20, 0.5), tone(20, 0.5)] }];
+    const s = await answering(['내일 회의 시간이요'], { fillers });
+    s.run.feedAudio(tone(600, 0.3));
+    const before = s.call.frames;
+    s.run.feedAudio(quiet(800)); // the caller stops: "네." goes out now, before the words are even recognised
+    expect(s.call.frames - before).toBe(3);
+    expect(s.record.transcript[s.record.transcript.length - 1]).toMatchObject({ role: 'agent', text: '네.' });
+    await settleAll();
+    s.dialog().reply('네, 내일 회의는 세 시예요.');
+    await settleAll();
+    expect(s.spoken[s.spoken.length - 1]).toBe('내일 회의는 세 시예요.');
+  });
+
+  it('uses acknowledgments made after the call began (they are made when the line opens, in the background)', async () => {
+    const fillers: NonNullable<CallRunPlan['fillers']> = [];
+    const s = await answering(['내일 회의 시간이요'], { fillers });
+    fillers.push({ text: '네.', frames: [tone(20, 0.5)] }); // ready now
+    s.run.feedAudio(tone(600, 0.3));
+    s.run.feedAudio(quiet(800));
+    expect(s.record.transcript.some((l) => l.role === 'agent' && l.text === '네.')).toBe(true);
+  });
+
+  it('keeps the transcript in time order: the words come before the "네." said after them', async () => {
+    const fillers = [{ text: '네.', frames: [tone(20, 0.5)] }];
+    const s = await answering(['내일 회의 시간이요'], { fillers });
+    s.run.feedAudio(tone(600, 0.3));
+    s.run.feedAudio(quiet(800));
+    await settleAll(); // recognised after "네." went out
+    const tail = s.record.transcript.slice(-2).map((l) => [l.role, l.text]);
+    expect(tail).toEqual([
+      ['peer', '내일 회의 시간이요'],
+      ['agent', '네.'],
+    ]);
+  });
+
+  it('the recognised words arriving while the acknowledgment still sounds do not cut it', async () => {
+    const fillers = [{ text: '네.', frames: Array.from({ length: 30 }, () => tone(20, 0.5)) }]; // 600 ms
+    const s = await answering(['그리고 장소는요'], { fillers });
+    s.run.feedAudio(tone(600, 0.3));
+    s.run.feedAudio(quiet(800));
+    await settleAll(); // recognised while "네." is still going out
+    s.clock.advance(1000);
+    expect(s.record.transcript.filter((l) => l.role === 'agent').some((l) => l.interrupted)).toBe(false);
+    expect(s.dialog().sent[s.dialog().sent.length - 1]).toBe('그리고 장소는요');
+  });
+
+  it('after the first piece of a reply, the rest is synthesized as one piece (no gap between sentences)', async () => {
+    const s = await answering(['일정 알려 주세요']);
+    s.run.feedAudio(tone(600, 0.3));
+    s.run.feedAudio(quiet(800));
+    await settleAll();
+    const n = s.spoken.length;
+    s.dialog().reply('오늘은 회의가 두 개예요. 오후 두 시에 하나, 네 시에 하나. 저녁엔 리뷰가 있어요.');
+    await settleAll();
+    expect(s.spoken.slice(n)).toEqual([
+      '오늘은 회의가 두 개예요.',
+      '오후 두 시에 하나, 네 시에 하나. 저녁엔 리뷰가 있어요.',
+    ]);
   });
 });
 

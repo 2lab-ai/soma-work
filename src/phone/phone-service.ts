@@ -83,6 +83,9 @@ export interface PhoneServiceDeps {
   connectTimeoutMs?: number;
 }
 
+/** Said the moment the other side stops talking, in turn, while the reply is made. */
+const ACKNOWLEDGMENTS = ['네.', '아, 네.'];
+
 interface PhoneLine {
   env: string;
   cfg: PhoneEnvConfig;
@@ -90,6 +93,11 @@ interface PhoneLine {
   session: PhoneVoiceSession;
   voice: VoiceClient;
   greeting?: { text: string; frames: Buffer[] };
+  /**
+   * Short acknowledgments made once per line ("네."), said the moment the other side stops talking. Filled in place
+   * when they are ready: a call that began before that uses them from then on.
+   */
+  fillers: Array<{ text: string; frames: Buffer[] }>;
   /** Lease of each call's dialog, released when the call ends. */
   auths: Map<string, DialogAuth>;
   /**
@@ -251,6 +259,7 @@ export class PhoneService {
       throw new PhoneConfigError(`server ${env}: phone.apiKey did not resolve`);
     const voice = this.deps.voiceClientFor?.(cfg) ?? createVoiceClient(cfg.voice);
     const line: PhoneLine = {
+      fillers: [],
       env,
       cfg,
       voice,
@@ -279,6 +288,7 @@ export class PhoneService {
     this.lines.set(env, line);
     this.deps.log('info', `phone: ${env} connected`, { number: formatPhoneNumber(cfg.number) });
     if (cfg.inbound.enabled) void this.prepareGreeting(line);
+    void this.prepareFillers(line);
   }
 
   /** connect(), bounded: past the limit the attempt is dropped (its reconnect loop stopped) and sync() retries. */
@@ -429,7 +439,7 @@ export class PhoneService {
     greeting?: { text: string; frames: Buffer[] },
   ): CallRun {
     return new CallRun(
-      { callId, direction, maxMinutes, greeting, model: auth.model },
+      { callId, direction, maxMinutes, greeting, fillers: line.fillers, model: auth.model },
       {
         ulawToPcm16: (b) => this.deps.sdk.ulawToPcm16(b),
         pcm16ToUlaw: (b) => this.deps.sdk.pcm16ToUlaw(b),
@@ -540,20 +550,45 @@ export class PhoneService {
     return run;
   }
 
+  /** Speech for the line, made ahead (μ-law 20 ms frames). */
+  private async synthesizeFrames(line: PhoneLine, text: string): Promise<Buffer[]> {
+    const stream = await line.voice.speak(text);
+    const rs = new StreamResampler(stream.sampleRate, LINE_SAMPLE_RATE);
+    const parts: Buffer[] = [];
+    for await (const chunk of stream.chunks) parts.push(this.deps.sdk.pcm16ToUlaw(rs.push(chunk)));
+    const ulaw = Buffer.concat(parts);
+    const frames: Buffer[] = [];
+    for (let off = 0; off < ulaw.length; off += 160) {
+      const f = ulaw.subarray(off, off + 160);
+      frames.push(f.length === 160 ? Buffer.from(f) : Buffer.concat([f, Buffer.alloc(160 - f.length, 0xff)]));
+    }
+    return frames;
+  }
+
+  /**
+   * Make the short acknowledgments once per line (.prd/31 §3): the reply to a caller takes a few seconds (recognising,
+   * the model's first words, synthesis), so the phone says "네." the moment they stop, as a person would. Best effort:
+   * without them the call works as before.
+   */
+  private async prepareFillers(line: PhoneLine): Promise<void> {
+    for (const text of ACKNOWLEDGMENTS) {
+      try {
+        const frames = await this.synthesizeFrames(line, text);
+        if (frames.length) line.fillers.push({ text, frames }); // in place: calls already running get it too
+      } catch (err) {
+        this.deps.log('warn', 'phone: acknowledgment not synthesized', {
+          env: line.env,
+          error: (err as Error).message,
+        });
+      }
+    }
+  }
+
   /** Synthesize the inbound greeting once (μ-law frames), so a caller hears it the moment the line opens. */
   private async prepareGreeting(line: PhoneLine): Promise<{ text: string; frames: Buffer[] } | undefined> {
     const text = line.cfg.inbound.greeting;
     try {
-      const stream = await line.voice.speak(text);
-      const rs = new StreamResampler(stream.sampleRate, LINE_SAMPLE_RATE);
-      const parts: Buffer[] = [];
-      for await (const chunk of stream.chunks) parts.push(this.deps.sdk.pcm16ToUlaw(rs.push(chunk)));
-      const ulaw = Buffer.concat(parts);
-      const frames: Buffer[] = [];
-      for (let off = 0; off < ulaw.length; off += 160) {
-        const f = ulaw.subarray(off, off + 160);
-        frames.push(f.length === 160 ? Buffer.from(f) : Buffer.concat([f, Buffer.alloc(160 - f.length, 0xff)]));
-      }
+      const frames = await this.synthesizeFrames(line, text);
       line.greeting = { text, frames };
       return line.greeting;
     } catch (err) {

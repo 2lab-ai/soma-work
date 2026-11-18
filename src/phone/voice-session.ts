@@ -11,6 +11,7 @@ import type { VoiceDialog, VoiceDialogTool } from '../agent-runtime/voice-dialog
 import { EnergyVad, LINE_SAMPLE_RATE, pcm16ToWav, StreamResampler } from './audio';
 import type { PhoneCallRecord, PhoneWorkEvent } from './call-store';
 import type { CallSessionLike, SessionLike } from './koreaaitel';
+import { LineOut } from './line-out';
 import {
   dtmfCue,
   HANG_UP_TOOL,
@@ -21,7 +22,7 @@ import {
   SILENCE_CUE,
   TIME_UP_CUE,
 } from './phone-prompt';
-import { hasSpeech, SentenceSplitter, toSpeakable } from './speech-text';
+import { hasSpeech, SentenceSplitter, stripAcknowledgment, toSpeakable } from './speech-text';
 import type { VoiceClient } from './voice-client';
 
 const FRAME_BYTES = 160; // 20 ms of μ-law at 8 kHz
@@ -39,6 +40,10 @@ const TIME_UP_GRACE_MS = 25_000;
  * hello, a cough — are not an interruption (a real call cut the agent six times for them).
  */
 const BARGE_IN_MS = 600;
+/** A real interruption: the agent's voice falls silent over this long (it ends its word), it is not cut dead. */
+const FADE_OUT_MS = 300;
+/** At most this much text goes into one synthesis (the rest of a reply is spoken as one piece, without gaps). */
+const MAX_PIECE_CHARS = 400;
 
 /**
  * The speech engine is woken at most this often. It slows down after a few idle seconds (VoiceClient.warm), so the
@@ -67,11 +72,24 @@ export interface CallRunPlan {
   maxMinutes: number;
   /** Inbound: the greeting already synthesized (μ-law frames) and its words. */
   greeting?: { text: string; frames: Buffer[] };
+  /**
+   * Short acknowledgments already synthesized ("네."): one is said the moment the other side stops talking, while
+   * the reply is still being made — the answer itself takes a few seconds.
+   */
+  fillers?: Array<{ text: string; frames: Buffer[] }>;
   model?: string;
 }
 
-interface Buffered {
+/** A piece of the agent's speech: its words, and its transcript line once it starts to sound. */
+interface SpokenPart {
   text: string;
+  /** An acknowledgment said while the reply is made ("네."). */
+  filler?: boolean;
+  line?: { text: string; at: number; role: 'agent'; interrupted?: boolean };
+}
+
+interface Buffered {
+  part: SpokenPart;
   frames: Buffer[];
 }
 
@@ -90,9 +108,16 @@ export class CallRun {
 
   private queue: string[] = [];
   private speaking = false;
-  private playEndAt = 0;
+  /** The agent's voice to the line, paced (see line-out.ts); made when the call is answered. */
+  private out: LineOut | null = null;
+  /** The piece of speech sounding now. */
+  private sounding: SpokenPart | null = null;
+  /** Said when the agent was cut: what the other side heard of it and what it did not get to say. */
+  private cutNote: string | null = null;
+  private fillerIndex = 0;
+  /** An acknowledgment was just said: the reply should not open with another. */
+  private acknowledged = false;
   private synthAbort: AbortController | null = null;
-  private lastAgentLine: { text: string; at: number; role: 'agent'; interrupted?: boolean } | null = null;
 
   /** Outbound: the opening is held until the other side has picked up and said hello (or stayed quiet). */
   private released: boolean;
@@ -147,6 +172,16 @@ export class CallRun {
     if (this.ended || this.call) return;
     this.call = call;
     this.answered = true;
+    this.out = new LineOut({
+      send: (f) => this.call?.sendAudio(f),
+      clear: () => this.call?.clearAudio(),
+      decode: (f) => this.deps.ulawToPcm16(f),
+      encode: (p) => this.deps.pcm16ToUlaw(p),
+      now: this.now,
+      setTimer: this.setTimer,
+      clearTimer: this.clearTimer,
+      onStart: (tag) => this.started(tag as SpokenPart),
+    });
     const at = this.now();
     this.deps.update((r) => {
       r.status = 'active';
@@ -155,8 +190,8 @@ export class CallRun {
     this.work({ kind: 'event', at, text: '상대가 전화를 받음' });
     if (this.plan.direction === 'inbound') {
       if (this.plan.greeting) {
-        this.addAgentLine(this.plan.greeting.text);
-        for (const f of this.plan.greeting.frames) this.sendFrame(f);
+        const part: SpokenPart = { text: this.plan.greeting.text };
+        for (const f of this.plan.greeting.frames) this.sendFrame(f, part);
         this.armSilenceIfIdle();
       } else {
         this.sendToDialog(INBOUND_CUE);
@@ -180,6 +215,9 @@ export class CallRun {
         this.silenceNudged = false;
         this.startedOverAgent = this.released && this.agentSpeaking();
         this.bargeArmed = this.startedOverAgent;
+        // Someone talks over the agent: it lowers its voice at once and goes on — a "네" brings it back, a real
+        // interruption makes it fall silent (bargeIn).
+        if (this.startedOverAgent) this.out?.duck();
       } else if (ev.type === 'utterance') {
         // All of it may have come in one packet: judge it as a whole before letting go of the arm.
         if (this.bargeArmed && ev.speechMs >= BARGE_IN_MS) this.interrupt();
@@ -190,9 +228,12 @@ export class CallRun {
         // A backchannel (short, begun over the agent) and the hello that released the opening leave what is being
         // said alone.
         const keepReply = releasedOpening || (this.startedOverAgent && ev.speechMs < BARGE_IN_MS);
+        if (this.startedOverAgent) this.out?.restore(); // it was not an interruption (that would have faded it out)
+        if (!keepReply && !releasedOpening) this.acknowledge();
         void this.transcribe(ev.pcm, ev.totalMs, first, keepReply);
       } else if (ev.type === 'noise') {
         this.bargeArmed = false;
+        if (this.startedOverAgent) this.out?.restore();
         if (!this.released) this.release('상대가 조용해서 첫 마디 시작');
         else if (!this.flushPending()) this.armSilenceIfIdle(); // its start cleared the quiet-line timer
       }
@@ -236,6 +277,7 @@ export class CallRun {
     this.synthAbort?.abort('call-ended');
     this.warmAbort.abort('call-ended');
     this.queue = [];
+    this.out?.stop();
     for (const t of this.timers) this.clearTimer(t);
     this.timers.clear();
     this.vad.reset();
@@ -245,12 +287,41 @@ export class CallRun {
   // ── speaking ────────────────────────────────────────────────
 
   private agentSpeaking(): boolean {
-    return this.speaking || this.queue.length > 0 || this.now() < this.playEndAt;
+    return this.speaking || this.queue.length > 0 || (this.out?.busy ?? false);
+  }
+
+  /** When everything the agent has said so far will have been heard. */
+  private playEnd(): number {
+    return this.out?.playEndAt ?? this.now();
+  }
+
+  /** Only an acknowledgment is sounding (nothing of a reply yet): newer words do not need to cut it. */
+  private onlyAcknowledging(): boolean {
+    return !!this.sounding?.filler && !this.speaking && this.queue.length === 0 && !this.out?.unstarted().length;
+  }
+
+  /**
+   * The other side has stopped talking: say a short acknowledgment now, while the reply is made (end of speech →
+   * first word of the answer takes a few seconds: recognising, the model's first words, synthesis).
+   */
+  private acknowledge(): void {
+    const fillers = this.plan.fillers;
+    if (!fillers?.length || !this.out || !this.released || this.hangupRequested || this.ended) return;
+    if (this.agentSpeaking()) return;
+    const f = fillers[this.fillerIndex++ % fillers.length];
+    const part: SpokenPart = { text: f.text, filler: true };
+    for (const frame of f.frames) this.sendFrame(frame, part);
+    this.acknowledged = true;
   }
 
   private enqueue(sentence: string): void {
     if (this.ended || this.hangupRequestedAndDropping()) return;
-    const spoken = toSpeakable(sentence);
+    let spoken = toSpeakable(sentence);
+    if (this.acknowledged) {
+      // "네." was just said: a reply that opens with its own "네," would say it twice.
+      this.acknowledged = false;
+      spoken = stripAcknowledgment(spoken);
+    }
     if (!hasSpeech(spoken)) return;
     this.queue.push(spoken);
     void this.speakQueue();
@@ -268,7 +339,12 @@ export class CallRun {
     this.speaking = true;
     try {
       while (this.queue.length && !this.ended) {
-        const text = this.queue.shift() as string;
+        // Everything written by now goes as one piece: the engine re-reads the voice before every request, so
+        // sentence by sentence leaves a gap between them (measured: 0.45 s median on real calls).
+        let text = this.queue.shift() as string;
+        while (this.queue.length && text.length + this.queue[0].length < MAX_PIECE_CHARS) {
+          text = `${text} ${this.queue.shift()}`;
+        }
         await this.speakOne(text);
       }
     } finally {
@@ -288,8 +364,8 @@ export class CallRun {
     let frames = 0;
     const resampler = new StreamResampler(44100, LINE_SAMPLE_RATE);
     let carry = Buffer.alloc(0);
-    const buffered: Buffered | null = this.released ? null : { text, frames: [] };
-    if (this.released) this.addAgentLine(text);
+    const part: SpokenPart = { text };
+    const buffered: Buffered | null = this.released ? null : { part, frames: [] };
     try {
       const stream = await this.deps.voice.speak(text, abort.signal);
       const rs = stream.sampleRate === 44100 ? resampler : new StreamResampler(stream.sampleRate, LINE_SAMPLE_RATE);
@@ -303,7 +379,7 @@ export class CallRun {
           data = data.subarray(FRAME_BYTES);
           frames++;
           if (buffered) buffered.frames.push(frame);
-          else this.sendFrame(frame);
+          else this.sendFrame(frame, part);
         }
         carry = Buffer.from(data);
       }
@@ -311,7 +387,7 @@ export class CallRun {
         const frame = Buffer.concat([carry, Buffer.alloc(FRAME_BYTES - carry.length, 0xff)]);
         frames++;
         if (buffered) buffered.frames.push(frame);
-        else this.sendFrame(frame);
+        else this.sendFrame(frame, part);
       }
     } catch (err) {
       if (!abort.signal.aborted) this.fail('tts', err);
@@ -321,26 +397,29 @@ export class CallRun {
     if (buffered && !this.released) this.held.push(buffered);
     else if (buffered && this.released && !abort.signal.aborted && !this.ended) {
       // Released while this sentence was being made: it goes out whole, after the ones released before it.
-      this.addAgentLine(buffered.text);
-      for (const f of buffered.frames) this.sendFrame(f);
+      for (const f of buffered.frames) this.sendFrame(f, buffered.part);
     }
     this.work({ kind: 'tts', at: started, text, firstByteMs: Math.max(0, firstByteMs), audioMs: frames * FRAME_MS });
   }
 
-  private sendFrame(frame: Buffer): void {
-    if (!this.call || this.ended) return;
-    this.call.sendAudio(frame);
-    const now = this.now();
-    this.playEndAt = Math.max(this.playEndAt, now) + FRAME_MS;
+  private sendFrame(frame: Buffer, part: SpokenPart): void {
+    if (!this.out || this.ended) return;
+    this.out.push(frame, part);
   }
 
-  private addAgentLine(text: string): void {
+  /** A piece starts to sound: from now on it is in the transcript (a piece never heard is not). */
+  private started(part: SpokenPart): void {
+    this.sounding = part;
+    part.line = this.addAgentLine(part.text);
+  }
+
+  private addAgentLine(text: string): { text: string; at: number; role: 'agent'; interrupted?: boolean } {
     const line = { role: 'agent' as const, text, at: this.now() };
-    this.lastAgentLine = line;
     this.deps.update((r) => {
       r.transcript.push(line);
     });
     this.call?._emit?.('transcript', 'assistant', text);
+    return line;
   }
 
   /** Outbound opening: send what was made while ringing. */
@@ -349,8 +428,7 @@ export class CallRun {
     this.released = true;
     this.work({ kind: 'event', at: this.now(), text: why });
     for (const b of this.held) {
-      this.addAgentLine(b.text);
-      for (const f of b.frames) this.sendFrame(f);
+      for (const f of b.frames) this.sendFrame(f, b.part);
     }
     this.held = [];
     const peer = this.heldPeer.filter((t) => !isBareGreeting(t));
@@ -364,21 +442,46 @@ export class CallRun {
     if (this.generating && !this.hangupRequested) this.dropReply();
   }
 
-  /** Stop what is playing and what is waiting to be said; the cut line is marked in the transcript. */
+  /**
+   * Stop speaking — not dead: the voice falls silent over {@link FADE_OUT_MS} (it ends its word), and what was not
+   * yet said is dropped. The cut line is marked in the transcript, and the model is told with the next words what
+   * the other side heard and what it did not get to say (like truncating a reply to what was played).
+   */
   private cutSpeech(why: string): void {
-    this.call?.clearAudio();
     this.synthAbort?.abort('barge-in');
+    const unsaid: string[] = [];
+    let heard = '';
+    const part = this.sounding;
+    if (part && this.out) {
+      const share = this.out.sentFraction(part);
+      if (share < 1) {
+        const at = Math.round(part.text.length * share);
+        heard = part.text.slice(0, at).trim();
+        unsaid.push(part.text.slice(at).trim());
+        this.markInterrupted(part);
+      }
+    }
+    for (const p of (this.out?.unstarted() ?? []) as SpokenPart[]) if (!p.filler) unsaid.push(p.text);
+    unsaid.push(...this.queue);
     this.queue = [];
-    this.playEndAt = this.now();
-    if (this.lastAgentLine && !this.lastAgentLine.interrupted) {
-      const line = this.lastAgentLine;
-      this.deps.update((r) => {
-        const hit = r.transcript.find((l) => l.at === line.at && l.role === 'agent' && l.text === line.text);
-        if (hit) hit.interrupted = true;
-      });
-      line.interrupted = true;
+    this.out?.fadeOut(FADE_OUT_MS, () => undefined);
+    const rest = unsaid.filter(Boolean).join(' ').slice(0, 300);
+    if (rest) {
+      this.cutNote = heard
+        ? `[시스템: 상대가 끼어들어 네 말이 "${heard}"에서 끊겼다. 못 한 말: "${rest}". 상대 말에 먼저 답하고, 못 한 말이 아직 필요하면 짧게 이어서 말하라.]`
+        : `[시스템: 상대가 끼어들어 네 말 "${rest}"은 들리지 않았다. 상대 말에 먼저 답하고, 그 말이 아직 필요하면 짧게 말하라.]`;
     }
     this.work({ kind: 'event', at: this.now(), text: why });
+  }
+
+  private markInterrupted(part: SpokenPart): void {
+    const line = part.line;
+    if (!line || line.interrupted) return;
+    this.deps.update((r) => {
+      const hit = r.transcript.find((l) => l.at === line.at && l.role === 'agent' && l.text === line.text);
+      if (hit) hit.interrupted = true;
+    });
+    line.interrupted = true;
   }
 
   /** The reply being written answers words that are out of date: nothing more of it is said. */
@@ -413,13 +516,13 @@ export class CallRun {
     if (this.generating) {
       this.pendingPeer.push(text);
       if (!this.dropTurn) {
-        if (this.agentSpeaking()) this.cutSpeech('상대가 말을 이어감 — 말하기 멈춤');
+        if (this.agentSpeaking() && !this.onlyAcknowledging()) this.cutSpeech('상대가 말을 이어감 — 말하기 멈춤');
         else this.work({ kind: 'event', at: this.now(), text: '상대가 말을 이어감 — 쓰던 답을 버림' });
         this.dropReply();
       }
       return;
     }
-    if (this.agentSpeaking()) this.cutSpeech('상대가 말을 이어감 — 말하기 멈춤');
+    if (this.agentSpeaking() && !this.onlyAcknowledging()) this.cutSpeech('상대가 말을 이어감 — 말하기 멈춤');
     this.sendToDialog(text);
   }
 
@@ -454,11 +557,16 @@ export class CallRun {
     this.work({ kind: 'stt', at, text, ms, audioMs });
     if (!text) {
       // A cough or line noise: nothing for the model, but the line is quiet again (or words waited for this).
+      this.acknowledged = false; // nothing to answer: the next reply opens as it likes
       if (!this.flushPending()) this.armSilenceIfIdle();
       return;
     }
     this.deps.update((r) => {
-      r.transcript.push({ role: 'peer', text, at });
+      // In time order: what the agent began to say after these words ended (the "네." said the moment they did)
+      // comes after them, though the words are known only now.
+      let i = r.transcript.length;
+      while (i > 0 && r.transcript[i - 1].role === 'agent' && r.transcript[i - 1].at >= at) i--;
+      r.transcript.splice(i, 0, { role: 'peer', text, at });
     });
     this.call?._emit?.('transcript', 'user', text);
     if (!this.released) {
@@ -489,6 +597,10 @@ export class CallRun {
       this.turnText = '';
     }
     this.generating = true;
+    if (this.cutNote) {
+      text = `${this.cutNote}\n${text}`;
+      this.cutNote = null;
+    }
     this.dialog.send(text);
   }
 
@@ -541,6 +653,7 @@ export class CallRun {
             this.work({ kind: 'error', at, stage: 'dialog', message: ev.message });
           this.generating = false;
           this.dropTurn = false;
+          this.acknowledged = false;
           this.turnText = '';
           if (this.pendingPeer.length && !this.hangupRequested && !this.ended) {
             // Words that waited for this reply: answered now, all together — or with the words the other side is
@@ -609,7 +722,7 @@ export class CallRun {
   private finishWhenQuiet(): void {
     if (this.ended || !this.hangupRequested) return;
     if (this.speaking || this.queue.length) return; // speakQueue calls back when done
-    const wait = Math.max(0, this.playEndAt - this.now()) + HANGUP_TAIL_MS;
+    const wait = Math.max(0, this.playEnd() - this.now()) + HANGUP_TAIL_MS;
     this.later(() => {
       if (this.ended) return;
       if (this.speaking || this.queue.length) return;
@@ -639,7 +752,7 @@ export class CallRun {
   private armSilence(): void {
     this.clearSilence();
     if (!this.released || this.hangupRequested || this.ended) return;
-    const wait = Math.max(0, this.playEndAt - this.now()) + SILENCE_NUDGE_MS * (this.silenceNudged ? 2 : 1);
+    const wait = Math.max(0, this.playEnd() - this.now()) + SILENCE_NUDGE_MS * (this.silenceNudged ? 2 : 1);
     this.silenceTimer = this.later(() => {
       // Still talking (either side) or thinking: not a quiet line. The end of that speech arms the timer again.
       if (this.ended || this.vad.speaking || this.generating || this.speaking || this.agentSpeaking()) return;
