@@ -291,6 +291,25 @@ export class McpToolGrantStore {
   }
 
   /**
+   * Every live grant on `serverName`, by user (secret-access WU3: the 서버 도구 tab lists them). Reloads first, so a
+   * grant the MCP child revoked is not shown.
+   */
+  listServerGrants(serverName: string): Array<{ userId: string; level: PermissionLevel; entry: GrantEntry }> {
+    this.reload();
+    const now = Date.now();
+    const out: Array<{ userId: string; level: PermissionLevel; entry: GrantEntry }> = [];
+    for (const [userId, servers] of Object.entries(this.grants)) {
+      const grants = servers?.[serverName];
+      if (!grants) continue;
+      for (const level of ['read', 'write'] as const) {
+        const entry = grants[level];
+        if (entry && new Date(entry.expiresAt).getTime() > now) out.push({ userId, level, entry: { ...entry } });
+      }
+    }
+    return out.sort((a, b) => a.userId.localeCompare(b.userId) || a.level.localeCompare(b.level));
+  }
+
+  /**
    * Revoke a grant for a user.
    * @param level - "read", "write", or "all"
    */

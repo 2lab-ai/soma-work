@@ -120,6 +120,34 @@ describe('McpConfigBuilder tool permission integration', () => {
     expect(config.allowedTools).not.toContain('mcp__server-tools');
   });
 
+  // secret-access WU3 (#1339): a level the dashboard changes in config.json reaches the next query of the same
+  // builder (one per ClaudeHandler, process-long) — not only after a restart.
+  it('a level changed in config.json applies to the next query of the same builder', async () => {
+    const grantFile = path.join(DATA_DIR, 'mcp-tool-grants.json');
+    const expiresAt = new Date(Date.now() + 86400000).toISOString();
+    fs.writeFileSync(
+      grantFile,
+      JSON.stringify({
+        U_READ_USER: {
+          'server-tools': { read: { grantedAt: new Date().toISOString(), expiresAt, grantedBy: 'U_ADMIN' } },
+        },
+      }),
+    );
+    const builder = new McpConfigBuilder(createMockMcpManager());
+    const before = await builder.buildConfig({ channel: 'C1', user: 'U_READ_USER' });
+    expect(before.allowedTools).not.toContain('mcp__server-tools__db_query');
+
+    const raw = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
+    raw['server-tools'].permission.db_query = 'read';
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(raw, null, 2));
+    // a different mtime even on a coarse clock
+    const later = new Date(Date.now() + 5000);
+    fs.utimesSync(CONFIG_FILE, later, later);
+
+    const after = await builder.buildConfig({ channel: 'C1', user: 'U_READ_USER' });
+    expect(after.allowedTools).toContain('mcp__server-tools__db_query');
+  });
+
   // ── S5: write grant allows all tools ──
   it('writeGrantAllowsAllTools', async () => {
     const grantFile = path.join(DATA_DIR, 'mcp-tool-grants.json');
