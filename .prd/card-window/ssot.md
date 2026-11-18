@@ -1,6 +1,6 @@
 # SSOT — card-window (작업 카드 창 버튼: 한 줄 · 보통 · 펼침 · 상세 카드)
 
-Status: in-progress · 작성 2026-11-18 · 기준 커밋 main `5c85d551` · 라이브러리 기준 `@2lab.ai/ui` 0.42.1
+Status: shipped (라운드 1 닫힘 2026-11-18 — main `0a2476cf`, dev v0.3.79, [`loop.done.md`](loop.done.md) R1) · 작성 2026-11-18 · 기준 커밋 main `5c85d551` · 라이브러리 기준 `@2lab.ai/ui` 0.42.1
 스펙 = [`../34-dashboard-task-card-window-controls-spec.md`](../34-dashboard-task-card-window-controls-spec.md) · 드라이버 = [`loop.md`](loop.md)
 
 ## SSOT-LIST (시간 순, append-only)

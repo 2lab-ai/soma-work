@@ -1,6 +1,6 @@
 # 34 — 작업 카드 창 버튼: 한 줄 · 보통 · 펼침 · 상세 카드
 
-Status: in-progress (구현 · 리시트 완료, 라이브러리 배포 대기 — loop G1) · Date: 2026-11-18 · 기준 main `5c85d551` · `@2lab.ai/ui` 0.42.1 → 0.43.0
+Status: shipped · 2026-11-18 · main `0a2476cf`(PR #1349) · dev v0.3.79 · `@2lab.ai/ui` 0.43.0(ui PR #84 `cc51d50`) · 설계 기준 main `5c85d551`, `@2lab.ai/ui` 0.42.1
 앞선 계약: [`15-dashboard-detail-deck-spec.md`](15-dashboard-detail-deck-spec.md) §2(상세 카드 덱),
 [`19-dashboard-view-mode-spec.md`](19-dashboard-view-mode-spec.md) T9(카드 면의 별)
 SSOT·의도·diff: [`card-window/ssot.md`](card-window/ssot.md)
@@ -59,9 +59,10 @@ SSOT·의도·diff: [`card-window/ssot.md`](card-window/ssot.md)
 - **D4 — 제목은 상세 카드를 여는 버튼.** `<button>`이고 이름은 제목, 설명은 "상세 카드 열기". 호버 · 포커스: 강조색 밑줄, 제목 뒤 ⧉(옆 패널) 글리프가 4px 미끄러져 들어온다, 커서 pointer. 강조 테두리 카드(D5)는 ⧉가 늘 보인다.
 - **D5 — 보고 있는 카드.** 덱 앞 카드는 보드에서 2px 강조 테두리, 제목 `aria-current="true"`. 덱 뒤 카드는 표시 없음(한 줄인 것으로 덱에 있음을 안다).
 - **D6 — 펼침 애니메이션(▽ → △, 560ms).** 0–28% 제자리 점프(−7px)하며 1.35배로 커지고 아래 바닥 그림자(타원)가 작고 흐려진다 · 28–68% 공중에서 180° 회전 · 68–80% 내려앉으며 납작(가로 1.18, 세로 0.82) · 80–100% 제 크기. 내려앉는 순간(392ms) 바닥에서 먼지 알갱이 5개가 좌우로 1–12px 퍼지며 사라진다(320ms). 그 전에는 알갱이가 보이지 않는다(fill `forwards`). △ → ▽는 220ms 회전만. 감소된 모션: 점프 · 먼지 없음, 회전도 즉시. 본문 펼침(높이)은 지금과 같은 그리드 전환이 같이 돈다.
-- **D7 — 상세 카드 ⇔ 한 줄.** 상세 카드가 열리면(제목, 딥 링크, "관리 →" · 계획 직접 입력 등 `openPanel`을 부르는 모든 길) 그 카드는 보드에서 한 줄이 된다 — "상세 카드에서 줄였음"으로 기억한다. 상세 카드가 덱에서 빠지면(✕ · Esc · 시트 배경 · 세션 교체) 그렇게 줄어든 카드만 원래대로 돌아온다. 그 사이 사람이 − · + · ▽를 누른 카드는 사람의 선택을 따른다(되돌리지 않는다).
-- **D8 — 저장.** 사람이 −로 줄인 카드는 이 브라우저에 저장된다(`localStorage` `soma-card-min`, 최근 300개). 상세 카드로 줄어든 것은 저장하지 않는다(덱은 새로 고침을 넘지 않는다).
-- **D9 — 그대로인 것.** 결정 대기 카드를 페이지가 스스로 제자리 펼침하는 것(`autoOpenDecisions`, 상세 카드는 안 연다), 별, 파일 칩 · 링크 · 후속 작업 · 에픽 자식 줄(각자 자기 일), 덱 ‹ › 넘기기, 폰(<840px)의 전체 화면 시트.
+- **D7 — 상세 카드 ⇔ 한 줄.** 상세 카드가 열리면(제목, 딥 링크, "관리 →" · 계획 직접 입력 등 `openPanel`을 부르는 모든 길) 그 카드는 보드에서 한 줄이 된다 — "상세 카드에서 줄였음"으로 기억한다. 상세 카드가 덱에서 빠지면(✕ · Esc · 시트 배경 · 세션 교체) 그렇게 줄어든 카드만 원래대로 돌아온다. 그 사이 사람이 − · + · ▽를 누른 카드는 사람의 선택을 따른다(되돌리지 않는다). 덱에 있는 카드는 보드를 다시 그려도(필터 · 카드가 CRON 줄로 옮겨짐) 한 줄로 남고, 덱에 있는 동안 사람이 +로 펼친 카드는 덱에서 빠질 때까지 펼친 채다. ‹ ›로 덱을 넘겨 앞이 바뀌어도 다시 줄이지 않는다 — 줄이는 것은 덱에 들어갈 때 한 번이다.
+- **D8 — 저장.** 사람이 −로 줄인 카드는 이 브라우저에 저장된다(`localStorage` `soma-card-min`, 최근 300개). 상세 카드로 줄어든 것은 저장하지 않는다(덱은 새로 고침을 넘지 않는다). 읽을 때마다 저장소를 다시 읽는다 — 같은 브라우저의 다른 탭이 줄이거나 펼친 것을 이 탭이 다음 저장에서 지우지 않는다(저장이 실패한 동안만 이 탭의 사본을 쓴다). 두 탭이 같은 순간 쓰는 경쟁은 막지 않는다: `localStorage`는 동기 API라 한 탭 안의 읽기-쓰기는 끊기지 않고, 카드마다 키를 따로 두면 그릴 때마다 저장소 전체를 훑어야 한다. 잃는 최악은 카드 하나의 접힘 한 번이다.
+- **D9 — 결정 대기 카드.** 페이지가 결정 대기 카드를 스스로 제자리 펼침하는 것(`autoOpenDecisions`)은 그대로이고, 상세 카드는 열지 않는다. 한 줄 카드는 펼쳐도 결정이 안 보이므로 새 결정이 오면 한 줄을 푼다(`boardUnfoldForDecision`): 사람이 −로 줄였든, 상세 카드가 덱 뒤에 있어 줄었든 같다. 그때 저장된 한 줄(`soma-card-min`)은 지운다 — 다음에 그리는 요소가 다시 접어 시작하지 않게. 사람의 +로 기록하지는 않는다(`soma-card-unfold`에 쓰지 않음): 하루 지난 즐겨찾기의 기본 한 줄(D12)은 다음에 그릴 때 그대로 적용된다. 그 카드의 상세 카드가 덱 앞이면 결정이 거기 보이므로 보드 카드는 건드리지 않는다. 결정 하나에 한 번이다 — 사람이 다시 줄이면 다음 결정까지 한 줄.
+- **D9a — 그대로인 것.** 별, 파일 칩 · 링크 · 후속 작업 · 에픽 자식 줄(각자 자기 일), 덱 ‹ › 넘기기, 폰(<840px)의 전체 화면 시트.
 - **D11 — 한 줄이어도 TL;DR은 보인다 (SSOT_2-1).** TL;DR이 있는 카드는 한 줄로 접혀도 머리 아래에 TL;DR 상자를 둔다(라이브러리 `.ib-min-tldr`, 카드의 rows에 TL;DR이 있을 때만). TL;DR의 ×(`ui-dismiss` → `tldrDismiss`, 이 브라우저에 그 TL;DR을 지웠다고 저장)를 누르면 상자가 빠지고 그제서야 머리 한 줄이다. 포커스는 그 카드의 제목으로 간다.
 - **D12 — 하루 지난 즐겨찾기는 한 줄로 시작 (SSOT_2-2).** 즐겨찾기 카드는 휴면 · 보관되지 않아 보드에 계속 남는다. 마지막으로 움직인 지(`lastActivity`) 24시간이 지났고 일하는 중도 응답 필요도 아니면, 보드가 그 카드를 처음 그릴 때 한 줄(+ TL;DR, D11)로 시작한다(`cardMinSeeds` → `data.minimized`). 사람이 +로 펼치면 `soma-card-unfold`에 저장되어 기본보다 앞선다(다시 −를 누르면 지워진다). 열어 둔 화면에서 24시간을 넘는 순간 접지는 않는다(다음에 그릴 때).
 - **D10 — 라이브러리 경계.** 버튼 · 상태 · 애니메이션은 `@2lab.ai/ui` `<ui-agent-inbox>`의 opt-in(`data.controls = 'window'`)이다. 다른 소비자는 지금 그대로(면 = 토글). soma-work는 보드 · CRON 줄의 모든 요소에 켠다.
@@ -87,11 +88,14 @@ SSOT·의도·diff: [`card-window/ssot.md`](card-window/ssot.md)
 |---|---|
 | `inboxPaint` | `controls: 'window'`, `minimized`(저장된 것), `current`(패널이 열렸으면 앞 카드) |
 | `wireInbox` `ui-toggle` | 본문만(`_expanded` · `syncCardBody` · `ensureCardIo`). `openPanel` · `deckDrop` 안 함 |
-| `wireInbox` `ui-detail` | `openPanel(key)` |
-| `wireInbox` `ui-minimize` | 저장(D8) |
+| `wireInbox` `ui-detail` | `openPanel(key)`. 세션이 아직 없는 새 작업 카드면 취소하고 그 시작 카드를 연다 |
+| `wireInbox` `ui-minimize` | 저장(D8), 덱에 있는 카드의 +는 덱에서 빠질 때까지 펼친 채(D7) |
 | `openPanel` | 그 카드를 `setMinimized(key, true, { untilRestore: true })`, `current` 갱신 |
 | `deckRemove` | 그 카드 `restore(key)`, `current` 갱신 |
 | `closeDetailCard` | 면을 누르지 않는다 — `deckDrop(key)`만. ✕ 툴팁 "상세 카드 닫기" |
+| `closePanel` | 포커스가 패널 안에 있었으면 상세 카드를 연 버튼으로 돌린다. 그 버튼이 다시 그려져 없거나 포커스를 못 받으면 그 카드의 제목으로 |
+| `autoOpenDecisions` | 덱 앞 카드는 건너뛴다. 한 줄이면 `boardUnfoldForDecision` 뒤 `reveal(key, { open: true })`(D9) |
+| `inboxPaint` 뒤 `boardFoldDeck` | 덱에 있는 카드를 다시 한 줄로(새로 그려진 요소가 접힘을 잊었을 때, D7) |
 | 딥 링크 · 새 작업 시작 카드 | `host.reveal(key, { open: false })` 뒤 `openPanel` (본문을 펼치지 않는다 — 카드는 한 줄) |
 
 ## 5. 인수 시나리오
@@ -109,7 +113,7 @@ SSOT·의도·diff: [`card-window/ssot.md`](card-window/ssot.md)
 
 ## 6. 검증
 
-실측(2026-11-18, `@2lab.ai/ui` 0.43.0 로컬 빌드를 설치한 soma-work 실서버 + Chromium, `scripts/screenshot-card-window.ts`): **30/30** — 1440 보드(라이트) · 1440 다크(감소된 모션) · 1280 목록 보기 · 390 폰.
+실측(2026-11-18, npm `@2lab.ai/ui` 0.43.0을 설치한 soma-work 실서버 + Chromium, `scripts/screenshot-card-window.ts`, PR 머리 `55dcf53c`): **34/34** — 1440 보드(라이트) · 1440 다크(감소된 모션) · 1280 목록 보기 · 390 폰. 배포 빌드 실측은 §7.
 
 | 시나리오 | 실측 |
 |---|---|
@@ -122,9 +126,32 @@ SSOT·의도·diff: [`card-window/ssot.md`](card-window/ssot.md)
 | 9 감소된 모션 | `is-hop` 없음, 애니메이션 0개, 바로 180° |
 | 11 즐겨찾기 · TL;DR (SSOT_2) | 30시간 지난 즐겨찾기 카드가 한 줄로 시작하고 TL;DR 상자(79px)를 머리 아래에 둔다(카드 128px). TL;DR × → 42px. + → 펼침, `soma-card-unfold`에 저장, 새로 고침 뒤에도 펼친 채(82px) |
 | 목록 · 폰 | 목록 보기(카드 폭 1232px) 118 → 42px. 390px: 제목 → 전체 화면 시트(머리 x 0 · 폭 390), ✕ → 카드 118px로 복원 |
+| S12 상세 카드가 열린 한 줄 카드의 ▽ | 제자리 펼침, 다시 그려도 펼친 채, 상세 카드는 그대로 |
+| S13 검색으로 숨겼다 다시 보임 | 덱 카드는 한 줄 그대로, 사람이 +로 펼친 카드는 펼친 채. 둘 다 닫으면 A 118px(원래대로) |
+| S14 키보드 | 제목에서 Enter → 그 상세 카드, Esc → 포커스가 그 제목(`UI-AGENT-INBOX` 그림자 안) |
 
 캡처: 보통 · 한 줄 · 제목 호버 · 점프 150/330/430ms · 제자리 펼침 · 상세 한 장/두 장 · 닫은 뒤 · 다크(감소된 모션) 상세.
 
 - 라이브러리: `src/components/agent-inbox/agent-inbox.test.ts` 창 버튼 묶음(이벤트 · 상태 · 키보드 · 취소 · 저장 아님 · `restore` 규칙 · 감소된 모션).
-- soma-work: `src/conversation/__tests__/dashboard-card-window-client.test.ts`(연결: 제목 → openPanel, 캐럿 → openPanel 없음, ✕ → restore, 저장).
-- 실브라우저: `scripts/screenshot-card-window.ts` — 시나리오 1~8을 돌려 각 단계의 카드 rect · 패널 rect · 캐럿 각도를 출력하고 캡처한다.
+- soma-work: `src/conversation/__tests__/dashboard-card-window-client.test.ts`(연결: 제목 → openPanel, 캐럿 → openPanel 없음, ✕ → restore, 저장 · 탭 사이 · 저장 순서, 하루 지난 즐겨찾기, 결정 대기 카드 D9를 실제 `autoOpenDecisions`로).
+- 실브라우저: `scripts/screenshot-card-window.ts` — S1~S14를 돌려 각 단계의 카드 rect · 패널 rect · 캐럿 각도를 출력하고 캡처한다. 배포 빌드를 재는 법은 [`card-window/loop.md`](card-window/loop.md) build facts(코드에 로더를 두지 않는다 — import 그래프 검사가 문자열이 아닌 로드를 막는다).
+
+## 7. 배포 빌드 실측 (dev v0.3.79 `0a2476cf`, 2026-11-18)
+
+배포: run [44264502709](https://github.com/2lab-ai/soma-work/actions/runs/44264502709) — `Deploy t3` 하나(dev 호스트 한 대), `Verify` 성공, 설치본 `version.json` commitHash = 머지 `0a2476cf`, 번들의 `@2lab.ai/ui` 0.43.0. 재시작 뒤 세션 시작 3개(서로 다른 sessionId), 거절 0.
+
+하네스 = 배포 번들의 web-server(임시 폴더의 `src/conversation/web-server.js`를 번들의 `dist/conversation/web-server.js`로 가는 심볼릭 링크로 두고 그 폴더에서 이 스크립트 사본을 돌린다 — Node가 링크를 따라가 번들의 모듈과 번들에 설치된 라이브러리가 페이지를 낸다) + Chromium, 보드 데이터는 브라우저 라우트(scratch 설정 폴더). 잰 빌드 = 설치본 `version.json` v0.3.79 `0a2476cf`. **34/34**, 페이지 오류 0. 같은 하네스가 배포 전 v0.3.78에서는 창 버튼을 기다리다 시간 초과로 멈췄다(AS-IS).
+
+| 시나리오 | 관측 (1440×900, 상세 카드 1001,56 439×844) | 판정 |
+|---|---|---|
+| S1 머리 | `min` · 상태 점 · 작업 표시 · `detail` · `star` · `expand`, 면 `role` 없음, 카드 521,296 397×118 | ✅ |
+| S2 한 줄 | − → 118 → 42px(x · 폭 그대로), 패널 닫힘, `soma-card-min` 저장, 새로 고침 뒤 42px, + → 118px | ✅ |
+| S3 제목 호버 | 밑줄(강조색), ⧉ 불투명도 1, 커서 pointer, 툴팁 "상세 카드 열기" | ✅ |
+| S4 펼침 | 150ms `matrix(1.34981,0,0,1.34981,0,-6.99618)` · 그림자 · 먼지 0, 430ms 먼지 0.52, 끝 `matrix(-1,0,0,-1,0,0)`, 카드 241px, 패널 닫힘 | ✅ |
+| S5 · S6 상세 카드 | 제목 → 카드 42px + 강조 테두리, 패널 x 1001. 둘째 제목 → 앞이 바뀌고 둘 다 42px. ✕ → A 118px · 앞 B, ✕ → B 241px(펼친 채로) · 패널 닫힘 | ✅ |
+| S7 사람이 줄인 카드 | 상세 카드를 닫은 뒤에도 42px | ✅ |
+| S8 면의 글 | 눌러도 카드 · 패널 그대로 | ✅ |
+| S9 감소된 모션 | `is-hop` 없음, 애니메이션 0, 바로 180° | ✅ |
+| S10 목록 · 폰 | 1280 목록 118 → 42px, 상세 카드 841,56. 390 폰: 상세 카드 = 전체 화면 시트(0,0 폭 390), ✕ → 118px | ✅ |
+| S11 즐겨찾기 · TL;DR | 30시간 지난 즐겨찾기 128px(TL;DR 79px), TL;DR × → 42px, + → 82px · `soma-card-unfold` 저장 · 새로 고침 뒤에도 펼친 채 | ✅ |
+| S12 · S13 · S14 | 상세 카드가 열린 한 줄 카드의 ▽ → 241px 제자리 펼침 · 상세 카드 유지. 검색으로 숨겼다 보임 → 덱 카드 42px 유지 · +로 펼친 카드 118px. Enter → 상세 카드, Esc → 포커스가 그 제목 | ✅ |
