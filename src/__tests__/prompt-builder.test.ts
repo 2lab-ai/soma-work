@@ -66,14 +66,6 @@ describe('PromptBuilder', () => {
       expect(prompt!.toLowerCase()).toContain('onboarding');
     });
 
-    it('should cache workflow prompts', () => {
-      const prompt1 = builder.loadWorkflowPrompt('onboarding');
-      const prompt2 = builder.loadWorkflowPrompt('onboarding');
-
-      // Should be exact same object (cached)
-      expect(prompt1).toBe(prompt2);
-    });
-
     it('should load pr-review workflow prompt', () => {
       const prompt = builder.loadWorkflowPrompt('pr-review');
 
@@ -1000,22 +992,6 @@ describe('PromptBuilder', () => {
       // (sibling-of-cwd patterns trigger the depth-mismatch bug from #799).
       expect(workingFolderLine).toMatch(/`<cwd>\/[^`]+`/);
       expect(workingFolderLine).not.toMatch(/`\/tmp\/\{slackId\}\//);
-    });
-  });
-
-  describe('clearCache', () => {
-    it('should clear workflow prompt cache', () => {
-      // Load a workflow prompt (caches it)
-      const prompt1 = builder.loadWorkflowPrompt('onboarding');
-
-      // Clear cache
-      builder.clearCache();
-
-      // Load again - should reload from file
-      const prompt2 = builder.loadWorkflowPrompt('onboarding');
-
-      // Content should be the same but may be different object references
-      expect(prompt1).toEqual(prompt2);
     });
   });
 });

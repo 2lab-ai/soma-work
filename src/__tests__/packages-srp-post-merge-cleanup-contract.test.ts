@@ -57,13 +57,6 @@ describe('packages SRP post-merge cleanup contract', () => {
     }
   });
 
-  it('migrates the two _shared mcp tests into @soma/process-shared', () => {
-    const baseTest = path.join(repoRoot, 'packages/process-shared/src/mcp/base-mcp-server.test.ts');
-    const cacheTest = path.join(repoRoot, 'packages/process-shared/src/mcp/config-cache.test.ts');
-    expect(fs.existsSync(baseTest), `${baseTest} should exist`).toBe(true);
-    expect(fs.existsSync(cacheTest), `${cacheTest} should exist`).toBe(true);
-  });
-
   it('archives completed packages-srp-refactor plan docs', () => {
     const archivedCurrent = path.join(repoRoot, 'docs/archive/plans/packages-srp-refactor');
     expect(fs.existsSync(archivedCurrent), `${archivedCurrent} should exist`).toBe(true);

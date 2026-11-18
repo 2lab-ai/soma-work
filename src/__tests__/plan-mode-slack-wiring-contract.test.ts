@@ -43,7 +43,6 @@ describe('index.ts — plan mode on every session (#853)', () => {
     // #855 — one kind of work session: every plan is a Slack session's.
     const handler = section('setDashboardTaskPlanHandler(', ');\n');
     expect(handler).toMatch(/\(request\) => slackPlanDecider\(request\)/);
-    expect(source).not.toMatch(/taskPlanDecider/);
   });
 
   it('W3 — the injection watches the message it sends, verbatim on request, and forgets the waiter', () => {

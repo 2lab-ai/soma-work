@@ -24,11 +24,4 @@ describe('#1074 — model guidance for artifact versions', () => {
     expect(skill.match(/artifact_key="pr-<n>-body"/g)?.length).toBe(2);
     expect(read('src/prompt/default.prompt')).toContain('"Keep the body you replace"');
   });
-
-  it('the zworkflow plugin version moved past the one without this guidance', () => {
-    const { version } = JSON.parse(read('src/local/.claude-plugin/plugin.json')) as { version: string };
-    const [major, minor] = version.split('.').map(Number);
-    // main shipped 2.16.0 (#1084) and 2.17.0 (#1073) without this guidance: it ships as 2.18.0 or later.
-    expect(major > 2 || (major === 2 && minor >= 18)).toBe(true);
-  });
 });

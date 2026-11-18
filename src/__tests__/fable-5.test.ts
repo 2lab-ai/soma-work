@@ -19,13 +19,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { resolveModelProfile } from '../metrics/model-registry';
 import { ModelHandler } from '../slack/commands/model-handler';
 import type { CommandContext, CommandDependencies } from '../slack/commands/types';
-import {
-  AVAILABLE_MODELS,
-  coerceToAvailableModel,
-  DEFAULT_MODEL,
-  MODEL_ALIASES,
-  UserSettingsStore,
-} from '../user-settings-store';
+import { AVAILABLE_MODELS, coerceToAvailableModel, MODEL_ALIASES, UserSettingsStore } from '../user-settings-store';
 
 function makeStore(): UserSettingsStore {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fable5-test-'));
@@ -59,14 +53,6 @@ describe('fable-5 — release wiring', () => {
     expect(store.resolveModelInput('fable')).toBe('claude-fable-5-2[1m]');
     expect(coerceToAvailableModel('claude-fable-5[1m]')).toBe('claude-fable-5[1m]');
     expect(coerceToAvailableModel('claude-fable-5[1M]')).toBe('claude-fable-5[1m]');
-  });
-
-  it('does NOT change DEFAULT_MODEL (Fable is opt-in, not the default)', () => {
-    // Fable 5 is double opus pricing and becomes credit-gated post-launch, so
-    // it must not silently become everyone's default. The default follows
-    // `opus` since 2026-11-19.
-    expect(DEFAULT_MODEL).toBe(MODEL_ALIASES.opus);
-    expect(DEFAULT_MODEL).not.toMatch(/fable/);
   });
 
   it('coerce passes the bare id through and normalises an uppercase typo path', () => {

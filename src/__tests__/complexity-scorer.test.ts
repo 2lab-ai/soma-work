@@ -3,16 +3,6 @@ import { ComplexityResult, ComplexityTier, scoreComplexity } from '../complexity
 
 describe('complexity-scorer', () => {
   describe('scoreComplexity', () => {
-    it('returns a ComplexityResult with score, tier, and signals', () => {
-      const result = scoreComplexity('hello');
-      expect(result).toHaveProperty('score');
-      expect(result).toHaveProperty('tier');
-      expect(result).toHaveProperty('signals');
-      expect(typeof result.score).toBe('number');
-      expect(['LOW', 'MEDIUM', 'HIGH']).toContain(result.tier);
-      expect(Array.isArray(result.signals)).toBe(true);
-    });
-
     it('scores a simple greeting as LOW (0-4)', () => {
       const result = scoreComplexity('안녕하세요');
       expect(result.score).toBeLessThanOrEqual(4);

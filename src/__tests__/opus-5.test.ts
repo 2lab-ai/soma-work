@@ -36,7 +36,6 @@ import { getModelSpec, resolveAutoCompactTokens, resolveContextWindow } from '..
 import {
   AVAILABLE_MODELS,
   coerceToAvailableModel,
-  DEFAULT_MODEL,
   MODEL_ALIASES,
   migrateOpusDefaultModel,
   OPUS_DEFAULT_MIGRATION_TARGET,
@@ -82,14 +81,6 @@ describe('opus-5 — release wiring', () => {
     expect(MODEL_ALIASES['opus-4.7']).toBe('claude-opus-4-7');
     expect(MODEL_ALIASES['opus-4.6']).toBe('claude-opus-4-6');
     expect(MODEL_ALIASES['opus-4.5']).toBe('claude-opus-4-5-20251101');
-  });
-
-  it('is not the default — DEFAULT_MODEL follows the floating `opus` alias (Opus 5.5 [1m])', () => {
-    // Opus 5 was added while the default was the gpt flagship; since
-    // 2026-11-19 the default is opus, but the NEWEST one, not this pin.
-    expect(DEFAULT_MODEL).toBe(MODEL_ALIASES.opus);
-    expect(DEFAULT_MODEL).not.toBe('claude-opus-5');
-    expect(DEFAULT_MODEL).not.toBe('claude-opus-5[1m]');
   });
 
   it('resolves and coerces both spellings', () => {

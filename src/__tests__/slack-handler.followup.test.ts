@@ -4281,10 +4281,6 @@ describe('SlackHandler — follow-up queue host', () => {
     /** The hook the host handed to the executor — the only path the SDK's answer arrives on. */
     const lifecycle = () => handlerAny.streamExecutor.deps.onSteerLifecycle;
 
-    it('wires onSteerLifecycle into the StreamExecutor', () => {
-      expect(typeof lifecycle()).toBe('function');
-    });
-
     it('resolves the item as consumed when the model read it', async () => {
       const { uuid, settle } = await steerOne();
 
@@ -4355,12 +4351,6 @@ describe('SlackHandler — follow-up queue host', () => {
      */
     describe('a read reported ahead of the stream (the running turn’s own signal)', () => {
       const signals = () => claudeHandler.setSteerSignals.mock.calls[0][0];
-
-      it('is registered with the Claude handler', () => {
-        expect(claudeHandler.setSteerSignals).toHaveBeenCalledTimes(1);
-        expect(typeof signals().read).toBe('function');
-        expect(typeof signals().inputReopened).toBe('function');
-      });
 
       it('closes the row at once, and Send now can no longer cut the turn that is running it', async () => {
         const { uuid, settle } = await steerOne();

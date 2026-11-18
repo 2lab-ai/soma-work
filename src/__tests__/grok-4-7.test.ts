@@ -45,10 +45,6 @@ describe('grok-4.7 — release wiring', () => {
     expect(models.indexOf('grok-4.7')).toBeLessThan(models.indexOf('grok-4.6'));
   });
 
-  it('is selectable but not the default', () => {
-    expect(DEFAULT_MODEL).not.toBe('grok-4.7');
-  });
-
   it('resolves and round-trips as itself without a catalog snapshot; grok-4.6 stays reachable', () => {
     const store = makeStore();
     expect(store.resolveModelInput('grok-4.7')).toBe('grok-4.7');

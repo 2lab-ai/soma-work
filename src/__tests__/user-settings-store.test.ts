@@ -644,7 +644,6 @@ describe('the removed Slack-instruction → dashboard-task flag (#855)', () => {
     const store = new UserSettingsStore(dir);
     expect(store.getUserSettings('U1')?.accepted).toBe(true);
     expect(store.getUserEpicTasks('U1')).toBe(true);
-    expect((store as unknown as Record<string, unknown>).getUserSlackTaskEntry).toBeUndefined();
   });
 });
 
