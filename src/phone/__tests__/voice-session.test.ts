@@ -829,10 +829,78 @@ describe('CallRun — conversation', () => {
     dialog().reply('네, 말씀하세요.'); // answered before the fade is over
     await settleAll();
     clock.advance(3000);
+    // The answer is 40 frames (400 ms of identity-codec PCM): all of them go out at full voice, after the fade.
     const answer = call.levels.slice(at);
-    expect(answer.length).toBeGreaterThanOrEqual(40);
-    expect(Math.max(...answer.slice(-30))).toBeGreaterThan(0.18);
-    expect(Math.min(...answer.slice(-30, -1))).toBeGreaterThan(0.18);
+    const full = answer.filter((l) => l > 0.19);
+    expect(full.length).toBeGreaterThanOrEqual(39);
+    expect(Math.min(...answer.slice(-39))).toBeGreaterThan(0.19);
+  });
+
+  it('newer words while the cut voice still fades drop a quick answer that came meanwhile; the model hears so', async () => {
+    const s = setup({}, ['오늘 회의가 두 개 있어요.', '잠깐만요', '아니 그게 아니라']);
+    s.run.begin();
+    s.dialog().reply('안녕하세요, 소마예요.');
+    await settleAll();
+    const call = fakeCall();
+    s.run.attach(call as unknown as CallSessionLike);
+    s.clock.advance(1300);
+    await settleAll();
+    s.clock.advance(1000);
+    s.run.feedAudio(tone(600, 0.3));
+    s.run.feedAudio(quiet(800));
+    await settleAll();
+    s.dialog().reply('네, 회의 두 개 확인했어요. 시간도 알려 드릴까요?');
+    await settleAll();
+    s.clock.advance(100);
+    s.run.feedAudio(tone(900, 0.6)); // cut: the voice fades …
+    s.run.feedAudio(quiet(800));
+    await settleAll();
+    s.dialog().reply('네, 말씀하세요.'); // … a quick answer comes before the fade is over …
+    await settleAll();
+    const at = call.levels.length;
+    s.run.feedAudio(tone(900, 0.6)); // … and the caller cuts in again, still in the fade
+    s.run.feedAudio(quiet(800));
+    await settleAll();
+    s.clock.advance(3000);
+    expect(call.levels.slice(at).filter((l) => l > 0.19).length).toBeLessThan(5); // the quick answer is not heard
+    const last = s.dialog().sent[s.dialog().sent.length - 1];
+    expect(last).toContain('"네, 말씀하세요."');
+    expect(last.endsWith('\n아니 그게 아니라')).toBe(true);
+  });
+
+  it('a piece the voice engine failed on part-way is not taken as made in full', async () => {
+    const long = '이번 분기 매출은 지난 분기보다 조금 늘었고 비용은 줄어서 이익이 꽤 좋아졌어요.';
+    const s = setup({}, ['실적 어때요?', '잠깐만요'], {
+      speakChunks: (text) =>
+        (async function* () {
+          if (text !== long) {
+            yield tone(400, 0.2);
+            return;
+          }
+          yield tone(1000, 0.2); // the first second of it …
+          throw new Error('engine dropped the stream'); // … then the engine fails
+        })(),
+    });
+    s.run.begin();
+    s.dialog().reply('안녕하세요, 소마예요.');
+    await settleAll();
+    const call = fakeCall();
+    s.run.attach(call as unknown as CallSessionLike);
+    s.clock.advance(1300);
+    await settleAll();
+    s.clock.advance(1000);
+    s.run.feedAudio(tone(600, 0.3));
+    s.run.feedAudio(quiet(800));
+    await settleAll();
+    s.dialog().reply(long);
+    await settleAll();
+    s.clock.advance(800);
+    s.run.feedAudio(tone(900, 0.6));
+    s.run.feedAudio(quiet(800));
+    await settleAll();
+    const heard = /네 말이 "([^"]*)"에서 끊겼다/.exec(s.dialog().sent[s.dialog().sent.length - 1])?.[1] ?? '';
+    expect(heard.length).toBeGreaterThan(0);
+    expect(heard.length).toBeLessThan(long.length * 0.4); // judged by its words, not by the second that was made
   });
 
   it('a line that fails to take audio on a timer is reported once and never throws out of the timer', async () => {
@@ -1051,6 +1119,19 @@ describe('CallRun — like a live call', () => {
     s.clock.advance(1000);
     expect(s.record.transcript.filter((l) => l.role === 'agent').some((l) => l.interrupted)).toBe(false);
     expect(s.dialog().sent[s.dialog().sent.length - 1]).toBe('그리고 장소는요');
+  });
+
+  it('the rest of a reply goes in pieces of at most 400 characters', async () => {
+    const s = await answering(['일정 알려 주세요']);
+    s.run.feedAudio(tone(600, 0.3));
+    s.run.feedAudio(quiet(800));
+    await settleAll();
+    const n = s.spoken.length;
+    const sentence = (word: string) => `${`${word} 일정을 차례대로 정리해 드릴게요 `.repeat(7).trim()}.`; // ~150 characters
+    const [a, b, c, d] = ['월요일', '화요일', '수요일', '목요일'].map(sentence);
+    s.dialog().reply(`${a} ${b} ${c} ${d}`);
+    await settleAll();
+    expect(s.spoken.slice(n)).toEqual([a, `${b} ${c}`, d]);
   });
 
   it('after the first piece of a reply, the rest is synthesized as one piece (no gap between sentences)', async () => {

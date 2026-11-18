@@ -71,9 +71,11 @@ export class LineOut {
     return this.frames.length > 0 || this.deps.now() < this.sentUntil;
   }
 
-  /** When everything sent and queued will have played. */
+  /** When everything sent and queued will have played (a fade under way: its frames up to silence only). */
   get playEndAt(): number {
-    return Math.max(this.sentUntil, this.deps.now()) + this.frames.length * FRAME_MS;
+    const fadeHeard = this.fadeLeft ? Math.min(this.fadeLeft, Math.ceil(this.gain / this.step)) : 0;
+    const queued = this.frames.length - this.fadeLeft + fadeHeard;
+    return Math.max(this.sentUntil, this.deps.now()) + queued * FRAME_MS;
   }
 
   /**

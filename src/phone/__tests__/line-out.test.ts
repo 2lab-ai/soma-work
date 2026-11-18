@@ -202,6 +202,14 @@ describe('LineOut', () => {
     for (const p of next) expect(p).toBeGreaterThan(0.75);
   });
 
+  it('while fading, it knows the voice ends with the fade — not after the rest of the cut part', () => {
+    const { clock, out } = setup();
+    for (let i = 0; i < 250; i++) out.push(frame(0.8), 'reply'); // 5 s
+    clock.advance(1000);
+    out.fadeOut(300);
+    expect(out.playEndAt - clock.t).toBeLessThanOrEqual(200 + 300 + 20);
+  });
+
   it('a cut drops the parts not started yet at once: they never start during the fade', () => {
     const { clock, out, started } = setup();
     for (let i = 0; i < 12; i++) out.push(frame(0.8), 'a'); // 10 go out at once, 2 wait

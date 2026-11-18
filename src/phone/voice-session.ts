@@ -379,6 +379,8 @@ export class CallRun {
     this.synthAbort = abort;
     const started = this.now();
     let firstByteMs = -1;
+    /** The engine streamed all of it (no error, not stopped). */
+    let complete = false;
     let frames = 0;
     const resampler = new StreamResampler(44100, LINE_SAMPLE_RATE);
     let carry = Buffer.alloc(0);
@@ -408,13 +410,14 @@ export class CallRun {
         if (buffered) buffered.frames.push(frame);
         else this.sendFrame(frame, part);
       }
+      complete = !abort.signal.aborted && !this.ended;
     } catch (err) {
       if (!abort.signal.aborted) this.fail('tts', err);
     } finally {
       if (this.synthAbort === abort) this.synthAbort = null;
       if (this.making === part) this.making = null;
     }
-    if (!abort.signal.aborted && !this.ended && frames > 0) {
+    if (complete && frames > 0) {
       part.done = true;
       if (text.length >= PACE_MIN_CHARS) this.framesPerChar = frames / text.length;
     }
@@ -483,11 +486,6 @@ export class CallRun {
    */
   private cutSpeech(why: string): void {
     this.synthAbort?.abort('barge-in');
-    if (this.out?.fading) {
-      // Cut already (the words of that interruption came in while the voice was still going): its note stands.
-      this.queue = [];
-      return;
-    }
     const unsaid: string[] = [];
     let heard = '';
     const part = this.sounding;
