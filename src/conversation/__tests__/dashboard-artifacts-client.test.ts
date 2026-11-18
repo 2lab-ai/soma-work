@@ -21,6 +21,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { nextActionSeams } from '../__fixtures__/viewer-scope';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
@@ -62,7 +63,7 @@ const PAGE_STRINGS = new Function(
   `${cook(TEMPLATE.slice(TEMPLATE.indexOf('var STRINGS = {'), TEMPLATE.indexOf('\n};\n', TEMPLATE.indexOf('var STRINGS = {')) + 3))}\nreturn STRINGS;`,
 )();
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}): T {
-  inject = { STRINGS: PAGE_STRINGS, ...inject };
+  inject = { STRINGS: PAGE_STRINGS, ...nextActionSeams(fns, inject), ...inject };
   const names = Object.keys(inject);
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
@@ -234,7 +235,7 @@ describe('T5 — collapsed card face: artifacts visible on the board itself', ()
     const fetched: string[] = [];
     const panels: string[] = [];
     const s = { key: 'k1', conversationId: 'conv-1', artifacts: { count: 1, recent: [png] } };
-    const { wireInbox } = load<{ wireInbox(h: unknown): void }>(['inboxChipOf', 'wireInbox'], ['_quietOpen'], {
+    const { wireInbox } = load<{ wireInbox(h: unknown): void }>(['inboxChipOf', 'wireInbox'], [], {
       _expanded: new Set<string>(),
       _sessionCache: { k1: s },
       _doneGroupOpen: {},
@@ -269,7 +270,8 @@ describe('T5 — collapsed card face: artifacts visible on the board itself', ()
     expect(panels).toEqual([]);
     on['ui-toggle']({ target: host, detail: { cardId: 'k1', expanded: true } });
     expect(fetched).toEqual(['conv-1']);
-    expect(panels).toEqual(['k1']);
+    // .prd/34: opening in place opens no detail card — that is the title's.
+    expect(panels).toEqual([]);
     expect(clientFn('renderCardBody')).toContain('renderCardArtifacts(s)');
   });
 });

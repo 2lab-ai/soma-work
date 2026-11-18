@@ -979,8 +979,8 @@ describe('approval keyboard (D14) — the element’s own', () => {
     const fnStart = TEMPLATE.indexOf('function(e) {', start);
     const fnText = cook(TEMPLATE.slice(fnStart, TEMPLATE.indexOf('\n});', fnStart) + 2));
     expect(fnText).not.toMatch(/answerPermission|ui-decide/);
-    // SSOT 2026-10-29 T2: ✕, the backdrop and Escape close the detail card — which folds its board
-    // card too (an open card always has its detail card) — not the bare panel.
+    // ✕, the backdrop and Escape close the detail card — not the bare panel. Its board card is not
+    // touched (.prd/34): only the one-line fold the detail card made comes undone.
     expect(fnText).toContain('closeDetailCard()');
     expect(fnText).not.toContain('closePanel()');
     const KEY = 'inst::C1:t1';
@@ -1006,31 +1006,15 @@ describe('approval keyboard (D14) — the element’s own', () => {
       window: { matchMedia: () => ({ matches: false }) },
       document: { querySelector: () => null },
     };
-    // The real closeDetailCard, cardFaceOf and the deck it leaves. The board card is a
-    // <ui-agent-inbox> card: closeDetailCard folds it the way a reader does, by clicking its face
-    // in the element's shadow root; the element answers with ui-toggle (expanded: false), whose
-    // handler (wireInbox) is cut down here to what a fold does to the deck.
-    const face = {
-      click: () => {
-        folds.push(KEY);
-        (inject._expanded as Set<string>).delete(KEY);
-        deckDropRef(KEY);
-      },
-    };
-    const li = { getAttribute: (n: string) => (n === 'data-card' ? KEY : null), querySelector: () => face };
-    inject._cardHost = { [KEY]: { shadowRoot: { querySelectorAll: () => [li] } } };
-    let deckDropRef: (k: string) => void = () => {};
-    inject.__setDrop = (f: (k: string) => void) => {
-      deckDropRef = f;
-    };
+    // The real closeDetailCard and the deck it leaves (.prd/34: no face is clicked — the board card
+    // comes back from the detail card's fold through deckRemove → boardRestoreFromDetail).
+    inject.boardRestoreFromDetail = (k: string) => folds.push(`restore:${k}`);
     const body = [
       'var _panelOpenWaiting = null;',
       clientFn('closeDetailCard'),
-      clientFn('cardFaceOf'),
       clientFn('deckDrop'),
       clientFn('deckNextAfter'),
       clientFn('deckRemove'),
-      '__setDrop(deckDrop);',
       `return ${fnText}`,
     ].join('\n');
     const onDocument = new Function(...Object.keys(inject), body)(...Object.values(inject)) as (e: unknown) => void;
@@ -1042,9 +1026,10 @@ describe('approval keyboard (D14) — the element’s own', () => {
     expect(closes).toBe(0);
     expect(folds).toEqual([]);
     dispatch(false); // Esc on the card itself (the keyboard landing): its detail card closes
-    expect(folds).toEqual([KEY]); // the board card folds with it (its face clicked once)
+    expect(folds).toEqual([`restore:${KEY}`]); // the board card comes back from the detail card's fold
     expect(deck).toEqual([]);
-    expect(closes).toBe(1); // it was the only detail card: the panel closes — once, not again after the fold
+    expect(closes).toBe(1); // it was the only detail card: the panel closes — once
+    expect((inject._expanded as Set<string>).has(KEY)).toBe(true); // an open board card stays open
   });
 });
 

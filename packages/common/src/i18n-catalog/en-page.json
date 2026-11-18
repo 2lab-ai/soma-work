@@ -1086,7 +1086,6 @@
   "작업 지시를 쓰거나 파일을 첨부해 주세요": "Write a task instruction or attach a file",
   "작업 카드": "Task card",
   "작업 카드 닫기": "Close task card",
-  "작업 카드 닫기 (카드도 접힘)": "Close task card (the card collapses too)",
   "작업 카드가 아직 보드에 오지 않았어요": "The task card hasn't reached the board yet",
   "작업 폴더 파일은 복구되지 않아요": "Files in the working directory are not restored",
   "작업 합계: 메인 + 서브에이전트": "Task total: main + subagents",

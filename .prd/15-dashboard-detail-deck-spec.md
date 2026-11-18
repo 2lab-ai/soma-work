@@ -4,6 +4,8 @@ Status: 구현 · Date: 2026-10-29 · 기준 main `72042d8`
 앞선 계약: [`14-dashboard-task-view-spec.md`](14-dashboard-task-view-spec.md) (패널 = 태스크 뷰, Tasks의 결말),
 [`13-dashboard-three-surfaces-spec.md`](13-dashboard-three-surfaces-spec.md) (카드 · 펼친 카드 · 패널)
 
+> 이후: 카드를 누르는 방식(펼친 카드 ⇔ 상세 카드, ✕ = 카드 접기, 뒤 카드 누르면 접힘)은 [`34-dashboard-task-card-window-controls-spec.md`](34-dashboard-task-card-window-controls-spec.md)가 대체한다 — 상세 카드는 제목이 열고, ▽는 제자리 펼침만 한다.
+>
 > 이 문서가 대체하는 것: 13의 "펼친 카드 맨 아래 컨트롤 줄(모델 · Stop · Slack · 작업 로그)", 14 §3의 "이전 계획 = 교체 시점별 묶음" 표시와 "중단"이라는 이름, 14 §3.4의 "동일성은 직전 목록에서 같은 문구".
 
 ## 0. 한 줄 정의

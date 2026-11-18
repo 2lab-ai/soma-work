@@ -290,18 +290,19 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
     expect(fnBody('renderCardBody')).toContain('questionHtml = acQuestionHtml(s, s.pendingQuestion);');
   });
 
-  it('every card opens its detail card as it expands; without a conversation the work log reads 작업 로그 없음', () => {
+  it('a card’s title opens its detail card, ▽ only opens it in place; without a conversation the work log reads 작업 로그 없음', () => {
     const body = fnBody('renderCardBody');
-    // SSOT 2026-10-29 T2: no 작업 로그 button (nor its primary/steps-back logic) — expanding the
-    // card opens its detail card (the element's ui-toggle → openPanel(key)), folding it takes it
-    // out (deckDrop). The executed wiring is in dashboard-affectui-agent-inbox-client.test.ts.
+    // SSOT 2026-10-29 T2: no 작업 로그 button (nor its primary/steps-back logic). .prd/34: the detail
+    // card is the title's (the element's ui-detail → openPanel(key)); expanding in place (ui-toggle)
+    // opens or drops none. The executed wiring is in dashboard-affectui-agent-inbox-client.test.ts.
     expect(body).not.toContain('worklogBtn');
     expect(body).not.toContain('canDecideHere');
     expect(body).not.toContain('작업 로그</button>');
-    const toggle = fnBody('wireInbox');
-    expect(toggle).toContain('openPanel(key);');
-    expect(toggle).toContain('deckDrop(key);');
-    expect(toggle.indexOf('openPanel(key);')).toBeLessThan(toggle.indexOf('deckDrop(key);'));
+    const wire = fnBody('wireInbox');
+    const toggle = wire.slice(wire.indexOf("'ui-toggle'"), wire.indexOf("'ui-detail'"));
+    expect(toggle).not.toContain('openPanel(');
+    expect(toggle).not.toContain('deckDrop(');
+    expect(wire.slice(wire.indexOf("'ui-detail'"), wire.indexOf("'ui-minimize'"))).toContain('openPanel(key);');
     // SSOT 2026-10-29 T1: the actions (Stop · Close · Trash) + Slack are the body's first row.
     expect(body).toContain(
       `const actionsHtml = '<div class="card-actions-bar"><span class="card-actions">' + sessionActionHtml(s, col, !!spec && spec.star === false) + slackBtn + '</span></div>';`,

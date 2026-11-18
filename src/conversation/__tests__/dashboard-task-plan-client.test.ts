@@ -798,7 +798,6 @@ describe('U8 — a card that newly needs a decision opens by itself, once, witho
         quickChoicesOf: (q: any) => (q && q.choices && q.choices.length === 2 ? q.choices : null),
         viewerOwns: () => true,
         isSiblingSession: () => false,
-        _quietOpen: { key: '' },
       },
     );
     expect(m.decisionSigOf(cache['task:a'])).toBe('plan|2');
@@ -820,7 +819,6 @@ describe('U8 — a card that newly needs a decision opens by itself, once, witho
       quickChoicesOf: () => null,
       viewerOwns: () => known,
       isSiblingSession: () => false,
-      _quietOpen: { key: '' },
     });
     reveal.mockClear();
     late.autoOpenDecisions();
@@ -842,7 +840,6 @@ describe('U8 — a card that newly needs a decision opens by itself, once, witho
       quickChoicesOf: () => null,
       viewerOwns: () => true,
       isSiblingSession: () => false,
-      _quietOpen: { key: '' },
       _autoOpenWait: false,
       customElements: {
         whenDefined: (tag: string) => {
@@ -860,9 +857,10 @@ describe('U8 — a card that newly needs a decision opens by itself, once, witho
     expect(typeof defined).toBe('function');
     const toggle = TEMPLATE.slice(
       TEMPLATE.indexOf("host.addEventListener('ui-toggle'"),
-      TEMPLATE.indexOf("host.addEventListener('ui-group-toggle'"),
+      TEMPLATE.indexOf("host.addEventListener('ui-detail'"),
     );
-    expect(toggle).toContain('_quietOpen.key !== key');
+    // .prd/34: opening a card in place never opens a detail card — so a card the page opens by itself needs no guard.
+    expect(toggle).not.toContain('openPanel(');
     expect(clientFn('renderBoard')).toContain('if (!partial) autoOpenDecisions();');
   });
 });

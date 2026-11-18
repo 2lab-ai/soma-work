@@ -1,0 +1,515 @@
+/**
+ * Task card window controls (.prd/34) — browser receipts on the real dashboard page.
+ *
+ * The real web server serves the real page and the installed @2lab.ai/ui; the board JSON and the
+ * conversation are browser routes and the WebSocket is a stub, so every step is deterministic.
+ * Every check prints the rects it judged (card, panel), never a bare boolean (.prd skill: a
+ * position claim leaves its coordinates).
+ *
+ *   S1  each card head: − · title · (★) · ▽, the face is no button
+ *   S2  − → one line (≤ 44px tall), ▢; saved — a reload keeps it; ▢ → back
+ *   S3  title hover: accent underline + the side-panel glyph slides in
+ *   S4  ▽ → the body opens in place, no detail card; the hop: mid-air (up, bigger), dust after landing, lands as △ (180°)
+ *   S5  title → one line + ring, its detail card on the right; a second title → that one in front, the ring moves
+ *   S6  ✕ → the front leaves and its card comes back as it was (open again if it was open); the last closes the panel
+ *   S7  a card the reader folded stays one line after its detail card closes
+ *   S8  a press on the face's text opens nothing
+ *   S9  reduced motion: ▽ turns without the hop
+ *
+ * Run from the repo root (keeps state out of the checkout):
+ *   SOMA_CONFIG_DIR=$TMP/cfg SOMA_INSTANCE_DIR=$TMP/inst CONVERSATION_VIEWER_TOKEN=t npx tsx scripts/screenshot-card-window.ts [outDir]
+ */
+
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { chromium, type Page } from 'playwright';
+
+const OUT = process.argv[2] || path.join(__dirname, '..', 'screenshots', 'card-window');
+fs.mkdirSync(OUT, { recursive: true });
+const PORT = process.env.CARD_WINDOW_PORT || '33937';
+process.env.CONVERSATION_VIEWER_PORT = PORT;
+const BASE_URL = `http://127.0.0.1:${PORT}`;
+const NOW = Date.now();
+const M = 60_000;
+const KEY_A = 'mock-inst::work:C501:1700000000.000100';
+const KEY_B = 'mock-inst::work:C502:1700000000.000200';
+const KEY_C = 'mock-inst::work:C503:1700000000.000300';
+
+function session(key: string, title: string, channel: string, state: string, summary: string) {
+  return {
+    key,
+    title,
+    displayHeadline: title,
+    summaryTitle: title,
+    summaryBody: summary,
+    ownerId: 'U001',
+    ownerName: 'Zhuge',
+    workflow: 'zwork',
+    model: 'claude-opus-5-5[1m]',
+    effort: 'high',
+    channelId: channel,
+    sessionState: 'MAIN',
+    activityState: state,
+    conversationId: `conv-${channel}`,
+    lastActivity: new Date(NOW - 3 * M).toISOString(),
+    activeLegStartedAtMs: NOW - 12 * M,
+    activeAccumulatedMs: 0,
+    slackThreadUrl: `https://slack.example/archives/${channel}/p1700000000000`,
+    tokenUsage: { totalInputTokens: 300_000, totalOutputTokens: 40_000, totalCostUsd: 6.2, contextUsagePercent: 22 },
+    artifacts: { count: 0, recent: [] },
+    tasks: [{ id: '1', content: '카드 머리에 창 버튼 그리기', activeForm: '창 버튼 그리는 중', status: 'in_progress' }],
+  };
+}
+const BOARD = {
+  waiting: [],
+  working: [
+    session(
+      KEY_A,
+      '작업 카드 창 버튼 개선',
+      'C501',
+      'working',
+      '보드 카드에 − · 제목 · ▽ 버튼을 붙이고 상태를 셋으로 나눈다.',
+    ),
+    session(KEY_B, 'dev 로그 문제 확인', 'C502', 'working', '배포 로그에서 재시작 원인을 찾는다.'),
+  ],
+  idle: [session(KEY_C, '릴리즈 노트 정리', 'C503', 'idle', '지난주 머지된 PR을 묶어 노트를 쓴다.')],
+};
+const TURNS = [
+  {
+    id: 'u1',
+    role: 'user',
+    timestamp: new Date(NOW - 10 * M).toISOString(),
+    userName: 'Zhuge',
+    rawContent: '카드 버튼 개선해줘',
+    origin: { by: 'user' },
+  },
+  {
+    id: 'a1',
+    role: 'assistant',
+    timestamp: new Date(NOW - 5 * M).toISOString(),
+    summaryTitle: '진행',
+    summaryBody: '버튼을 그렸습니다',
+    summarized: true,
+  },
+];
+
+const PAGE_HELPERS = [
+  'window.__card = function (k) { var h = document.getElementById("kanban"); var r = h && h.shadowRoot; var all = r ? r.querySelectorAll("li.ib-card[data-card]") : []; for (var i = 0; i < all.length; i++) if (all[i].getAttribute("data-card") === k) return all[i]; return null; };',
+  'window.WebSocket = function StubWebSocket(url) { this.url = url; window.__ws = this; };',
+  'window.WebSocket.prototype.close = function () {};',
+  'window.__name = function (f) { return f; };',
+].join('\n');
+
+async function installMocks(page: Page) {
+  await page.addInitScript({ content: PAGE_HELPERS });
+  await page.addInitScript({ content: 'localStorage.setItem("soma-board-view", "board");' });
+  await page.route('**/auth/me', (r) =>
+    r.fulfill({ json: { user: { name: 'Zhuge', slackUserId: 'U001' }, csrfToken: 'x' } }),
+  );
+  await page.route('**/api/dashboard/users', (r) => r.fulfill({ json: { users: [{ id: 'U001', name: 'Zhuge' }] } }));
+  await page.route('**/api/dashboard/stats**', (r) => r.fulfill({ json: { stats: [], byDay: [] } }));
+  await page.route('**/api/dashboard/usage**', (r) => r.fulfill({ json: { totals: {}, byUser: {}, byDay: [] } }));
+  await page.route('**/api/dashboard/sessions**', (r) => r.fulfill({ json: { board: BOARD } }));
+  await page.route(/\/api\/dashboard\/session\/[^/?]+\/artifacts/, (r) => r.fulfill({ json: { artifacts: [] } }));
+  await page.route(/\/api\/dashboard\/session\/[^/?]+\/worklog/, (r) =>
+    r.fulfill({ json: { entries: [], hasMore: false } }),
+  );
+  await page.route(/\/api\/dashboard\/session\/[^/?]+(\?.*)?$/, (r) => {
+    if (r.request().method() !== 'GET') return r.fulfill({ json: { ok: true } });
+    const cid = decodeURIComponent(new URL(r.request().url()).pathname.split('/').pop() || '');
+    return r.fulfill({
+      json: { id: cid, title: cid, titleSub: '', turnCount: TURNS.length, turns: TURNS, hasMore: false },
+    });
+  });
+}
+
+const failures: string[] = [];
+const report: string[] = [];
+function log(line: string) {
+  report.push(line);
+  console.log(line);
+}
+function check(ok: boolean, what: string, detail?: unknown) {
+  log(`${ok ? '[ok]  ' : '[FAIL]'} ${what}${detail !== undefined ? ` — ${JSON.stringify(detail)}` : ''}`);
+  if (!ok) failures.push(what);
+}
+const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
+
+type Rect = { x: number; y: number; w: number; h: number };
+type CardState = {
+  rect: Rect;
+  min: boolean;
+  open: boolean;
+  current: boolean;
+  pressed: string | null;
+  expanded: string | null;
+  caret: string;
+  head: string[];
+  faceRole: string | null;
+};
+async function cardState(page: Page, key: string): Promise<CardState> {
+  return page.evaluate((k) => {
+    const c = (window as any).__card(k) as HTMLElement;
+    const r = c.getBoundingClientRect();
+    const q = (s: string) => c.querySelector(s) as HTMLElement | null;
+    const lift = q('[data-win="expand"] .ib-caret-lift');
+    return {
+      rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) },
+      min: c.classList.contains('is-min'),
+      open: c.classList.contains('is-open'),
+      current: c.classList.contains('is-current'),
+      pressed: q('[data-win="min"]')?.getAttribute('aria-pressed') ?? null,
+      expanded: q('[data-win="expand"]')?.getAttribute('aria-expanded') ?? null,
+      caret: lift ? getComputedStyle(lift).transform : '',
+      head: Array.from(q('.ib-head')?.children ?? []).map(
+        (n) => n.getAttribute('data-win') ?? (n.classList.contains('ib-star') ? 'star' : n.className),
+      ),
+      faceRole: q('.ib-face')?.getAttribute('role') ?? null,
+    };
+  }, key);
+}
+async function panel(page: Page): Promise<{ open: boolean; key: string | null; rect: Rect | null; deck: string[] }> {
+  // The page's own state (top-level let / var of its classic script): an expression Playwright evaluates in the
+  // page's global scope.
+  const state = (await page.evaluate(
+    '({ open: typeof panelOpen !== "undefined" && !!panelOpen, key: typeof panelSessionKey !== "undefined" ? panelSessionKey : null, deck: typeof _deck !== "undefined" ? _deck.slice() : [] })',
+  )) as { open: boolean; key: string | null; deck: string[] };
+  const rect = await page.evaluate(() => {
+    // <ui-drawer> lays out its slotted parts: the detail card's own header is what is drawn on the right.
+    const p = document.querySelector('#slide-panel[open] .panel-header') as HTMLElement | null;
+    const r = p?.getBoundingClientRect();
+    return p && r && r.width > 0
+      ? { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) }
+      : null;
+  });
+  return { ...state, rect };
+}
+async function press(page: Page, key: string, what: 'min' | 'detail' | 'expand') {
+  const box = await page.evaluate(
+    ([k, w]) => {
+      const b = ((window as any).__card(k) as HTMLElement).querySelector(`[data-win="${w}"]`) as HTMLElement;
+      const r = b.getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    },
+    [key, what],
+  );
+  await page.mouse.click(box.x, box.y);
+}
+async function shot(page: Page, name: string) {
+  await page.screenshot({ path: path.join(OUT, name) });
+}
+async function boot(page: Page) {
+  await installMocks(page);
+  await page.goto(`${BASE_URL}/dashboard/U001`);
+  await page.waitForSelector(`li.ib-card[data-card="${KEY_A}"] [data-win="detail"]`, { timeout: 20_000 });
+  await sleep(500);
+}
+
+async function motionRun(browser: import('playwright').Browser) {
+  const ctx = await browser.newContext({
+    viewport: { width: 1440, height: 900 },
+    colorScheme: 'light',
+    deviceScaleFactor: 2,
+  });
+  const tok = process.env.CONVERSATION_VIEWER_TOKEN;
+  if (tok)
+    await ctx.addCookies([{ name: 'soma_dash_token', value: encodeURIComponent(`bearer:${tok}`), url: BASE_URL }]);
+  const page = await ctx.newPage();
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  await boot(page);
+  log('\n── 1440 light ──');
+
+  // S1
+  const a0 = await cardState(page, KEY_A);
+  check(
+    a0.head[0] === 'min' &&
+      a0.head.includes('detail') &&
+      a0.head[a0.head.length - 1] === 'expand' &&
+      a0.faceRole === null,
+    'S1 head = − · title · (★) · ▽; the face is no button',
+    { head: a0.head, faceRole: a0.faceRole, rect: a0.rect },
+  );
+  await shot(page, '01-normal.png');
+
+  // S2
+  await press(page, KEY_A, 'min');
+  await sleep(450);
+  const a1 = await cardState(page, KEY_A);
+  const p1 = await panel(page);
+  check(a1.min && a1.pressed === 'true' && a1.rect.h <= 44 && !p1.open, 'S2 − → one line, no detail card', {
+    before: a0.rect,
+    after: a1.rect,
+    panel: p1,
+  });
+  await shot(page, '02-one-line.png');
+  const saved = await page.evaluate(() => localStorage.getItem('soma-card-min'));
+  check(saved === JSON.stringify([KEY_A]), 'S2 the fold is saved in this browser', { saved });
+  await page.reload();
+  await page.waitForSelector(`li.ib-card[data-card="${KEY_A}"] [data-win="detail"]`);
+  await sleep(500);
+  const a2 = await cardState(page, KEY_A);
+  check(a2.min && a2.rect.h <= 44, 'S2 a reload keeps it on one line', { rect: a2.rect });
+  await press(page, KEY_A, 'min');
+  await sleep(450);
+  const a3 = await cardState(page, KEY_A);
+  check(!a3.min && a3.rect.h === a0.rect.h, 'S2 ▢ → back as it was', { before: a0.rect, after: a3.rect });
+
+  // S3
+  const tb = await page.evaluate((k) => {
+    const t = ((window as any).__card(k) as HTMLElement).querySelector('[data-win="detail"]') as HTMLElement;
+    const r = t.getBoundingClientRect();
+    return { x: r.x + 20, y: r.y + r.height / 2 };
+  }, KEY_B);
+  await page.mouse.move(tb.x, tb.y);
+  await sleep(300);
+  const hover = await page.evaluate((k) => {
+    const c = (window as any).__card(k) as HTMLElement;
+    const text = c.querySelector('.ib-title-text') as HTMLElement;
+    const peek = c.querySelector('.ib-peek') as HTMLElement;
+    const cs = getComputedStyle(text);
+    return {
+      underline: cs.textDecorationLine,
+      decoColor: cs.textDecorationColor,
+      peekOpacity: getComputedStyle(peek).opacity,
+      cursor: getComputedStyle(c.querySelector('[data-win="detail"]') as HTMLElement).cursor,
+      tooltip: (c.querySelector('[data-win="detail"]') as HTMLElement).title,
+    };
+  }, KEY_B);
+  check(
+    hover.underline.includes('underline') &&
+      hover.peekOpacity === '1' &&
+      hover.cursor === 'pointer' &&
+      hover.decoColor !== 'rgba(0, 0, 0, 0)',
+    'S3 title hover: underline + side-panel glyph + pointer + tooltip',
+    hover,
+  );
+  await shot(page, '03-title-hover.png');
+  await page.mouse.move(5, 5);
+
+  // S4 — ▽ with its hop, frozen at points of its animation.
+  await press(page, KEY_B, 'expand');
+  const frames: Array<Record<string, unknown>> = [];
+  for (const at of [150, 330, 430]) {
+    const f = await page.evaluate(
+      ([k, t]) => {
+        const c = (window as any).__card(k) as HTMLElement;
+        const caret = c.querySelector('[data-win="expand"]') as HTMLElement;
+        const lift = caret.querySelector('.ib-caret-lift') as HTMLElement;
+        const grains = Array.from(caret.querySelectorAll('.ib-dust i')) as HTMLElement[];
+        const shadow = caret.querySelector('.ib-caret-shadow') as HTMLElement;
+        for (const a of caret.getAnimations({ subtree: true })) {
+          a.pause();
+          a.currentTime = Number(t);
+        }
+        const lr = lift.getBoundingClientRect();
+        const cr = caret.getBoundingClientRect();
+        return {
+          at: t,
+          hop: caret.classList.contains('is-hop'),
+          caretBox: { x: Math.round(cr.x), y: Math.round(cr.y), w: Math.round(cr.width), h: Math.round(cr.height) },
+          lift: { y: Math.round(lr.y * 10) / 10, w: Math.round(lr.width * 10) / 10 },
+          transform: getComputedStyle(lift).transform,
+          shadow: getComputedStyle(shadow).opacity,
+          dust: grains.map((g) => Number(getComputedStyle(g).opacity).toFixed(2)),
+        };
+      },
+      [KEY_B, String(at)],
+    );
+    frames.push(f);
+    const r = f.caretBox as Rect;
+    await page.screenshot({
+      path: path.join(OUT, `04-hop-${at}ms.png`),
+      clip: { x: r.x - 40, y: r.y - 24, width: r.w + 80, height: r.h + 40 },
+    });
+  }
+  log(`      hop frames — ${JSON.stringify(frames)}`);
+  const lifted = frames[0] as { lift: { y: number; w: number }; shadow: string };
+  check(
+    lifted.lift.w > 16.5 && Number(lifted.shadow) > 0,
+    'S4 mid-air at 150 ms: bigger than 16px, a ground shadow',
+    lifted,
+  );
+  const early = frames[0] as { dust: string[] };
+  check(
+    early.dust.every((o) => Number(o) === 0),
+    'S4 no dust before the landing (150 ms)',
+    early.dust,
+  );
+  const dusty = frames[2] as { dust: string[] };
+  check(
+    dusty.dust.some((o) => Number(o) > 0.1),
+    'S4 dust after the landing (430 ms)',
+    dusty.dust,
+  );
+  await page.evaluate((k) => {
+    const caret = ((window as any).__card(k) as HTMLElement).querySelector('[data-win="expand"]') as HTMLElement;
+    for (const a of caret.getAnimations({ subtree: true })) a.finish();
+  }, KEY_B);
+  await sleep(500);
+  const b1 = await cardState(page, KEY_B);
+  const p4 = await panel(page);
+  // matrix(-1, ~0, ~0, -1, 0, 0) = rotate(180deg)
+  const turned = /^matrix\(-1, [-0-9.e]+, [-0-9.e]+, -1, 0, 0\)$/.test(b1.caret);
+  check(b1.open && b1.expanded === 'true' && turned && !p4.open, 'S4 ▽ → open in place, △ (180°), no detail card', {
+    rect: b1.rect,
+    caret: b1.caret,
+    panel: p4,
+  });
+  await shot(page, '04-open-in-place.png');
+
+  // S5
+  await press(page, KEY_B, 'detail');
+  try {
+    await page.waitForSelector('#slide-panel[open]', { timeout: 8000 });
+  } catch (e) {
+    log(
+      `DEBUG panel ${JSON.stringify(await panel(page))} errors ${JSON.stringify(errors)} card ${JSON.stringify(await cardState(page, KEY_B))}`,
+    );
+    throw e;
+  }
+  await sleep(600);
+  const b2 = await cardState(page, KEY_B);
+  const p5 = await panel(page);
+  check(
+    b2.min && b2.current && p5.open && p5.key === KEY_B && !!p5.rect && p5.rect.x >= b2.rect.x + b2.rect.w - 1,
+    'S5 title → one line + ring, its detail card on the right',
+    { card: b2.rect, panel: p5 },
+  );
+  await shot(page, '05-detail-open.png');
+  await press(page, KEY_A, 'detail');
+  await sleep(600);
+  const a5 = await cardState(page, KEY_A);
+  const b5 = await cardState(page, KEY_B);
+  const p5b = await panel(page);
+  check(
+    a5.min && a5.current && !b5.current && b5.min && p5b.key === KEY_A && p5b.deck.join() === [KEY_B, KEY_A].join(),
+    'S5 a second title → that one in front, the ring moves, both on one line',
+    { a: a5.rect, b: b5.rect, panel: p5b },
+  );
+  await shot(page, '05-detail-two.png');
+
+  // S6
+  await page.click('#slide-panel .panel-close');
+  await sleep(600);
+  const a6 = await cardState(page, KEY_A);
+  const p6 = await panel(page);
+  check(
+    !a6.min && !a6.current && p6.key === KEY_B && (await cardState(page, KEY_B)).current,
+    'S6 ✕ → A back, B in front',
+    {
+      a: a6.rect,
+      panel: p6,
+    },
+  );
+  await page.click('#slide-panel .panel-close');
+  await sleep(600);
+  const b6 = await cardState(page, KEY_B);
+  const p6b = await panel(page);
+  check(
+    !b6.min && b6.open && b6.expanded === 'true' && !p6b.open,
+    'S6 ✕ again → B back open (as it was), the panel closed',
+    {
+      b: b6.rect,
+      panel: p6b,
+    },
+  );
+  await shot(page, '06-closed-restored.png');
+
+  // S7
+  await press(page, KEY_C, 'min');
+  await sleep(400);
+  await press(page, KEY_C, 'detail');
+  await page.waitForSelector('#slide-panel[open]');
+  await sleep(500);
+  await page.click('#slide-panel .panel-close');
+  await sleep(600);
+  const c7 = await cardState(page, KEY_C);
+  check(
+    c7.min && !(await panel(page)).open,
+    'S7 the reader’s one-line card stays one line after its detail card closes',
+    {
+      c: c7.rect,
+    },
+  );
+
+  // S8
+  const sum = await page.evaluate((k) => {
+    // The first row under the head (the summary, the task in progress…): text, not a control.
+    const s = ((window as any).__card(k) as HTMLElement).querySelector(
+      '.ib-rest-in > :first-child',
+    ) as HTMLElement | null;
+    const r = s?.getBoundingClientRect();
+    return r ? { x: r.x + 30, y: r.y + r.height / 2 } : null;
+  }, KEY_A);
+  if (sum) await page.mouse.click(sum.x, sum.y);
+  await sleep(400);
+  const a8 = await cardState(page, KEY_A);
+  check(!!sum && !a8.open && !a8.min && !(await panel(page)).open, 'S8 a press on the face’s text opens nothing', {
+    a: a8.rect,
+    at: sum,
+  });
+  check(errors.length === 0, 'no page errors', errors);
+  await ctx.close();
+}
+
+async function reducedRun(browser: import('playwright').Browser) {
+  const ctx = await browser.newContext({
+    viewport: { width: 1440, height: 900 },
+    colorScheme: 'dark',
+    reducedMotion: 'reduce',
+  });
+  const tok = process.env.CONVERSATION_VIEWER_TOKEN;
+  if (tok)
+    await ctx.addCookies([{ name: 'soma_dash_token', value: encodeURIComponent(`bearer:${tok}`), url: BASE_URL }]);
+  const page = await ctx.newPage();
+  await boot(page);
+  log('\n── 1440 dark · reduced motion ──');
+  await press(page, KEY_B, 'expand');
+  await sleep(60);
+  const s = await page.evaluate((k) => {
+    const caret = ((window as any).__card(k) as HTMLElement).querySelector('[data-win="expand"]') as HTMLElement;
+    return { hop: caret.classList.contains('is-hop'), anims: caret.getAnimations({ subtree: true }).length };
+  }, KEY_B);
+  const b = await cardState(page, KEY_B);
+  check(!s.hop && s.anims === 0 && b.open && /^matrix\(-1/.test(b.caret), 'S9 reduced motion: △ without the hop', {
+    ...s,
+    caret: b.caret,
+  });
+  await press(page, KEY_A, 'detail');
+  await page.waitForSelector('#slide-panel[open]');
+  await sleep(400);
+  await shot(page, '09-dark-detail.png');
+  await ctx.close();
+}
+
+async function main() {
+  const ws = await import('../src/conversation/web-server');
+  await ws.startWebServer({ listen: true });
+  log(`server ${BASE_URL}`);
+  try {
+    for (const run of [motionRun, reducedRun]) {
+      const browser = await chromium.launch({ headless: true, args: ['--single-process', '--no-zygote'] });
+      try {
+        await run(browser);
+      } finally {
+        await browser.close();
+      }
+    }
+  } finally {
+    await ws.stopWebServer();
+  }
+  fs.writeFileSync(path.join(OUT, 'report.txt'), `${report.join('\n')}\n`);
+  log(
+    `\n${report.filter((l) => l.startsWith('[ok]')).length}/${report.filter((l) => /^\[(ok|FAIL)/.test(l)).length} checks passed — ${OUT}`,
+  );
+  if (failures.length > 0) process.exit(1);
+}
+
+main().then(
+  () => process.exit(0),
+  (err) => {
+    console.error(err);
+    process.exit(1);
+  },
+);

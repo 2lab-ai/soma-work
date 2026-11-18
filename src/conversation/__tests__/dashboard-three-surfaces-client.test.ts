@@ -1191,13 +1191,13 @@ describe('focus goes back to whatever opened the panel (executed)', () => {
   });
 });
 
-// SSOT 2026-10-29 T2 — the detail deck: an open card always has its detail card beside the
-// board. The board card is a <ui-agent-inbox> card: the element owns click / Enter / Escape and
-// says so with ui-toggle; wireInbox answers it — opened → openPanel(key) (in front of the deck),
-// folded → deckDrop(key) (the next one comes to the front, or the panel closes). ✕ / the overlay
-// / Escape close the front detail card by folding its card the way a reader does: a click on its
-// face (cardFaceOf, in the element's shadow root). ‹ › go round the deck.
-describe('the detail deck — open cards and their detail cards move together (SSOT 2026-10-29 T2)', () => {
+// The detail deck (SSOT 2026-10-29 T2, .prd/34): a card's title (the element's ui-detail) opens its
+// detail card in front of the deck and the card goes to one line on its board; ▽ / △ (ui-toggle)
+// only open the card in place. ✕ / the overlay / Escape (closeDetailCard) take the front detail
+// card out of the deck — the next one comes to the front, or the panel closes — and its board card
+// comes back from the detail card's fold (deckRemove → restore); a fold the reader made stays.
+// ‹ › go round the deck.
+describe('the detail deck — the title opens a detail card, its card goes to one line until it leaves (.prd/34)', () => {
   const pure = load<{
     deckNextAfter(deck: string[], key: string): string | null;
   }>(['deckNextAfter'], []);
@@ -1214,54 +1214,74 @@ describe('the detail deck — open cards and their detail cards move together (S
     expect(deck).toEqual(['a', 'b', 'c']); // it never changes the deck
   });
 
-  // The real wireInbox, cardFaceOf, closeDetailCard and deck functions against a fake board
-  // element: its cards are <li class="ib-card" data-card> in a shadow root, each with a face
-  // (.ib-face[role="button"]) whose click toggles the card and fires ui-toggle, as the element
-  // does. openPanel / closePanel are cut down to their deck and panel-state lines (pinned against
-  // the shipped source below).
+  // The real wireInbox, closeDetailCard, deck and fold functions against a fake board element that
+  // keeps its cards' folds as <ui-agent-inbox> 0.43.0 does: a title press sends ui-detail and, unless
+  // prevented, folds the card as its own (restore() undoes only that); − is the reader's fold. openPanel /
+  // closePanel are cut down to their deck, fold and panel-state lines (pinned against the shipped source below).
   type Deck = {
     wireInbox(host: unknown): void;
     onDeckPage(e: unknown): void;
     deckDrop(key: string): void;
     closeDetailCard(): void;
-    cardFaceOf(key: string): unknown;
     openPanel(key: string): void;
     state(): { deck: string[]; front: string | null; open: boolean; expanded: string[] };
   };
   const world = (keys = ['A', 'B', 'C']) => {
     const log: string[] = [];
     const nav: number[] = [];
-    const clicked: string[] = [];
     const handlers: Record<string, (e: unknown) => void> = {};
     const elOpen = new Set<string>(); // the element's own open state
+    const fold = new Map<string, 'detail' | 'reader'>(); // the element's folds, and whose
     const host: Record<string, unknown> = {
       addEventListener: (n: string, fn: (e: unknown) => void) => {
         handlers[n] = fn;
       },
+      setMinimized: (k: string, on: boolean, opts: { untilRestore?: boolean } = {}) => {
+        if (!on) return fold.delete(k);
+        if (fold.has(k)) return false;
+        fold.set(k, opts.untilRestore ? 'detail' : 'reader');
+        return true;
+      },
+      restore: (k: string) => fold.get(k) === 'detail' && fold.delete(k),
     };
+    const send = (name: string, detail: Record<string, unknown>) => {
+      const e = {
+        target: host,
+        detail,
+        prevented: false,
+        preventDefault() {
+          this.prevented = true;
+        },
+      };
+      handlers[name](e);
+      return !e.prevented;
+    };
+    // ▽ / △: open or close in place.
     const toggle = (key: string) => {
       const expanded = !elOpen.has(key);
       if (expanded) elOpen.add(key);
       else elOpen.delete(key);
-      handlers['ui-toggle']({ target: host, detail: { cardId: key, expanded } });
+      send('ui-toggle', { cardId: key, expanded });
     };
-    const faceOf = (key: string) => ({
-      click: () => {
-        clicked.push(key);
-        toggle(key);
-      },
-    });
-    const li = (key: string) => ({
-      getAttribute: (n: string) => (n === 'data-card' ? key : null),
-      querySelector: (sel: string) => (sel === '.ib-face[role="button"]' ? faceOf(key) : null),
-    });
-    host.shadowRoot = { querySelectorAll: (sel: string) => (sel === 'li.ib-card[data-card]' ? keys.map(li) : []) };
+    // The title: ui-detail, then the element's own fold.
+    const title = (key: string) => {
+      if (send('ui-detail', { cardId: key }) && !fold.has(key)) fold.set(key, 'detail');
+    };
+    // − / ▢: the reader's fold.
+    const minimize = (key: string) => {
+      const on = !fold.has(key);
+      if (!send('ui-minimize', { cardId: key, minimized: on })) return;
+      if (on) fold.set(key, 'reader');
+      else fold.delete(key);
+    };
+    const folded = () => Object.fromEntries(fold);
     const cache: Record<string, unknown> = {};
     const cardHost: Record<string, unknown> = {};
     for (const k of keys) {
       cache[k] = { key: k };
       cardHost[k] = host;
     }
+    const saved: Array<[string, boolean]> = [];
     const m = load<Deck>(
       [
         'deckAdd',
@@ -1269,11 +1289,12 @@ describe('the detail deck — open cards and their detail cards move together (S
         'deckNextAfter',
         'onDeckPage',
         'deckDrop',
-        'cardFaceOf',
         'closeDetailCard',
+        'boardFoldForDetail',
+        'boardRestoreFromDetail',
         'wireInbox',
       ],
-      ['_deck', '_panelOpenWaiting', '_quietOpen'],
+      ['_deck', '_panelOpenWaiting'],
       {
         log,
         _sessionCache: cache,
@@ -1292,11 +1313,14 @@ describe('the detail deck — open cards and their detail cards move together (S
         placeCard: () => {},
         inboxPaint: () => {},
         openArtifactViewer: () => {},
+        ntPendingOf: () => null,
+        ntOpenLaunch: () => {},
+        cardMinSave: (k: string, on: boolean) => saved.push([k, on]),
         renderDeckNav: (dir: number) => nav.push(dir),
       },
       [
         'var panelOpen = false, panelSessionKey = null, _expanded = new Set();',
-        "function openPanel(k) { if (!_sessionCache[k]) return; log.push('open ' + k); deckAdd(k); panelOpen = true; panelSessionKey = k; }",
+        "function openPanel(k) { if (!_sessionCache[k]) return; log.push('open ' + k); deckAdd(k); boardFoldForDetail(k); panelOpen = true; panelSessionKey = k; }",
         "function closePanel() { log.push('close'); if (panelSessionKey) deckRemove(panelSessionKey); panelOpen = false; panelSessionKey = null; }",
         'function state() { return { deck: _deck.slice(), front: panelSessionKey, open: panelOpen, expanded: Array.from(_expanded) }; }',
       ],
@@ -1306,99 +1330,81 @@ describe('the detail deck — open cards and their detail cards move together (S
     // hands it the keys with the data); the element steps and wraps round itself (its wrap attribute).
     const page = (index: number, keys = m.state().deck) =>
       m.onDeckPage({ currentTarget: { _keys: keys }, detail: { index, from: 0 } });
-    return { m, log, nav, clicked, toggle, cache, cardHost, host, page };
+    return { m, log, nav, toggle, title, minimize, folded, saved, cache, cardHost, host, page };
   };
 
-  it('ui-toggle: opening a card opens its detail card in front; the deck keeps the opening order', () => {
+  it('the title opens the detail card in front, the deck keeps the opening order, each card goes to one line', () => {
     const w = world();
-    w.toggle('A');
-    expect(w.m.state()).toEqual({ deck: ['A'], front: 'A', open: true, expanded: ['A'] });
-    w.toggle('B');
-    expect(w.m.state()).toEqual({ deck: ['A', 'B'], front: 'B', open: true, expanded: ['A', 'B'] });
+    w.title('A');
+    expect(w.m.state()).toEqual({ deck: ['A'], front: 'A', open: true, expanded: [] });
+    w.title('B');
+    expect(w.m.state()).toEqual({ deck: ['A', 'B'], front: 'B', open: true, expanded: [] });
+    expect(w.folded()).toEqual({ A: 'detail', B: 'detail' });
     expect(w.log).toEqual(['open A', 'open B']);
+    // A one-line card's title brings its detail card back to the front.
+    w.title('A');
+    expect(w.m.state()).toMatchObject({ deck: ['A', 'B'], front: 'A' });
   });
 
-  it('ui-toggle: folding the front card brings the next detail card forward; the last one closes the panel', () => {
+  it('▽ / △ open and close a card in place only — no detail card opens, none leaves', () => {
     const w = world();
     w.toggle('A');
-    w.toggle('B');
-    w.toggle('B'); // B folds: A comes back to the front
-    expect(w.m.state()).toEqual({ deck: ['A'], front: 'A', open: true, expanded: ['A'] });
-    w.toggle('A'); // the last one: the panel closes
+    expect(w.m.state()).toEqual({ deck: [], front: null, open: false, expanded: ['A'] });
+    w.title('B');
+    w.toggle('A'); // closing A in place leaves B's detail card in front
+    expect(w.m.state()).toEqual({ deck: ['B'], front: 'B', open: true, expanded: [] });
+    expect(w.log).toEqual(['open B']);
+  });
+
+  it('closeDetailCard (✕ / overlay / Escape): the front leaves, its card comes back, the next comes forward; the last closes the panel', () => {
+    const w = world();
+    w.title('A');
+    w.title('B');
+    w.m.closeDetailCard();
+    expect(w.m.state()).toEqual({ deck: ['A'], front: 'A', open: true, expanded: [] });
+    expect(w.folded()).toEqual({ A: 'detail' }); // B is back as it was
+    w.m.closeDetailCard();
     expect(w.m.state()).toEqual({ deck: [], front: null, open: false, expanded: [] });
+    expect(w.folded()).toEqual({});
     expect(w.log).toEqual(['open A', 'open B', 'open A', 'close']);
-  });
-
-  it('a click on an open card whose detail card waits behind another folds it — no bring-to-front; the front one stays', () => {
-    const w = world();
-    w.toggle('A');
-    w.toggle('B'); // B in front, A's detail card behind it
-    w.toggle('A'); // the element folds A: its detail card only leaves the deck
-    expect(w.m.state()).toEqual({ deck: ['B'], front: 'B', open: true, expanded: ['B'] });
-    expect(w.log).toEqual(['open A', 'open B']);
-    expect(w.nav).toEqual([0]); // the deck's ‹ n / m › repaint
-  });
-
-  it('closeDetailCard (✕ / overlay / Escape): clicks the front card’s face (cardFaceOf) — the element folds it, the next detail card comes forward', () => {
-    const w = world();
-    w.toggle('A');
-    w.toggle('B');
-    w.m.closeDetailCard();
-    expect(w.clicked).toEqual(['B']); // folded the way a reader does, on the element
-    expect(w.m.state()).toEqual({ deck: ['A'], front: 'A', open: true, expanded: ['A'] });
-    w.m.closeDetailCard();
-    expect(w.clicked).toEqual(['B', 'A']);
-    expect(w.m.state()).toEqual({ deck: [], front: null, open: false, expanded: [] });
-    // The fold's own ui-toggle already dropped it: the panel closed once, nothing dropped twice.
-    expect(w.log).toEqual(['open A', 'open B', 'open A', 'close']);
-  });
-
-  it('closeDetailCard on a detail card whose card is folded (an agent link, the cron drawer) or not on any element: it just leaves the deck', () => {
-    const w = world();
-    w.toggle('A');
-    w.m.openPanel('C'); // opened from elsewhere — its card stays folded
-    expect(w.m.state()).toEqual({ deck: ['A', 'C'], front: 'C', open: true, expanded: ['A'] });
-    w.m.closeDetailCard();
-    expect(w.clicked).toEqual([]); // no card to fold
-    expect(w.m.state()).toEqual({ deck: ['A'], front: 'A', open: true, expanded: ['A'] });
-    // Open, but its element is gone (moved, not drawn yet): no face to click — the detail card still leaves.
-    delete w.cardHost.A;
-    w.m.closeDetailCard();
-    expect(w.clicked).toEqual([]);
-    expect(w.m.state()).toMatchObject({ deck: [], front: null, open: false });
     // Nothing in front: closeDetailCard is closePanel.
     const e = world();
     e.m.closeDetailCard();
     expect(e.log).toEqual(['close']);
   });
 
-  it('cardFaceOf: the face of that key’s card in its element’s shadow root; null without an element, a shadow root or the card', () => {
+  it('a fold the reader made stays when the detail card leaves; the reader’s presses are kept (cardMinSave)', () => {
     const w = world();
-    expect(w.m.cardFaceOf('B')).toMatchObject({ click: expect.any(Function) });
-    (w.m.cardFaceOf('B') as { click(): void }).click();
-    expect(w.clicked).toEqual(['B']);
-    expect(w.m.cardFaceOf('X')).toBeNull(); // no element holds it
-    w.cardHost.X = w.host; // an element that does not draw it
-    expect(w.m.cardFaceOf('X')).toBeNull();
-    w.cardHost.Y = {}; // not upgraded yet: no shadow root
-    expect(w.m.cardFaceOf('Y')).toBeNull();
+    w.minimize('C'); // the reader folds C
+    w.title('C'); // its detail card opens: the element keeps the reader's fold
+    w.m.openPanel('A'); // opened from elsewhere (an agent link, the cron drawer): A folds for it
+    expect(w.folded()).toEqual({ C: 'reader', A: 'detail' });
+    w.m.closeDetailCard(); // A leaves: back as it was
+    w.m.closeDetailCard(); // C leaves: still the reader's one line
+    expect(w.folded()).toEqual({ C: 'reader' });
+    expect(w.saved).toEqual([['C', true]]);
+    // A card whose element is gone (moved, not drawn yet): its detail card still opens and leaves.
+    delete w.cardHost.B;
+    w.m.openPanel('B');
+    w.m.closeDetailCard();
+    expect(w.m.state()).toMatchObject({ deck: [], front: null, open: false });
   });
 
   it('deckDrop: a session gone from the board since it joined the deck is never the next front card', () => {
     const w = world();
-    w.toggle('A');
-    w.toggle('B');
-    w.toggle('C');
+    w.title('A');
+    w.title('B');
+    w.title('C');
     w.page(1); // B in front, C behind it
     expect(w.m.state().front).toBe('B');
     delete w.cache.C; // C left the board
-    w.toggle('B'); // B folds: its next would be C — gone, so A comes forward
+    w.m.closeDetailCard(); // B leaves: its next would be C — gone, so A comes forward
     expect(w.m.state()).toMatchObject({ deck: ['A'], front: 'A' });
   });
 
   it('ui-page: ‹ › (round the end — the element wraps) bring the card at that place in the deck to the front', () => {
     const w = world();
-    for (const k of ['A', 'B', 'C']) w.toggle(k);
+    for (const k of ['A', 'B', 'C']) w.title(k);
     expect(w.m.state().front).toBe('C');
     w.page(0); // › from the last: round to the first
     expect(w.m.state().front).toBe('A');
@@ -1406,8 +1412,9 @@ describe('the detail deck — open cards and their detail cards move together (S
     expect(w.m.state().front).toBe('C');
     w.page(1);
     expect(w.m.state().front).toBe('B');
-    // Going round never changes the deck or which cards are open.
-    expect(w.m.state()).toMatchObject({ deck: ['A', 'B', 'C'], expanded: ['A', 'B', 'C'] });
+    // Going round never changes the deck or the cards' folds.
+    expect(w.m.state()).toMatchObject({ deck: ['A', 'B', 'C'], expanded: [] });
+    expect(w.folded()).toEqual({ A: 'detail', B: 'detail', C: 'detail' });
     // The front card again, a place past the end, or a session gone since the nav was drawn: nothing opens.
     const opened = w.log.length;
     w.page(1);
@@ -1419,22 +1426,31 @@ describe('the detail deck — open cards and their detail cards move together (S
     expect(TEMPLATE).toContain('<script type="module" src="/dashboard/ui/deck-nav.js?v=');
   });
 
-  it('the shipped openPanel / closePanel / wireInbox / Escape / cron drawer do their part of the deck', () => {
+  it('the shipped openPanel / closePanel / deckRemove / wireInbox / Escape / cron drawer do their part of the deck', () => {
     const open = clientFn('openPanel');
-    // In the deck before anything else of the opening; the nav painted once it is open.
-    expect(open).toContain('deckAdd(sessionKey);');
-    expect(open.indexOf('deckAdd(sessionKey);')).toBeLessThan(open.indexOf('panelSessionKey = sessionKey;'));
+    // In the deck and its card folded before anything else of the opening; the nav painted once it is open.
+    expect(open).toContain('deckAdd(sessionKey);\n  // .prd/34 D7');
+    expect(open).toContain('boardFoldForDetail(sessionKey);');
+    expect(open.indexOf('boardFoldForDetail(sessionKey);')).toBeLessThan(open.indexOf('panelSessionKey = sessionKey;'));
+    expect(open).toContain('panelSessionKey = sessionKey;\n  syncBoardCurrent();');
     expect(open).toContain('renderDeckNav(deckDir);');
     expect(open.indexOf('renderDeckNav(deckDir);')).toBeGreaterThan(open.indexOf('panelOpen = true;'));
     const close = clientFn('closePanel');
     expect(close).toContain('if (closingKey) deckRemove(closingKey);');
+    expect(close).toContain('panelSessionKey = null;\n  panelConvId = null;\n  syncBoardCurrent();');
     expect(close).toContain('renderDeckNav(0);');
-    // The element's toggle is the one place a card opens or folds — no bring-to-front there.
+    expect(clientFn('deckRemove')).toContain('boardRestoreFromDetail(key);');
+    // The title is the one place a board card opens its detail card; ▽ never does — no bring-to-front there.
     const wire = clientFn('wireInbox');
-    expect(wire).toContain('openPanel(key);');
-    expect(wire).toContain('deckDrop(key);');
+    const toggle = wire.slice(wire.indexOf("'ui-toggle'"), wire.indexOf("'ui-detail'"));
+    expect(toggle).not.toContain('openPanel(');
+    expect(toggle).not.toContain('deckDrop(');
+    expect(wire.slice(wire.indexOf("'ui-detail'"), wire.indexOf("'ui-minimize'"))).toContain('openPanel(key);');
     expect(wire).not.toContain('panelSessionKey');
-    // Escape (outside the viewer and the cron drawer) closes the front detail card, folding its card.
+    // closeDetailCard clicks no face any more.
+    expect(clientFn('closeDetailCard')).not.toContain('click()');
+    expect(TEMPLATE).not.toContain('function cardFaceOf(');
+    // Escape (outside the viewer and the cron drawer) closes the front detail card.
     expect(TEMPLATE).toContain(
       // D1 (C-05): <ui-drawer> takes the key (preventDefault) before the page's listener; the panel leaves it be.
       "if (e.key === 'Escape' && !e.defaultPrevented && panelOpen && !artViewerIsOpen() && !_cronDrawerKey) closeDetailCard();",
@@ -1990,7 +2006,7 @@ describe('interaction state survives live renders on both surfaces', () => {
 
   it('closing the panel and ending the session are different names', () => {
     const header = PAGE.slice(PAGE.indexOf('<div class="panel-header">'), PAGE.indexOf('<div class="panel-body"'));
-    // SSOT 2026-10-29 T2: ✕ closes this session's detail card (and folds its card) — not "the panel".
+    // SSOT 2026-10-29 T2: ✕ closes this session’s detail card — not "the panel" (.prd/34: its board card is not folded).
     expect(header).toMatch(
       /class="ui-icon-btn is-bordered panel-close"[^>]*aria-label="작업 카드 닫기"[^>]*onclick="closeDetailCard\(\)"/,
     );
