@@ -3,15 +3,21 @@
  * end of the first sentence instead of waiting for the whole reply (.prd/31-phone-calls-architecture.md §3).
  *
  * The split rule follows the voice service's own voice chat (sentence marks once a sentence has a few
- * characters; a comma once it runs long), so a sentence sounds the same here as in the browser.
+ * characters; a comma once it runs long), so a sentence sounds the same here as in the browser. One exception for
+ * the phone: a turn's first chunk may end at a comma once it holds a clause, so the voice starts while the model is
+ * still writing the rest of the sentence (first audio is what a caller waits for).
  */
 
 const SENTENCE_END = /[.!?…。！？\n]/;
 const MIN_SENTENCE_CHARS = 6;
 const LONG_SENTENCE_CHARS = 120;
+/** A turn's first chunk may end at a comma from this many characters on ("네," is no clause). */
+const FIRST_CLAUSE_CHARS = 10;
 
 export class SentenceSplitter {
   private buffer = '';
+  /** Nothing of this turn released yet: the first chunk may end at a clause. */
+  private turnStart = true;
 
   /** Add a piece of streamed text; returns every sentence it completed. */
   push(delta: string): string[] {
@@ -22,7 +28,9 @@ export class SentenceSplitter {
       const ch = this.buffer[i];
       const length = i + 1 - start;
       const atEnd = SENTENCE_END.test(ch) && length >= MIN_SENTENCE_CHARS;
-      const atComma = (ch === ',' || ch === '，') && length > LONG_SENTENCE_CHARS;
+      const comma = ch === ',' || ch === '，';
+      const atComma =
+        comma && (length > LONG_SENTENCE_CHARS || (this.turnStart && out.length === 0 && length >= FIRST_CLAUSE_CHARS));
       if (!atEnd && !atComma) continue;
       // Keep runs of closing marks ("?!", "...") with the sentence they end.
       let end = i + 1;
@@ -33,13 +41,15 @@ export class SentenceSplitter {
       i = end - 1;
     }
     this.buffer = this.buffer.slice(start);
+    if (out.length) this.turnStart = false;
     return out;
   }
 
-  /** The rest of the reply once the model stopped. */
+  /** The rest of the reply once the model stopped; the next push starts a new turn. */
   flush(): string[] {
     const rest = this.buffer.trim();
     this.buffer = '';
+    this.turnStart = true;
     return rest ? [rest] : [];
   }
 }

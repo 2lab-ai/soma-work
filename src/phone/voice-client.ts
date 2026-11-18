@@ -35,6 +35,11 @@ export interface SpeechStream {
 export interface VoiceClient {
   transcribe(wav: Buffer, signal?: AbortSignal): Promise<Transcription>;
   speak(text: string, signal?: AbortSignal): Promise<SpeechStream>;
+  /**
+   * Wake the speech engine: it answers ~0.8 s slower after a few idle seconds (measured: 1.4 s vs 0.6 s to the first
+   * byte). A one-word synthesis whose audio is dropped. Best effort — never throws.
+   */
+  warm?(): Promise<void> | void;
 }
 
 type FetchLike = typeof fetch;
@@ -72,36 +77,48 @@ export function createVoiceClient(cfg: VoiceConfig, fetchImpl: FetchLike = fetch
       return { text, ms };
     },
 
-    async speak(text, signal) {
-      const started = Date.now();
-      let res: Response;
+    speak,
+    async warm() {
       try {
-        res = await fetchImpl(`${base}/api/tts/stream`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', ...auth },
-          body: JSON.stringify({ voice: cfg.voice, text, model: cfg.model, format: 'pcm' }),
-          signal,
-        });
-      } catch (err) {
-        throw new VoiceServiceError('tts', `text-to-speech unreachable: ${(err as Error).message}`);
+        const s = await speak('네');
+        for await (const _ of s.chunks) {
+          // dropped: the request only wakes the engine
+        }
+      } catch {
+        // best effort: the next real sentence pays the cold start instead
       }
-      if (!res.ok || !res.body) throw new VoiceServiceError('tts', `text-to-speech answered ${res.status}`);
-      const rate = Number(res.headers.get('x-soma-voice-sample-rate') ?? '44100');
-      const reader = res.body.getReader();
-      const chunks: AsyncIterable<Buffer> = {
-        async *[Symbol.asyncIterator]() {
-          try {
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) return;
-              if (value && value.byteLength) yield Buffer.from(value.buffer, value.byteOffset, value.byteLength);
-            }
-          } finally {
-            reader.releaseLock();
-          }
-        },
-      };
-      return { sampleRate: Number.isFinite(rate) && rate > 0 ? rate : 44100, headersMs: Date.now() - started, chunks };
     },
   };
+
+  async function speak(text: string, signal?: AbortSignal): Promise<SpeechStream> {
+    const started = Date.now();
+    let res: Response;
+    try {
+      res = await fetchImpl(`${base}/api/tts/stream`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...auth },
+        body: JSON.stringify({ voice: cfg.voice, text, model: cfg.model, format: 'pcm' }),
+        signal,
+      });
+    } catch (err) {
+      throw new VoiceServiceError('tts', `text-to-speech unreachable: ${(err as Error).message}`);
+    }
+    if (!res.ok || !res.body) throw new VoiceServiceError('tts', `text-to-speech answered ${res.status}`);
+    const rate = Number(res.headers.get('x-soma-voice-sample-rate') ?? '44100');
+    const reader = res.body.getReader();
+    const chunks: AsyncIterable<Buffer> = {
+      async *[Symbol.asyncIterator]() {
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) return;
+            if (value && value.byteLength) yield Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+          }
+        } finally {
+          reader.releaseLock();
+        }
+      },
+    };
+    return { sampleRate: Number.isFinite(rate) && rate > 0 ? rate : 44100, headersMs: Date.now() - started, chunks };
+  }
 }

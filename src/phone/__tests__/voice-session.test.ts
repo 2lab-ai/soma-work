@@ -146,7 +146,11 @@ function setup(plan: Partial<CallRunPlan> = {}, stt: string[] = [], opts: { spea
   };
   let dialog: FakeDialog | undefined;
   const spoken: string[] = [];
+  const warmed: number[] = [];
   const voice: VoiceClient = {
+    warm() {
+      warmed.push(clock.t);
+    },
     async transcribe() {
       return { text: stt.shift() ?? '', ms: 5 };
     },
@@ -180,7 +184,7 @@ function setup(plan: Partial<CallRunPlan> = {}, stt: string[] = [], opts: { spea
       clearTimer: clock.clear,
     },
   );
-  return { run, clock, record, spoken, dialog: () => dialog as FakeDialog };
+  return { run, clock, record, spoken, warmed, dialog: () => dialog as FakeDialog };
 }
 
 const settle = () => new Promise((r) => setTimeout(r, 0));
@@ -390,6 +394,33 @@ describe('CallRun — a quiet line', () => {
     await settleAll();
     clock.advance(16_000);
     expect(dialog().sent[dialog().sent.length - 1]).toBe(SILENCE_CUE);
+  });
+});
+
+describe('CallRun — a warm voice engine', () => {
+  it('wakes the speech engine once the other side is transcribed (not during it), at most once every few seconds', async () => {
+    const { run, clock, warmed, dialog } = setup({ direction: 'inbound' }, ['네', '그리고요', '하나 더요']);
+    run.begin();
+    run.attach(fakeCall() as unknown as CallSessionLike);
+    dialog().reply('네, 말씀하세요.');
+    await settleAll();
+    clock.advance(2_000); // the agent has finished speaking
+    run.feedAudio(quiet(300));
+    run.feedAudio(tone(400, 0.3)); // the caller talks: the engine sat idle meanwhile
+    expect(warmed).toHaveLength(0);
+    run.feedAudio(quiet(800)); // … and stops: transcription runs first (a wake-up now would slow it down)
+    expect(warmed).toHaveLength(0);
+    await settleAll(); // transcribed: the reply reaches the engine in ~1 s, wake it now
+    expect(warmed).toHaveLength(1);
+    run.feedAudio(tone(400, 0.3));
+    run.feedAudio(quiet(800)); // a second utterance right after: no second ping
+    await settleAll();
+    expect(warmed).toHaveLength(1);
+    clock.advance(10_000);
+    run.feedAudio(tone(400, 0.3));
+    run.feedAudio(quiet(800)); // a new turn after a while: wakes it again
+    await settleAll();
+    expect(warmed).toHaveLength(2);
   });
 });
 
