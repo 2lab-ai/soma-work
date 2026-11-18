@@ -11,14 +11,15 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { adminApprovalSnapshot, clearAdminApprovalAdapters, registerAdminApprovalAdapter } from '../admin-approvals';
+import { getAdminRequest } from '../admin-request-store';
 import { resetAdminUsersCache } from '../admin-utils';
 import { type BuildStreamOptionsDeps, buildStreamOptions } from '../agent-runtime/claude-code/build-stream-options';
-import { CONFIG_FILE, DATA_DIR } from '../env-paths';
+import { CONFIG_FILE, DATA_DIR, SECRETS_DIR } from '../env-paths';
 import type { McpConfig, SlackContext } from '../mcp-config-builder';
 import { SECRET_AUDIT_FILE } from '../secrets/secret-audit';
 import { SecretUseActionHandler } from '../slack/actions/secret-use-action-handler';
 import { secretUseAdminApprovalAdapter } from '../slack/secret-use-admin-approval';
-import { requestSecretUse } from '../slack/secret-use-request';
+import { requestSecretUse, secretUseRequestId } from '../slack/secret-use-request';
 import { hasSecretGrant } from '../user-skill-grants-store';
 
 const ADMIN = 'UADMINSEC01';
@@ -47,6 +48,8 @@ describe('secret-use approval — full flow', () => {
     updateMessage: vi.fn(async () => undefined),
   };
   const resent: Array<{ user: string; text: string; thread?: string }> = [];
+  /** The hook's whole answer to the last call — what the model is told. */
+  let lastOut: unknown;
   const messageHandler = vi.fn(async (event: any) => {
     resent.push({ user: event.user, text: event.text, thread: event.thread_ts });
   });
@@ -85,6 +88,7 @@ describe('secret-use approval — full flow', () => {
       tool_name: `mcp__server-tools__${tool}`,
       tool_input: input,
     });
+    lastOut = out;
     // Let the fire-and-forget card delivery finish.
     await new Promise((r) => setTimeout(r, 20));
     return out.hookSpecificOutput?.permissionDecision as string | undefined;
@@ -116,6 +120,7 @@ describe('secret-use approval — full flow', () => {
     resetAdminUsersCache();
     clearAdminApprovalAdapters();
     fs.rmSync(CONFIG_FILE, { force: true });
+    fs.rmSync(SECRETS_DIR, { recursive: true, force: true });
   });
   beforeEach(() => {
     fs.rmSync(DATA_DIR, { recursive: true, force: true });
@@ -129,6 +134,9 @@ describe('secret-use approval — full flow', () => {
         },
       }),
     );
+    // The real secret is in the store: nothing below may carry its value.
+    fs.mkdirSync(SECRETS_DIR, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(SECRETS_DIR, 'plain-db'), VALUE_MARKER, { mode: 0o600 });
     posted.length = 0;
     resent.length = 0;
     vi.clearAllMocks();
@@ -150,6 +158,72 @@ describe('secret-use approval — full flow', () => {
     expect(cards()).toHaveLength(1);
     expect(posted.filter((p) => p.channel === CHANNEL)).toHaveLength(1);
     expect(JSON.stringify(posted)).not.toContain(VALUE_MARKER);
+    // what the model is told names the secret, never its value
+    expect(JSON.stringify(lastOut)).toContain('plain-db');
+    expect(JSON.stringify(lastOut)).not.toContain(VALUE_MARKER);
+  });
+
+  it('two denials at once — before the first card is out — still make one card and one notice', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    slackApi.openDmChannel.mockImplementationOnce(async (user: string) => {
+      await gate;
+      return `D-${user}`;
+    });
+    const ask = () =>
+      requestSecretUse({
+        slackApi,
+        requesterId: REQUESTER,
+        names: ['plain-db'],
+        tool: 'db_query',
+        server: 'plain',
+        channel: CHANNEL,
+        threadTs: THREAD,
+        adminOnlyTool: false,
+        originalText: 'x',
+      });
+    const first = ask();
+    const second = ask();
+    release();
+    const answers = await Promise.all([first, second]);
+    expect(answers.map((a) => a.delivered).sort()).toEqual(['dm', 'pending']);
+    expect(cards()).toHaveLength(1);
+    expect(posted.filter((p) => p.channel === CHANNEL)).toHaveLength(1);
+  });
+
+  it("an earlier card's button cannot answer the request opened again after a denial", async () => {
+    await call(...DB);
+    const oldAlways = button('secret_always');
+    await click(button('secret_deny'));
+    expect(await call(...DB)).toBe('deny');
+    expect(cards()).toHaveLength(2);
+    await click(oldAlways);
+    expect(hasSecretGrant('plain-db', REQUESTER)).toBe(false);
+    const id = secretUseRequestId(REQUESTER, ['plain-db'], CHANNEL, THREAD);
+    expect(getAdminRequest('secret_use', id)?.handled).toBe(false);
+    // the new card's own button still answers it
+    await click(button('secret_always'));
+    expect(hasSecretGrant('plain-db', REQUESTER)).toBe(true);
+  });
+
+  it('a grant that cannot be written leaves the request answerable — the same button works once it can', async () => {
+    await call(...DB);
+    const always = button('secret_always');
+    // the grant store cannot be replaced: a directory with a file in it sits at its path
+    const grants = path.join(DATA_DIR, 'env-skill-grants.json');
+    fs.mkdirSync(grants, { recursive: true });
+    fs.writeFileSync(path.join(grants, 'x'), 'x');
+    await click(always);
+    expect(hasSecretGrant('plain-db', REQUESTER)).toBe(false);
+    const id = secretUseRequestId(REQUESTER, ['plain-db'], CHANNEL, THREAD);
+    expect(getAdminRequest('secret_use', id)?.handled).toBe(false);
+    expect(resent).toHaveLength(0);
+    fs.rmSync(grants, { recursive: true, force: true });
+    await click(always);
+    expect(hasSecretGrant('plain-db', REQUESTER)).toBe(true);
+    expect(resent).toHaveLength(1);
   });
 
   it('A2 — 수락 (이 스레드): the turn is sent again, the call runs in that thread only', async () => {

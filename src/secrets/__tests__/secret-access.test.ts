@@ -7,7 +7,6 @@ import {
   hasSecretGrant,
   revokeSecret,
   secretGrantees,
-  secretGrantNames,
 } from '../../user-skill-grants-store';
 import { checkSecretAccess, secretsForCall } from '../secret-access';
 
@@ -102,12 +101,11 @@ describe('secret grants (user × secret)', () => {
     grantSecret('gh-token', 'U2');
     expect(secretGrantees('gh-token')).toEqual(['U1', 'U2']);
     expect(hasSecretGrant('gh-token', 'U1')).toBe(true);
-    expect(secretGrantNames()).toEqual(['gh-token']);
     expect(revokeSecret('gh-token', 'U1')).toBe(true);
     expect(revokeSecret('gh-token', 'U1')).toBe(false);
     expect(secretGrantees('gh-token')).toEqual(['U2']);
     revokeSecret('gh-token', 'U2');
-    expect(secretGrantNames()).toEqual([]);
+    expect(secretGrantees('gh-token')).toEqual([]);
   });
 
   it('refuses a name the store cannot hold, and never reads an inherited key', () => {

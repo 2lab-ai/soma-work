@@ -19,6 +19,11 @@ import { secretUseView } from './secret-use-request';
 
 const logger = new Logger('SecretUseAdminApproval');
 
+/** The dashboard's id names the round too, so an answer to an earlier round's card cannot decide a later one. */
+function approvalId(req: { requestId: string; createdAt: number }): string {
+  return `secret_use:${req.requestId}.${req.createdAt}`;
+}
+
 export function secretUseAdminApprovalAdapter(handler: Pick<SecretUseActionHandler, 'decide'>): AdminApprovalAdapter {
   return {
     kind: 'secret_use',
@@ -28,7 +33,7 @@ export function secretUseAdminApprovalAdapter(handler: Pick<SecretUseActionHandl
         .map((req): AdminApproval => {
           const view = secretUseView(req);
           return {
-            id: `secret_use:${req.requestId}`,
+            id: approvalId(req),
             kind: 'secret_use',
             card: 'question',
             title: `비밀 ${secretNamesText(view.names)} 사용 요청`,
@@ -53,7 +58,7 @@ export function secretUseAdminApprovalAdapter(handler: Pick<SecretUseActionHandl
         const r = req.resolution;
         if (!req.handled || !r || r.at < since || r.by === 'system') continue;
         out.push({
-          id: `secret_use:${req.requestId}`,
+          id: approvalId(req),
           outcome: r.outcome,
           choiceId: r.choiceId,
           by: r.by,
@@ -63,23 +68,21 @@ export function secretUseAdminApprovalAdapter(handler: Pick<SecretUseActionHandl
       }
       return out;
     },
-    async answer(requestId, choiceId, actor) {
+    async answer(ref, choiceId, actor) {
       if (!isSecretUseKind(choiceId)) return { ok: false, reason: 'invalid' };
-      const result = handler.decide(requestId, choiceId, actor, 'dashboard');
+      const dot = ref.lastIndexOf('.');
+      if (dot <= 0) return { ok: false, reason: 'invalid' };
+      const result = handler.decide(ref.slice(0, dot), ref.slice(dot + 1), choiceId, actor, 'dashboard');
       if (!result.ok) {
+        // A grant that could not be written left the request open: answering again shortly works.
         return {
           ok: false,
-          reason:
-            result.reason === 'already_answered'
-              ? 'already_answered'
-              : result.reason === 'not_admin'
-                ? 'forbidden'
-                : 'not_found',
+          reason: result.reason === 'not_admin' ? 'forbidden' : result.reason === 'failed' ? 'busy' : result.reason,
         };
       }
       result.effects.catch((error: unknown) =>
         logger.warn('secret use dashboard answer: follow-up failed', {
-          requestId,
+          requestId: ref,
           error: error instanceof Error ? error.message : String(error),
         }),
       );

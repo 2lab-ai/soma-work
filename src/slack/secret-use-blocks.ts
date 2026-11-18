@@ -7,8 +7,9 @@
  *   - 거부                   → no grant; the requester is told
  *   - 앞으로 계속 자동 수락   → the requester's tools may use these secrets anywhere, from now on
  *
- * Each button carries ONLY the `requestId`; the request (names, requester, thread) is read back server-side from
- * the admin request store, so a forged or replayed payload cannot fabricate a grant. The same list feeds the
+ * Each button carries ONLY the `requestId` and its round (the request's `createdAt`); the request (names, requester,
+ * thread) is read back server-side from the admin request store, so a forged or replayed payload cannot fabricate a
+ * grant, and a card drawn for an earlier round (before a denial) cannot answer the request opened since. The same list feeds the
  * dashboard's approval card (`secretUseChoices`). Names only — a secret value is never on a card.
  */
 
@@ -49,6 +50,8 @@ export function secretUseChoices(): SecretUseChoice[] {
 
 export interface SecretUseView {
   requestId: string;
+  /** The round this card answers — the request's `createdAt`, never reused for a key. */
+  round: string;
   requesterId: string;
   names: readonly string[];
   /** The server-tools tool, without the `mcp__server-tools__` prefix. */
@@ -60,20 +63,33 @@ export interface SecretUseView {
   adminOnlyTool: boolean;
 }
 
-export function secretNamesText(names: readonly string[]): string {
-  return names.map((n) => `\`${n}\``).join(', ');
+/** A card's section holds at most 3,000 characters (Slack); a long list of names is cut well before that. */
+export const SECRET_NAMES_TEXT_MAX = 1200;
+
+/** `a`, `b` — or, past `maxChars`, the names that fit and "외 N개" (the grant still covers every name). */
+export function secretNamesText(names: readonly string[], maxChars: number = Number.POSITIVE_INFINITY): string {
+  const shown: string[] = [];
+  let length = 0;
+  for (const name of names) {
+    const part = `\`${name}\``;
+    if (shown.length > 0 && length + part.length + 2 > maxChars) break;
+    shown.push(part);
+    length += part.length + 2;
+  }
+  const rest = names.length - shown.length;
+  return shown.join(', ') + (rest > 0 ? ` 외 ${rest}개` : '');
 }
 
 /** The prompt's one line — also the DM's notification text. */
 export function secretUseTitle(view: Pick<SecretUseView, 'requesterId' | 'names'>): string {
-  return `🔑 비밀 사용 요청 — <@${view.requesterId}>님의 모델이 비밀 ${secretNamesText(view.names)}을(를) 쓰려 합니다.`;
+  return `🔑 비밀 사용 요청 — <@${view.requesterId}>님의 모델이 비밀 ${secretNamesText(view.names, SECRET_NAMES_TEXT_MAX)}을(를) 쓰려 합니다.`;
 }
 
 export function buildSecretUseMessage(view: SecretUseView): { text: string; blocks: any[] } {
   const text = secretUseTitle(view);
   const lines = [
     `🔑 *비밀 사용 요청* (어드민 승인 필요)`,
-    `<@${view.requesterId}>님의 모델이 비밀 ${secretNamesText(view.names)}을(를) 쓰려 합니다.`,
+    `<@${view.requesterId}>님의 모델이 비밀 ${secretNamesText(view.names, SECRET_NAMES_TEXT_MAX)}을(를) 쓰려 합니다.`,
     `도구 \`${view.tool}\` · 서버 \`${view.server || '(없음)'}\` · ${describeRequestPlace(view.channel, view.threadTs)}`,
     ...(view.adminOnlyTool
       ? [
@@ -93,7 +109,7 @@ export function buildSecretUseMessage(view: SecretUseView): { text: string; bloc
           type: 'button',
           text: { type: 'plain_text', text: choice.label, emoji: true },
           action_id: `${SECRET_USE_ACTION_ID_PREFIX}${choice.kind}`,
-          value: JSON.stringify({ kind: choice.kind, requestId: view.requestId }),
+          value: JSON.stringify({ kind: choice.kind, requestId: view.requestId, round: view.round }),
           ...(choice.style ? { style: choice.style } : {}),
         })),
       },
