@@ -926,4 +926,53 @@ describe('CallRun — never over the caller, and a quick "네."', () => {
     await settleAll();
     expect(s.call.hungUp).toBe(1);
   });
+  it("no hang-up while the caller's words over the goodbye are still being transcribed", async () => {
+    let n = 0;
+    let release!: () => void;
+    const s = await inboundTalking(
+      ['고마워요', '잠깐만, 하나 더 있어요'],
+      {},
+      {
+        sttGate: () => {
+          if (++n < 2) return Promise.resolve();
+          return new Promise<void>((r) => {
+            release = r;
+          });
+        },
+      },
+    );
+    s.dialog().emit({ type: 'text_delta', text: '네, 들어가세요. ' });
+    await s.dialog().tool('hang_up').handler({ reason: 'done' });
+    s.dialog().emit({ type: 'tool_use', name: 'hang_up', input: {} });
+    s.dialog().emit({ type: 'turn_end', isError: false });
+    await settleAll();
+    s.run.feedAudio(tone(600, 0.3));
+    s.run.feedAudio(quiet(600)); // the caller has stopped; the words are still being transcribed …
+    await settleAll();
+    s.clock.advance(3000); // … past the goodbye's end and several rechecks
+    await settleAll();
+    expect(s.call.hungUp).toBe(0);
+    release();
+    await settleAll();
+    s.clock.advance(3000);
+    await settleAll();
+    expect(s.call.hungUp).toBe(0);
+    expect(s.dialog().sent[s.dialog().sent.length - 1]).toContain('잠깐만, 하나 더 있어요');
+  });
+
+  it("a hang-up does not wait for ever when the caller's audio stops mid-word", async () => {
+    const s = await inboundTalking(['고마워요']);
+    s.dialog().emit({ type: 'text_delta', text: '네, 들어가세요. ' });
+    await s.dialog().tool('hang_up').handler({ reason: 'done' });
+    s.dialog().emit({ type: 'tool_use', name: 'hang_up', input: {} });
+    s.dialog().emit({ type: 'turn_end', isError: false });
+    await settleAll();
+    s.run.feedAudio(tone(600, 0.3)); // speech starts, then no more audio arrives at all
+    s.clock.advance(1500);
+    await settleAll();
+    expect(s.call.hungUp).toBe(0); // still waiting for the caller
+    s.clock.advance(5000);
+    await settleAll();
+    expect(s.call.hungUp).toBe(1); // the line is not held open on a dead stream
+  });
 });

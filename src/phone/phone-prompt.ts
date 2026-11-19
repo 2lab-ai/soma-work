@@ -123,44 +123,15 @@ export function callSummaryPrompt(input: {
 }
 
 /** Bare greetings the other side says when it picks up — heard, logged, but not a turn of their own. */
-/** Words that only close the call (thanks, goodbye): after the agent's own goodbye they do not keep the line open. */
-const GOODBYE_WORDS = [
-  '네네',
-  '네',
-  '예',
-  '응',
-  '그럼',
-  '감사합니다',
-  '감사해요',
-  '고맙습니다',
-  '고마워요',
-  '고마워',
-  '수고하세요',
-  '수고하셨습니다',
-  '들어가세요',
-  '안녕히계세요',
-  '안녕히가세요',
-  '안녕',
-  '끊을게요',
-  '끊겠습니다',
-  '알겠습니다',
-  '알겠어요',
-];
+/**
+ * Words that only close the call (thanks, goodbye, "I'll hang up"), in any order and number: after the agent's own
+ * goodbye they do not keep the line open. Informal endings count ("응, 끊을게", "그래 잘 가").
+ */
+const GOODBYE_RE =
+  /^(?:네네|네|예|응|어|그래|그럼|이만|감사합니다|감사해요|고맙습니다|고마워요|고마워|수고하세요|수고하셨습니다|수고해|들어가세요|들어가|안녕히계세요|안녕히가세요|안녕|잘가요|잘가|끊을게요|끊을께요|끊을게|끊을께|끊겠습니다|끊어요|끊어|알겠습니다|알겠어요|알겠어)+$/;
 
 export function isGoodbye(text: string): boolean {
-  let t = text.replace(/[\s.,!?~…]/g, '');
-  if (!t) return false;
-  for (let changed = true; t && changed; ) {
-    changed = false;
-    for (const w of GOODBYE_WORDS) {
-      if (t.startsWith(w)) {
-        t = t.slice(w.length);
-        changed = true;
-        break;
-      }
-    }
-  }
-  return t === '';
+  return GOODBYE_RE.test(text.replace(/[\s.,!?~…]/g, ''));
 }
 
 export function isBareGreeting(text: string): boolean {

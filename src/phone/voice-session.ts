@@ -36,6 +36,8 @@ const SILENCE_NUDGE_MS = 15_000;
 const HANGUP_TAIL_MS = 600;
 /** A hang-up waiting for the other side to finish talking looks again this often. */
 const HANGUP_FLOOR_RECHECK_MS = 250;
+/** No audio from the other side for this long: a hang-up stops waiting for them. */
+const HANGUP_MEDIA_STALL_MS = 2_000;
 /** After the time-up cue the agent gets this long to say goodbye before the line is cut. */
 const TIME_UP_GRACE_MS = 25_000;
 /**
@@ -123,6 +125,8 @@ export class CallRun {
   /** The lines whose audio is (partly) in floorHeld: unheard if it is dropped. */
   private heldLines: Array<{ text: string; at: number; role: 'agent'; interrupted?: boolean }> = [];
   private transcribing = 0;
+  /** When the other side's audio last arrived (a hang-up does not wait on a stalled stream). */
+  private lastAudioAt = 0;
   /** The start of the reply being written, until it is known whether it opens with "네,". */
   private openerOpen = false;
   private openerBuf = '';
@@ -186,6 +190,7 @@ export class CallRun {
 
   feedAudio(ulaw: Buffer): void {
     if (this.ended || !this.answered) return;
+    this.lastAudioAt = this.now();
     const pcm = this.deps.ulawToPcm16(ulaw);
     // Held audio is not playing: nothing of the agent's can echo back while the other side has the floor.
     for (const ev of this.vad.push(pcm, this.agentSpeaking() && !this.floorHeld.length)) {
@@ -701,7 +706,9 @@ export class CallRun {
       // The other side is talking over the goodbye, or its words are being transcribed: they decide — a goodbye back
       // ends the call, anything else cancels the hang-up (transcribe). Seen on a mock call: the line was put down
       // while the caller was still saying "잠깐만, 내가 물어본 거 대답해 줘".
-      if (this.floorTaken()) {
+      // A stream that stopped mid-word (VAD still "in speech", no audio coming) does not hold the line open.
+      const talking = this.vad.speaking && this.now() - this.lastAudioAt < HANGUP_MEDIA_STALL_MS;
+      if (talking || this.transcribing > 0) {
         this.hangupTimer = this.later(attempt, HANGUP_FLOOR_RECHECK_MS);
         return;
       }
