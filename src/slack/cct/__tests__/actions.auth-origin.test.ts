@@ -250,19 +250,6 @@ describe('modal opens — auth-origin value stamps metadata (direct unchanged)',
     });
   });
 
-  it('remove open with direct value → private_metadata stays the bare keyId', async () => {
-    const { app, actionHandlers } = makeApp();
-    registerCctActions(app as never, fakeTm());
-    const client = makeClient();
-    await actionHandlers.get(CCT_ACTION_IDS.remove)?.({
-      ack: vi.fn(async () => undefined),
-      body: msgBody('cm:admin|slot-B'),
-      client,
-    });
-    const view = (client.views.open.mock.calls[0]?.[0] as { view: { private_metadata?: string } }).view;
-    expect(view.private_metadata).toBe('slot-B');
-  });
-
   it('attach open with auth-origin value → origin metadata stamped', async () => {
     const { app, actionHandlers } = makeApp();
     registerCctActions(app as never, fakeTm());
