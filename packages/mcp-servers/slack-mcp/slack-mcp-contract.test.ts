@@ -29,6 +29,8 @@ const h = vi.hoisted(() => ({
   slack: {} as Record<string, (args: any) => Promise<unknown>>,
   /** Called whenever an upload enters the per-key upload queue (`UploadVersions.serialize`). */
   onSerialize: undefined as undefined | ((key: string) => void),
+  /** Queued upload bodies running now, and the most that ever ran at once. */
+  queue: { running: 0, maxRunning: 0 },
 }));
 
 vi.mock('@modelcontextprotocol/sdk/server/index.js', () => ({
@@ -56,7 +58,15 @@ vi.mock('./helpers/artifact-version.js', async (importOriginal) => {
   class UploadVersions extends actual.UploadVersions {
     override serialize<T>(key: string, fn: () => Promise<T>): Promise<T> {
       h.onSerialize?.(key);
-      return super.serialize(key, fn);
+      return super.serialize(key, async () => {
+        h.queue.running++;
+        h.queue.maxRunning = Math.max(h.queue.maxRunning, h.queue.running);
+        try {
+          return await fn();
+        } finally {
+          h.queue.running--;
+        }
+      });
     }
   }
   return { ...actual, UploadVersions };
@@ -687,6 +697,7 @@ describe('send_file / send_media', () => {
         secondArrived = resolve;
       });
       let queued = 0;
+      h.queue = { running: 0, maxRunning: 0 };
       h.onSerialize = () => {
         if (++queued === 2) secondArrived();
       };
@@ -708,6 +719,8 @@ describe('send_file / send_media', () => {
         await secondAtQueue;
         releaseFirst();
         const [first, second] = await Promise.all([pending, pendingSecond]);
+        // The queue held the second upload's planning until the first was sent.
+        expect(h.queue.maxRunning).toBe(1);
         expect(body(first)).toMatchObject({
           file_id: 'F_DIGEST_1',
           version_key: 'key:weekly-digest',
