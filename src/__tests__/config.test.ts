@@ -184,11 +184,13 @@ describe('config.autoRotate unit boundary (#781)', () => {
 
   it('the 5-hour knob is gone: config.autoRotate has no fiveHourMax (2026-11)', async () => {
     // An operator .env written before 2026-11 may still set the retired knob; it must not be read.
-    vi.stubEnv('AUTO_ROTATE_FIVEH_THRESHOLD', '0.5');
+    vi.stubEnv('AUTO_ROTATE_FIVEH_THRESHOLD', '0.37');
     vi.resetModules();
     const { config } = await import('../config');
     expect(config.autoRotate).not.toHaveProperty('fiveHourMax');
-    expect(Object.keys(config.autoRotate).sort()).toEqual(['dryRun', 'enabled', 'sevenDayMax']);
+    // Under any key, as a fraction or as a percent: other auto-rotate knobs may be added, this one must stay unread.
+    expect(Object.values(config.autoRotate)).not.toContain(0.37);
+    expect(Object.values(config.autoRotate)).not.toContain(37);
   });
 });
 

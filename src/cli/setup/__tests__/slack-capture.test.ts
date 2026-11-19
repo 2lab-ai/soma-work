@@ -1030,10 +1030,12 @@ describe('error safety against a hostile peer', () => {
   });
 
   it('keeps every error toJSON a value-free projection', async () => {
+    // Built with frame() so each frame carries the nonce and reaches its own validation path
+    // (a frame without the nonce is dropped as an unknown sender before any check runs).
     const cases: Array<readonly unknown[]> = [
       [],
-      [{ version: 2, botToken: BOT_TOKEN, appToken: APP_TOKEN }],
-      [{ version: 1, botToken: BOT_TOKEN, appToken: 'xoxp-not-an-app-token-000000' }],
+      [frame({ version: 2 })],
+      [frame({ appToken: 'xoxp-not-an-app-token-000000' })],
     ];
     for (const frames of cases) {
       const host = primedHost(frames);
@@ -1366,10 +1368,11 @@ describe('token carriers', () => {
   });
 
   it('keeps tokens out of errors and call records on every failure path', async () => {
+    // frame() carries the nonce, so the wrong-prefix and wrong-version paths really run.
     const cases: Array<readonly unknown[]> = [
       [],
-      [{ version: 1, botToken: BOT_TOKEN, appToken: 'xoxb-wrong-kind-of-token-000000' }],
-      [{ version: 9, botToken: BOT_TOKEN, appToken: APP_TOKEN }],
+      [frame({ appToken: 'xoxb-wrong-kind-of-token-000000' })],
+      [frame({ version: 9 })],
     ];
 
     for (const frames of cases) {
@@ -1381,7 +1384,7 @@ describe('token carriers', () => {
       );
       expect(err).toBeInstanceOf(SlackCaptureError);
       expectClean('error message', (err as Error).message);
-      expectClean('error json', (err as { toJSON?: () => unknown }).toJSON?.() ?? {});
+      expectClean('error json', (err as SlackCaptureError).toJSON());
       expectClean('calls', host.calls);
       expectClean('raw calls', host.unsafeRawCalls());
     }

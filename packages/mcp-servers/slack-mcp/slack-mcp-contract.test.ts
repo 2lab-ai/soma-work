@@ -367,20 +367,14 @@ describe('send_thread_message', () => {
         text: '**Done** — see [the PR](https://github.com/o/r/pull/1)\n\n- one\n- two',
       }),
     );
-    // The list is what tells the converter's blocks from the plain mrkdwn section the fallback would send.
-    const item = (text: string) => ({ type: 'rich_text_section', elements: [{ type: 'text', text }] });
-    expect(sent()).toEqual({
+    expect(sent()).toMatchObject({
       channel: 'C_WORK',
       thread_ts: WORK.threadTs,
       text: '*Done* — see <https://github.com/o/r/pull/1|the PR>\n\n- one\n- two',
-      blocks: [
-        { type: 'section', text: { type: 'mrkdwn', text: '*Done* — see <https://github.com/o/r/pull/1|the PR>' } },
-        {
-          type: 'rich_text',
-          elements: [{ type: 'rich_text_list', style: 'bullet', indent: 0, elements: [item('one'), item('two')] }],
-        },
-      ],
     });
+    // The list is what tells the converter's blocks from the plain mrkdwn section the fallback would send;
+    // the exact block shape belongs to the markdown-to-slack-blocks library, not to this server.
+    expect(sent().blocks).toContainEqual(expect.objectContaining({ type: 'rich_text' }));
     expect(out).toEqual({ sent: true, channel: 'C_WORK', thread_ts: WORK.threadTs, message_ts: '1700000009.000100' });
   });
 
@@ -670,15 +664,23 @@ describe('send_file / send_media', () => {
 
     it('two uploads of one report at once are versions 1 and 2: the second plans after the first is sent', async () => {
       let n = 0;
+      let firstEntered: () => void = () => {};
+      const firstInFlight = new Promise<void>((resolve) => {
+        firstEntered = resolve;
+      });
       h.slack.filesUploadV2 = vi.fn(async () => {
         const id = `F_DIGEST_${++n}`;
-        await new Promise((resolve) => setTimeout(resolve, 20)); // both calls are in flight together
+        if (n === 1) firstEntered();
+        await new Promise((resolve) => setTimeout(resolve, 20)); // the first upload is still in flight
         return { files: [{ files: [{ id, permalink: `https://x/${id}` }] }] };
       });
       const one = await file('digest-a.html', 'week one');
       const two = await file('digest-b.html', 'week two');
+      // Start the second call only once the first upload is in flight, so which one is "first" is fixed.
+      const pending = server.call('send_file', { file_path: one, artifact_key: 'weekly-digest' });
+      await firstInFlight;
       const [first, second] = await Promise.all([
-        server.call('send_file', { file_path: one, artifact_key: 'weekly-digest' }),
+        pending,
         server.call('send_file', { file_path: two, artifact_key: 'weekly-digest' }),
       ]);
       expect(body(first)).toMatchObject({

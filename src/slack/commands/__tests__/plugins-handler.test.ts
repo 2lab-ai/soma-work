@@ -595,6 +595,35 @@ describe('PluginsHandler', () => {
         expect(sentBlocks.length).toBeLessThanOrEqual(50);
       });
 
+      it('a failure that is not a security block offers Ignore only — never the security bypass', async () => {
+        vi.mocked(isAdminUser).mockReturnValue(true);
+        mockPluginManager.forceRefresh.mockResolvedValue({
+          total: 1,
+          updated: 0,
+          unchanged: 0,
+          errors: [],
+          details: [
+            {
+              name: 'p@m',
+              status: 'error',
+              oldSha: null,
+              oldDate: null,
+              newSha: null,
+              newDate: null,
+              error: 'Failed to download',
+              failureCode: 'DOWNLOAD_FAILED',
+            },
+          ],
+        });
+
+        const { ctx, say } = createContext('plugins update');
+        await handler.execute(ctx);
+
+        const sentBlocks = say.mock.calls[1][0].blocks;
+        const buttons = sentBlocks.filter((b: any) => b.type === 'actions').flatMap((b: any) => b.elements ?? []);
+        expect(buttons.map((el: any) => el.action_id)).toEqual(['plugin_update_ignore_p@m']);
+      });
+
       it('should keep button text under 75 chars', async () => {
         vi.mocked(isAdminUser).mockReturnValue(true);
 

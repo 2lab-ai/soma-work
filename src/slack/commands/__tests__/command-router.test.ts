@@ -530,10 +530,10 @@ describe('CommandRouter — non-canonical bare input falls through to the model 
 
     expect(result.handled).toBe(true);
     expect(say).toHaveBeenCalledTimes(1);
-    expect(say).toHaveBeenCalledWith({
-      text: `❓ \`${keyword}\` 명령어를 인식할 수 없습니다. \`help\`를 입력하여 사용 가능한 명령어를 확인하세요.`,
-      thread_ts: 'T1',
-    });
+    // The hint names the refused keyword in the thread; its wording is not the contract.
+    expect(say).toHaveBeenCalledWith(
+      expect.objectContaining({ text: expect.stringContaining(`\`${keyword}\``), thread_ts: 'T1' }),
+    );
     expect(deps.slackApi.postSystemMessage).not.toHaveBeenCalled();
   });
 });

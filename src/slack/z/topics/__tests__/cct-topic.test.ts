@@ -252,8 +252,8 @@ describe('cct-topic.renderCctCard', () => {
     vi.mocked(isAdminUser).mockReturnValue(true);
     const { blocks } = await renderCctCard({ userId: 'U1', issuedAt: 4 });
     const ids = actionIds(blocks);
-    expect(ids).not.toContain('z_setting_cct_set_cct1');
-    expect(ids).not.toContain('z_setting_cct_set_ops-api');
+    expect(ids).toContain('cct_refresh_card'); // the card's controls did render
+    expect(ids.filter((id) => id.startsWith('z_setting_cct_set_'))).toEqual([]);
   });
 
   // ── T9c: Z3 — api_key slot rows are hidden from the card ──

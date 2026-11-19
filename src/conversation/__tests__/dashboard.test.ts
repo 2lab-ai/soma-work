@@ -1395,17 +1395,19 @@ describe('Dashboard API', () => {
     //
     // Check: every occurrence of "Action(" or "Panel(" in handler-building
     // lines must be followed by \' not just '
-    const handlerCalls = script.match(/(?:doAction|openPanel|closePanel|sendCommand)\(/g) ?? [];
-    // The script builds these handlers today: an empty match would check nothing.
-    expect(handlerCalls.length).toBeGreaterThan(0);
-    // For each unique handler function name found, verify escaping is used
-    const uniqueHandlers = [...new Set(handlerCalls.map((h: string) => h.replace('(', '')))];
-    for (const handler of uniqueHandlers) {
-      // If this handler appears in a string-building context (with quotes),
-      // it must use escaped quotes
-      const buildPattern = new RegExp(`${handler}\\(''`, 'g');
-      const broken = script.match(buildPattern);
-      expect(broken).toBeNull();
+    // 1. No handler is built with a bare quote: `openPanel(''` breaks the rendered attribute.
+    expect(script).not.toMatch(/(?:doAction|openPanel|closePanel|sendCommand)\(''/);
+    // 2. Every value spliced into a handler's first argument is escaped: either escJs(...) itself,
+    //    or a local the script assigned from escJs(...). A key with a quote would otherwise end the
+    //    string and run the rest as script.
+    const spliced = [...script.matchAll(/(?:doAction|openPanel|closePanel|sendCommand)\(\\'' \+ ([^+]+?) \+/g)].map(
+      (m) => m[1].trim(),
+    );
+    expect(spliced).toContain('escJs(s.key)'); // the card links build these today
+    for (const expr of spliced) {
+      const escaped =
+        /^escJs\(/.test(expr) || new RegExp(`\\b(?:var|let|const)\\s+${expr}\\s*=\\s*escJs\\(`).test(script);
+      expect(escaped, `unescaped handler argument: ${expr}`).toBe(true);
     }
   });
 
