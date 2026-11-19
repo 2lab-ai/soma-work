@@ -837,6 +837,8 @@ describe('CallRun — never over the caller, and a quick "네."', () => {
     await settleAll();
     expect(s.call.frames).toBe(s.before + 40); // the held goodbye is said, not dropped
     expect(s.call.hungUp).toBe(0);
+    s.run.feedAudio(quiet(600)); // the sound was a cough: the caller has stopped
+    await settleAll();
     s.clock.advance(3000);
     await settleAll();
     expect(s.call.hungUp).toBe(1);
@@ -884,6 +886,42 @@ describe('CallRun — never over the caller, and a quick "네."', () => {
   it("a goodbye back after the agent's goodbye still ends the call", async () => {
     const s = await afterGoodbye('네 감사합니다');
     expect(s.dialog().sent).not.toContain('네 감사합니다');
+    s.clock.advance(5000);
+    await settleAll();
+    expect(s.call.hungUp).toBe(1);
+  });
+  it('no hang-up while the caller talks over the goodbye; their words then keep the call', async () => {
+    const s = await inboundTalking(['고마워요', '잠깐만, 하나 더 물어볼게']);
+    s.dialog().emit({ type: 'text_delta', text: '네, 들어가세요. ' });
+    await s.dialog().tool('hang_up').handler({ reason: 'done' });
+    s.dialog().emit({ type: 'tool_use', name: 'hang_up', input: {} });
+    s.dialog().emit({ type: 'turn_end', isError: false });
+    await settleAll();
+    s.run.feedAudio(tone(600, 0.3)); // the caller starts talking over the goodbye …
+    s.clock.advance(2000); // … and is still talking when the goodbye would have ended
+    await settleAll();
+    expect(s.call.hungUp).toBe(0);
+    s.run.feedAudio(quiet(600)); // their words are in
+    await settleAll();
+    s.clock.advance(5000);
+    await settleAll();
+    expect(s.call.hungUp).toBe(0);
+    expect(s.dialog().sent[s.dialog().sent.length - 1]).toContain('잠깐만, 하나 더 물어볼게');
+  });
+
+  it('a goodbye back said over the goodbye still ends the call once it is heard', async () => {
+    const s = await inboundTalking(['고마워요', '네 감사합니다']);
+    s.dialog().emit({ type: 'text_delta', text: '네, 들어가세요. ' });
+    await s.dialog().tool('hang_up').handler({ reason: 'done' });
+    s.dialog().emit({ type: 'tool_use', name: 'hang_up', input: {} });
+    s.dialog().emit({ type: 'turn_end', isError: false });
+    await settleAll();
+    s.run.feedAudio(tone(600, 0.3));
+    s.clock.advance(2000);
+    await settleAll();
+    expect(s.call.hungUp).toBe(0);
+    s.run.feedAudio(quiet(600));
+    await settleAll();
     s.clock.advance(5000);
     await settleAll();
     expect(s.call.hungUp).toBe(1);

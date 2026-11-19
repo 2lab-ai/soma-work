@@ -34,6 +34,8 @@ const OPEN_AFTER_SILENCE_MS = 1200;
 const SILENCE_NUDGE_MS = 15_000;
 /** After `hang_up`, the line is held this long past the estimated end of playback, so the goodbye is heard. */
 const HANGUP_TAIL_MS = 600;
+/** A hang-up waiting for the other side to finish talking looks again this often. */
+const HANGUP_FLOOR_RECHECK_MS = 250;
 /** After the time-up cue the agent gets this long to say goodbye before the line is cut. */
 const TIME_UP_GRACE_MS = 25_000;
 /**
@@ -692,12 +694,20 @@ export class CallRun {
       this.clearTimer(this.hangupTimer);
       this.timers.delete(this.hangupTimer);
     }
-    this.hangupTimer = this.later(() => {
+    const attempt = () => {
       this.hangupTimer = null;
-      if (this.ended) return;
+      if (this.ended || !this.hangupRequested) return;
       if (this.speaking || this.queue.length) return;
+      // The other side is talking over the goodbye, or its words are being transcribed: they decide — a goodbye back
+      // ends the call, anything else cancels the hang-up (transcribe). Seen on a mock call: the line was put down
+      // while the caller was still saying "잠깐만, 내가 물어본 거 대답해 줘".
+      if (this.floorTaken()) {
+        this.hangupTimer = this.later(attempt, HANGUP_FLOOR_RECHECK_MS);
+        return;
+      }
       void this.call?.hangup().catch((err) => this.fail('hangup', err));
-    }, wait);
+    };
+    this.hangupTimer = this.later(attempt, wait);
   }
 
   private timeUp(): void {
