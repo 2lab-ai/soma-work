@@ -210,6 +210,18 @@ describe('settings routes (SSOT 2026-10-23 T2)', () => {
     expect(JSON.parse(bad.body)).toEqual({ error: '디테일 카드 위치는 left 또는 right여야 합니다' });
   });
 
+  it('a JSON body that is not an object is a 400 on both layout writes, never a 500 (PR review)', async () => {
+    const auth = { ...(await signIn('U1')), 'content-type': 'application/json' };
+    for (const url of ['/api/settings/dashboard-layout', '/api/settings/dashboard-layout/panel'])
+      for (const payload of ['"left"', '7', 'true', '[]'])
+        expect(
+          (await injectWebServer({ method: 'PUT', url, headers: auth, payload })).statusCode,
+          `${url} ${payload}`,
+        ).toBe(400);
+    expect(registry.writeLayout).not.toHaveBeenCalled();
+    expect(registry.writePanelPlace).not.toHaveBeenCalled();
+  });
+
   it('PATCH without a CSRF token is refused before the registry runs', async () => {
     const { cookie } = await signIn('U1');
     const res = await injectWebServer({

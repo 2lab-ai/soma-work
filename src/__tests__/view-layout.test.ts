@@ -22,6 +22,7 @@ import {
   CARD_CHIPS,
   CARD_ROWS,
   type DashboardLayoutDoc,
+  DEFAULT_PANEL_PLACE,
   DETAIL_HEAD,
   DETAIL_TABS,
   followThreadLayout,
@@ -30,7 +31,6 @@ import {
   normalizeLayoutDoc,
   OPEN_PARTS,
   PRESET_IDS,
-  panelPlace,
   resolveLayouts,
   THREAD_INFO,
   THREAD_NAV,
@@ -512,11 +512,10 @@ describe('L9 — a device copy saved before the zones reads as the server migrat
 
 describe('L10 — 디테일 카드 위치: the side it docks on and its lock (SSOT 2026-11-19)', () => {
   it('nothing saved is the right side, unlocked (the grip shows); a saved place round-trips', () => {
-    expect(panelPlace(undefined)).toEqual({ side: 'right', locked: false });
-    expect(panelPlace(normalizeLayoutDoc({ v: 1 }))).toEqual({ side: 'right', locked: false });
+    expect(DEFAULT_PANEL_PLACE).toEqual({ side: 'right', locked: false });
+    expect(normalizeLayoutDoc({ v: 1 }).panel).toBeUndefined();
     const doc = normalizeLayoutDoc({ v: 1, panel: { side: 'left', locked: true } });
     expect(doc.panel).toEqual({ side: 'left', locked: true });
-    expect(panelPlace(doc)).toEqual({ side: 'left', locked: true });
   });
 
   it('a partial place keeps the other half at its default', () => {
@@ -556,7 +555,7 @@ describe('L10 — 디테일 카드 위치: the side it docks on and its lock (SS
       { v: 1, panel: { side: 'left' } },
       { v: 1, panel: { locked: true } },
     ])
-      expect(client(doc), JSON.stringify(doc)).toEqual(panelPlace(normalizeLayoutDoc(doc)));
+      expect(client(doc), JSON.stringify(doc)).toEqual(normalizeLayoutDoc(doc).panel ?? DEFAULT_PANEL_PLACE);
     expect(client({ v: 1, panel: { side: 'top', locked: 'x' } })).toEqual({ side: 'right', locked: false });
     expect(client({ v: 1, panel: 'left' })).toEqual({ side: 'right', locked: false });
   });

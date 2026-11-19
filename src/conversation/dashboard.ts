@@ -8942,7 +8942,7 @@ function placePanel(place, how) {
 // move and its 실행 취소, or a move waiting on a CSRF refresh, can never land in the wrong order. A failed save says
 // so — the card stays where the reader put it on this page.
 async function savePanelPlace(place) {
-  _panelPlaceRev++;
+  _panelPlaceRev++; // a read that left before this choice must not paint over it
   var doc = JSON.parse(JSON.stringify(_viewLayout || { v: 1 }));
   doc.panel = { side: place.side, locked: place.locked };
   _viewLayout = doc;
@@ -8960,6 +8960,7 @@ async function savePanelPlace(place) {
         if (!_panelPlaceQueued)
           dashToast({ title: '디테일 카드 위치를 저장하지 못했어요', description: String((e && e.message) || e), tone: 'error' });
       }
+      _panelPlaceRev++; // settled: a read that left while it was on its way may hold the place before it
     }
   } finally {
     _panelPlaceSaving = 0;
@@ -14397,7 +14398,10 @@ function setViewLayout(doc) {
 
 async function loadViewLayout() {
   var load = ++_layoutLoads;
+  // The place in this read's answer is the truth only if no place was chosen or saved here from the moment it left
+  // until it answers (the revision moves on both).
   var placeRev = _panelPlaceRev;
+  var placePending = _panelPlaceSaving;
   try {
     var res = await fetch('/api/settings/dashboard-layout');
     if (!res.ok) return;
@@ -14405,8 +14409,7 @@ async function loadViewLayout() {
     // An answer to an earlier load that lands after a later one is not drawn.
     if (load !== _layoutLoads || !data || !data.doc) return;
     var doc = data.doc;
-    // A place chosen here after this read left (saved or still saving) is newer than the place in its answer.
-    if (_panelPlaceSaving || placeRev !== _panelPlaceRev) {
+    if (placePending || _panelPlaceSaving || placeRev !== _panelPlaceRev) {
       doc = JSON.parse(JSON.stringify(doc));
       if (_viewLayout && _viewLayout.panel) doc.panel = _viewLayout.panel; else delete doc.panel;
     }

@@ -83,8 +83,9 @@ export function registerSettingsRoutes(
       reply.status(503).send({ error: 'Settings are not available on this instance' });
       return;
     }
-    const body = request.body || {};
-    if (!('doc' in body)) {
+    // A JSON body that is not an object (a string, a number, an array) is a 400, not a TypeError.
+    const body = request.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body) || !('doc' in body)) {
       reply.status(400).send({ error: 'doc is required' });
       return;
     }
@@ -109,8 +110,8 @@ export function registerSettingsRoutes(
       reply.status(503).send({ error: 'Settings are not available on this instance' });
       return;
     }
-    const body = request.body || {};
-    if (!('panel' in body)) {
+    const body = request.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body) || !('panel' in body)) {
       reply.status(400).send({ error: 'panel is required' });
       return;
     }

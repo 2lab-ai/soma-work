@@ -277,16 +277,26 @@ describe('P6 — the board glides when the card changes side', () => {
     const fn = clientFn('currentLayoutMode');
     expect(fn).toContain("if (m.panel === 'docked' && _panelPlace.side === 'left') m.panel = 'docked-left';");
   });
-  it('a place alone redraws no card: the layouts without the place key a rerender (one helper, both pages)', async () => {
+  it('a place alone redraws no card: the place moves the card, only a layouts change rerenders', async () => {
     const { VIEW_LAYOUT_CLIENT_JS } = await import('../view-layout-client');
-    const sans = new Function(`${VIEW_LAYOUT_CLIENT_JS}\nreturn layoutSansPlace;`)() as (d: unknown) => unknown;
-    expect(sans({ v: 1, active: { card: '2' }, panel: { side: 'left', locked: true } })).toEqual({
-      v: 1,
-      active: { card: '2' },
-    });
-    expect(clientFn('setViewLayout')).toContain(
-      'JSON.stringify(layoutSansPlace(d)) !== JSON.stringify(layoutSansPlace(_viewLayout))',
-    );
+    const calls: string[] = [];
+    const c = new Function(
+      'localStorage',
+      'placePanel',
+      'applyViewMode',
+      'rerenderForViewMode',
+      `${VIEW_LAYOUT_CLIENT_JS}\nvar VIEW_LAYOUT_KEY = 'soma-view-layout';\nvar _viewLayout = { v: 1, active: { card: '2' } };\n${clientFn('setViewLayout')}\nreturn { setViewLayout };`,
+    )(
+      { setItem() {} },
+      (p: unknown) => calls.push(`place ${JSON.stringify(p)}`),
+      () => calls.push('applyViewMode'),
+      () => calls.push('rerender'),
+    ) as { setViewLayout(d: unknown): void };
+    c.setViewLayout({ v: 1, active: { card: '2' }, panel: { side: 'left', locked: false } });
+    expect(calls).toEqual(['place {"side":"left","locked":false}']);
+    calls.length = 0;
+    c.setViewLayout({ v: 1, active: { card: '3' }, panel: { side: 'left', locked: false } });
+    expect(calls).toEqual(['place {"side":"left","locked":false}', 'applyViewMode', 'rerender']);
   });
 });
 
@@ -405,21 +415,21 @@ describe('P8 — PR review (review-of-legends): ordered saves, stale reads, the 
     const n = net(() => ({ v: 1 }));
     const { c } = dash(n);
     const a = c.savePanelPlace({ side: 'left', locked: false });
-    const b = c.savePanelPlace({ side: 'right', locked: false }); // e.g. the toast's 실행 취소
-    const d = c.savePanelPlace({ side: 'left', locked: false });
+    const b = c.savePanelPlace({ side: 'left', locked: true });
+    const d = c.savePanelPlace({ side: 'right', locked: false }); // e.g. the toast's 실행 취소
     await tick();
     expect(n.puts.map((x) => x.body)).toEqual([{ panel: { side: 'left', locked: false } }]);
     n.puts[0].done();
     await tick();
-    // Only the newest of the two made meanwhile goes, after the first answered.
+    // Only the newest of the two made meanwhile goes, after the first answered — the move back to the right.
     expect(n.puts.map((x) => x.body)).toEqual([
       { panel: { side: 'left', locked: false } },
-      { panel: { side: 'left', locked: false } },
+      { panel: { side: 'right', locked: false } },
     ]);
     n.puts[1].done();
     await Promise.all([a, b, d]);
     expect(n.puts).toHaveLength(2);
-    expect(c.layout().panel).toEqual({ side: 'left', locked: false });
+    expect(c.layout().panel).toEqual({ side: 'right', locked: false });
   });
 
   it('a layouts read that left before a move does not move the card back, even after the move saved', async () => {
@@ -434,6 +444,30 @@ describe('P8 — PR review (review-of-legends): ordered saves, stale reads, the 
     n.gets[0](undefined);
     await reading;
     expect((placed[placed.length - 1] as any).panel).toEqual({ side: 'left', locked: false });
+  });
+
+  it('a layouts read that left while a save was on its way does not move the card back after the save answered', async () => {
+    const n = net(() => ({ v: 1 })); // the server's copy when the read left: the place not yet saved
+    const { c, placed } = dash(n);
+    const saving = c.savePanelPlace({ side: 'left', locked: false });
+    await tick();
+    const reading = c.loadViewLayout(); // leaves while the PUT is on its way
+    await tick();
+    n.puts[0].done();
+    await saving;
+    n.gets[0](undefined);
+    await reading;
+    expect((placed[placed.length - 1] as any).panel).toEqual({ side: 'left', locked: false });
+  });
+
+  it('with nothing chosen here, the server’s place is the truth (another tab moved the card)', async () => {
+    const n = net(() => ({ v: 1, panel: { side: 'left', locked: true } }));
+    const { c, placed } = dash(n);
+    const reading = c.loadViewLayout();
+    await tick();
+    n.gets[0](undefined);
+    await reading;
+    expect((placed[placed.length - 1] as any).panel).toEqual({ side: 'left', locked: true });
   });
 
   it('the first move after a mid-glide grab continues from where the card is drawn (no jump toward its dock)', () => {

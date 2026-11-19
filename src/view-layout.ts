@@ -752,11 +752,6 @@ function normalizePanelPlace(input: unknown): PanelPlace {
   return { side, locked };
 }
 
-/** The detail card's place in a saved document — the default when none is saved. */
-export function panelPlace(doc: DashboardLayoutDoc | undefined): PanelPlace {
-  return doc?.panel ? { side: doc.panel.side, locked: doc.panel.locked } : { ...DEFAULT_PANEL_PLACE };
-}
-
 /** The preset a surface uses: the user's default for it, else the quick switch, else 1. */
 export function activePreset(doc: DashboardLayoutDoc | undefined, surface: 'card' | 'detail', plan?: string): PresetId {
   const a = doc?.active?.[surface];

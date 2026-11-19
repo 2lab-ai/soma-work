@@ -244,7 +244,7 @@ function layAnnounce(text) {
 
 async function loadLayout() {
   setLayStatus('불러오는 중…');
-  var placeRev = _layPlaceRev;
+  var placeSeen = layPlaceSeen();
   try {
     var res = await fetch('/api/settings/dashboard-layout');
     if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -259,7 +259,7 @@ async function loadLayout() {
   var placeHere = _layDoc && _layDoc.panel;
   if (!_layPending && !_laySaving) _layDoc = layClone(_lay.doc || { v: 1 });
   // The place is the server's (the dashboard may have moved the card) unless a choice made here is still saving.
-  var place = _layPlaceSaving || placeRev !== _layPlaceRev ? placeHere : _lay.doc && _lay.doc.panel;
+  var place = layPlaceStill(placeSeen) ? _lay.doc && _lay.doc.panel : placeHere;
   if (place) _layDoc.panel = place; else delete _layDoc.panel;
   _layMode = _lay.mode === 'advanced' ? 'advanced' : 'minimal';
   _layPreset = layoutPreset(_layDoc, 'card', _lay.plan);
@@ -325,22 +325,24 @@ async function saveLayout() {
     for (;;) {
       _layResave = false;
       var rev = _layRev;
-      var placeRev = _layPlaceRev;
+      var placeSeen = layPlaceSeen();
       var r = await apiWrite('PUT', '/api/settings/dashboard-layout', { doc: layoutSansPlace(_layDoc) });
       if (!r.ok) { why = r.error || 'HTTP'; break; }
       if (rev !== _layRev) continue; // the user moved on while it ran: save what they have now
-      // The server's checked copy (its order, the items it appended) is the truth.
+      // The server's checked copy (its order, the items it appended) is the truth for the layouts; its place only if
+      // no place was chosen or saved here while it ran.
       if (r.data && r.data.layout && r.data.layout.doc) {
-        // A place picked while this PUT ran (saved or still saving) is newer than the place in its answer.
-        var placeHere = _layPlaceSaving || placeRev !== _layPlaceRev ? _layDoc.panel : undefined;
+        var placeHere = _layDoc.panel;
         _layDoc = layClone(r.data.layout.doc);
-        if (placeHere) _layDoc.panel = placeHere;
-        try { localStorage.setItem('soma-view-layout', JSON.stringify(_layDoc)); } catch (_e) {}
+        if (!layPlaceStill(placeSeen)) { if (placeHere) _layDoc.panel = placeHere; else delete _layDoc.panel; }
+        // The shared copy gets the layouts only — a layouts answer never publishes a place.
+        layCachePut(_layDoc);
       }
       if (!_layResave) { _layPending = false; break; }
     }
   } catch (e) { why = String((e && e.message) || e); }
   finally { _laySaving = false; }
+  _layFailed = why;
   setLayStatus(why ? '저장하지 못했습니다 — ' + why : '저장됨');
   if (!why) layPaint();
 }
@@ -361,9 +363,30 @@ var LAY_PLACE_HINT = {
   locked: '잠겨 있습니다. 디테일 카드 상단바에 손잡이가 없고, 끌어서 옮길 수 없습니다. 위치는 여기서만 바뀝니다.',
   open: '꺼져 있으면 디테일 카드 상단바의 손잡이를 끌어 반대쪽에 놓을 수 있습니다. 손잡이를 누르거나 ←/→ 키로도 옮깁니다.',
 };
-var _layPlaceRev = 0; // bumped by every choice made here: a read that left before one does not paint over it
+var _layPlaceRev = 0; // bumped when a place is chosen here and when its save settles
 var _layPlaceSaving = 0; // 1 while a place PUT is on its way
 var _layPlaceQueued = null; // the newest choice made while a PUT was on its way: { place, shown }
+var _layRefreshGen = 0; // refresh reads: only the newest answer is applied
+var _layFailed = ''; // why the last layouts save failed ('' = saved): a place save does not hide it
+// What a request saw of the place writes when it left; layPlaceStill says whether its answer's place is still the
+// truth — no place was chosen or saved here from then until now (the revision moves on both).
+function layPlaceSeen() {
+  return { rev: _layPlaceRev, pending: _layPlaceSaving };
+}
+function layPlaceStill(seen) {
+  return !seen.pending && !_layPlaceSaving && seen.rev === _layPlaceRev;
+}
+// The shared copy (the dashboard's first paint): the layouts, and a place only from a place write (place given) —
+// otherwise the copy keeps the place it has (another tab may have moved the card).
+function layCachePut(doc, place) {
+  try {
+    var out = layoutSansPlace(doc);
+    var cached = JSON.parse(localStorage.getItem('soma-view-layout') || 'null');
+    var p = place !== undefined ? place : cached && cached.panel;
+    if (p) out.panel = p;
+    localStorage.setItem('soma-view-layout', JSON.stringify(out));
+  } catch (_e) {}
+}
 function layPaintPlace() {
   var p = panelPlaceOf(_layDoc);
   var off = !!(_lay && _lay.accepted === false);
@@ -398,6 +421,7 @@ async function layPlaceSave(next) {
       var r;
       try { r = await apiWrite('PUT', '/api/settings/dashboard-layout/panel', { panel: job.place }); }
       catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+      _layPlaceRev++; // settled: a request that left while it was on its way may hold the place before it
       if (_layPlaceQueued) { if (r && r.ok) saved = job.place; continue; } // a newer choice goes next
       if (!r || !r.ok) {
         // Refused: the controls show what is saved, and say why.
@@ -409,8 +433,9 @@ async function layPlaceSave(next) {
       // The server's checked place is the truth.
       _layDoc.panel = r.data && r.data.layout && r.data.layout.doc && r.data.layout.doc.panel ? r.data.layout.doc.panel : job.place;
       layPaintPlace();
-      try { localStorage.setItem('soma-view-layout', JSON.stringify(_layDoc)); } catch (_e) {}
-      setLayStatus('저장됨');
+      layCachePut(_layDoc, _layDoc.panel);
+      // The place is saved; the layouts' own state stays on the line (a failed or pending layouts save is not saved).
+      setLayStatus(_laySaving ? '저장 중…' : _layFailed ? '저장하지 못했습니다 — ' + _layFailed : _layPending ? '저장 중…' : '저장됨');
       var p = _layDoc.panel;
       layAnnounce(p.side !== job.shown.side
         ? (p.side === 'left' ? '디테일 카드를 왼쪽에 둡니다' : '디테일 카드를 오른쪽에 둡니다')
@@ -423,13 +448,14 @@ async function layPlaceSave(next) {
 // Back on the page: a drag on the dashboard meanwhile shows here (unless a choice made here is still saving).
 async function layRefreshPlace() {
   if (!_layLoaded || _layPlaceSaving) return;
-  var placeRev = _layPlaceRev;
+  var gen = ++_layRefreshGen;
+  var seen = layPlaceSeen();
   try {
     var res = await fetch('/api/settings/dashboard-layout');
     if (!res.ok) return;
     var data = await res.json();
-    // A choice made here after this read left is newer than its answer.
-    if (_layPlaceSaving || placeRev !== _layPlaceRev || !data || !data.doc) return;
+    // An older read answering after a newer one, or a place chosen or saved here since it left: not applied.
+    if (gen !== _layRefreshGen || !layPlaceStill(seen) || !data || !data.doc) return;
     if (data.doc.panel) _layDoc.panel = data.doc.panel; else delete _layDoc.panel;
     layPaintPlace();
   } catch (_e) {}

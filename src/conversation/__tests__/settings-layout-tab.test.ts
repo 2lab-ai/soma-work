@@ -53,7 +53,7 @@ function fakeEl(id: string): El {
 
 function editor(
   answer: Record<string, unknown> = {},
-  opts: { gate?: boolean; refusePlace?: boolean; gatePlace?: boolean; gateGet?: boolean } = {},
+  opts: { gate?: boolean; refusePlace?: boolean; gatePlace?: boolean; gateGet?: boolean; failLayout?: boolean } = {},
 ) {
   const els: Record<string, El> = {};
   const el = (id: string) => (els[id] ??= fakeEl(id));
@@ -115,7 +115,7 @@ function editor(
   };
   const inject = {
     document,
-    localStorage: { setItem: (k: string, v: string) => (stored[k] = v), getItem: () => null },
+    localStorage: { setItem: (k: string, v: string) => (stored[k] = v), getItem: (k: string) => stored[k] ?? null },
     setTimeout: (fn: () => void) => {
       timers.push(fn);
       return timers.length;
@@ -132,14 +132,18 @@ function editor(
       if (url === '/api/settings/dashboard-layout/panel') {
         if (opts.gatePlace) await new Promise<void>((r) => placeGates.push(r));
         if (opts.refusePlace) return { ok: false, error: '관리자 승인을 받은 뒤에 바꿀 수 있습니다' };
-        const doc = { ...((serverDoc as object) ?? snapshot.doc), panel: body.panel };
+        const doc = { ...((serverDoc as object) ?? (snapshot.doc as object)), panel: body.panel };
         serverDoc = doc;
         return { ok: true, data: { ok: true, layout: { doc } } };
       }
       const sent = JSON.parse(JSON.stringify(body.doc));
+      // The server keeps the stored place when the document leaves it out (writeLayout), as it is when handled.
+      const kept = ((serverDoc as any) ?? (snapshot.doc as any))?.panel;
+      if (opts.failLayout) return { ok: false, error: '레이아웃을 저장하지 못했습니다' };
       if (opts.gate) await new Promise<void>((r) => gates.push(r));
-      serverDoc = sent;
-      return { ok: true, data: { ok: true, layout: { doc: sent } } };
+      const answer = kept && !sent.panel ? { ...sent, panel: kept } : sent;
+      serverDoc = answer;
+      return { ok: true, data: { ok: true, layout: { doc: answer } } };
     },
   };
   const names = Object.keys(inject);
@@ -162,8 +166,8 @@ function editor(
     placeGates.shift()?.();
     for (let i = 0; i < 6; i++) await new Promise((r) => setImmediate(r));
   };
-  const releaseGet = async () => {
-    getGates.shift()?.();
+  const releaseGet = async (at = 0) => {
+    getGates.splice(at, 1)[0]?.();
     for (let i = 0; i < 6; i++) await new Promise((r) => setImmediate(r));
   };
   return { api, els, puts, stored, flush, timers, release, releasePlace, releaseGet, placeGates, getGates };
@@ -635,12 +639,15 @@ describe('E8 — 디테일 카드 위치: 왼쪽 · 오른쪽 and 위치 잠금 
   });
 
   it('the layouts’ save leaves the place out (the dashboard may have moved it); 되돌리기 keeps the place', async () => {
-    const { api, puts, flush } = editor({ doc: { v: 1, panel: { side: 'left', locked: false } } });
+    const { api, els, puts, flush } = editor({ doc: { v: 1, panel: { side: 'left', locked: false } } });
     await api.loadLayout();
     api.layDefault('card', '2');
     await flush();
     const whole = puts.find((x: any) => x.url === '/api/settings/dashboard-layout') as any;
     expect(whole.body.doc).toEqual({ v: 1, active: { card: '2' } });
+    // After the layouts save the place is still the saved one, on the page and in the controls.
+    expect(api.get('_layDoc').panel).toEqual({ side: 'left', locked: false });
+    expect(els['lay-place-left'].checked).toBe(true);
     await api.layOnChange(change('place-side', 'right'));
     api.layUndo();
     expect(api.get('_layDoc').panel).toEqual({ side: 'right', locked: false });
@@ -753,5 +760,77 @@ describe('E10 — PR review (review-of-legends): place saves in order, stale rea
     await refresh;
     expect(api.get('_layDoc').panel).toEqual({ side: 'left', locked: false });
     expect(els['lay-place-left'].checked).toBe(true);
+  });
+});
+
+describe('E11 — PR review round 2: saves pending when a request leaves, refresh order, status (2026-11-19)', () => {
+  const pick = (lay: string, value: string, checked = false) => ({
+    target: { getAttribute: (k: string) => (k === 'data-lay' ? lay : null), value, checked },
+  });
+  const tick = async () => {
+    for (let i = 0; i < 6; i++) await new Promise((r) => setImmediate(r));
+  };
+
+  it('a layouts PUT that left while a place save was on its way keeps the place, even answering after it', async () => {
+    const { api, els, flush, release, releasePlace, stored } = editor(
+      { doc: { v: 1 } },
+      { gate: true, gatePlace: true },
+    );
+    await api.loadLayout();
+    const placing = api.layOnChange(pick('place-side', 'left'));
+    await tick();
+    api.layDefault('card', '2');
+    const saving = flush(); // the layouts PUT leaves (handled now: the stored place is still none)
+    await tick();
+    await releasePlace(); // the place PUT answers first
+    await placing;
+    await release(); // then the layouts PUT's answer arrives, with the place as it was when handled
+    await saving;
+    expect(api.get('_layDoc').panel).toEqual({ side: 'left', locked: false });
+    expect(els['lay-place-left'].checked).toBe(true);
+    expect(JSON.parse(stored['soma-view-layout']).panel).toEqual({ side: 'left', locked: false });
+  });
+
+  it('a layouts answer never publishes a place to the shared copy (another tab may have moved the card since)', async () => {
+    const { api, flush, stored } = editor({ doc: { v: 1, panel: { side: 'right', locked: false } } });
+    await api.loadLayout();
+    stored['soma-view-layout'] = JSON.stringify({ v: 1, panel: { side: 'left', locked: false } }); // a dashboard drag
+    api.layDefault('card', '2');
+    await flush();
+    expect(JSON.parse(stored['soma-view-layout'])).toEqual({
+      v: 1,
+      active: { card: '2' },
+      panel: { side: 'left', locked: false },
+    });
+  });
+
+  it('two refresh reads answering out of order: the older answer does not paint over the newer', async () => {
+    const doc: Record<string, unknown> = { v: 1, panel: { side: 'right', locked: false } };
+    const { api, els, releaseGet } = editor({ doc }, { gateGet: true });
+    const first = api.loadLayout();
+    await releaseGet();
+    await first;
+    const older = api.layRefreshPlace(); // reads right
+    await tick();
+    doc.panel = { side: 'left', locked: false }; // another tab moves the card
+    const newer = api.layRefreshPlace(); // reads left
+    await tick();
+    await releaseGet(1); // the newer answers first
+    await newer;
+    expect(els['lay-place-left'].checked).toBe(true);
+    await releaseGet(0); // then the older
+    await older;
+    expect(api.get('_layDoc').panel).toEqual({ side: 'left', locked: false });
+    expect(els['lay-place-left'].checked).toBe(true);
+  });
+
+  it('a failed layouts save keeps saying so after a place saves — the place is not the layouts', async () => {
+    const { api, els, flush } = editor({}, { failLayout: true });
+    await api.loadLayout();
+    api.layDefault('card', '2');
+    await flush();
+    expect(els['lay-status'].textContent).toContain('저장하지 못했습니다');
+    await api.layOnChange(pick('place-side', 'left'));
+    expect(els['lay-status'].textContent).toContain('저장하지 못했습니다');
   });
 });
