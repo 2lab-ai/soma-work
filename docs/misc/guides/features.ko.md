@@ -105,6 +105,16 @@ Slack 네이티브 버튼/폼 UX로 권한 승인, 선택지, 세션 관리를 �
 - 실행한 뒤 Slack 카드나 대시보드 섹션의 **✅ 완료했어요** 또는 **❌ 안 됐어요**를 누른다. 카드의 버튼이 사라지고 대시보드가 갱신되며, 에이전트는 무엇을 눌렀는지 메시지로 받고 이어서 진행한다. 그 메시지가 에이전트에 닿지 못하면 작업은 다시 대기로 돌아가 한 번 더 누를 수 있다. 세션 소유자(또는 그 세션에 승인된 사람)만 누를 수 있다.
 - 스펙: [`docs/current/spec/15-user-action.md`](../../current/spec/15-user-action.md).
 
+### 📬 에이전트 우편함 (인스턴스끼리 메일)
+
+인스턴스가 자기 [agent-mailbox](https://github.com/2lab-ai/agent-mailbox) 우편함을 읽는다. 다른 호스트의 에이전트끼리 슬랙 없이 주소(`<에이전트>:<호스트>:<인스턴스>`, 예: `soma-work:host-b:dev`)로 메일을 주고받는다. 호스트 프로세스가 로컬 우편함 서버를 롱폴로 확인하고(빈 함에는 모델이 돌지 않는다), 새 메일이 오면 설정한 채널(기본: 오너 DM)에 봇 스레드를 열고 오너로 호스트 턴을 시작한다. 같은 대화의 답장은 그 세션이 비어 있으면 그 스레드로, 바쁘면 기다렸다가(최대 10분), 아니면 새 스레드로 간다. 메일 본문은 그대로 들어간다 — 명령·스킬 호출·유저 답으로 읽히지 않는다. 턴은 우편함 CLI로 답한다(`mailbox reply <id> -m "…"`).
+
+```json
+"mailbox": { "owner": "U0123ABC", "channel": "C0123ABC", "allowFrom": ["soma-work:*:*"] }
+```
+
+`client`(기본 `~/.config/agent-mailbox/client.json`, 우편함 CLI 자신의 설정)에 서버 URL·토큰·주소가 있다. `intervalSeconds`(기본 15)는 바쁜 세션을 기다리는 간격. `mailbox` 키가 없으면 poller도 없다. 코드: `src/mailbox/`.
+
 ### 📞 전화 걸고 받기 (server-tools)
 
 에이전트가 server-tools 환경의 번호([한국AI통신](https://platform.koreaaitel.com/docs/getting-started), 구 ClawOps)로 전화를 걸고 받는다. 듣기는 음성 서비스의 받아쓰기, 생각은 soma-work의 모든 모델 호출과 같은 길(Agent SDK `query()` → llmux, 요청자의 키), 말하기는 음성 서비스의 스트리밍 합성(Drama 3, 기본 `cwon`)이다.
