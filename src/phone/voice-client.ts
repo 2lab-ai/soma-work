@@ -111,13 +111,18 @@ export class VoiceServiceError extends Error {
   }
 }
 
-/** `lease`: the token of a claimed host — every request of this client runs under it. */
-export function createVoiceClient(cfg: VoiceConfig, fetchImpl: FetchLike = fetch, lease?: string): VoiceClient {
+/**
+ * `lease`: the claimed host's token — every request of this client runs under it. Read per request: a lease the host
+ * lost and the call took again carries a new token.
+ */
+export function createVoiceClient(
+  cfg: VoiceConfig,
+  fetchImpl: FetchLike = fetch,
+  lease?: { token: string },
+): VoiceClient {
   const base = cfg.url.replace(/\/+$/, '');
-  const auth: Record<string, string> = {
-    ...(cfg.token ? { authorization: `Bearer ${cfg.token}` } : {}),
-    ...(lease ? { [LEASE_HEADER]: lease } : {}),
-  };
+  const bearer: Record<string, string> = cfg.token ? { authorization: `Bearer ${cfg.token}` } : {};
+  const auth = (): Record<string, string> => (lease ? { ...bearer, [LEASE_HEADER]: lease.token } : bearer);
   const host: VoiceHost = hosts.get(base) ?? {
     transcribing: new Set(),
     synthesizing: new Set(),
@@ -147,7 +152,7 @@ export function createVoiceClient(cfg: VoiceConfig, fetchImpl: FetchLike = fetch
             res = await fetchImpl(`${base}/api/stt`, {
               method: 'POST',
               body: form,
-              headers: auth,
+              headers: auth(),
               signal: signal ? AbortSignal.any([signal, bound.signal]) : bound.signal,
             });
             if (res.ok) body = (await res.json()) as { text?: unknown; ms?: unknown };
@@ -171,51 +176,49 @@ export function createVoiceClient(cfg: VoiceConfig, fetchImpl: FetchLike = fetch
     speak: (text, signal) => synthesize(text, signal, false),
 
     async claim(owner) {
-      const bounded = () => AbortSignal.timeout(LEASE_REQUEST_MS);
-      let res: Response;
-      try {
-        res = await fetchImpl(`${base}/api/lease`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', ...auth },
-          body: JSON.stringify({ owner, ttl_ms: LEASE_TTL_MS }),
-          signal: bounded(),
-        });
-      } catch (err) {
-        return { kind: 'busy', reason: `voice host unreachable: ${(err as Error).message}` };
-      }
-      if (res.status === 404) return { kind: 'shared' };
-      const body = (await res.json().catch(() => ({}))) as { token?: unknown; holder?: unknown };
-      if (res.status === 409)
-        return { kind: 'busy', reason: typeof body.holder === 'string' ? `busy with ${body.holder}` : 'busy' };
-      if (!res.ok) return { kind: 'busy', reason: `voice host answered ${res.status}` };
-      if (typeof body.token !== 'string' || !body.token) return { kind: 'busy', reason: 'lease without a token' };
-      const token = body.token;
-      const leased = { ...auth, [LEASE_HEADER]: token };
+      const first = await takeLease(owner);
+      if (first.kind !== 'token') return first;
+      const lease = { token: first.token };
+      const leased = () => ({ ...bearer, [LEASE_HEADER]: lease.token });
       return {
         kind: 'held',
-        voice: createVoiceClient(cfg, fetchImpl, token),
+        voice: createVoiceClient(cfg, fetchImpl, lease),
         async renew() {
+          let status: number;
           try {
             const r = await fetchImpl(`${base}/api/lease/renew`, {
               method: 'POST',
-              headers: { 'content-type': 'application/json', ...leased },
+              headers: { 'content-type': 'application/json', ...leased() },
               body: JSON.stringify({ ttl_ms: LEASE_TTL_MS }),
-              signal: bounded(),
+              signal: AbortSignal.timeout(LEASE_REQUEST_MS),
             });
-            return r.ok;
+            if (r.ok) return true;
+            status = r.status;
           } catch {
-            return false;
+            return false; // not reached: tried again on the next renewal
           }
+          if (status !== 404) return false;
+          // The host does not know the lease any more (it restarted, or the lease lapsed): the call takes the host
+          // again if it is free, and its requests carry the new token from here on.
+          const again = await takeLease(owner);
+          if (again.kind !== 'token') return false;
+          lease.token = again.token;
+          return true;
         },
         async release() {
           try {
-            await fetchImpl(`${base}/api/lease`, { method: 'DELETE', headers: leased, signal: bounded() });
+            await fetchImpl(`${base}/api/lease`, {
+              method: 'DELETE',
+              headers: leased(),
+              signal: AbortSignal.timeout(LEASE_REQUEST_MS),
+            });
           } catch {
             // Not given back: it lapses on the host within LEASE_TTL_MS.
           }
         },
       };
     },
+
     warm(signal) {
       if (host.wakeUp) return host.wakeUp.done; // one per host: a stalled service never piles up wake-ups
       const now = Date.now();
@@ -243,6 +246,31 @@ export function createVoiceClient(cfg: VoiceConfig, fetchImpl: FetchLike = fetch
     },
   };
 
+  /** POST /api/lease, bounded. Never throws. */
+  async function takeLease(
+    owner: string,
+  ): Promise<{ kind: 'token'; token: string } | Extract<VoiceHostClaim, { kind: 'busy' | 'shared' }>> {
+    let res: Response;
+    try {
+      res = await fetchImpl(`${base}/api/lease`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...bearer },
+        body: JSON.stringify({ owner, ttl_ms: LEASE_TTL_MS }),
+        signal: AbortSignal.timeout(LEASE_REQUEST_MS),
+      });
+    } catch (err) {
+      return { kind: 'busy', reason: `voice host unreachable: ${(err as Error).message}` };
+    }
+    if (res.status === 404) return { kind: 'shared' };
+    const parsed: unknown = await res.json().catch(() => null);
+    const body = parsed && typeof parsed === 'object' ? (parsed as { token?: unknown; holder?: unknown }) : {};
+    if (res.status === 409)
+      return { kind: 'busy', reason: typeof body.holder === 'string' ? `busy with ${body.holder}` : 'busy' };
+    if (!res.ok) return { kind: 'busy', reason: `voice host answered ${res.status}` };
+    if (typeof body.token !== 'string' || !body.token) return { kind: 'busy', reason: 'lease without a token' };
+    return { kind: 'token', token: body.token };
+  }
+
   async function synthesize(text: string, signal: AbortSignal | undefined, wakeUp: boolean): Promise<SpeechStream> {
     if (!wakeUp) host.wakeUp?.abort.abort('speech first'); // a reply never waits behind a wake-up
     const started = Date.now();
@@ -258,7 +286,7 @@ export function createVoiceClient(cfg: VoiceConfig, fetchImpl: FetchLike = fetch
     try {
       res = await fetchImpl(`${base}/api/tts/stream`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', ...auth },
+        headers: { 'content-type': 'application/json', ...auth() },
         body: JSON.stringify({ voice: cfg.voice, text, model: cfg.model, format: 'pcm' }),
         signal,
       });

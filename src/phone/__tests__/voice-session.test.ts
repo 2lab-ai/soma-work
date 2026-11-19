@@ -702,6 +702,20 @@ describe('CallRun — the voice host is busy: a notice, then the phone goes down
     quietLine.clock.advance(1700);
     expect(c2.hungUp).toBe(1);
   });
+
+  it('outbound: a hello still going at 1.2 s is not talked over — the notice waits for its end', async () => {
+    const { run, clock } = setup({ direction: 'outbound', notice });
+    run.begin();
+    const call = fakeCall();
+    run.attach(call as unknown as CallSessionLike);
+    run.feedAudio(tone(1000, 0.3)); // a long greeting, still going…
+    clock.advance(1200); // …past the quiet-start deadline
+    expect(call.frames).toBe(0);
+    run.feedAudio(tone(1000, 0.3)); // 2 s of it
+    expect(call.frames).toBe(0);
+    run.feedAudio(quiet(700)); // it ends
+    expect(call.frames).toBe(50);
+  });
 });
 
 describe('PhoneVoiceSession', () => {

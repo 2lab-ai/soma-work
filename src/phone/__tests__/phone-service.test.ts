@@ -610,6 +610,7 @@ describe('PhoneService', () => {
       let kind: VoiceHostClaim['kind'] = 'held';
       const host = voiceHost(() => kind);
       const auths: string[] = [];
+      let summaries = 0;
       const { svc, agents, store, dialogs, notices } = make(serverTools(), undefined, {
         voiceClientFor: () => host.voice,
         dialogAuth: async () => {
@@ -617,7 +618,8 @@ describe('PhoneService', () => {
           return { env: {}, model: 'm', release: async () => undefined };
         },
         summarize: async () => {
-          throw new Error('nothing to summarize');
+          summaries++;
+          return 'summary';
         },
       });
       await svc.start();
@@ -634,6 +636,7 @@ describe('PhoneService', () => {
       expect(dialogs).toHaveLength(0);
       await agents[0].handlers.call_end(fakeCall('IN1', 'inbound', 'completed'));
       expect(notices[0][1]).toContain(BUSY_NOTICE.inbound);
+      expect(summaries).toBe(0); // the other side said nothing: nothing to sum up
       expect(host.log).not.toContain('release'); // nothing was held
       await svc.stop();
     });
@@ -681,6 +684,48 @@ describe('PhoneService', () => {
         notice: expect.any(String),
       });
       await svc.stop();
+    });
+
+    it('the host is kept from the claim on: renewed while the dialog credentials and the dial are still pending', async () => {
+      const host = voiceHost(() => 'held');
+      let letAuthGo!: () => void;
+      const authGate = new Promise<void>((r) => {
+        letAuthGo = r;
+      });
+      const { svc, timers } = make(serverTools(), undefined, {
+        voiceClientFor: () => host.voice,
+        dialogAuth: async () => {
+          await authGate;
+          return { env: {}, model: 'm', release: async () => undefined };
+        },
+      });
+      await svc.start();
+      await settleAll();
+      const dialing = svc.dial(request() as never);
+      await settleAll();
+      for (let i = 0; i < 4; i++) {
+        timers.advance(10_000); // 40 s of slow setup: past the host's 30 s
+        await settleAll();
+      }
+      expect(host.log.filter((l) => l === 'renew')).toHaveLength(4);
+      letAuthGo();
+      expect(await dialing).toMatchObject({ ok: true });
+      await svc.stop();
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1);
+    });
+
+    it('stop() with a call up gives its host back once, and no renewal follows', async () => {
+      const host = voiceHost(() => 'held');
+      const { svc, timers } = make(serverTools(), undefined, { voiceClientFor: () => host.voice });
+      await svc.start();
+      await settleAll();
+      expect(await svc.dial(request() as never)).toMatchObject({ ok: true });
+      await svc.stop(); // no call_end comes: the process is going
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1);
+      const renewed = host.log.filter((l) => l === 'renew').length;
+      timers.advance(60_000);
+      await settleAll();
+      expect(host.log.filter((l) => l === 'renew')).toHaveLength(renewed);
     });
 
     it('a dial that fails gives the host back at once', async () => {

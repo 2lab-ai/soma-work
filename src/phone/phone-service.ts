@@ -54,6 +54,12 @@ export interface DialogAuth {
   release(): Promise<void>;
 }
 
+/** A claimed voice host, kept alive from the claim on (call setup can take a while) until it is given back. */
+interface HeldLease {
+  /** Stop renewing and give the host back. Idempotent. */
+  release(): Promise<void>;
+}
+
 export interface PhoneServiceDeps {
   sdk: KoreaAiTelSdk;
   store: PhoneCallStore;
@@ -97,7 +103,7 @@ interface PhoneLine {
   /** Lease of each call's dialog, released when the call ends. */
   auths: Map<string, DialogAuth>;
   /** Each call's lease on the voice host (the host does one job at a time), renewed until the call ends. */
-  voiceLeases: Map<string, { release(): Promise<void>; timer: unknown }>;
+  voiceLeases: Map<string, HeldLease>;
   /** Line phrases are being synthesized (at most one pass at a time). */
   preparing: boolean;
   /** Phrases whose synthesis failed, said once in the log until they are made. */
@@ -374,6 +380,7 @@ export class PhoneService {
   private async placeCall(line: PhoneLine, req: PhoneCallRequest): Promise<PhoneCallRequestResult> {
     // The voice host first: it does one job at a time. Busy → the call is still made, but only says it cannot go on.
     const host = await this.claimVoice(line, 'outbound');
+    const lease = this.holdLease(line, host);
     const notice = host.kind === 'busy' ? this.noticeFor(line, 'outbound') : undefined;
     if (host.kind === 'busy' && !notice)
       return { ok: false, error: `the voice host cannot take a call now (${host.reason}) and no notice is ready` };
@@ -382,7 +389,7 @@ export class PhoneService {
       try {
         auth = await this.deps.dialogAuth({ requester: req.requester, model: line.cfg.model });
       } catch (err) {
-        await this.letGo(host);
+        await lease?.release();
         return { ok: false, error: `no model credentials for the call: ${(err as Error).message}` };
       }
     }
@@ -391,7 +398,7 @@ export class PhoneService {
       call = await line.agent.call(req.to, { timeout: DIAL_TIMEOUT_S });
     } catch (err) {
       await auth?.release().catch(() => undefined);
-      await this.letGo(host);
+      await lease?.release();
       return { ok: false, error: `dial failed: ${(err as Error).message}` };
     }
     const maxMinutes = Math.min(req.maxMinutes, line.cfg.outbound.maxMinutes);
@@ -436,7 +443,7 @@ export class PhoneService {
       record.work.push({ kind: 'instruction', at: record.createdAt, text: systemPrompt });
       this.deps.store.create(record);
       line.auths.set(call.callId, dialogAuth);
-      this.keepLease(line, call.callId, host);
+      if (lease) line.voiceLeases.set(call.callId, lease);
       run = this.makeRun(
         line,
         { callId: call.callId, direction: 'outbound', maxMinutes, model: dialogAuth.model },
@@ -510,38 +517,42 @@ export class PhoneService {
     return frames ? { text, frames } : undefined;
   }
 
-  private async letGo(host: VoiceHostClaim): Promise<void> {
-    if (host.kind === 'held') await host.release();
-  }
-
-  /** Keep the call's lease alive until {@link dropLease}. */
-  private keepLease(line: PhoneLine, callId: string, host: VoiceHostClaim): void {
-    if (host.kind !== 'held') return;
-    const entry = { release: () => host.release(), timer: undefined as unknown };
+  /**
+   * Renew a held host from the claim on — dialog credentials and the dial can take longer than the host's 30 s — until
+   * {@link HeldLease.release}. Null when nothing is held.
+   */
+  private holdLease(line: PhoneLine, host: VoiceHostClaim): HeldLease | null {
+    if (host.kind !== 'held') return null;
+    let over = false;
+    let timer: unknown;
     let warned = false;
     const arm = () => {
-      entry.timer = this.setTimer(() => {
-        if (line.voiceLeases.get(callId) !== entry) return;
+      timer = this.setTimer(() => {
+        if (over) return;
         void host.renew().then((ok) => {
-          if (line.voiceLeases.get(callId) !== entry) return;
-          if (!ok && !warned) {
-            warned = true;
-            this.deps.log('warn', 'phone: the voice host lease was not renewed', { env: line.env, callId });
-          }
+          if (over) return;
+          if (!ok && !warned) this.deps.log('warn', 'phone: the voice host lease was not renewed', { env: line.env });
+          warned = !ok;
           arm();
         });
       }, LEASE_RENEW_MS);
     };
-    line.voiceLeases.set(callId, entry);
     arm();
+    return {
+      release: async () => {
+        if (over) return;
+        over = true;
+        this.clearTimer(timer);
+        await host.release();
+      },
+    };
   }
 
   private async dropLease(line: PhoneLine, callId: string): Promise<void> {
-    const entry = line.voiceLeases.get(callId);
-    if (!entry) return;
+    const lease = line.voiceLeases.get(callId);
+    if (!lease) return;
     line.voiceLeases.delete(callId);
-    this.clearTimer(entry.timer);
-    await entry.release();
+    await lease.release();
   }
 
   // ── inbound ─────────────────────────────────────────────────
@@ -591,18 +602,19 @@ export class PhoneService {
     // The voice host first: it does one job at a time. Busy → the caller hears that the call cannot be taken.
     const host = await this.claimVoice(line, 'inbound');
     if (host.kind === 'busy') return this.inboundNotice(line, callId, from, host);
+    const lease = this.holdLease(line, host);
     let auth: DialogAuth;
     try {
       auth = await this.deps.dialogAuth({ requester: line.cfg.owner, model: line.cfg.model });
     } catch (err) {
-      await this.letGo(host);
+      await lease?.release();
       this.deps.log('warn', 'phone: inbound call refused — no model credentials', { error: (err as Error).message });
       return null;
     }
     if (this.finished.has(callId)) {
       // The caller hung up while the run was being made.
       await auth.release().catch(() => undefined);
-      await this.letGo(host);
+      await lease?.release();
       return null;
     }
     // Only a greeting made earlier: synthesizing now would keep the caller waiting in silence.
@@ -633,7 +645,7 @@ export class PhoneService {
       work: [{ kind: 'instruction', at: now, text: systemPrompt }],
     });
     line.auths.set(callId, auth);
-    this.keepLease(line, callId, host);
+    if (lease) line.voiceLeases.set(callId, lease);
     const run = this.makeRun(
       line,
       { callId, direction: 'inbound', maxMinutes: line.cfg.outbound.maxMinutes, greeting, model: auth.model },

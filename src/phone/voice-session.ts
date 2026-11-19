@@ -182,10 +182,13 @@ export class CallRun {
     // Also the backstop of a notice call whose hang-up did not go through.
     this.later(() => this.timeUp(), this.plan.maxMinutes * 60_000);
     if (this.plan.notice) {
-      // Inbound: at once, as a greeting would be. Outbound: after the other side's "여보세요" (feedAudio), or a quiet
-      // spell.
+      // Inbound: at once, as a greeting would be. Outbound: after the other side's "여보세요" ends (feedAudio), or after
+      // a quiet start — never over a hello (or a recorded greeting) still going: its end says the notice.
       if (this.plan.direction === 'inbound') this.sayNotice();
-      else this.later(() => this.sayNotice(), OPEN_AFTER_SILENCE_MS);
+      else
+        this.later(() => {
+          if (!this.vad.speaking) this.sayNotice();
+        }, OPEN_AFTER_SILENCE_MS);
       return;
     }
     if (this.plan.direction === 'inbound') {
