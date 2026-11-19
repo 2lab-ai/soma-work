@@ -366,8 +366,14 @@ export interface SettingsRegistry {
   write(userId: string, key: string, value: unknown): Promise<SettingView>;
   /** The user's surface layouts for the editor and the dashboard (.prd/21). */
   readLayout(userId: string): LayoutSnapshot;
-  /** Replace the user's surface layouts — checked (400) and only for an accepted user (403). */
+  /**
+   * Replace the user's surface layouts — checked (400) and only for an accepted user (403). A document without the
+   * detail card's place keeps the saved one: the place has its own writer (writePanelPlace), so a whole-document save
+   * from an editor loaded before a drag on the dashboard does not move the card back.
+   */
   writeLayout(userId: string, doc: unknown): LayoutSnapshot;
+  /** Set only the detail card's place (side · lock, SSOT 2026-11-19) — checked (400), accepted users only (403). */
+  writePanelPlace(userId: string, place: unknown): LayoutSnapshot;
 }
 
 export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegistry {
@@ -971,7 +977,22 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
         throw e;
       }
       assertAccepted(userId);
+      const kept = store.getUserDashboardLayout(userId).panel;
+      if (!doc.panel && kept) doc.panel = kept;
       store.setUserDashboardLayout(userId, doc);
+      return this.readLayout(userId);
+    },
+    writePanelPlace(userId, place) {
+      let panel: DashboardLayoutDoc['panel'];
+      try {
+        // Checked by normalizeLayoutDoc's own rule, before anything is read or written (400 before 403).
+        panel = normalizeLayoutDoc({ v: 1, panel: place }).panel;
+      } catch (e) {
+        if (e instanceof LayoutError) throw new SettingsError(400, e.message);
+        throw e;
+      }
+      assertAccepted(userId);
+      store.setUserDashboardLayout(userId, { ...store.getUserDashboardLayout(userId), panel });
       return this.readLayout(userId);
     },
     async write(userId, key, value) {

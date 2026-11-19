@@ -100,6 +100,32 @@ export function registerSettingsRoutes(
     }
   });
 
+  // The detail card's place (SSOT 2026-11-19): the dashboard's drag and the editor's 위치 · 잠금 write it alone, so
+  // neither replaces the other's layouts.
+  server.put<{ Body: { panel?: unknown } }>('/api/settings/dashboard-layout/panel', write, async (request, reply) => {
+    const userId = requireSelfUser(request, reply);
+    if (!userId) return;
+    if (!_registry) {
+      reply.status(503).send({ error: 'Settings are not available on this instance' });
+      return;
+    }
+    const body = request.body || {};
+    if (!('panel' in body)) {
+      reply.status(400).send({ error: 'panel is required' });
+      return;
+    }
+    try {
+      reply.send({ ok: true, layout: _registry.writePanelPlace(userId, body.panel) });
+    } catch (error) {
+      if (error instanceof SettingsError) {
+        reply.status(error.statusCode).send({ error: error.message });
+        return;
+      }
+      logger.error('Error writing the detail card place', { error });
+      reply.status(500).send({ error: 'Internal Server Error' });
+    }
+  });
+
   server.patch<{ Params: { key: string }; Body: { value?: unknown } }>(
     '/api/settings/:key',
     write,

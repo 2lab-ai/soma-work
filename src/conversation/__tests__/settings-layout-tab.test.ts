@@ -10,6 +10,8 @@
  *   E6  미니멀 상세 카드: the 대화 · 작업 로그 tab switch (on in minimal) and its preview row
  *   E7  상세 카드 세 구역 (SSOT 2026-11-03): 타이틀 바 · 입력 필요 · 탭 바 · 아래 — the title bar's items and the tabs
  *       switch and move; the preview's tabs open and close as the card's do
+ *   E8  디테일 카드 위치 (SSOT 2026-11-19): 왼쪽 · 오른쪽 and 위치 잠금 — saved alone and at once, outside 되돌리기;
+ *       the whole-document save leaves the place out
  */
 
 import { describe, expect, it } from 'vitest';
@@ -49,7 +51,7 @@ function fakeEl(id: string): El {
   };
 }
 
-function editor(answer: Record<string, unknown> = {}, opts: { gate?: boolean } = {}) {
+function editor(answer: Record<string, unknown> = {}, opts: { gate?: boolean; refusePlace?: boolean } = {}) {
   const els: Record<string, El> = {};
   const el = (id: string) => (els[id] ??= fakeEl(id));
   for (const id of [
@@ -70,6 +72,12 @@ function editor(answer: Record<string, unknown> = {}, opts: { gate?: boolean } =
     'lay-surface',
     'lay-sample',
     'lay-inbox',
+    'lay-place',
+    'lay-place-left',
+    'lay-place-right',
+    'lay-place-lock',
+    'lay-place-lock-word',
+    'lay-place-lock-hint',
   ])
     el(id);
   const timers: Array<() => void> = [];
@@ -81,6 +89,7 @@ function editor(answer: Record<string, unknown> = {}, opts: { gate?: boolean } =
     querySelector: () => null,
     querySelectorAll: () => [],
     activeElement: null,
+    addEventListener() {},
   };
   const snapshot = {
     userId: 'U1',
@@ -108,8 +117,14 @@ function editor(answer: Record<string, unknown> = {}, opts: { gate?: boolean } =
     },
     clearTimeout: () => {},
     fetch: async () => ({ ok: true, json: async () => snapshot }),
-    apiWrite: async (method: string, url: string, body: { doc: unknown }) => {
+    apiWrite: async (method: string, url: string, body: { doc?: unknown; panel?: unknown }) => {
       puts.push({ method, url, body: JSON.parse(JSON.stringify(body)) });
+      if (url === '/api/settings/dashboard-layout/panel') {
+        if (opts.refusePlace) return { ok: false, error: '관리자 승인을 받은 뒤에 바꿀 수 있습니다' };
+        const doc = { ...((serverDoc as object) ?? snapshot.doc), panel: body.panel };
+        serverDoc = doc;
+        return { ok: true, data: { ok: true, layout: { doc } } };
+      }
       const sent = JSON.parse(JSON.stringify(body.doc));
       if (opts.gate) await new Promise<void>((r) => gates.push(r));
       serverDoc = sent;
@@ -121,7 +136,7 @@ function editor(answer: Record<string, unknown> = {}, opts: { gate?: boolean } =
     ...names,
     `${VIEW_LAYOUT_CLIENT_JS}\n${LAYOUT_CLIENT_JS}\nreturn {
       loadLayout, layMove, layToggle, layOpt, layFlag, laySelect, layDefault, layQuick, layThreadSet, layUndo, layReset,
-      layOnDrop, layOnDragStart, layOnChange, layOnClick, layPaint,
+      layOnDrop, layOnDragStart, layOnChange, layOnClick, layPaint, layPlaceSave, layRefreshPlace,
       get: function(n) { return eval(n); }, set: function(n, v) { eval(n + ' = v'); },
     };`,
   )(...names.map((n) => (inject as Record<string, unknown>)[n]));
@@ -534,5 +549,110 @@ describe('E7 — 상세 카드 세 구역: 타이틀 바 · 탭 바 · 아래 (S
     expect(pv().indexOf('<b>입력 필요</b>')).toBeGreaterThan(pv().indexOf('pv-midbar'));
     expect(pv().indexOf('<b>입력 필요</b>')).toBeGreaterThan(pv().indexOf('검증 규칙 4개를 추가했습니다'));
     expect(pv().indexOf('<b>입력 필요</b>')).toBeLessThan(pv().indexOf('pv-composer'));
+  });
+});
+
+describe('E8 — 디테일 카드 위치: 왼쪽 · 오른쪽 and 위치 잠금 (SSOT 2026-11-19)', () => {
+  const change = (lay: string, value: string, checked = false) => ({
+    target: { getAttribute: (k: string) => (k === 'data-lay' ? lay : null), value, checked },
+  });
+
+  it('the section is in the tab: two pictures as radio buttons, then the lock switch with its hint', () => {
+    expect(LAYOUT_TAB_HTML).toContain('<h2 id="h-lay-place">디테일 카드 위치</h2>');
+    expect(LAYOUT_TAB_HTML).toMatch(
+      /<input type="radio" name="lay-place-side" id="lay-place-left" value="left" data-lay="place-side">/,
+    );
+    expect(LAYOUT_TAB_HTML).toMatch(
+      /<input type="radio" name="lay-place-side" id="lay-place-right" value="right" data-lay="place-side">/,
+    );
+    expect(LAYOUT_TAB_HTML).toMatch(/<input type="checkbox" role="switch" id="lay-place-lock" data-lay="place-lock"/);
+    expect(LAYOUT_TAB_HTML).toContain('<span class="lay-name" id="lay-place-lock-name">위치 잠금</span>');
+    // Before the editor's toolbar: it is a setting of the dashboard, not of a preset.
+    expect(LAYOUT_TAB_HTML.indexOf('id="lay-place"')).toBeLessThan(LAYOUT_TAB_HTML.indexOf('class="lay-bar"'));
+  });
+
+  it('nothing saved: right, unlocked — the hint says the grip moves it', async () => {
+    const { api, els } = editor();
+    await api.loadLayout();
+    expect(els['lay-place-right'].checked).toBe(true);
+    expect(els['lay-place-left'].checked).toBe(false);
+    expect(els['lay-place-lock'].checked).toBe(false);
+    expect(els['lay-place-lock-word'].textContent).toBe('꺼짐');
+    expect(els['lay-place-lock-hint'].textContent).toContain('손잡이를 끌어 반대쪽에 놓을 수 있습니다');
+    expect(els['lay-place'].attrs['data-locked']).toBe('false');
+  });
+
+  it('a saved place shows as saved', async () => {
+    const { api, els } = editor({ doc: { v: 1, panel: { side: 'left', locked: true } } });
+    await api.loadLayout();
+    expect(els['lay-place-left'].checked).toBe(true);
+    expect(els['lay-place-lock'].checked).toBe(true);
+    expect(els['lay-place-lock-word'].textContent).toBe('켜짐');
+    expect(els['lay-place-lock-hint'].textContent).toContain('손잡이가 없고');
+    expect(els['lay-place'].attrs['data-locked']).toBe('true');
+  });
+
+  it('왼쪽 and 잠금 save at once, each alone (PUT …/panel) — no whole-document save, nothing to undo', async () => {
+    const { api, els, puts, flush, stored } = editor();
+    await api.loadLayout();
+    await api.layOnChange(change('place-side', 'left'));
+    expect(puts).toEqual([
+      { method: 'PUT', url: '/api/settings/dashboard-layout/panel', body: { panel: { side: 'left', locked: false } } },
+    ]);
+    expect(els['lay-place-left'].checked).toBe(true);
+    expect(els['lay-status'].textContent).toBe('저장됨');
+    expect(JSON.parse(stored['soma-view-layout']).panel).toEqual({ side: 'left', locked: false });
+    await api.layOnChange(change('place-lock', '', true));
+    expect(puts[1]).toEqual({
+      method: 'PUT',
+      url: '/api/settings/dashboard-layout/panel',
+      body: { panel: { side: 'left', locked: true } },
+    });
+    expect(els['lay-place-lock-word'].textContent).toBe('켜짐');
+    // No whole-document save follows, and 되돌리기 has nothing of it.
+    await flush();
+    expect(puts.filter((x: any) => x.url === '/api/settings/dashboard-layout')).toHaveLength(0);
+    expect(api.get('_layUndo')).toHaveLength(0);
+  });
+
+  it('the layouts’ save leaves the place out (the dashboard may have moved it); 되돌리기 keeps the place', async () => {
+    const { api, puts, flush } = editor({ doc: { v: 1, panel: { side: 'left', locked: false } } });
+    await api.loadLayout();
+    api.layDefault('card', '2');
+    await flush();
+    const whole = puts.find((x: any) => x.url === '/api/settings/dashboard-layout') as any;
+    expect(whole.body.doc).toEqual({ v: 1, active: { card: '2' } });
+    await api.layOnChange(change('place-side', 'right'));
+    api.layUndo();
+    expect(api.get('_layDoc').panel).toEqual({ side: 'right', locked: false });
+    expect(api.get('_layDoc').active).toBeUndefined();
+  });
+
+  it('a refused place goes back to what is saved and says why', async () => {
+    const { api, els } = editor({}, { refusePlace: true });
+    await api.loadLayout();
+    await api.layOnChange(change('place-side', 'left'));
+    expect(els['lay-place-right'].checked).toBe(true);
+    expect(api.get('_layDoc').panel).toEqual({ side: 'right', locked: false });
+    expect(els['lay-status'].textContent).toBe('저장하지 못했습니다 — 관리자 승인을 받은 뒤에 바꿀 수 있습니다');
+  });
+
+  it('a user not yet accepted sees the place, not a control that would be refused', async () => {
+    const { api, els } = editor({ accepted: false });
+    await api.loadLayout();
+    expect(els['lay-place-left'].disabled).toBe(true);
+    expect(els['lay-place-right'].disabled).toBe(true);
+    expect(els['lay-place-lock'].disabled).toBe(true);
+  });
+
+  it('back on the page, a drag made on the dashboard meanwhile shows', async () => {
+    const doc: Record<string, unknown> = { v: 1 };
+    const { api, els } = editor({ doc });
+    await api.loadLayout();
+    expect(els['lay-place-right'].checked).toBe(true);
+    // The server now has the place the dashboard saved.
+    doc.panel = { side: 'left', locked: false };
+    await api.layRefreshPlace();
+    expect(els['lay-place-left'].checked).toBe(true);
   });
 });

@@ -49,7 +49,7 @@ var CHG_NEXT = '다음 파일';
 var CHG_TREE_TOGGLE = '파일 목록';
 var CHG_FULL = '전체 화면';
 var CHG_TO_PANEL = '패널로';
-// .prd/28 §4 — the panel needs 640px left of the card (two line-number columns and the code); the card docks from 840px.
+// .prd/28 §4 — the panel needs 640px beside the card (left of it, or right of it when it docks on the left) (two line-number columns and the code); the card docks from 840px.
 var CHG_PANEL_MIN = 640;
 var CHG_DOCK_AT = 840;
 var CHG_PREF_KEY = 'soma-chg-viewer';
@@ -523,7 +523,7 @@ function chgViewerEl() {
   return d;
 }
 // ── The viewer's two modes (.prd/28 §4) ──
-// Pure: 'panel' beside a docked detail card with CHG_PANEL_MIN on its left, unless the device chose the full screen.
+// Pure: 'panel' beside a docked detail card with CHG_PANEL_MIN beside it (either side), unless the device chose the full screen.
 function chgViewerModeFor(vw, panelW, docked, pref) {
   if (pref === 'full' || !docked || vw < CHG_DOCK_AT) return 'full';
   return vw - panelW >= CHG_PANEL_MIN ? 'panel' : 'full';
@@ -870,6 +870,8 @@ dialog.chg-viewer[open] { display: flex; }
 dialog.chg-viewer::backdrop { background: rgba(0, 0, 0, .4); }
 /* .prd/28 §4 — the panel: where the board is, under the top bar, from the left edge to the docked card's; not modal. */
 dialog.chg-viewer[data-mode="panel"] { inset: var(--topbar-b, 0px) var(--panel-w, 440px) 0 0; width: auto; height: auto; z-index: 99; border-right: 1px solid var(--border); }
+/* The card docked on the left (SSOT 2026-11-19): the board, and so the panel, is on its right. */
+html[data-panel-side="left"] dialog.chg-viewer[data-mode="panel"] { inset: var(--topbar-b, 0px) 0 0 var(--panel-w, 440px); border-right: 0; border-left: 1px solid var(--border); }
 dialog.chg-viewer[data-mode="panel"] .chg-v-tree, dialog.chg-viewer[data-mode="panel"] .chg-v-tree-toggle, dialog.chg-viewer[data-mode="panel"] .chg-v-panel { display: none; }
 dialog.chg-viewer[data-mode="full"] .chg-v-full, dialog.chg-viewer[data-mode="full"]:not([data-fits]) .chg-v-panel { display: none; }
 body:has(dialog.chg-viewer[open][data-mode="panel"]) .new-task-fab { display: none !important; }

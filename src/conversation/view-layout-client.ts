@@ -35,6 +35,16 @@ function detailWithZones(d, b) {
   }
   return out;
 }
+// The detail card's place (SSOT 2026-11-19, view-layout.ts panelPlace): its side beside the board and its lock. A
+// device copy the server would refuse reads as the default — right, unlocked — never as a half-read place.
+function panelPlaceOf(doc) {
+  var p = doc && doc.panel;
+  if (!p || typeof p !== 'object' || Array.isArray(p)) return { side: 'right', locked: false };
+  var side = p.side === undefined ? 'right' : p.side;
+  var locked = p.locked === undefined ? false : p.locked;
+  if ((side !== 'left' && side !== 'right') || typeof locked !== 'boolean') return { side: 'right', locked: false };
+  return { side: side, locked: locked };
+}
 // What a mode draws: the task card (face + open card) from its preset, the detail card from its own.
 function layoutsFor(doc, builtins, mode, plan) {
   var c = layoutPreset(doc, 'card', plan);
