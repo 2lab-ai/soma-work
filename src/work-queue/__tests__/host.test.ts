@@ -3,12 +3,9 @@
  * back a turn its thread stopped working on, drops waiting entries whose thread is gone, and tells the board, the goal
  * loop, the follow-up question and the hand-off where a thread stands.
  */
-import * as fs from 'node:fs';
-import * as os from 'node:os';
-import * as path from 'node:path';
 import { endEntry, enterQueue, type WorkQueueHolder } from 'somalib/work-queue/ledger';
-import { WorkQueueStore } from 'somalib/work-queue/store';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { MemoryWorkQueueStore } from 'somalib/work-queue/memory-store';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { type HolderProbe, WORK_QUEUE_ASKING_GRACE_MS, WORK_QUEUE_IDLE_GRACE_MS, WorkQueueHost } from '../host';
 
 const QUEUES = [{ id: 'qa:dev2', lane: 'qa', env: 'dev2' }];
@@ -16,16 +13,11 @@ const A: WorkQueueHolder = { user: 'U1', channel: 'C1', threadTs: '1.1' };
 const B: WorkQueueHolder = { user: 'U2', channel: 'C1', threadTs: '2.2' };
 const C: WorkQueueHolder = { user: 'U3', channel: 'C1', threadTs: '3.3' };
 
-let dir: string;
-let store: WorkQueueStore;
+// The host's rules run on the in-process store (same contract as the SQLite one), so they are checked on every runtime.
+let store: MemoryWorkQueueStore;
 
 beforeEach(() => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'work-queue-host-'));
-  store = new WorkQueueStore(path.join(dir, 'work-queues.sqlite3'));
-});
-afterEach(() => {
-  store.close();
-  fs.rmSync(dir, { recursive: true, force: true });
+  store = new MemoryWorkQueueStore();
 });
 
 type Outcome = 'injected' | 'expired' | 'gone';

@@ -46,7 +46,7 @@ import type { LiveUsageCall } from '@soma/slack/live-usage';
 import * as path from 'path';
 import { CronStorage } from 'somalib/cron/cron-storage';
 import { parseWorkQueuesConfig } from 'somalib/work-queue/config';
-import { WORK_QUEUE_FILE, WorkQueueStore } from 'somalib/work-queue/store';
+import { WORK_QUEUE_FILE, WorkQueueStore, workQueueStoreAvailable } from 'somalib/work-queue/store';
 import {
   initA2tService,
   initDictationA2tService,
@@ -2296,40 +2296,45 @@ async function start() {
       },
       logger,
     });
-    const workQueueHost = new WorkQueueHost({
-      store: new WorkQueueStore(path.join(DATA_DIR, WORK_QUEUE_FILE)),
-      probe: (holder) => {
-        const s = envWakeRegistry.getSessionByKey(envWakeRegistry.getSessionKey(holder.channel, holder.threadTs));
-        if (!s || s.terminated || s.state === 'SLEEPING') return { exists: false };
-        return {
-          exists: true,
-          activity: s.activityState,
-          // A hand-off that just ended restarts the idle clock: its result's wake is on the way.
-          activityChangedAt: Math.max(
-            Number(s.activityStateChangedAt) || 0,
-            envHandoffRuns.lastEndedAt(holder.channel, holder.threadTs) ?? 0,
-          ),
-          handoffActive: envHandoffRuns.isRunning(holder.channel, holder.threadTs),
-        };
-      },
-      deliver: (holder, text, done, current) => {
-        const key = envWakeRegistry.getSessionKey(holder.channel, holder.threadTs);
-        // `false` = refused at once (the session is gone): the delivery never calls `done` then.
-        void workQueueDelivery
-          .deliver(key, text, done, current, holder.user)
-          .then((queued) => {
-            if (!queued) done('gone');
-          })
-          .catch(() => done('gone'));
-      },
-      post: (holder, text) =>
-        slackHandler
-          .getSlackApi()
-          .postMessage(holder.channel, text, { threadTs: holder.threadTs })
-          .catch(() => undefined),
-    });
-    setActiveWorkQueueHost(workQueueHost);
-    workQueueHost.start();
+    // Without node:sqlite (Node < 22.5) there is no shared ledger: the host keeps no work queue and the tools say so.
+    if (workQueueStoreAvailable()) {
+      const workQueueHost = new WorkQueueHost({
+        store: new WorkQueueStore(path.join(DATA_DIR, WORK_QUEUE_FILE)),
+        probe: (holder) => {
+          const s = envWakeRegistry.getSessionByKey(envWakeRegistry.getSessionKey(holder.channel, holder.threadTs));
+          if (!s || s.terminated || s.state === 'SLEEPING') return { exists: false };
+          return {
+            exists: true,
+            activity: s.activityState,
+            // A hand-off that just ended restarts the idle clock: its result's wake is on the way.
+            activityChangedAt: Math.max(
+              Number(s.activityStateChangedAt) || 0,
+              envHandoffRuns.lastEndedAt(holder.channel, holder.threadTs) ?? 0,
+            ),
+            handoffActive: envHandoffRuns.isRunning(holder.channel, holder.threadTs),
+          };
+        },
+        deliver: (holder, text, done, current) => {
+          const key = envWakeRegistry.getSessionKey(holder.channel, holder.threadTs);
+          // `false` = refused at once (the session is gone): the delivery never calls `done` then.
+          void workQueueDelivery
+            .deliver(key, text, done, current, holder.user)
+            .then((queued) => {
+              if (!queued) done('gone');
+            })
+            .catch(() => done('gone'));
+        },
+        post: (holder, text) =>
+          slackHandler
+            .getSlackApi()
+            .postMessage(holder.channel, text, { threadTs: holder.threadTs })
+            .catch(() => undefined),
+      });
+      setActiveWorkQueueHost(workQueueHost);
+      workQueueHost.start();
+    } else {
+      logger.warn('Work queue off: this Node has no node:sqlite (needs >= 22.5)');
+    }
     setStreamExecutorProviders({
       handOffEnvironmentSkill: createEnvSkillHandoffHost({
         handler: new SkillForceHandler(undefined, {

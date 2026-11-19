@@ -8,7 +8,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { emptyLedger, enterQueue } from './ledger';
-import { WORK_QUEUE_FILE, WorkQueueStore } from './store';
+import { WORK_QUEUE_FILE, WorkQueueStore, workQueueStoreAvailable } from './store';
 
 const QUEUES = [{ id: 'qa:dev2', lane: 'qa', env: 'dev2' }];
 const A = { user: 'U1', channel: 'C1', threadTs: '1.1' };
@@ -36,7 +36,8 @@ afterEach(() => {
 const enterA = (store: WorkQueueStore, key = 'ABC-1', threadTs = '1.1') =>
   store.mutate((l) => enterQueue(l, { queue: 'qa:dev2', keys: [key], holder: { ...A, threadTs } }, QUEUES, 1_000));
 
-describe('WorkQueueStore', () => {
+// node:sqlite needs Node >= 22.5; on an older runtime the host keeps no work queue (the tools say so).
+describe.skipIf(!workQueueStoreAvailable())('WorkQueueStore', () => {
   it('is a SQLite file in the data dir', () => {
     expect(WORK_QUEUE_FILE).toBe('work-queues.sqlite3');
   });

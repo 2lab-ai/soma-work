@@ -28,7 +28,7 @@ import {
   queueViews,
   type WorkQueueHolder,
 } from '@soma/process-shared/work-queue/ledger.js';
-import { WORK_QUEUE_FILE, WorkQueueStore } from '@soma/process-shared/work-queue/store.js';
+import { WORK_QUEUE_FILE, WorkQueueStore, workQueueStoreAvailable } from '@soma/process-shared/work-queue/store.js';
 
 const logger = new StderrLogger('WorkQueueMCP');
 
@@ -117,6 +117,8 @@ export interface WorkQueueToolsDeps {
   /** The calling thread; undefined when the host gave none. */
   context: WorkQueueHolder | undefined;
   now: () => number;
+  /** False when this runtime cannot keep the ledger (no `node:sqlite`): the queue is off. Default: available. */
+  available?: () => boolean;
 }
 
 /** Every answer: JSON with `ok`, and `next` — what the model does now, in one line. */
@@ -203,6 +205,13 @@ export function createWorkQueueTools(deps: WorkQueueToolsDeps): {
 
   return {
     call(name, args) {
+      if (deps.available && !deps.available()) {
+        return fail(
+          'QUEUE_UNAVAILABLE',
+          "This host's runtime cannot keep the work queue (its Node has no node:sqlite).",
+          'Go on without a line: this host keeps no work queue.',
+        );
+      }
       let queues: readonly WorkQueueDef[];
       try {
         queues = deps.queues();
@@ -296,6 +305,7 @@ class WorkQueueMcpServer extends BaseMcpServer {
       queues: readWorkQueuesFromConfigFile(process.env.SOMA_CONFIG_FILE),
       context: parseContext(process.env.SOMA_WORK_QUEUE_CONTEXT),
       now: () => Date.now(),
+      available: workQueueStoreAvailable,
     });
   }
 

@@ -4,12 +4,13 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { WorkQueueStore } from '@soma/process-shared/work-queue/store.js';
+import { MemoryWorkQueueStore } from '@soma/process-shared/work-queue/memory-store.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createWorkQueueTools, readWorkQueuesFromConfigFile, WORK_QUEUE_TOOLS } from './work-queue-mcp-server';
 
 let dir: string;
-let store: WorkQueueStore;
+// The tools run on the in-process store (same contract as the SQLite one), so they are checked on every runtime.
+let store: MemoryWorkQueueStore;
 const QUEUES = [
   { id: 'qa:dev2', lane: 'qa', env: 'dev2' },
   { id: 'deploy:dev2', lane: 'deploy', env: 'dev2' },
@@ -17,12 +18,9 @@ const QUEUES = [
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'work-queue-mcp-'));
-  store = new WorkQueueStore(path.join(dir, 'work-queues.sqlite3'));
+  store = new MemoryWorkQueueStore();
 });
-afterEach(() => {
-  store.close();
-  fs.rmSync(dir, { recursive: true, force: true });
-});
+afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
 function tools(threadTs: string, queues = QUEUES, now = 1_000) {
   return createWorkQueueTools({
@@ -135,7 +133,21 @@ describe('work-queue MCP tools', () => {
   it('bad arguments are refused before the ledger is touched', () => {
     expect(tools('1.1').call('queue_done', {})).toMatchObject({ ok: false, code: 'INVALID_ARGS' });
     expect(tools('1.1').call('queue_enter', { keys: ['ABC-1'] })).toMatchObject({ ok: false, code: 'INVALID_ARGS' });
-    expect(fs.existsSync(path.join(dir, 'work-queues.sqlite3'))).toBe(false);
+    expect(store.stamp()).toBeUndefined();
+  });
+
+  it('a runtime that cannot keep the ledger says so on every tool — the queue is off there', () => {
+    const t = createWorkQueueTools({
+      store,
+      queues: () => QUEUES,
+      context: { user: 'U1', channel: 'C1', threadTs: '1.1' },
+      now: () => 1,
+      available: () => false,
+    });
+    const r = t.call('queue_enter', { queue: 'qa:dev2', keys: ['ABC-1'] });
+    expect(r).toMatchObject({ ok: false, code: 'QUEUE_UNAVAILABLE' });
+    expect(t.call('queue_list', {})).toMatchObject({ ok: false, code: 'QUEUE_UNAVAILABLE' });
+    expect(store.stamp()).toBeUndefined();
   });
 
   it('a call from no thread is refused (the host gives every session its thread)', () => {

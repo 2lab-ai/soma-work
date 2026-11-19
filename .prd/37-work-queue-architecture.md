@@ -96,6 +96,10 @@ interface WorkQueueEnded extends WorkQueueEntry { endedAt: number; end: 'done' |
 - `read()`: 커밋된 원장(WAL이라 쓰는 중에도 기다리지 않는다). 행이 없으면 빈 원장. 모양이 틀리면(레코드 하나라도) 오류 —
   빈 원장으로 떨어뜨리지 않는다(rules/config.md 4).
 - `stamp()`: `rev`. 커밋마다 바뀐다 — 호스트는 바뀌었을 때만 다시 읽는다.
+- `node:sqlite`는 Node 22.5부터다. 그보다 낮은 런타임(CI의 Node 20, 옛 Docker 이미지)에서는 공유 원장을 둘 수 없으므로 작업 큐를
+  끈다: 호스트는 `WorkQueueHost`를 만들지 않고, 도구는 `QUEUE_UNAVAILABLE`(줄 없이 진행)을 답한다. 호스트 · MCP 테스트는 같은
+  계약의 메모리 저장소(`memory-store.ts`)로 돌아 모든 런타임에서 규칙을 검사하고, SQLite 저장소 테스트만 그 런타임에서
+  건너뛴다(metrics 저장소와 같은 방식).
 
 처음 구현(2026-11-19 R0–R2)은 JSON 파일 + 직접 만든 잠금 파일이었다. 리뷰가 오래된 잠금 탈취에서 PID 재사용 · 복구 경합을
 거듭 찾아 SQLite로 옮겼다(.prd/36 D4).

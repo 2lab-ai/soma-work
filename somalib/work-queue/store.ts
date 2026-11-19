@@ -21,6 +21,28 @@ import { emptyLedger, isWorkQueueLedger, type WorkQueueLedger } from './ledger';
 
 export const WORK_QUEUE_FILE = 'work-queues.sqlite3';
 
+type SqliteModule = typeof import('node:sqlite');
+let sqlite: SqliteModule | null | undefined;
+
+function loadSqlite(): SqliteModule | null {
+  if (sqlite !== undefined) return sqlite;
+  try {
+    // biome-ignore lint/style/noCommonJs: optional builtin, absent before Node 22.5 (as in the metrics store)
+    sqlite = require('node:sqlite') as SqliteModule;
+  } catch {
+    sqlite = null;
+  }
+  return sqlite;
+}
+
+/**
+ * True when this runtime can keep the ledger (`node:sqlite`, Node >= 22.5). Without it the host keeps no work queue
+ * and the tools say so (`QUEUE_UNAVAILABLE`) — a per-process fallback could not be shared between sessions.
+ */
+export function workQueueStoreAvailable(): boolean {
+  return loadSqlite() !== null;
+}
+
 export interface WorkQueueStoreOptions {
   /** How long a writer waits for another writer's transaction. */
   busyTimeoutMs?: number;
@@ -104,10 +126,10 @@ export class WorkQueueStore {
 
   private open(): DatabaseSync {
     if (this.db) return this.db;
+    const sqliteModule = loadSqlite();
+    if (!sqliteModule) throw new Error('QUEUE_UNAVAILABLE: this runtime has no node:sqlite (Node >= 22.5)');
     fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
-    // biome-ignore lint/style/noCommonJs: builtin loaded on first use, as the metrics store does
-    const { DatabaseSync: Database } = require('node:sqlite') as typeof import('node:sqlite');
-    const db = new Database(this.filePath);
+    const db = new sqliteModule.DatabaseSync(this.filePath);
     try {
       db.exec(`PRAGMA busy_timeout = ${Math.max(0, Math.floor(this.busyTimeoutMs))}`);
       // Switching a new file to WAL and creating the table take a lock SQLite does not wait for (its deadlock rule):
