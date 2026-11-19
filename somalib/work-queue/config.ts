@@ -28,7 +28,7 @@ function legacyTarget(raw: string): string {
 
 /**
  * A queue name as a model writes it, read the way the config reads environments: lower case, and the environment
- * without a `refs/heads/` or `deploy/` prefix — `deploy:deploy/dev2` and `deploy:DEV2` are `deploy:dev2`.
+ * without a `refs/heads/` or `deploy/` prefix — `deploy:deploy/<env>` and `deploy:<ENV>` are `deploy:<env>`.
  */
 export function normalizeQueueId(raw: string): string {
   const text = raw.trim().toLowerCase();
