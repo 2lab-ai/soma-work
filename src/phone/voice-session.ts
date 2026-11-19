@@ -14,8 +14,10 @@ import type { CallSessionLike, SessionLike } from './koreaaitel';
 import {
   dtmfCue,
   HANG_UP_TOOL,
+  HANGUP_CANCELLED_CUE,
   INBOUND_CUE,
   isBareGreeting,
+  isGoodbye,
   OPENING_CUE,
   SEND_DTMF_TOOL,
   SILENCE_CUE,
@@ -125,6 +127,8 @@ export class CallRun {
 
   private hangupRequested = false;
   private hangupTimer: unknown = null;
+  /** The next words to the dialog carry HANGUP_CANCELLED_CUE: the model had called hang_up. */
+  private resumeAfterHangup = false;
   private ended = false;
   private readonly timers = new Set<unknown>();
   private silenceTimer: unknown = null;
@@ -474,7 +478,12 @@ export class CallRun {
       this.heldPeer.push(text);
       return;
     }
-    if (this.hangupRequested) return;
+    if (this.hangupRequested) {
+      // Words after the agent's goodbye: a goodbye back lets the call end; anything else is a new turn (seen on a real
+      // call: "내가 물어본 거 대답하라고" was dropped and the line hung up on the caller).
+      if (isGoodbye(text)) return;
+      this.cancelHangup();
+    }
     // The reply's first sentence reaches the speech engine in ~1 s (first tokens). Wake it now — not earlier: on the
     // voice host the wake-up would compete with this transcription (measured: STT 0.9 s → 2.5 s).
     this.warmEngine();
@@ -493,6 +502,10 @@ export class CallRun {
     if (!this.dialog || this.ended) return;
     // A turn is coming: the line is not quiet. Whoever ends that turn arms the timer again.
     this.clearSilence();
+    if (this.resumeAfterHangup) {
+      this.resumeAfterHangup = false;
+      text = `${HANGUP_CANCELLED_CUE}\n${text}`;
+    }
     if (!this.generating) {
       this.turnStartAt = this.now();
       this.firstTokenAt = 0;
@@ -655,6 +668,19 @@ export class CallRun {
   }
 
   // ── ending ──────────────────────────────────────────────────
+
+  /** The other side spoke on after the agent's goodbye: the call goes on, and the model hears why. */
+  private cancelHangup(): void {
+    this.hangupRequested = false;
+    this.dropAfterHangup = false;
+    if (this.hangupTimer !== null) {
+      this.clearTimer(this.hangupTimer);
+      this.timers.delete(this.hangupTimer);
+      this.hangupTimer = null;
+    }
+    this.resumeAfterHangup = true;
+    this.work({ kind: 'event', at: this.now(), text: '끊기 취소 — 상대가 말을 이어감' });
+  }
 
   /** After `hang_up`: wait for the queue and the playback, then put the phone down. */
   private finishWhenQuiet(): void {

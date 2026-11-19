@@ -852,4 +852,40 @@ describe('CallRun — never over the caller, and a quick "네."', () => {
     expect(s.spoken).not.toContain('네');
     expect(s.record.transcript.filter((l) => l.role === 'agent' && l.text.startsWith('네'))).toHaveLength(1);
   });
+  /** The agent says goodbye and calls hang_up; its goodbye is playing when the caller speaks again. */
+  async function afterGoodbye(lastWords: string) {
+    const s = await inboundTalking(['고마워요', lastWords]);
+    s.dialog().emit({ type: 'text_delta', text: '네, 들어가세요. ' });
+    await s.dialog().tool('hang_up').handler({ reason: 'done' });
+    s.dialog().emit({ type: 'tool_use', name: 'hang_up', input: {} });
+    s.dialog().emit({ type: 'turn_end', isError: false });
+    await settleAll();
+    expect(s.call.hungUp).toBe(0);
+    s.run.feedAudio(tone(600, 0.3));
+    s.run.feedAudio(quiet(600));
+    await settleAll();
+    return s;
+  }
+
+  it('words after the agent decided to hang up cancel the hang-up and get an answer', async () => {
+    const s = await afterGoodbye('내가 물어본 거 대답하라고');
+    const last = s.dialog().sent[s.dialog().sent.length - 1];
+    expect(last).toContain('내가 물어본 거 대답하라고');
+    expect(last).toContain('[시스템:'); // the model is told the call goes on
+    expect(s.record.work.some((w) => w.kind === 'event' && w.text.includes('끊기 취소'))).toBe(true);
+    s.clock.advance(5000);
+    await settleAll();
+    expect(s.call.hungUp).toBe(0); // the line stays up
+    s.dialog().reply('죄송해요, 밥은 못 먹지만 잘 지내요.');
+    await settleAll();
+    expect(s.spoken).toContain('죄송해요, 밥은 못 먹지만 잘 지내요.');
+  });
+
+  it("a goodbye back after the agent's goodbye still ends the call", async () => {
+    const s = await afterGoodbye('네 감사합니다');
+    expect(s.dialog().sent).not.toContain('네 감사합니다');
+    s.clock.advance(5000);
+    await settleAll();
+    expect(s.call.hungUp).toBe(1);
+  });
 });
