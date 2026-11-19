@@ -378,9 +378,12 @@ export function migrateOpusDefaultModel(model: string): string {
 // alias, `claude-opus-5-5[1m]` today — since 2026-11-19 (owner instruction;
 // it followed the `gpt` alias, gpt-5.6-sol, from 2026-07-10, and was
 // opus[1m] before that). Bumping MODEL_ALIASES.opus propagates here
-// automatically. Only the IN-CODE default moved: stored user choices are not
-// rewritten. It reaches brand-new users, users with no stored default, and
+// automatically. It reaches brand-new users, users with no stored default, and
 // stored or session values that no longer resolve (coerceToAvailableModel).
+// Users whose SAVED default was the old one (gpt-5.6-sol — the store writes
+// DEFAULT_MODEL into every record it creates) or the retired gpt-5.5 were
+// moved to opus once on 2026-11-19 (deploy/migrate-default-gpt-to-opus-once.ts);
+// every other saved choice is kept, and a user may switch back.
 // The `??` literal is a defence-in-depth fallback for the (test-asserted)
 // case where the alias is ever dropped; the Issue #656 exact-set test fails
 // loud at CI time before that branch matters. deploy/main-env-bootstrap.ts

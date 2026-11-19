@@ -29,7 +29,10 @@ soma-work (Slack multi-tenant AI Assistant) 아키텍처 문서. 2026-06-10 기�
 | Socket Watchdog | Socket Mode 헬스 모니터 | `src/slack-socket-watchdog.ts` |
 
 부트스트랩 초반(`acquirePidLock(DATA_DIR)` 이후, 세션 복원 `slackHandler.loadSavedSessions()` 이전)에는 `src/deploy/`의
-1회성 이관이 순서대로 돈다. 전 유저 opus 기본 모델 이관 바로 다음이 `migrate-all-users-minimal-once.ts`로, 모든 유저의
+1회성 이관이 순서대로 돈다. 전 유저 opus 기본 모델 이관 바로 다음이 `migrate-default-gpt-to-opus-once.ts`로, 저장된
+기본 모델이 예전 기본값 `gpt-5.6-sol`(또는 빠진 `gpt-5.5`)인 유저만 `MODEL_ALIASES.opus`로 옮긴다(2026-11-19, 마커
+`.default-gpt-to-opus-once-2026-11-19.json`, 같은 존재 확인·마커 먼저 방식, `sessions.json`은 건드리지 않음). 그다음이
+`migrate-all-users-minimal-once.ts`로, 모든 유저의
 `defaultLogVerbosity`를 `minimal`로, `sessions.json`의 모든 세션 마스크를 `LOG_MINIMAL`로 바꾼다. 마커
 (`.all-users-log-minimal-once-2026-10-16.json`)는 존재만 확인하고 데이터보다 먼저 기록하므로 다시 돌지 않으며, 이후 유저가
 바꾼 값은 덮지 않는다. 세션 복원보다 먼저 돌기 때문에 복원된 세션은 바뀐 마스크를 읽는다.

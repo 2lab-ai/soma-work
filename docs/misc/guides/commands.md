@@ -279,8 +279,11 @@ accepted (model set, session model, `/autocompact`) with a visible
 
 The default model is `opus` (`claude-opus-5-5[1m]`) since 2026-11-19; it was
 `gpt-5.6-sol` before. It applies to new users, users with no stored default,
-and a stored or session model that no longer resolves. A model a user already
-chose is not changed.
+and a stored or session model that no longer resolves. Users whose saved
+default was still the old default (`gpt-5.6-sol`, or the retired `gpt-5.5`)
+were moved to opus once on 2026-11-19; anyone can switch back with
+`model set gpt-5.6-sol` (or `gpt`). Every other saved model was left as it
+was, and running sessions keep their model.
 
 `gpt-5.5` (and its `gpt5.5` alias) was retired on 2026-11-19: the Codex
 backend no longer serves it to ChatGPT accounts. Typing it is refused with a

@@ -21,7 +21,8 @@
  * changed by this module: brand-new users after this boot still got the gpt
  * flagship (gpt-5.6-sol). Since 2026-11-19 DEFAULT_MODEL is opus itself (it
  * follows `MODEL_ALIASES.opus`, user-settings-store.ts), so brand-new users
- * now get opus too — that change rewrote no stored user choice.
+ * now get opus too, and `migrate-default-gpt-to-opus-once.ts` moved the users
+ * whose saved default was still gpt-5.6-sol (or the retired gpt-5.5) once.
  *
  * Ordering — MARKER FIRST:
  *   1. read + shape-validate `user-settings.json`; an unreadable or mis-shaped

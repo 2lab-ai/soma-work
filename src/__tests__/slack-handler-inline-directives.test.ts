@@ -167,6 +167,47 @@ describe('SlackHandler — inline %model / %nogoal directives', () => {
     expect(registrySession.model).toBeUndefined();
   });
 
+  it('`%model gpt-5.5 {instruction}`: a REFUSED model posts the reason + suggestion, nothing dispatched', async () => {
+    // Real refusal text (model-profile RETIRED_MODEL_INPUTS), not "Unknown model".
+    vi.mocked(userSettingsStore.resolveModelInputDetailedWithRefresh).mockResolvedValueOnce({
+      status: 'rejected',
+      rejectedReason:
+        '`gpt-5.5` was retired on 2026-11-19 — the Codex backend no longer serves it to ChatGPT accounts.',
+      suggestedModel: 'gpt-5.6-sol',
+    });
+    const say = vi.fn().mockResolvedValue({ ts: 'msg' });
+    await handler.handleMessage(
+      { user: 'U123', channel: 'C123', ts: '111.222', text: '%model gpt-5.5 do the thing' } as Parameters<
+        SlackHandler['handleMessage']
+      >[0],
+      say,
+    );
+
+    const errCall = postSystemMessage.mock.calls.find((c: unknown[]) => String(c[1]).includes('gpt-5.5'));
+    expect(errCall, 'refusal should be posted').toBeDefined();
+    expect(String(errCall?.[1])).toContain('retired on 2026-11-19');
+    expect(String(errCall?.[1])).toContain('`gpt-5.6-sol`');
+    expect(String(errCall?.[1])).not.toContain('Unknown model');
+    expect(initialize).not.toHaveBeenCalled();
+    expect(startWithContinuation).not.toHaveBeenCalled();
+    expect(registrySession.model).toBeUndefined();
+  });
+
+  it('`%model gpt-5.5` against the REAL store resolver is refused too (no stub)', async () => {
+    vi.mocked(userSettingsStore.resolveModelInputDetailedWithRefresh).mockRestore();
+    const say = vi.fn().mockResolvedValue({ ts: 'msg' });
+    await handler.handleMessage(
+      { user: 'U123', channel: 'C123', ts: '111.222', text: '%model gpt-5.5 do the thing' } as Parameters<
+        SlackHandler['handleMessage']
+      >[0],
+      say,
+    );
+
+    const errCall = postSystemMessage.mock.calls.find((c: unknown[]) => String(c[1]).includes('gpt-5.5'));
+    expect(String(errCall?.[1])).toContain('retired on 2026-11-19');
+    expect(startWithContinuation).not.toHaveBeenCalled();
+  });
+
   it('bare `%nogoal` (no instruction): usage hint, nothing dispatched', async () => {
     const say = vi.fn().mockResolvedValue({ ts: 'msg' });
     await handler.handleMessage({ user: 'U123', channel: 'C123', ts: '111.222', text: '%nogoal' } as any, say);
