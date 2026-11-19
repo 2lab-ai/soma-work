@@ -8,13 +8,13 @@ PR https://github.com/2lab-ai/soma-work/pull/1380 · 이슈 https://github.com/2
 
 | ID | 작업 단위 | Status | 다음 |
 |---|---|---|---|
-| W1 | 원장: keys · config · ledger · store (`@soma/process-shared/work-queue`) | 🔴 | TDD |
-| W2 | MCP 서버 `work-queue` + 리졸버 · config builder · 패키지 등록 | 🔴 | W1 뒤 |
-| W3 | 호스트 `WorkQueueHost` + index.ts 조립 | 🔴 | W1 뒤 |
-| W4 | 옛 장치 제거: #726 게이트(세션 초기화 · 액션 · 블록 · `workQueueId`) · v1 `env-run-queue` | 🔴 | W3와 같이 |
-| W5 | hand-off 추적 + 끝 = `whenFree` · 목표 루프 · 후속 질문 술어 | 🔴 | W3 뒤 |
-| W6 | 보드: `queueWait` 서버 · 클라이언트 · 보라 태그 · i18n | 🔴 | W5 뒤 |
-| W7 | 레인 소비자: `deploy.prompt` · `deploy-qa` · RUN_ENV_SKILL 설명 · CLAUDE.md · architecture.md | 🔴 | W2 뒤 |
+| W1 | 원장: keys · config · ledger · store (`somalib/work-queue`, process-shared 재export) | 🟡 | 커밋 1b52498e(+005b9002 이동). 테스트 40 GREEN. 머지 대기 |
+| W2 | MCP 서버 `work-queue` + 리졸버 · config builder · 패키지 등록 | 🟡 | 커밋 7e6e93ce. 테스트 12 + e2e 11 GREEN, stdio 스모크(running · UNKNOWN_QUEUE). 머지 대기 |
+| W3 | 호스트 `WorkQueueHost`(`src/work-queue/host.ts`) + index.ts 조립 | 🟡 | 커밋 005b9002. host 13 · host-wait 4 GREEN. 실측은 W9 |
+| W4 | 옛 장치 제거: #726 게이트(세션 초기화 · 액션 · 블록 · `workQueueId`) · v1 `env-run-queue` | 🟡 | 커밋 005b9002. 옛 카드 버튼은 "만료" 응답 |
+| W5 | hand-off 추적 + 끝 = `whenFree` · 목표 루프 · 후속 질문 술어 | 🟡 | 커밋 005b9002. hand-off 48 GREEN(v1 때 깨지던 env-skill-handoff-host 6건 포함) |
+| W6 | 보드: `queueWait` 서버 · 클라이언트 · 보라 태그 · i18n | 🟡 | 커밋 005b9002. 화면 실측은 W9 |
+| W7 | 레인 소비자: `deploy.prompt` · `deploy-qa` · RUN_ENV_SKILL 설명 · CLAUDE.md · architecture.md | 🟡 | 커밋 6d9aa65f. 257 GREEN |
 | W8 | 게이트: tsc · biome · vitest 전체 · 리뷰 · PR 본문 | 🔴 | 모두 뒤 |
 | W9 | 배포 · 설정: 소유자 dev 호스트 `{"deploy":["dev"],"qa":["dev"]}`, 고객 dev 호스트 `dev2` · `stage0` → 실측(A2–A5) | 🔴 | 머지 뒤 |
 
