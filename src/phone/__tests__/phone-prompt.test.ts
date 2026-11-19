@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildCallSystemPrompt, formatPhoneNumber, isBareGreeting } from '../phone-prompt';
+import { buildCallSystemPrompt, formatPhoneNumber, isBareGreeting, isGoodbye } from '../phone-prompt';
 
 describe('buildCallSystemPrompt (.prd/30 D5)', () => {
   const now = new Date('2026-11-17T06:30:00Z');
@@ -62,5 +62,47 @@ describe('isBareGreeting', () => {
     expect(isBareGreeting('여보세요?')).toBe(true);
     expect(isBareGreeting('네.')).toBe(true);
     expect(isBareGreeting('네, 누구세요?')).toBe(false);
+  });
+});
+
+describe('isGoodbye', () => {
+  it('knows a goodbye or thanks back', () => {
+    for (const t of [
+      '네 감사합니다',
+      '네네, 수고하세요!',
+      '고마워요',
+      '안녕히 계세요.',
+      '네, 들어가세요',
+      '그럼 끊을게요',
+      '응 안녕',
+      '응, 끊을게',
+      '응 고마워 끊을게',
+      '네 끊을께요',
+      '그래 잘 가',
+    ])
+      expect(isGoodbye(t), t).toBe(true);
+  });
+  it('anything that asks or says more is not a goodbye', () => {
+    for (const t of [
+      '내가 물어본 거 대답하라고',
+      '잠깐만요',
+      '네 근데 하나만 더요',
+      '감사한데 질문 있어요',
+      '밥 먹었어?',
+    ])
+      expect(isGoodbye(t), t).toBe(false);
+  });
+});
+
+describe('call rules', () => {
+  it('answer a question first, and read an odd transcript by its likely meaning', () => {
+    const p = buildCallSystemPrompt({
+      direction: 'outbound',
+      peerNumber: '01000000000',
+      ourNumber: '07000000000',
+      maxMinutes: 5,
+    });
+    expect(p).toContain('상대가 묻거나 부탁하면 그것부터');
+    expect(p).toContain('발음이 비슷한');
   });
 });

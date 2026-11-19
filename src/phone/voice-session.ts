@@ -14,8 +14,10 @@ import type { CallSessionLike, SessionLike } from './koreaaitel';
 import {
   dtmfCue,
   HANG_UP_TOOL,
+  HANGUP_CANCELLED_CUE,
   INBOUND_CUE,
   isBareGreeting,
+  isGoodbye,
   OPENING_CUE,
   SEND_DTMF_TOOL,
   SILENCE_CUE,
@@ -32,6 +34,10 @@ const OPEN_AFTER_SILENCE_MS = 1200;
 const SILENCE_NUDGE_MS = 15_000;
 /** After `hang_up`, the line is held this long past the estimated end of playback, so the goodbye is heard. */
 const HANGUP_TAIL_MS = 600;
+/** A hang-up waiting for the other side to finish talking looks again this often. */
+const HANGUP_FLOOR_RECHECK_MS = 250;
+/** No audio from the other side for this long: a hang-up stops waiting for them. */
+const HANGUP_MEDIA_STALL_MS = 2_000;
 /** After the time-up cue the agent gets this long to say goodbye before the line is cut. */
 const TIME_UP_GRACE_MS = 25_000;
 /**
@@ -119,12 +125,16 @@ export class CallRun {
   /** The lines whose audio is (partly) in floorHeld: unheard if it is dropped. */
   private heldLines: Array<{ text: string; at: number; role: 'agent'; interrupted?: boolean }> = [];
   private transcribing = 0;
+  /** When the other side's audio last arrived (a hang-up does not wait on a stalled stream). */
+  private lastAudioAt = 0;
   /** The start of the reply being written, until it is known whether it opens with "네,". */
   private openerOpen = false;
   private openerBuf = '';
 
   private hangupRequested = false;
   private hangupTimer: unknown = null;
+  /** The next words to the dialog carry HANGUP_CANCELLED_CUE: the model had called hang_up. */
+  private resumeAfterHangup = false;
   private ended = false;
   private readonly timers = new Set<unknown>();
   private silenceTimer: unknown = null;
@@ -180,6 +190,7 @@ export class CallRun {
 
   feedAudio(ulaw: Buffer): void {
     if (this.ended || !this.answered) return;
+    this.lastAudioAt = this.now();
     const pcm = this.deps.ulawToPcm16(ulaw);
     // Held audio is not playing: nothing of the agent's can echo back while the other side has the floor.
     for (const ev of this.vad.push(pcm, this.agentSpeaking() && !this.floorHeld.length)) {
@@ -474,7 +485,12 @@ export class CallRun {
       this.heldPeer.push(text);
       return;
     }
-    if (this.hangupRequested) return;
+    if (this.hangupRequested) {
+      // Words after the agent's goodbye: a goodbye back lets the call end; anything else is a new turn (seen on a real
+      // call: "내가 물어본 거 대답하라고" was dropped and the line hung up on the caller).
+      if (isGoodbye(text)) return;
+      this.cancelHangup();
+    }
     // The reply's first sentence reaches the speech engine in ~1 s (first tokens). Wake it now — not earlier: on the
     // voice host the wake-up would compete with this transcription (measured: STT 0.9 s → 2.5 s).
     this.warmEngine();
@@ -493,6 +509,10 @@ export class CallRun {
     if (!this.dialog || this.ended) return;
     // A turn is coming: the line is not quiet. Whoever ends that turn arms the timer again.
     this.clearSilence();
+    if (this.resumeAfterHangup) {
+      this.resumeAfterHangup = false;
+      text = `${HANGUP_CANCELLED_CUE}\n${text}`;
+    }
     if (!this.generating) {
       this.turnStartAt = this.now();
       this.firstTokenAt = 0;
@@ -656,6 +676,19 @@ export class CallRun {
 
   // ── ending ──────────────────────────────────────────────────
 
+  /** The other side spoke on after the agent's goodbye: the call goes on, and the model hears why. */
+  private cancelHangup(): void {
+    this.hangupRequested = false;
+    this.dropAfterHangup = false;
+    if (this.hangupTimer !== null) {
+      this.clearTimer(this.hangupTimer);
+      this.timers.delete(this.hangupTimer);
+      this.hangupTimer = null;
+    }
+    this.resumeAfterHangup = true;
+    this.work({ kind: 'event', at: this.now(), text: '끊기 취소 — 상대가 말을 이어감' });
+  }
+
   /** After `hang_up`: wait for the queue and the playback, then put the phone down. */
   private finishWhenQuiet(): void {
     if (this.ended || !this.hangupRequested) return;
@@ -666,12 +699,22 @@ export class CallRun {
       this.clearTimer(this.hangupTimer);
       this.timers.delete(this.hangupTimer);
     }
-    this.hangupTimer = this.later(() => {
+    const attempt = () => {
       this.hangupTimer = null;
-      if (this.ended) return;
+      if (this.ended || !this.hangupRequested) return;
       if (this.speaking || this.queue.length) return;
+      // The other side is talking over the goodbye, or its words are being transcribed: they decide — a goodbye back
+      // ends the call, anything else cancels the hang-up (transcribe). Seen on a mock call: the line was put down
+      // while the caller was still saying "잠깐만, 내가 물어본 거 대답해 줘".
+      // A stream that stopped mid-word (VAD still "in speech", no audio coming) does not hold the line open.
+      const talking = this.vad.speaking && this.now() - this.lastAudioAt < HANGUP_MEDIA_STALL_MS;
+      if (talking || this.transcribing > 0) {
+        this.hangupTimer = this.later(attempt, HANGUP_FLOOR_RECHECK_MS);
+        return;
+      }
       void this.call?.hangup().catch((err) => this.fail('hangup', err));
-    }, wait);
+    };
+    this.hangupTimer = this.later(attempt, wait);
   }
 
   private timeUp(): void {

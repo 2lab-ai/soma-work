@@ -29,14 +29,19 @@ export const INBOUND_CUE = '[시스템: 걸려 온 전화를 방금 받았다. �
 /** Sent when the line has been quiet after the agent spoke and the other side seems gone. */
 export const SILENCE_CUE = '[시스템: 상대가 한동안 말이 없다. 짧게 확인하거나, 용건이 끝났으면 인사하고 hang_up.]';
 
+/** Sent with the other side's words when they spoke on after the agent had decided to hang up. */
+export const HANGUP_CANCELLED_CUE =
+  '[시스템: 끊기 전에 상대가 말을 이어 갔다. 통화는 계속된다. 상대 말에 먼저 답하라.]';
+
 /** Sent when the call reaches its time limit. */
 export const TIME_UP_CUE = '[시스템: 통화 시간 한도에 닿았다. 한 문장으로 마무리 인사를 하고 hang_up.]';
 
 const PHONE_RULES = [
   '너는 지금 전화 통화 중인 음성 에이전트다. 네 말은 음성 합성으로 상대에게 그대로 들린다.',
+  '- 상대가 묻거나 부탁하면 그것부터 짧게 답한다. 통화 목적은 그다음에 이어 간다.',
   '- 한 번에 한두 문장, 짧은 구어체로 말한다. 상대가 말할 틈을 준다.',
   '- 마크다운, 목록, 이모지, 괄호 속 지문, 링크를 쓰지 않는다. 숫자와 기호는 소리 내어 읽는 말로 쓴다.',
-  '- 상대 말은 받아쓰기라 틀릴 수 있다. 애매하면 짧게 되묻는다.',
+  '- 상대 말은 받아쓰기라 틀릴 수 있다. 어색하면 발음이 비슷한 말 중 대화 흐름에 맞는 뜻으로 알아듣고 답한다. 받아쓴 글자를 그대로 읽어 주며 확인하지 않는다. 정말 알 수 없을 때만 짧게 되묻는다.',
   '- 상대가 AI냐고 물으면 AI 비서라고 사실대로 답한다. 없는 사실을 지어내지 않는다.',
   '- 목적을 이뤘거나 상대가 통화를 끝내려 하면, 짧게 인사한 뒤 hang_up 도구를 부른다. 인사 없이 끊지 않는다.',
   '- 상대가 이미 답한 확인은 다시 묻지 않는다. 다만 확인에 "네"라고 답한 것만으로는 끊지 않는다.',
@@ -118,6 +123,17 @@ export function callSummaryPrompt(input: {
 }
 
 /** Bare greetings the other side says when it picks up — heard, logged, but not a turn of their own. */
+/**
+ * Words that only close the call (thanks, goodbye, "I'll hang up"), in any order and number: after the agent's own
+ * goodbye they do not keep the line open. Informal endings count ("응, 끊을게", "그래 잘 가").
+ */
+const GOODBYE_RE =
+  /^(?:네네|네|예|응|어|그래|그럼|이만|감사합니다|감사해요|고맙습니다|고마워요|고마워|수고하세요|수고하셨습니다|수고해|들어가세요|들어가|안녕히계세요|안녕히가세요|안녕|잘가요|잘가|끊을게요|끊을께요|끊을게|끊을께|끊겠습니다|끊어요|끊어|알겠습니다|알겠어요|알겠어)+$/;
+
+export function isGoodbye(text: string): boolean {
+  return GOODBYE_RE.test(text.replace(/[\s.,!?~…]/g, ''));
+}
+
 export function isBareGreeting(text: string): boolean {
   const t = text.replace(/[\s.,!?~…]/g, '');
   return /^(여보세요|네|예|네네|여보세요여보세요|안녕하세요|hello|hi)$/i.test(t);

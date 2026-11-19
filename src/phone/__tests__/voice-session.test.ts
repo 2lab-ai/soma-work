@@ -837,6 +837,8 @@ describe('CallRun — never over the caller, and a quick "네."', () => {
     await settleAll();
     expect(s.call.frames).toBe(s.before + 40); // the held goodbye is said, not dropped
     expect(s.call.hungUp).toBe(0);
+    s.run.feedAudio(quiet(600)); // the sound was a cough: the caller has stopped
+    await settleAll();
     s.clock.advance(3000);
     await settleAll();
     expect(s.call.hungUp).toBe(1);
@@ -851,5 +853,126 @@ describe('CallRun — never over the caller, and a quick "네."', () => {
     expect(s.call.frames).toBe(s.before + 7);
     expect(s.spoken).not.toContain('네');
     expect(s.record.transcript.filter((l) => l.role === 'agent' && l.text.startsWith('네'))).toHaveLength(1);
+  });
+  /** The agent says goodbye and calls hang_up; its goodbye is playing when the caller speaks again. */
+  async function afterGoodbye(lastWords: string) {
+    const s = await inboundTalking(['고마워요', lastWords]);
+    s.dialog().emit({ type: 'text_delta', text: '네, 들어가세요. ' });
+    await s.dialog().tool('hang_up').handler({ reason: 'done' });
+    s.dialog().emit({ type: 'tool_use', name: 'hang_up', input: {} });
+    s.dialog().emit({ type: 'turn_end', isError: false });
+    await settleAll();
+    expect(s.call.hungUp).toBe(0);
+    s.run.feedAudio(tone(600, 0.3));
+    s.run.feedAudio(quiet(600));
+    await settleAll();
+    return s;
+  }
+
+  it('words after the agent decided to hang up cancel the hang-up and get an answer', async () => {
+    const s = await afterGoodbye('내가 물어본 거 대답하라고');
+    const last = s.dialog().sent[s.dialog().sent.length - 1];
+    expect(last).toContain('내가 물어본 거 대답하라고');
+    expect(last).toContain('[시스템:'); // the model is told the call goes on
+    expect(s.record.work.some((w) => w.kind === 'event' && w.text.includes('끊기 취소'))).toBe(true);
+    s.clock.advance(5000);
+    await settleAll();
+    expect(s.call.hungUp).toBe(0); // the line stays up
+    s.dialog().reply('죄송해요, 밥은 못 먹지만 잘 지내요.');
+    await settleAll();
+    expect(s.spoken).toContain('죄송해요, 밥은 못 먹지만 잘 지내요.');
+  });
+
+  it("a goodbye back after the agent's goodbye still ends the call", async () => {
+    const s = await afterGoodbye('네 감사합니다');
+    expect(s.dialog().sent).not.toContain('네 감사합니다');
+    s.clock.advance(5000);
+    await settleAll();
+    expect(s.call.hungUp).toBe(1);
+  });
+  it('no hang-up while the caller talks over the goodbye; their words then keep the call', async () => {
+    const s = await inboundTalking(['고마워요', '잠깐만, 하나 더 물어볼게']);
+    s.dialog().emit({ type: 'text_delta', text: '네, 들어가세요. ' });
+    await s.dialog().tool('hang_up').handler({ reason: 'done' });
+    s.dialog().emit({ type: 'tool_use', name: 'hang_up', input: {} });
+    s.dialog().emit({ type: 'turn_end', isError: false });
+    await settleAll();
+    s.run.feedAudio(tone(600, 0.3)); // the caller starts talking over the goodbye …
+    s.clock.advance(2000); // … and is still talking when the goodbye would have ended
+    await settleAll();
+    expect(s.call.hungUp).toBe(0);
+    s.run.feedAudio(quiet(600)); // their words are in
+    await settleAll();
+    s.clock.advance(5000);
+    await settleAll();
+    expect(s.call.hungUp).toBe(0);
+    expect(s.dialog().sent[s.dialog().sent.length - 1]).toContain('잠깐만, 하나 더 물어볼게');
+  });
+
+  it('a goodbye back said over the goodbye still ends the call once it is heard', async () => {
+    const s = await inboundTalking(['고마워요', '네 감사합니다']);
+    s.dialog().emit({ type: 'text_delta', text: '네, 들어가세요. ' });
+    await s.dialog().tool('hang_up').handler({ reason: 'done' });
+    s.dialog().emit({ type: 'tool_use', name: 'hang_up', input: {} });
+    s.dialog().emit({ type: 'turn_end', isError: false });
+    await settleAll();
+    s.run.feedAudio(tone(600, 0.3));
+    s.clock.advance(2000);
+    await settleAll();
+    expect(s.call.hungUp).toBe(0);
+    s.run.feedAudio(quiet(600));
+    await settleAll();
+    s.clock.advance(5000);
+    await settleAll();
+    expect(s.call.hungUp).toBe(1);
+  });
+  it("no hang-up while the caller's words over the goodbye are still being transcribed", async () => {
+    let n = 0;
+    let release!: () => void;
+    const s = await inboundTalking(
+      ['고마워요', '잠깐만, 하나 더 있어요'],
+      {},
+      {
+        sttGate: () => {
+          if (++n < 2) return Promise.resolve();
+          return new Promise<void>((r) => {
+            release = r;
+          });
+        },
+      },
+    );
+    s.dialog().emit({ type: 'text_delta', text: '네, 들어가세요. ' });
+    await s.dialog().tool('hang_up').handler({ reason: 'done' });
+    s.dialog().emit({ type: 'tool_use', name: 'hang_up', input: {} });
+    s.dialog().emit({ type: 'turn_end', isError: false });
+    await settleAll();
+    s.run.feedAudio(tone(600, 0.3));
+    s.run.feedAudio(quiet(600)); // the caller has stopped; the words are still being transcribed …
+    await settleAll();
+    s.clock.advance(3000); // … past the goodbye's end and several rechecks
+    await settleAll();
+    expect(s.call.hungUp).toBe(0);
+    release();
+    await settleAll();
+    s.clock.advance(3000);
+    await settleAll();
+    expect(s.call.hungUp).toBe(0);
+    expect(s.dialog().sent[s.dialog().sent.length - 1]).toContain('잠깐만, 하나 더 있어요');
+  });
+
+  it("a hang-up does not wait for ever when the caller's audio stops mid-word", async () => {
+    const s = await inboundTalking(['고마워요']);
+    s.dialog().emit({ type: 'text_delta', text: '네, 들어가세요. ' });
+    await s.dialog().tool('hang_up').handler({ reason: 'done' });
+    s.dialog().emit({ type: 'tool_use', name: 'hang_up', input: {} });
+    s.dialog().emit({ type: 'turn_end', isError: false });
+    await settleAll();
+    s.run.feedAudio(tone(600, 0.3)); // speech starts, then no more audio arrives at all
+    s.clock.advance(1500);
+    await settleAll();
+    expect(s.call.hungUp).toBe(0); // still waiting for the caller
+    s.clock.advance(5000);
+    await settleAll();
+    expect(s.call.hungUp).toBe(1); // the line is not held open on a dead stream
   });
 });
