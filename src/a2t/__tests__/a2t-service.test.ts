@@ -1,15 +1,12 @@
+import { spawn } from 'child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { A2tService } from '../a2t-service';
 import type { A2tStatus } from '../types';
 
-// The real spawn runs; the wrapper only records what the worker was handed.
-const { spawnCalls } = vi.hoisted(() => ({ spawnCalls: [] as unknown[][] }));
+// The real spawn runs; the mock only records what the worker was handed.
 vi.mock('child_process', async (importOriginal) => {
   const real = await importOriginal<typeof import('child_process')>();
-  const spawn = (...args: Parameters<typeof real.spawn>) => {
-    spawnCalls.push(args);
-    return real.spawn(...args);
-  };
+  const spawn = vi.fn(real.spawn);
   return { ...real, default: { ...real, spawn }, spawn };
 });
 
@@ -80,16 +77,13 @@ describe('A2tService — status management', () => {
     expect(cfg.enabled).toBe(true);
   });
 
-  it('initialize() enforces the configured memory floor and python path, not the defaults', async () => {
+  it('initialize() enforces the configured memory floor, not the default', async () => {
     const floor = new A2tService({ minMemoryMb: 999_999_999 });
     await expect(floor.initialize()).rejects.toThrow('999999999MB required');
-
-    const python = new A2tService({ pythonPath: '/nonexistent/custom-python3', minMemoryMb: 1 });
-    await expect(python.initialize()).rejects.toThrow("Python not found at '/nonexistent/custom-python3'");
   });
 
   it('initialize() hands the worker the configured model, device, compute type and memory floor', async () => {
-    spawnCalls.length = 0;
+    vi.mocked(spawn).mockClear();
     const service = new A2tService({
       model: 'tiny',
       device: 'cuda',
@@ -99,8 +93,12 @@ describe('A2tService — status management', () => {
     });
     await expect(service.initialize()).rejects.toThrow("Python not found at '/nonexistent/custom-python3'");
 
-    expect(spawnCalls).toHaveLength(1);
-    const [command, , options] = spawnCalls[0] as [string, string[], { env: Record<string, string> }];
+    expect(vi.mocked(spawn)).toHaveBeenCalledTimes(1);
+    const [command, , options] = vi.mocked(spawn).mock.calls[0] as unknown as [
+      string,
+      string[],
+      { env: Record<string, string> },
+    ];
     expect(command).toBe('/nonexistent/custom-python3');
     expect(options.env).toMatchObject({
       A2T_MODEL: 'tiny',

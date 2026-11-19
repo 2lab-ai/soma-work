@@ -27,6 +27,8 @@ const h = vi.hoisted(() => ({
   servers: [] as Array<{ handlers: Map<string, (request?: unknown) => Promise<unknown>> }>,
   // biome-ignore lint/suspicious/noExplicitAny: each test swaps in its own Slack stub.
   slack: {} as Record<string, (args: any) => Promise<unknown>>,
+  /** Called whenever an upload enters the per-key upload queue (`UploadVersions.serialize`). */
+  onSerialize: undefined as undefined | ((key: string) => void),
 }));
 
 vi.mock('@modelcontextprotocol/sdk/server/index.js', () => ({
@@ -55,6 +57,17 @@ vi.mock('../../process-shared/src/stderr-logger', () => ({
     error() {}
   },
 }));
+// The real upload queue, reporting when an upload reaches it — a checkpoint for the concurrent-upload test.
+vi.mock('./helpers/artifact-version.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./helpers/artifact-version.js')>();
+  class UploadVersions extends actual.UploadVersions {
+    override serialize<T>(key: string, fn: () => Promise<T>): Promise<T> {
+      h.onSerialize?.(key);
+      return super.serialize(key, fn);
+    }
+  }
+  return { ...actual, UploadVersions };
+});
 // The real converter, except that it fails on a marker — the only way to reach the server's fallback for it.
 vi.mock('markdown-to-slack-blocks', async (importOriginal) => {
   const actual = await importOriginal<typeof import('markdown-to-slack-blocks')>();
@@ -663,35 +676,54 @@ describe('send_file / send_media', () => {
     });
 
     it('two uploads of one report at once are versions 1 and 2: the second plans after the first is sent', async () => {
-      let n = 0;
+      // The first upload is held until the second request has reached the upload queue (or, without a queue,
+      // started its own upload), so the two overlap whatever the machine's speed.
+      let releaseFirst: () => void = () => {};
+      const firstHeld = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
       let firstEntered: () => void = () => {};
       const firstInFlight = new Promise<void>((resolve) => {
         firstEntered = resolve;
       });
+      let secondArrived: () => void = () => {};
+      const secondAtQueue = new Promise<void>((resolve) => {
+        secondArrived = resolve;
+      });
+      let queued = 0;
+      h.onSerialize = () => {
+        if (++queued === 2) secondArrived();
+      };
+      let n = 0;
       h.slack.filesUploadV2 = vi.fn(async () => {
         const id = `F_DIGEST_${++n}`;
-        if (n === 1) firstEntered();
-        await new Promise((resolve) => setTimeout(resolve, 20)); // the first upload is still in flight
+        if (n === 1) {
+          firstEntered();
+          await firstHeld;
+        } else secondArrived();
         return { files: [{ files: [{ id, permalink: `https://x/${id}` }] }] };
       });
       const one = await file('digest-a.html', 'week one');
       const two = await file('digest-b.html', 'week two');
-      // Start the second call only once the first upload is in flight, so which one is "first" is fixed.
-      const pending = server.call('send_file', { file_path: one, artifact_key: 'weekly-digest' });
-      await firstInFlight;
-      const [first, second] = await Promise.all([
-        pending,
-        server.call('send_file', { file_path: two, artifact_key: 'weekly-digest' }),
-      ]);
-      expect(body(first)).toMatchObject({
-        file_id: 'F_DIGEST_1',
-        version_key: 'key:weekly-digest',
-        version: 1,
-        changed: null,
-      });
-      expect(body(second)).toMatchObject({ file_id: 'F_DIGEST_2', version: 2, changed: true, previous_version: 1 });
-      const calls = (h.slack.filesUploadV2 as ReturnType<typeof vi.fn>).mock.calls;
-      expect(calls[1][0].initial_comment).toBe('판 2 · 이전 판 이후 바뀜');
+      try {
+        const pending = server.call('send_file', { file_path: one, artifact_key: 'weekly-digest' });
+        await firstInFlight;
+        const pendingSecond = server.call('send_file', { file_path: two, artifact_key: 'weekly-digest' });
+        await secondAtQueue;
+        releaseFirst();
+        const [first, second] = await Promise.all([pending, pendingSecond]);
+        expect(body(first)).toMatchObject({
+          file_id: 'F_DIGEST_1',
+          version_key: 'key:weekly-digest',
+          version: 1,
+          changed: null,
+        });
+        expect(body(second)).toMatchObject({ file_id: 'F_DIGEST_2', version: 2, changed: true, previous_version: 1 });
+        const calls = (h.slack.filesUploadV2 as ReturnType<typeof vi.fn>).mock.calls;
+        expect(calls[1][0].initial_comment).toBe('판 2 · 이전 판 이후 바뀜');
+      } finally {
+        h.onSerialize = undefined;
+      }
     });
   });
 });
