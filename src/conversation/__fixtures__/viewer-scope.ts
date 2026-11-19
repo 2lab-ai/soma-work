@@ -67,6 +67,11 @@ export const NEXT_ACTION_SEAMS: Readonly<Record<string, unknown>> = {
   boardDecisionHidden: () => false,
   boardUnfoldForDecision: () => {},
   cardTitleOf: () => null,
+  // SSOT 2026-11-19 — 중지 while a goal runs: `doAction`'s Stop asks first when the session's goal runs
+  // (`stopGoalOf` → `askStopGoal`). No goal runs, unless the test loads the real ones (pinned by
+  // dashboard-stop-goal-client.test.ts).
+  stopGoalOf: () => null,
+  askStopGoal: () => {},
 };
 export function nextActionSeams(fns: readonly string[], inject: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};

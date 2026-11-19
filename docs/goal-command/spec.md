@@ -228,6 +228,20 @@ A paused goal leaves the current slot. It waits in `session.goalPaused` (oldest 
 - **Not yet: the cap question's 🛑 취소.** It still stops the goal in place (`status: 'paused'` in `session.goal`), which holds the queue until the owner presses ⏸️ (or `goal pause`) on it — a follow-up moves it onto the same path.
 - **Surfaces.** `goal pause`, `goal resume [n]`; the `goal` list's ⏸️ 일시정지 on the running goal and a ⏸️ Paused goals section with ▶️ 재개 · ✏️ 업데이트 · 🗑️ 삭제 per goal (up to 5 rows; the rest by `goal resume <n>`); and on the dashboard, the goal card's ⏸️ / ▶️ and a 일시정지된 목표 list under the card with 재개 · 삭제. The buttons and the dashboard go through `SlackHandler.handleHostGoalAction` (`pause` / `resume`, and `delete` with `expect: 'paused'`) — the delete path's order: the anchor notice first, then re-check → mutate → persist → admit in one synchronous step. A goal that moved meanwhile is refused as stale (409).
 
+### Stopping a card whose goal runs
+
+Requested 2026-11-19: "작업 카드 중지누르면 현재 진행중이 골이 있으면 골때문에 중지가 안됨 그래서 작업 카드 눌렀을때 진행중인 goal이 있으면 진행중인 goal을 puase하고 중지하겠냐고 한번더 물어보고 최종 확인 받으면, goal부터 pause 처리하고 작업 중지처리해줘"
+
+A stop alone does not hold while a goal runs: the stop (`abortSession(…, 'user-stop')`) cuts the turn, the cut turn's end still drives the goal (`handleAssistantTurnCompleteForGoal`), and the goal starts its next turn.
+
+- **The card asks first.** On the dashboard (the opened card's 중지 and the detail card's status bar), Stop on a session whose current goal is `active` opens 진행 중인 goal이 있어요 (the objective, and how many queued goals keep waiting) with 취소 and **goal 일시정지하고 중지**. With no running goal, Stop stops at once, as before.
+- **The yes pauses first, then stops.** `POST /api/dashboard/session/:key/stop` takes `{ pauseGoalId }`. The stop handler (`createDashboardStopHandler`) calls `SlackHandler.pauseGoalForStop` and aborts in the same tick, so no turn end can fall between the two.
+- **Nothing starts in its place** (`pauseCurrentGoalHoldingQueue`). With nothing queued it is the ordinary pause (the goal moves to `goalPaused`). With goals queued it is paused in place — the current slot keeps it as `paused`, so the head of the queue does not start either; ▶️ on the goal card resumes it.
+- **Refusals stop nothing.** No goal runs any more (it finished, was paused or deleted meanwhile): the stop goes through. Another goal runs now: 409 — the owner did not confirm pausing that one; the toast's Retry asks again on fresh data. A closed or missing session: 409 / 404.
+- **The server checks too.** A plain stop (no `pauseGoalId`) on a session whose goal is `active` is refused with 409 and `{ goal: { goalId, objective, queued } }` — a card whose board was stale did not ask; it opens the same question from that goal.
+- **A continuation already on its way is dropped.** The loop posts a notice before it injects a continuation (or the next queued goal's first turn); a pause that lands during that post — the turn had already ended, so the stop had nothing to cut — would otherwise let one more turn run. `injectContinuationTurn` re-reads the goal and injects only for the same goal at the same epoch, still `active`.
+- **Paused in place, it keeps its open tasks** (`heldTaskIds`, as for a goal set aside), so a goal resumed into the slot later does not count them.
+
 ## Goal Commands While a Turn Runs
 
 A goal command is the user changing the goal list, not a follow-up for the running turn. Typed while the session's turn runs, it is run at once instead of being parked in the follow-up (steering) queue (`SlackHandler.runGoalCommandNow`; requested 2026-10-21: "goal을 추가 입력한 경우 추가 goal이 입력되야함").

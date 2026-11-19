@@ -249,6 +249,7 @@ import { createDashboardCloseHandler } from './task-turn/task-close';
 import { planGoalObjective } from './task-turn/task-goal';
 import type { TaskPlanDoc } from './task-turn/task-plan';
 import { createSlackPlanDecider } from './task-turn/task-plan-decision';
+import { createDashboardStopHandler } from './task-turn/task-stop';
 import { getTokenManager } from './token-manager';
 import { buildThreadPermalink } from './turn-notifier';
 import type { ConversationSession } from './types';
@@ -933,10 +934,16 @@ async function start() {
     // Connect dashboard: stop handler (abort running session). Dashboard
     // stop is an explicit user action, so tag `user-stop` to keep the
     // notification gate quiet (the dashboard itself shows the result).
-    setDashboardStopHandler(async (sessionKey: string) => {
-      slackHandler.getRequestCoordinator().abortSession(sessionKey, 'user-stop');
-      logger.info('Dashboard: stopped session', { sessionKey });
-    });
+    // With `pauseGoalId` (the owner confirmed it on the card) the running goal is paused FIRST: a stopped turn's
+    // end drives a running goal, which would start its next turn and undo the stop. A refused pause throws and
+    // nothing is stopped.
+    setDashboardStopHandler(
+      createDashboardStopHandler({
+        pauseGoalForStop: (key, goalId) => slackHandler.pauseGoalForStop(key, goalId),
+        abort: (key) => slackHandler.getRequestCoordinator().abortSession(key, 'user-stop'),
+        logger,
+      }),
+    );
 
     // Connect dashboard: close handler (terminate session). An epic's close stops its running
     // children first (#854); a child's close is its epic's event.

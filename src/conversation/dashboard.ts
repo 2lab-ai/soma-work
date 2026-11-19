@@ -1578,7 +1578,12 @@ export function setDashboardTaskAccessor(fn: TaskAccessor): void {
 
 // ── Action callbacks ───────────────────────────────────────────────
 
-type StopHandler = (sessionKey: string) => Promise<void>;
+/**
+ * Stop a working session. `pauseGoalId` — the owner confirmed "pause the running goal, then stop": the handler pauses
+ * that goal before it cuts the turn (a stopped turn's end would otherwise drive the goal's next turn), and refuses
+ * with a {@link HostGoalActionError} when it cannot — then nothing is stopped.
+ */
+type StopHandler = (sessionKey: string, opts?: { pauseGoalId?: string }) => Promise<void>;
 type CloseHandler = (sessionKey: string) => Promise<void>;
 type TrashHandler = (sessionKey: string) => Promise<void>;
 /**
@@ -4594,24 +4599,56 @@ export async function registerDashboardRoutes(
 
   // ── Action routes ──
 
-  server.post<{ Params: { key: string } }>(
+  // Body (optional): { pauseGoalId } — the owner confirmed pausing the running goal first (the card's 중지 asks when
+  // a goal is running: a stop alone would let the goal start its next turn). No body: a plain stop, as before.
+  server.post<{ Params: { key: string }; Body: { pauseGoalId?: unknown } | undefined }>(
     '/api/dashboard/session/:key/stop',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
+      const pauseGoalId = request.body?.pauseGoalId;
+      if (
+        pauseGoalId !== undefined &&
+        (typeof pauseGoalId !== 'string' || !pauseGoalId || pauseGoalId.length > 200)
+      ) {
+        reply.status(400).send({ error: 'pauseGoalId must be a non-empty string' });
+        return;
+      }
       const resolved = resolveSelfActionKeyAndOwner(request, reply);
       if (!resolved) return;
       const { wireKey: key, originalKey } = resolved;
       // Who may see the task, read before the stop (it may take the session away).
       const task = _getSessionsFn?.()?.get(originalKey);
+      // A plain stop while a goal runs would not hold (the goal starts its next turn): a card that did not ask (its
+      // board was stale) gets the goal back, and asks.
+      const running = task?.goal?.status === 'active' ? task.goal : undefined;
+      if (!pauseGoalId && running && typeof running.goalId === 'string') {
+        reply.status(409).send({
+          error: 'A goal is running — confirm pausing it to stop the work',
+          goal: {
+            goalId: running.goalId,
+            objective: String(running.objective ?? ''),
+            queued: Array.isArray(task?.goalQueue) ? task.goalQueue.length : 0,
+          },
+        });
+        return;
+      }
       try {
         if (_stopHandlerFn) {
-          await _stopHandlerFn(originalKey);
+          if (pauseGoalId) await _stopHandlerFn(originalKey, { pauseGoalId });
+          else await _stopHandlerFn(originalKey);
         }
         // Broadcast uses wire-format so the client cache lookup matches.
         broadcastSessionAction(key, 'stop', task);
         broadcastSessionUpdate();
         reply.send({ ok: true });
       } catch (error) {
+        // The goal could not be paused (another goal runs now, the session is gone or closed): nothing was
+        // stopped — say why, so the card can ask again on fresh data.
+        if (error instanceof HostGoalActionError) {
+          broadcastSessionUpdate();
+          reply.status(error.statusCode).send({ error: error.message });
+          return;
+        }
         logger.error('Error stopping session', error);
         reply.status(500).send({ error: 'Internal Server Error' });
       }
@@ -7972,6 +8009,12 @@ ${CARD_FINISH_CSS}
         <p class="ui-status-line" id="rollback-status" role="status" aria-live="polite"></p>
         <div slot="footer" class="lc-actions"><button type="button" class="ui-btn" onclick="closeRollbackDialog()">취소</button><button type="button" class="ui-btn is-primary" id="rollback-confirm" onclick="rbConfirm()">되돌리기</button></div>
       </ui-dialog>
+      <!-- 중지 while a goal runs (SSOT 2026-11-19): a stop alone does not hold — the goal starts its next turn. The
+           question: 취소, or pause the goal first and then stop (askStopGoal → confirmStopGoal). -->
+      <ui-dialog id="stop-goal-dialog" class="rollback-dialog stop-goal-dialog" heading="진행 중인 goal이 있어요" size="sm" lang="ko">
+        <div id="stop-goal-body"></div>
+        <div slot="footer" class="lc-actions"><button type="button" class="ui-btn" onclick="closeStopGoalDialog()">취소</button><button type="button" class="ui-btn is-danger" id="stop-goal-confirm" onclick="confirmStopGoal()">goal 일시정지하고 중지</button></div>
+      </ui-dialog>
       <!-- CRON lane (SSOT 2026-10-23 T4/T5): @2lab.ai/ui <ui-agent-queue> with the lane only —
            one tile per cron job, four numbers, the next-fire queue and 24 hours of runs
            (syncCronLane gives it its data); each job's latest run is its board card — a one-column
@@ -9882,6 +9925,7 @@ document.addEventListener('ui-dismiss', function(e) {
 });
 var DA_LABEL = { stop: '중지', close: '닫기', trash: '휴지통으로 이동' };
 var DA_DONE = { stop: '세션을 중지했어요', close: '세션을 닫았어요', trash: '휴지통으로 옮겼어요' };
+var DA_DONE_GOAL_PAUSED = 'goal을 일시정지하고 세션을 중지했어요';
 
 async function answerPermission(key, approvalId, decision) {
   var sk = 'p|' + approvalId;
@@ -19292,43 +19336,104 @@ function pressClose(key) {
   }, CLOSE_ARM_MS);
 }
 
+// ── 중지 while a goal runs (SSOT 2026-11-19) ──
+// A stop alone does not hold while a goal runs: the cut turn's end drives the goal, and it starts its next turn. So
+// Stop asks first — 취소, or pause the goal and then stop: the server pauses it before it cuts the turn, and nothing
+// queued starts in its place. No running goal: Stop stops at once, as before.
+var _stopGoalPick = null; // { key, goalId } — what the open question is for
+// Pure: the goal a stop must pause first — { goalId, objective, queued } — or null when none runs.
+function stopGoalOf(s) {
+  var cur = s && s.goal && s.goal.current;
+  if (!cur || cur.status !== 'active' || !cur.goalId) return null;
+  return { goalId: String(cur.goalId), objective: String(cur.objective || ''), queued: ((s.goal.queue) || []).length };
+}
+// Pure: the question's body.
+function stopGoalHtml(g) {
+  return '<p class="rb-lead">이 작업에는 진행 중인 goal이 있어요. 지금 중지만 하면 goal이 다음 턴을 다시 시작해서 작업이 멈추지 않습니다.</p>'
+    + '<blockquote class="rb-quote">' + esc(g.objective) + '</blockquote>'
+    + '<p class="rb-note">goal을 먼저 일시정지하고 작업을 중지할까요? '
+    + (g.queued > 0 ? '대기 중인 goal ' + g.queued + '개는 시작하지 않고 그대로 기다립니다. ' : '')
+    + '목표 탭에서 재개하면 다시 시작해요.</p>';
+}
+function askStopGoal(key, g) {
+  var dlg = document.getElementById('stop-goal-dialog');
+  var body = document.getElementById('stop-goal-body');
+  if (!dlg || !body || typeof dlg.show !== 'function') {
+    // The dialog element is not upgraded yet: ask once it is — never stop without the answer.
+    if (dlg && window.customElements) window.customElements.whenDefined('ui-dialog').then(function() { askStopGoal(key, g); });
+    return;
+  }
+  _stopGoalPick = { key: key, goalId: g.goalId };
+  body.innerHTML = stopGoalHtml(g);
+  dlg.show();
+}
+function closeStopGoalDialog() {
+  _stopGoalPick = null;
+  var dlg = document.getElementById('stop-goal-dialog');
+  if (dlg && typeof dlg.hide === 'function') dlg.hide();
+}
+function confirmStopGoal() {
+  var pick = _stopGoalPick;
+  closeStopGoalDialog();
+  if (pick) doAction(pick.key, 'stop', { pauseGoalId: pick.goalId });
+}
+
 // ── Action handler (with CSRF retry on 403 after JWT rotation) ──
 // A close shows at once (SSOT 2026-11-10 T1: "즉시 반응하고 닫는중 빨갛게 표시하고 비동기로 처리"): from the press the
 // card reads 닫는 중 in red (viewCardOf, sessionActionsOf) — the request runs behind it, nothing waits on it — and it
 // holds until the board has reloaded with the card closed; a failure lets go at once.
-async function doAction(key, action) {
+// opts.pauseGoalId (Stop only): the owner said yes to "pause the running goal, then stop" — the server pauses that
+// goal first. Without it, a Stop on a session whose goal runs asks that question first (askStopGoal).
+async function doAction(key, action, opts) {
   if (isBusy(key, 'action')) return; // Stop / Close / Trash once, from either surface
+  var pauseGoalId = action === 'stop' && opts && opts.pauseGoalId ? String(opts.pauseGoalId) : '';
+  if (action === 'stop' && !pauseGoalId) {
+    var running = stopGoalOf(_sessionCache[key]);
+    if (running) { askStopGoal(key, running); return; }
+  }
   setBusy(key, 'action', true);
   if (action === 'close') setBusy(key, 'closing', true);
   refreshCard(key);
   if (panelOpen && panelSessionKey === key) renderPanelHead();
   var done = false;
+  var askGoal = null; // a goal the server says runs — asked once the action is no longer busy
   try {
-    const headers = {};
-    if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
     const url = '/api/dashboard/session/' + encodeURIComponent(key) + '/' + action;
-    let res = await fetch(url, { method: 'POST', headers });
+    const body = pauseGoalId ? JSON.stringify({ pauseGoalId: pauseGoalId }) : undefined;
+    const send = function() {
+      const headers = {};
+      if (body) headers['Content-Type'] = 'application/json';
+      if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+      return fetch(url, body ? { method: 'POST', headers: headers, body: body } : { method: 'POST', headers: headers });
+    };
+    let res = await send();
     if (res.status === 403) {
       await refreshCsrfToken();
-      const retryHeaders = {};
-      if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
-      res = await fetch(url, { method: 'POST', headers: retryHeaders });
+      res = await send();
     }
     var title = (_sessionCache[key] && _sessionCache[key].title) || '';
     if (res.ok) {
       done = true;
-      dashToast({ title: DA_DONE[action] || '완료했어요', description: title || undefined, tone: 'success' });
+      dashToast({ title: pauseGoalId ? DA_DONE_GOAL_PAUSED : (DA_DONE[action] || '완료했어요'), description: title || undefined, tone: 'success' });
     } else {
       console.error('Action failed', action, key);
-      // A refusal (409) carries its reason: show it instead of the bare status.
+      // A refusal (409) carries its reason: show it instead of the bare status. So does a goal pause the server
+      // refused (then nothing was stopped).
       var reason = '';
-      if (res.status === 409) {
-        try { var failed = await res.json(); reason = (failed && typeof failed.error === 'string') ? failed.error : ''; } catch (_) {}
+      var failed = null;
+      if (res.status === 409 || pauseGoalId) {
+        try { failed = await res.json(); reason = (failed && typeof failed.error === 'string') ? failed.error : ''; } catch (_) {}
       }
-      dashToast(
-        { title: (DA_LABEL[action] || action) + ' 실패', description: (reason || 'HTTP ' + res.status) + (title ? ' · ' + title : ''), tone: 'error', action: { id: 'retry' } },
-        function() { doAction(key, action); },
-      );
+      // A goal this page did not know about runs (a stale board): the server sent it back — ask, no error.
+      if (action === 'stop' && !pauseGoalId && res.status === 409 && failed && failed.goal && failed.goal.goalId) {
+        askGoal = { goalId: String(failed.goal.goalId), objective: String(failed.goal.objective || ''), queued: toNum(failed.goal.queued) };
+      } else {
+        // Retry asks again when a goal still runs (the goal may have changed): never a stale goal id.
+        dashToast(
+          { title: (DA_LABEL[action] || action) + ' 실패', description: (reason || 'HTTP ' + res.status) + (title ? ' · ' + title : ''), tone: 'error', action: { id: 'retry' } },
+          function() { doAction(key, action); },
+        );
+      }
     }
   } catch (e) {
     console.error('Action error', e);
@@ -19347,6 +19452,7 @@ async function doAction(key, action) {
   refreshCard(key);
   if (panelOpen && panelSessionKey === key) renderPanelHead();
   if (!(done && action === 'close')) loadSessions();
+  if (askGoal) askStopGoal(key, askGoal);
 }
 
 // ── Task star + revive (SSOT 2026-10-30) ──

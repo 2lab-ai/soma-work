@@ -155,6 +155,7 @@ import {
   formatGoalObjectiveForSlack,
   formatResumedGoalLine,
   pauseCurrentGoal,
+  pauseCurrentGoalHoldingQueue,
   restoreGoalState,
   resumePausedGoal,
   snapshotGoalState,
@@ -9554,6 +9555,51 @@ export class SlackHandler {
     }
     this.claudeHandler.broadcastSessionUpdate?.();
     return { outcome: 'paused', goalId, promoted: { goalId: promoted.goalId, objective: promoted.objective } };
+  }
+
+  /**
+   * The dashboard's 중지 after the owner confirmed "pause the goal first": the
+   * running goal `goalId` stops driving the loop BEFORE the caller cuts the turn.
+   * Without it the stopped turn's end drives the goal, and the goal starts its
+   * next turn — the stop does not hold.
+   *
+   * Nothing starts in its place ({@link pauseCurrentGoalHoldingQueue}): with
+   * nothing queued the goal moves to the paused goals; with goals queued it is
+   * paused in place, so the head of the queue does not start either.
+   *
+   * Synchronous, so the caller can abort right after it with no gap a turn end
+   * could fall into. `not-running` — no goal is running any more (it finished,
+   * or was paused or deleted meanwhile): nothing drives the loop, the stop alone
+   * holds. A different goal running now is refused (409): the owner confirmed
+   * pausing `goalId`, not that one (and then nothing is stopped). The thread
+   * notice is best-effort, after.
+   */
+  pauseGoalForStop(
+    sessionKey: string,
+    goalId: string,
+  ): { outcome: 'paused'; inPlace: boolean } | { outcome: 'not-running' } {
+    const live = this.liveGoalSession(sessionKey);
+    const current = live.goal;
+    if (current?.status !== 'active') return { outcome: 'not-running' };
+    if (current.goalId !== goalId) {
+      throw new HostGoalActionError(409, 'Another goal is running now — refresh and try again');
+    }
+    // Its open tasks stay its own: they hold no other goal while it is paused.
+    const { paused, inPlace } = pauseCurrentGoalHoldingQueue(live, heldTasksOf(live.taskLedger));
+    if (!paused) throw new HostGoalActionError(409, 'The current goal has changed — refresh and try again');
+    this.persistHostGoalMutation(live);
+    this.claudeHandler.broadcastSessionUpdate?.();
+    if (live.channelId && live.threadTs) {
+      void this.postGoalNoticeBestEffort(
+        live.channelId,
+        live.threadTs,
+        `⏸️ Goal paused: ${formatGoalObjectiveForSlack(paused.objective)}\n` +
+          (inPlace
+            ? '_The work was stopped from the dashboard. The queued goals wait behind it — resume it to go on._'
+            : '_The work was stopped from the dashboard. Resume the goal to start it again._'),
+      );
+    }
+    return { outcome: 'paused', inPlace: inPlace === true };
   }
 
   /**

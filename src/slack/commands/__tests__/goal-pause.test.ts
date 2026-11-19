@@ -16,6 +16,7 @@ import {
   enqueueOrActivateGoal,
   findGoalById,
   pauseCurrentGoal,
+  pauseCurrentGoalHoldingQueue,
   restoreGoalState,
   resumePausedGoal,
   snapshotGoalState,
@@ -156,6 +157,94 @@ describe('pauseCurrentGoal', () => {
     expect(a.status).toBe('active');
     expect(session.goalPaused).toBeUndefined();
     expect(session.goalQueue?.map((g) => g.objective)).toEqual(['goal B', 'goal C']);
+  });
+});
+
+// SSOT 2026-11-19 — the dashboard's 중지 while a goal runs: the goal is paused first, and nothing starts in its place.
+describe('pauseCurrentGoalHoldingQueue (a stop pauses the goal)', () => {
+  it('nothing queued: the same pause as pauseCurrentGoal — set aside, the goal work ends', () => {
+    const session = makeSession({ goal: createActiveSessionGoal('only goal', 'U123') });
+    const only = session.goal!;
+    only.epoch = 3;
+    only.pendingEval = { requestedAt: 1, turnId: 't' };
+
+    const result = pauseCurrentGoalHoldingQueue(session);
+
+    expect(result).toEqual({ paused: only, inPlace: false });
+    expect(session.goal).toBeUndefined();
+    expect(session.goalPaused).toEqual([only]);
+    expect(only.status).toBe('paused');
+    expect(only.epoch).toBe(4);
+    expect(only.pendingEval).toBeUndefined();
+    expect(session.systemPrompt).toBeUndefined();
+  });
+
+  it('goals queued: paused IN PLACE — the head of the queue does not start, the queue keeps its order', () => {
+    const session = sessionWithQueue();
+    const a = session.goal!;
+    a.epoch = 7;
+    a.continuationCount = 4;
+    a.pendingEval = { requestedAt: 1, turnId: 't' };
+    a.evalBackoffUntil = Date.now() + 60_000;
+
+    const result = pauseCurrentGoalHoldingQueue(session);
+
+    expect(result).toEqual({ paused: a, inPlace: true });
+    // Still the current goal, no longer driving: no queued goal was promoted.
+    expect(session.goal).toBe(a);
+    expect(a.status).toBe('paused');
+    expect(session.goalQueue?.map((g) => g.objective)).toEqual(['goal B', 'goal C']);
+    expect(session.goalPaused ?? []).toHaveLength(0);
+    // An in-flight eval for A resolves into a discard; its lease and retry window go; it keeps its spend.
+    expect(a.epoch).toBe(8);
+    expect(a.pendingEval).toBeUndefined();
+    expect(a.evalBackoffUntil).toBeUndefined();
+    expect(a.continuationCount).toBe(4);
+    expect(session.goalHistory ?? []).toHaveLength(0);
+    expect(session.systemPrompt).toBeUndefined();
+  });
+
+  it('paused in place, it still keeps its open tasks as its own — minus any another waiting goal holds (review P2)', () => {
+    const session = sessionWithQueue();
+    const a = session.goal!;
+    // Goal B (queued) already holds t3 on the same list.
+    session.goalQueue![0].heldTaskIds = ['t3'];
+    session.goalQueue![0].heldListAt = 50;
+
+    pauseCurrentGoalHoldingQueue(session, { heldTaskIds: ['t1', 't2', 't3'], heldListAt: 50 });
+
+    expect(a.heldTaskIds).toEqual(['t1', 't2']);
+    expect(a.heldListAt).toBe(50);
+    // Set aside later (another goal resumed into the slot), it takes them along: they hold no other goal.
+    session.goalPaused = [makeSession().goal ?? createActiveSessionGoal('goal P', 'U123')];
+    session.goalPaused[0].status = 'paused';
+    resumePausedGoal(session, session.goalPaused[0].goalId);
+    expect(session.goalPaused.find((g) => g.goalId === a.goalId)?.heldTaskIds).toEqual(['t1', 't2']);
+  });
+
+  it('a goal paused in place comes back with resume (▶️): it runs again, the queue still behind it', () => {
+    const session = sessionWithQueue();
+    const a = session.goal!;
+    pauseCurrentGoalHoldingQueue(session);
+
+    const resumed = resumePausedGoal(session, a.goalId);
+
+    expect(resumed).toEqual({ goal: a, placement: 'current' });
+    expect(session.goal).toBe(a);
+    expect(a.status).toBe('active');
+    expect(session.goalQueue?.map((g) => g.objective)).toEqual(['goal B', 'goal C']);
+  });
+
+  it('does nothing unless the current goal runs (none, paused, complete)', () => {
+    const none = makeSession();
+    expect(pauseCurrentGoalHoldingQueue(none)).toEqual({});
+    for (const status of ['paused', 'complete'] as const) {
+      const session = sessionWithQueue();
+      session.goal!.status = status;
+      const before = JSON.stringify(session);
+      expect(pauseCurrentGoalHoldingQueue(session)).toEqual({});
+      expect(JSON.stringify(session)).toBe(before);
+    }
   });
 });
 
