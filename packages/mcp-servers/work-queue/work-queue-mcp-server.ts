@@ -162,26 +162,12 @@ export function createWorkQueueTools(deps: WorkQueueToolsDeps): {
       return { ...result, next };
     }
     const { entry, position, ahead } = result;
-    if (entry.state === 'running') {
-      return {
-        ok: true,
-        status: 'running',
-        entry: briefOf(entry),
-        position,
-        ahead,
-        next: `Start the work now. When it ends call queue_done {"entry": "${entry.id}"}.`,
-      };
-    }
-    return {
-      ok: true,
-      status: 'queued',
-      entry: briefOf(entry),
-      position,
-      ahead,
-      next:
-        `End your turn now: ${position === 1 ? 'one entry runs' : `${ahead.length} entries run or wait`} before it. ` +
-        `The host wakes this thread when ${entry.id} runs; then do the work and call queue_done. ${NOT_A_PERSON}`,
-    };
+    const next =
+      entry.state === 'running'
+        ? `Start the work now. When it ends call queue_done {"entry": "${entry.id}"}.`
+        : `End your turn now: ${position === 1 ? 'one entry runs' : `${ahead.length} entries run or wait`} before it. ` +
+          `The host wakes this thread when ${entry.id} runs; then do the work and call queue_done. ${NOT_A_PERSON}`;
+    return { ok: true, status: entry.state, entry: briefOf(entry), position, ahead, next };
   };
 
   const end = (
@@ -217,7 +203,16 @@ export function createWorkQueueTools(deps: WorkQueueToolsDeps): {
 
   return {
     call(name, args) {
-      const queues = deps.queues();
+      let queues: readonly WorkQueueDef[];
+      try {
+        queues = deps.queues();
+      } catch (error) {
+        return fail(
+          'CONFIG_UNREADABLE',
+          `The host's queue configuration cannot be read now: ${(error as Error)?.message ?? String(error)}.`,
+          'Call again in a moment; until it answers, do not start the lane work.',
+        );
+      }
       if (queues.length === 0) {
         return fail(
           'NO_QUEUES',
@@ -237,29 +232,36 @@ export function createWorkQueueTools(deps: WorkQueueToolsDeps): {
   };
 }
 
-/** `config.json#workQueues`, re-read when the file changes (no restart needed to add a queue). */
+/**
+ * `config.json#workQueues`, re-read when the file changes (no restart needed to add a queue). A config that cannot be
+ * read or parsed keeps the last good queues and is tried again on the next call (never cached as "no queues": that
+ * would tell a model to go on without a line while another thread holds the lane); with no good read yet it throws,
+ * which the tools answer as `CONFIG_UNREADABLE`. A missing file is no queues.
+ */
 export function readWorkQueuesFromConfigFile(configFile: string | undefined): () => readonly WorkQueueDef[] {
-  let cached: { mtimeMs: number; queues: WorkQueueDef[] } | undefined;
+  let good: { mtimeMs: number; queues: WorkQueueDef[] } | undefined;
   return () => {
     if (!configFile) return [];
     let mtimeMs: number;
     try {
       mtimeMs = fs.statSync(configFile).mtimeMs;
-    } catch {
-      return [];
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      if (good) return good.queues;
+      throw new Error(`config.json cannot be read: ${(error as Error)?.message}`);
     }
-    if (cached?.mtimeMs === mtimeMs) return cached.queues;
-    let queues: WorkQueueDef[] = [];
+    if (good?.mtimeMs === mtimeMs) return good.queues;
     try {
       const raw = JSON.parse(fs.readFileSync(configFile, 'utf8')) as Record<string, unknown>;
       const parsed = parseWorkQueuesConfig(raw?.workQueues);
       for (const warning of parsed.warnings) logger.warn(`config.json ${warning}`);
-      queues = parsed.queues;
+      good = { mtimeMs, queues: parsed.queues };
+      return parsed.queues;
     } catch (error) {
-      logger.warn('config.json unreadable — no work queues', { error: (error as Error)?.message });
+      logger.warn('config.json unreadable — keeping the last good work queues', { error: (error as Error)?.message });
+      if (good) return good.queues;
+      throw new Error(`config.json cannot be read: ${(error as Error)?.message}`);
     }
-    cached = { mtimeMs, queues };
-    return queues;
   };
 }
 

@@ -107,6 +107,21 @@ describe('work-queue MCP tools', () => {
     });
   });
 
+  it('list shows what recently ended, newest first, with its outcome and reason', () => {
+    tools('1.1').call('queue_enter', { queue: 'qa:dev2', keys: ['ABC-1'] });
+    tools('1.1').call('queue_done', { entry: 'wq-1' });
+    tools('2.2').call('queue_enter', { queue: 'qa:dev2', keys: ['ABC-2'] });
+    tools('2.2').call('queue_cancel', { entry: 'wq-2', reason: 'not needed' });
+    tools('3.3').call('queue_enter', { queue: 'deploy:dev2', keys: ['2lab-ai/soma-work#9'] });
+    tools('3.3').call('queue_done', { entry: 'wq-3' });
+    const r = tools('9.9').call('queue_list', {}) as any;
+    expect(r.queues[0].recent.map((e: any) => [e.id, e.end, e.reason])).toEqual([
+      ['wq-2', 'cancelled', 'not needed'],
+      ['wq-1', 'done', undefined],
+    ]);
+    expect(r.queues[1].recent.map((e: any) => [e.id, e.end])).toEqual([['wq-3', 'done']]);
+  });
+
   it('a host with no queues says so on every tool — work goes on without a line', () => {
     const r = tools('1.1', []).call('queue_enter', { queue: 'qa:dev2', keys: ['ABC-1'] });
     expect(r).toMatchObject({ ok: false, code: 'NO_QUEUES' });
@@ -141,10 +156,39 @@ describe('readWorkQueuesFromConfigFile', () => {
     expect(read().map((q) => q.id)).toEqual(['deploy:dev', 'qa:dev']);
   });
 
-  it('a missing or broken config is no queues', () => {
+  it('a missing config is no queues', () => {
     expect(readWorkQueuesFromConfigFile(path.join(dir, 'none.json'))()).toEqual([]);
-    const file = path.join(dir, 'broken.json');
-    fs.writeFileSync(file, '{');
-    expect(readWorkQueuesFromConfigFile(file)()).toEqual([]);
+  });
+
+  it('an unreadable config keeps the last good queues; with none it throws (never "no queues")', () => {
+    const file = path.join(dir, 'config.json');
+    fs.writeFileSync(file, JSON.stringify({ workQueues: { deploy: ['dev'] } }));
+    const read = readWorkQueuesFromConfigFile(file);
+    expect(read().map((q) => q.id)).toEqual(['deploy:dev']);
+    fs.writeFileSync(file, '{ torn');
+    const later = new Date(Date.now() + 5_000);
+    fs.utimesSync(file, later, later);
+    expect(read().map((q) => q.id)).toEqual(['deploy:dev']);
+    // Fixed again without a new mtime: read again, not cached as broken.
+    fs.writeFileSync(file, JSON.stringify({ workQueues: { qa: ['dev'] } }));
+    fs.utimesSync(file, later, later);
+    expect(read().map((q) => q.id)).toEqual(['qa:dev']);
+    const broken = path.join(dir, 'broken.json');
+    fs.writeFileSync(broken, '{');
+    expect(() => readWorkQueuesFromConfigFile(broken)()).toThrow(/config/i);
+  });
+
+  it('a config that cannot be read answers CONFIG_UNREADABLE — retry, never go on without a line', () => {
+    const t = createWorkQueueTools({
+      store,
+      queues: () => {
+        throw new Error('config.json unreadable');
+      },
+      context: { user: 'U1', channel: 'C1', threadTs: '1.1' },
+      now: () => 1,
+    });
+    const r = t.call('queue_enter', { queue: 'qa:dev2', keys: ['ABC-1'] });
+    expect(r).toMatchObject({ ok: false, code: 'CONFIG_UNREADABLE' });
+    expect(r.next).not.toMatch(/without a line/i);
   });
 });

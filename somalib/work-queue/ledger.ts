@@ -63,7 +63,27 @@ export function emptyLedger(): WorkQueueLedger {
   return { version: 1, seq: 0, entries: [], ended: [] };
 }
 
-/** The ledger shape this module writes; anything else is a broken file. */
+function isHolder(h: unknown): h is WorkQueueHolder {
+  const x = h as WorkQueueHolder | null;
+  return !!x && typeof x === 'object' && typeof x.channel === 'string' && typeof x.threadTs === 'string';
+}
+
+function isEntry(e: unknown): e is WorkQueueEntry {
+  const x = e as WorkQueueEntry | null;
+  return (
+    !!x &&
+    typeof x === 'object' &&
+    typeof x.id === 'string' &&
+    typeof x.queue === 'string' &&
+    Array.isArray(x.keys) &&
+    x.keys.every((k) => typeof k === 'string') &&
+    isHolder(x.holder) &&
+    (x.state === 'running' || x.state === 'queued') &&
+    Number.isFinite(x.enteredAt)
+  );
+}
+
+/** The ledger shape this module writes, record by record; anything else is a broken file. */
 export function isWorkQueueLedger(value: unknown): value is WorkQueueLedger {
   const v = value as WorkQueueLedger | null;
   return (
@@ -72,7 +92,9 @@ export function isWorkQueueLedger(value: unknown): value is WorkQueueLedger {
     v.version === 1 &&
     Number.isInteger(v.seq) &&
     Array.isArray(v.entries) &&
-    Array.isArray(v.ended)
+    v.entries.every(isEntry) &&
+    Array.isArray(v.ended) &&
+    v.ended.every((e) => isEntry(e) && Number.isFinite((e as WorkQueueEnded).endedAt))
   );
 }
 
@@ -244,10 +266,6 @@ function promote(entries: WorkQueueEntry[], queue: string, now: number): WorkQue
   return granted;
 }
 
-function keepEnded(ended: WorkQueueEnded[]): WorkQueueEnded[] {
-  return ended.length > ENDED_KEEP ? ended.slice(ended.length - ENDED_KEEP) : ended;
-}
-
 export type EndResult =
   | { ok: true; ended: WorkQueueEnded; granted?: WorkQueueEntry }
   | { ok: false; code: 'UNKNOWN_ENTRY'; message: string }
@@ -295,7 +313,7 @@ export function endEntry(
   const entries = ledger.entries.filter((_, i) => i !== at);
   const granted = promote(entries, entry.queue, now);
   return {
-    ledger: { ...ledger, entries, ended: keepEnded([...ledger.ended, ended]) },
+    ledger: { ...ledger, entries, ended: [...ledger.ended, ended].slice(-ENDED_KEEP) },
     result: { ok: true, ended, ...(granted ? { granted } : {}) },
   };
 }

@@ -89,13 +89,15 @@ interface WorkQueueEnded extends WorkQueueEntry { endedAt: number; end: 'done' |
 ### 2.3 잠금 · 저장 — `WorkQueueStore`
 
 - `mutate(fn)`: `<file>.lock`을 배타 생성(`wx`)으로 잡고 `<pid> <시각> <토큰>`을 쓴다. 이미 있으면 20 ms씩 다시 보고,
-  3 s 마감은 모든 길(탈취 포함)에 걸린다. 10 s보다 오래됐고 그 pid가 살아 있지 않은 잠금만 탈취한다: 옆으로 rename한 뒤
-  옮긴 파일이 오래됐다고 본 그 파일일 때만 지운다(다른 대기자가 먼저 탈취해 새로 잡은 잠금을 옮겼으면 되돌린다).
-  해제는 자기 토큰일 때만. 잠금 안에서 읽기 → `fn` → 바뀌었으면 tmp(`<file>.<pid>.<rand>.tmp`) 쓰기 + fsync + rename →
-  해제. 동기 API(MCP · 호스트 모두 짧은 트랜잭션).
+  3 s 마감은 모든 길(탈취 포함)에 걸린다. 10 s보다 오래됐고 그 pid가 살아 있지 않은 잠금만 탈취한다: 복구 가드
+  (`<lock>.reclaim`, 배타 생성) 아래에서 잠금을 다시 읽어 아직 그 오래된 잠금일 때만 지운다 — 살아 있는 소유자가 있는 동안
+  잠금 경로가 비는 틈이 없다. 가드를 쥔 채 죽은 복구자의 가드도 같은 규칙(오래됨 + pid 없음)으로 치운다. 해제는 자기
+  토큰일 때만. 잠금 안에서 읽기 → `fn` → 바뀌었으면 tmp(`<file>.<pid>.<rand>.tmp`) 쓰기 + fsync + rename → 해제. 동기
+  API(MCP · 호스트 모두 짧은 트랜잭션).
 - `stamp()`: inode · mtime · 크기. 쓰기는 늘 rename(새 inode)이라 한 시계 틱 안의 두 쓰기도 다른 stamp다.
-- `read()`: 잠금 없이 읽는다(rename이라 반쯤 쓴 파일은 없다). 파일이 없으면 빈 원장. 깨졌으면 `.bak`(마지막으로 잘 읽힌
-  내용을 쓰기 전에 복사)로, 그것도 없으면 오류 — 빈 원장으로 떨어뜨리지 않는다(rules/config.md 4).
+- `read()`: 잠금 없이 읽는다(rename이라 반쯤 쓴 파일은 없다). 파일이 없으면 빈 원장. 깨졌으면(레코드 하나라도 모양이
+  틀리면) `.bak`(마지막으로 잘 읽힌 내용을 쓰기 전에 복사)로 읽고 경고를 남기며, 그것도 없으면 오류 — 빈 원장으로
+  떨어뜨리지 않는다(rules/config.md 4).
 - `mtimeMs()`: 호스트 틱이 바뀐 것만 다시 읽게.
 
 `@soma/common/atomic-json`을 쓰지 않는 이유: 원장 본문은 `somalib`에 있고 `somalib`은 `@soma/common`에 기대지 않는다(MCP 서버 번들 경계).
@@ -104,7 +106,9 @@ interface WorkQueueEnded extends WorkQueueEntry { endedAt: number; end: 'done' |
 ## 3. MCP 서버 `work-queue`
 
 - 맥락: `SOMA_WORK_QUEUE_CONTEXT = {user, channel, threadTs}`(부모가 만든다 — 모델이 바꿀 수 없다), `SOMA_DATA_DIR`,
-  `SOMA_CONFIG_FILE`. 설정은 호출마다 `config.json`의 `workQueues`를 읽는다(mtime 캐시) — 재시작 없이 반영(A9).
+  `SOMA_CONFIG_FILE`. 설정은 호출마다 `config.json`의 `workQueues`를 읽는다(mtime 캐시) — 재시작 없이 반영(A9). 못 읽으면
+  마지막으로 잘 읽은 설정을 쓰고 다음 호출에 다시 읽는다. 처음부터 못 읽으면 `CONFIG_UNREADABLE`(다시 부르라) — "큐 없음"으로
+  읽어 줄 없이 진행시키지 않는다.
 - 도구 네 개(§36 4.1). 답은 JSON 한 덩어리 + 모델이 바로 할 일 한 줄(`next`):
   - `running` → "지금 시작하라. 끝나면 `queue_done`."
   - `queued` → "턴을 끝내라. 차례가 오면 호스트가 이 스레드를 깨운다. 기다리며 폴링 · 크론 · sleep · 사람에게 묻기 금지."

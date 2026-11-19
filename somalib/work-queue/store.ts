@@ -5,9 +5,8 @@
  * - `mutate(fn)`: take `<file>.lock` by exclusive create (`wx`), writing `<pid> <time> <token>` into it; while another
  *   process holds it, look again every `retryMs` up to `lockTimeoutMs` (then `LOCK_TIMEOUT` — the deadline bounds
  *   every path, a takeover too). A lock older than `staleLockMs` whose process is gone was left by a crash mid-change
- *   (a change takes milliseconds): it is renamed aside and removed only if the moved file is the one judged stale —
- *   a fresh lock moved by mistake (another waiter took over first) is put back. A lock of a live process is never
- *   taken. Unlock removes the lock only while it still holds this change's token. Inside the lock: read → `fn` → when
+ *   (a change takes milliseconds): it is removed under a recovery guard (`<lock>.reclaim`) after reading it again,
+ *   so the lock path is never empty while a live owner holds it. A lock of a live process is never taken. Unlock removes the lock only while it still holds this change's token. Inside the lock: read → `fn` → when
  *   the ledger changed, copy the good current file to `<file>.bak`, write a temp file, fsync, rename over the live
  *   path.
  * - `stamp()`: inode + mtime + size of the live file. Every write is a rename (a new inode), so two writes within one
@@ -31,6 +30,8 @@ export interface WorkQueueStoreOptions {
   lockTimeoutMs?: number;
   staleLockMs?: number;
   retryMs?: number;
+  /** Where a recovery note goes (a broken live file read from its backup). Default: stderr. */
+  warn?: (message: string) => void;
 }
 
 const SLEEP_CELL = new Int32Array(new SharedArrayBuffer(4));
@@ -45,6 +46,8 @@ export class WorkQueueStore {
   private readonly lockTimeoutMs: number;
   private readonly staleLockMs: number;
   private readonly retryMs: number;
+  private readonly reclaimPath: string;
+  private readonly warn: (message: string) => void;
 
   constructor(
     readonly filePath: string,
@@ -55,6 +58,8 @@ export class WorkQueueStore {
     this.lockTimeoutMs = options.lockTimeoutMs ?? 3_000;
     this.staleLockMs = options.staleLockMs ?? 10_000;
     this.retryMs = options.retryMs ?? 20;
+    this.reclaimPath = `${filePath}.lock.reclaim`;
+    this.warn = options.warn ?? ((message) => process.stderr.write(`[work-queues] ${message}\n`));
   }
 
   /** What the live file is now (inode · mtime · size); undefined when there is no file yet. */
@@ -103,7 +108,12 @@ export class WorkQueueStore {
     } catch {
       backup = undefined;
     }
-    if (backup) return { ledger: backup, liveIsGood: false };
+    if (backup) {
+      this.warn(
+        `${this.filePath} is unreadable — reading its backup ${this.backupPath} (the last change before it may be missing)`,
+      );
+      return { ledger: backup, liveIsGood: false };
+    }
     throw new Error(`work-queues: ${this.filePath} is unreadable and has no usable backup — not reading it as empty`);
   }
 
@@ -152,42 +162,43 @@ export class WorkQueueStore {
 
   /**
    * Remove a lock its process left behind; true when one was removed. Only a lock older than `staleLockMs` whose
-   * process is not alive (a crash). The rename makes the takeover atomic: of two waiters only one moves the file,
-   * and a waiter that moved a lock other than the one it judged stale puts it back.
+   * process is not alive (a crash). Recovery runs under its own guard (`<lock>.reclaim`, exclusive create): under it
+   * the lock is read again and removed only if it is still the stale one — the lock path is never empty while a live
+   * owner holds it, and of two recoverers the second finds the first's fresh lock (alive) and backs off. A guard left
+   * by a recoverer that died is itself stale after `staleLockMs` and its process gone.
    */
   private takeOverStale(): boolean {
-    let seen: string;
+    if (!this.staleDeadLock(this.lockPath)) return false;
+    let guard: number;
     try {
-      if (Date.now() - fs.statSync(this.lockPath).mtimeMs <= this.staleLockMs) return false;
-      seen = fs.readFileSync(this.lockPath, 'utf8');
-    } catch {
+      guard = fs.openSync(this.reclaimPath, 'wx');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST' && this.staleDeadLock(this.reclaimPath)) {
+        fs.rmSync(this.reclaimPath, { force: true });
+      }
       return false;
     }
-    if (processAlive(Number.parseInt(seen, 10))) return false;
-    const aside = `${this.lockPath}.stale.${process.pid}.${randomBytes(4).toString('hex')}`;
     try {
-      fs.renameSync(this.lockPath, aside);
-    } catch {
-      return false;
-    }
-    let moved = '';
-    try {
-      moved = fs.readFileSync(aside, 'utf8');
-    } catch {
-      moved = '';
-    }
-    if (moved === seen) {
-      fs.rmSync(aside, { force: true });
+      fs.writeSync(guard, `${process.pid} ${Date.now()} reclaim`);
+      if (!this.staleDeadLock(this.lockPath)) return false;
+      fs.rmSync(this.lockPath, { force: true });
       return true;
-    }
-    // Another waiter took over between the read and the rename: this is its fresh lock — put it back.
-    try {
-      fs.linkSync(aside, this.lockPath);
     } catch {
-      // A third lock is already there; the moved one's owner will find its token gone and still finish its change.
+      return false;
+    } finally {
+      fs.closeSync(guard);
+      fs.rmSync(this.reclaimPath, { force: true });
     }
-    fs.rmSync(aside, { force: true });
-    return false;
+  }
+
+  /** The file at `at` is older than `staleLockMs` and the pid it names does not run. */
+  private staleDeadLock(at: string): boolean {
+    try {
+      if (Date.now() - fs.statSync(at).mtimeMs <= this.staleLockMs) return false;
+      return !processAlive(Number.parseInt(fs.readFileSync(at, 'utf8'), 10));
+    } catch {
+      return false;
+    }
   }
 
   /** Remove the lock only while it is still this change's. */

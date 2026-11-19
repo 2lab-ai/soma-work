@@ -158,3 +158,53 @@ describe('WorkQueueStore', () => {
     expect(r).toMatchObject({ ok: true, entry: { id: 'wq-2' } });
   });
 });
+
+describe('WorkQueueStore — review R2', () => {
+  it('a live file with a malformed record is broken: the backup is read instead', () => {
+    const store = new WorkQueueStore(file);
+    enterA(store, 'ABC-1');
+    store.mutate((l) =>
+      enterQueue(l, { queue: 'qa:dev2', keys: ['ABC-2'], holder: { ...A, threadTs: '2.2' } }, QUEUES, 2),
+    );
+    fs.writeFileSync(file, JSON.stringify({ version: 1, seq: 2, entries: [null], ended: [] }));
+    const warnings: string[] = [];
+    const warned = new WorkQueueStore(file, { warn: (m) => warnings.push(m) });
+    expect(warned.read().entries.map((e) => e.id)).toEqual(['wq-1']);
+    expect(warnings.join(' ')).toMatch(/backup/);
+  });
+
+  it('a stale lock is not taken while another process recovers it (the reclaim guard)', () => {
+    const store = new WorkQueueStore(file, { lockTimeoutMs: 60, retryMs: 10, staleLockMs: 1_000 });
+    fs.writeFileSync(`${file}.lock`, '2147483646 1 dead-token');
+    const old = new Date(Date.now() - 60_000);
+    fs.utimesSync(`${file}.lock`, old, old);
+    fs.writeFileSync(`${file}.lock.reclaim`, `${process.pid} ${Date.now()} other-recoverer`);
+    expect(() => enterA(store)).toThrow(/LOCK_TIMEOUT/);
+    expect(fs.readFileSync(`${file}.lock`, 'utf8')).toBe('2147483646 1 dead-token');
+  });
+
+  it('writers in separate processes, overlapping, lose nothing: distinct ids, one running entry per queue', () => {
+    const storeJs = require.resolve('./store');
+    const ledgerJs = require.resolve('./ledger');
+    const script = `
+      const { WorkQueueStore } = require(${JSON.stringify(storeJs)});
+      const { enterQueue } = require(${JSON.stringify(ledgerJs)});
+      const [file, who] = process.argv.slice(1);
+      const store = new WorkQueueStore(file, { lockTimeoutMs: 20000, retryMs: 2 });
+      for (let i = 0; i < 15; i++) {
+        store.mutate((l) => enterQueue(l, { queue: 'qa:dev2', keys: ['ABC-' + (who * 100 + i + 1)], holder: { user: 'U', channel: 'C' + who, threadTs: who + '.' + i } }, [{ id: 'qa:dev2', lane: 'qa', env: 'dev2' }], Date.now()));
+      }
+    `;
+    const kids = [1, 2, 3, 4].map((who) =>
+      require('node:child_process').spawn(process.execPath, ['-e', script, file, String(who)], { stdio: 'inherit' }),
+    );
+    return Promise.all(kids.map((k: any) => new Promise((r) => k.on('exit', r)))).then((codes) => {
+      expect(codes).toEqual([0, 0, 0, 0]);
+      const ledger = new WorkQueueStore(file).read();
+      expect(ledger.entries).toHaveLength(60);
+      expect(new Set(ledger.entries.map((e) => e.id)).size).toBe(60);
+      expect(ledger.seq).toBe(60);
+      expect(ledger.entries.filter((e) => e.state === 'running')).toHaveLength(1);
+    });
+  }, 60_000);
+});
