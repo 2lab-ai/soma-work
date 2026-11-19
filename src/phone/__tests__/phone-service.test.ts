@@ -678,6 +678,63 @@ describe('PhoneService', () => {
       await svc.stop();
     });
 
+    it('a phrase stream that stalls after its headers is given up, and a later idle pass makes the notice', async () => {
+      let stall = true;
+      const voice: VoiceClient = {
+        transcribe: async () => ({ text: '', ms: 0 }),
+        speak: async (_text, signal) => ({
+          sampleRate: 8000,
+          headersMs: 0,
+          chunks: (async function* () {
+            yield Buffer.alloc(320);
+            if (stall)
+              await new Promise<void>((_, reject) =>
+                signal?.addEventListener('abort', () => reject(new Error('aborted'))),
+              );
+            yield Buffer.alloc(3200);
+          })(),
+        }),
+        claim: async () => ({ kind: 'busy', reason: 'busy with voicechat' }),
+      };
+      const { svc, agents } = make(serverTools(), undefined, { voiceClientFor: () => voice, phraseSynthMs: 50 });
+      await svc.start();
+      await new Promise((r) => setTimeout(r, 400)); // every phrase hits the deadline in turn
+      expect(await svc.dial(request() as never)).toMatchObject({
+        ok: false,
+        error: expect.stringContaining('no notice'),
+      });
+      stall = false; // the host recovers
+      await svc.sync();
+      await settleAll();
+      expect(await svc.dial(request({ rid: 'zzz999yyy888' }) as never)).toMatchObject({
+        ok: true,
+        notice: expect.any(String),
+      });
+      expect(agents[0].dialed).toHaveLength(1);
+      await svc.stop();
+    });
+
+    it('a line closed while its inbound claim is pending gives the late grant back', async () => {
+      let letClaimGo!: () => void;
+      const claimGate = new Promise<void>((r) => {
+        letClaimGo = r;
+      });
+      const host = voiceHost(() => 'held', { claimGate: () => claimGate });
+      const { svc, agents, timers } = make(serverTools(), undefined, { voiceClientFor: () => host.voice });
+      await svc.start();
+      await settleAll();
+      await agents[0].incoming?.(incoming('IN1', []));
+      const starting = agents[0].start(fakeCall('IN1', 'inbound'));
+      await settleAll();
+      await svc.stop(); // the line goes; its disconnect sends no call_end
+      letClaimGo();
+      await starting;
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1);
+      timers.advance(60_000);
+      await settleAll();
+      expect(host.log.filter((l) => l === 'renew')).toHaveLength(0);
+    });
+
     it('busy and the notice could not be made: nothing is dialed; the notice is made on a later idle pass', async () => {
       let fails = true;
       const host = voiceHost(() => 'busy', { speakFails: () => fails });

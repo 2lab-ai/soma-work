@@ -675,6 +675,34 @@ describe('createVoiceClient().claim — one job at a time on the voice host', ()
     expect(seen.filter((r) => r.method === 'DELETE')).toHaveLength(1);
   });
 
+  it('a grant that comes back to a renewal after the call ended is deleted at once', async () => {
+    let claims = 0;
+    let letGrant!: () => void;
+    const grantGate = new Promise<void>((r) => {
+      letGrant = r;
+    });
+    const deleted: string[] = [];
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      const token = (init.headers as Record<string, string>)['x-soma-voice-lease'];
+      if (url.endsWith('/api/lease') && init.method === 'POST') {
+        if (++claims === 2) await grantGate; // the re-take is still on its way when the call ends
+        return Response.json({ token: `L${claims}` });
+      }
+      if (url.endsWith('/api/lease/renew')) return Response.json({ error: 'lease is not held' }, { status: 404 });
+      if (init.method === 'DELETE') deleted.push(token);
+      return new Response(null, { status: 204 });
+    }) as unknown as typeof fetch;
+    const claim = await createVoiceClient(cfg, fetchImpl).claim?.('phone');
+    if (claim?.kind !== 'held') throw new Error('not held');
+    const renewing = claim.renew();
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0)); // 404, then the re-take is pending
+    expect(claims).toBe(2);
+    await claim.release();
+    letGrant();
+    expect(await renewing).toBe(false);
+    expect(deleted).toEqual(['L1', 'L2']); // the late L2 went straight back
+  });
+
   it('a lease answer that is JSON null is busy, not a crash', async () => {
     const nul = host(() => new Response('null', { status: 200, headers: { 'content-type': 'application/json' } }));
     expect(await createVoiceClient(cfg, nul.fetchImpl).claim?.('phone')).toMatchObject({ kind: 'busy' });

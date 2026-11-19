@@ -91,6 +91,8 @@ export interface PhoneServiceDeps {
   setTimer?(fn: () => void, ms: number): unknown;
   clearTimer?(handle: unknown): void;
   connectTimeoutMs?: number;
+  /** A line phrase synthesis is given up after this long (default 30 s). */
+  phraseSynthMs?: number;
 }
 
 interface PhoneLine {
@@ -616,8 +618,10 @@ export class PhoneService {
     if (existing) return existing;
     // The voice host first: it does one job at a time. Busy → the caller hears that the call cannot be taken.
     const host = await this.claimVoice(line, 'inbound');
-    if (this.finished.has(callId) || this.stopped) {
-      if (host.kind === 'held') await host.release(); // the caller hung up while the host answered: a late grant
+    // The caller hung up, or the line closed (service stopped, section changed), while the host answered: a late
+    // grant goes straight back.
+    if (this.finished.has(callId) || this.stopped || this.lines.get(line.env) !== line) {
+      if (host.kind === 'held') await host.release();
       return null;
     }
     if (host.kind === 'busy') return this.inboundNotice(line, callId, from, host);
@@ -687,7 +691,6 @@ export class PhoneService {
       this.deps.log('warn', 'phone: inbound call put down — voice host busy and no notice made', { callId });
       return null;
     }
-    if (this.finished.has(callId)) return null;
     const now = Date.now();
     this.deps.store.create({
       id: callId,
@@ -708,7 +711,7 @@ export class PhoneService {
 
   /** Synthesize `text` whole, as μ-law frames for the line. */
   private async synthFrames(line: PhoneLine, text: string): Promise<Buffer[]> {
-    const stream = await line.voice.speak(text, AbortSignal.timeout(PHRASE_SYNTH_MS));
+    const stream = await line.voice.speak(text, AbortSignal.timeout(this.deps.phraseSynthMs ?? PHRASE_SYNTH_MS));
     const rs = new StreamResampler(stream.sampleRate, LINE_SAMPLE_RATE);
     const parts: Buffer[] = [];
     for await (const chunk of stream.chunks) parts.push(this.deps.sdk.pcm16ToUlaw(rs.push(chunk)));
