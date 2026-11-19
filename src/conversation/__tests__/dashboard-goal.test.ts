@@ -293,4 +293,65 @@ describe('Dashboard — work item goal list (SSOT T2/T3)', () => {
       expect(res.body).not.toContain('internal-detail');
     });
   });
+
+  // SSOT 2026-11-19 — 중지 while a goal runs: the card asks, and the yes rides the stop as `pauseGoalId`.
+  describe('POST /api/dashboard/session/:key/stop — pause the running goal first', () => {
+    async function stop(payload?: any, key = 'C1:t1') {
+      return injectWebServer({
+        method: 'POST',
+        url: `/api/dashboard/session/${encodeURIComponent(key)}/stop`,
+        headers: AUTH_HEADER,
+        ...(payload === undefined ? {} : { payload }),
+      });
+    }
+
+    beforeEach(() => {
+      dashboard.setDashboardSessionAccessor(() => new Map([['C1:t1', liveSession({ goal: goal() })]]));
+    });
+
+    it('passes the goal to pause to the stop handler', async () => {
+      const handler = vi.fn().mockResolvedValue(undefined);
+      dashboard.setDashboardStopHandler(handler);
+
+      const res = await stop({ pauseGoalId: 'g1' });
+
+      expect(res.statusCode).toBe(200);
+      expect(handler).toHaveBeenCalledWith('C1:t1', { pauseGoalId: 'g1' });
+    });
+
+    it('no body: a plain stop, as before', async () => {
+      const handler = vi.fn().mockResolvedValue(undefined);
+      dashboard.setDashboardStopHandler(handler);
+
+      expect((await stop()).statusCode).toBe(200);
+      expect((await stop({})).statusCode).toBe(200);
+      expect(handler.mock.calls).toEqual([['C1:t1'], ['C1:t1']]);
+    });
+
+    it.each([
+      [{ pauseGoalId: '' }],
+      [{ pauseGoalId: 7 }],
+      [{ pauseGoalId: 'x'.repeat(201) }],
+    ])('rejects a malformed goal id %j with 400 before stopping anything', async (payload) => {
+      const handler = vi.fn();
+      dashboard.setDashboardStopHandler(handler);
+
+      const res = await stop(payload);
+
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toMatch(/pauseGoalId/);
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('a refused goal pause answers with its status and reason — nothing was stopped', async () => {
+      dashboard.setDashboardStopHandler(
+        vi.fn().mockRejectedValue(new HostGoalActionError(409, 'Another goal is running now — refresh and try again')),
+      );
+
+      const res = await stop({ pauseGoalId: 'g1' });
+
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body).error).toBe('Another goal is running now — refresh and try again');
+    });
+  });
 });

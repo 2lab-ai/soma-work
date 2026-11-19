@@ -14,6 +14,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { nextActionSeams } from '../__fixtures__/viewer-scope';
 import { UI_LIB_FILE, uiLibDistDir } from '../dashboard';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
@@ -53,6 +54,7 @@ function clientListener(ev: string, needle = ''): string {
   throw new Error(`listener ${ev} (${needle}) not found`);
 }
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}, extra: string[] = []): T {
+  inject = { ...nextActionSeams(fns, inject), ...inject };
   const names = Object.keys(inject);
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\n${extra.join('\n')}\nreturn { ${fns.join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;

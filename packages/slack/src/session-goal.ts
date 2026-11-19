@@ -626,6 +626,38 @@ export function pauseCurrentGoal(
 }
 
 /**
+ * Pause the running CURRENT goal so that nothing starts in its place — what a
+ * person's stop needs (the dashboard's 중지 with "pause the goal" confirmed):
+ * a stopped turn whose goal still runs would only make the goal start its next
+ * turn, and a pause that promotes the next queued goal would start that one.
+ *
+ *   - Nothing queued → the same pause as {@link pauseCurrentGoal}: the goal
+ *     moves to the paused goals and the goal work ends.
+ *   - Goals queued behind it → it is paused IN PLACE: it keeps the current
+ *     slot as `paused` (as the cap question's Cancel leaves it), so the queue
+ *     waits behind it instead of its head starting. ▶️ resumes it.
+ *
+ * Only an `active` current goal is paused; returns `{}` otherwise (nothing is
+ * driving the loop). Persistence is the caller's job.
+ */
+export function pauseCurrentGoalHoldingQueue(
+  session: GoalQueueSession,
+  /** As for {@link pauseCurrentGoal}: the open tasks the goal leaves on the session's list. */
+  opts: { heldTaskIds?: readonly string[]; heldListAt?: number } = {},
+): { paused?: SessionGoalState; inPlace?: boolean } {
+  const current = session.goal;
+  if (current?.status !== 'active') return {};
+  if (!session.goalQueue?.length) return { paused: pauseCurrentGoal(session, opts).paused, inPlace: false };
+  endGoalCapDecision(current);
+  current.status = 'paused';
+  dropScheduledEval(current);
+  current.epoch = (current.epoch ?? 0) + 1;
+  current.updatedAt = Date.now();
+  session.systemPrompt = undefined;
+  return { paused: current, inPlace: true };
+}
+
+/**
  * Undo a pause whose follow-through (the promoted goal's first turn) was
  * refused: the goal state goes back to the snapshot, except the decision round
  * the pause ended. Ending it already withdrew its question and rewrote its DM

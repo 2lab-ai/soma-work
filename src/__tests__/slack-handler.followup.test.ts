@@ -7790,6 +7790,98 @@ describe('SlackHandler — follow-up queue host', () => {
       await settle();
     });
 
+    // SSOT 2026-11-19 — the dashboard's 중지 while a goal runs. The owner confirmed "pause the goal, then stop": the
+    // goal stops driving BEFORE the stop cuts the turn, so the cut turn's end starts nothing.
+    describe('pauseGoalForStop — the goal is paused first, then the stop holds', () => {
+      it('why: a stop alone — the cut turn ends with text and drives the goal, which would start its next turn', async () => {
+        const goalDriver = vi.fn();
+        handler.setGoalTurnSettledHandler(goalDriver);
+        registrySession.goal = goalOf();
+        const { settle } = await startBusyTurn();
+
+        handlerAny.requestCoordinator.abortSession(SESSION_KEY, 'user-stop');
+        handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, ['반쯤 한 일']);
+
+        expect(goalDriver).toHaveBeenCalledWith(SESSION_KEY);
+        await settle();
+      });
+
+      it('nothing queued: the goal is set aside, the cut turn drives nothing, no turn starts', async () => {
+        const goalDriver = vi.fn();
+        handler.setGoalTurnSettledHandler(goalDriver);
+        registrySession.goal = goalOf();
+        const { settle } = await startBusyTurn();
+
+        const result = handler.pauseGoalForStop(SESSION_KEY, 'g1');
+        handlerAny.requestCoordinator.abortSession(SESSION_KEY, 'user-stop');
+        handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, ['반쯤 한 일']);
+        await settle();
+        await tick();
+
+        expect(result).toEqual({ outcome: 'paused', inPlace: false });
+        expect(registrySession.goal).toBeUndefined();
+        expect(registrySession.goalPaused).toEqual([expect.objectContaining({ goalId: 'g1', status: 'paused' })]);
+        expect(goalDriver).not.toHaveBeenCalled();
+        expect(startWithContinuation).toHaveBeenCalledTimes(1);
+        expect(claudeHandler.saveSessions).toHaveBeenCalled();
+        expect(claudeHandler.broadcastSessionUpdate).toHaveBeenCalled();
+        expect(postSystemMessage).toHaveBeenCalledWith(
+          CHANNEL,
+          expect.stringContaining('Goal paused'),
+          expect.anything(),
+        );
+      });
+
+      it('goals queued: paused in place — the next goal does not start either, the queue waits behind it', async () => {
+        const goalDriver = vi.fn();
+        handler.setGoalTurnSettledHandler(goalDriver);
+        registrySession.goal = goalOf();
+        registrySession.goalQueue = [goalOf({ goalId: 'g2', objective: '다음 목표', status: 'queued' })];
+        const { settle } = await startBusyTurn();
+
+        const result = handler.pauseGoalForStop(SESSION_KEY, 'g1');
+        handlerAny.requestCoordinator.abortSession(SESSION_KEY, 'user-stop');
+        handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, ['반쯤 한 일']);
+        await settle();
+        await tick();
+
+        expect(result).toEqual({ outcome: 'paused', inPlace: true });
+        expect(registrySession.goal).toMatchObject({ goalId: 'g1', status: 'paused' });
+        expect(registrySession.goalQueue.map((g: any) => g.goalId)).toEqual(['g2']);
+        // No opening turn for the next goal was queued, and nothing ran after the stop.
+        expect(items()).toHaveLength(0);
+        expect(goalDriver).not.toHaveBeenCalled();
+        expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      });
+
+      it('no goal runs any more (finished, paused, deleted meanwhile): nothing to pause — the stop alone holds', () => {
+        for (const goal of [undefined, goalOf({ status: 'complete' }), goalOf({ status: 'paused' })]) {
+          registrySession.goal = goal;
+          expect(handler.pauseGoalForStop(SESSION_KEY, 'g1')).toEqual({ outcome: 'not-running' });
+        }
+        expect(claudeHandler.saveSessions).not.toHaveBeenCalled();
+      });
+
+      it('another goal runs now: refused (409) and nothing changes — the owner did not confirm pausing that one', () => {
+        registrySession.goal = goalOf({ goalId: 'g2' });
+        expect(() => handler.pauseGoalForStop(SESSION_KEY, 'g1')).toThrow(HostGoalActionError);
+        try {
+          handler.pauseGoalForStop(SESSION_KEY, 'g1');
+        } catch (error: any) {
+          expect(error.statusCode).toBe(409);
+        }
+        expect(registrySession.goal).toMatchObject({ goalId: 'g2', status: 'active' });
+        expect(claudeHandler.saveSessions).not.toHaveBeenCalled();
+      });
+
+      it('a closed session is refused (409)', () => {
+        registrySession.goal = goalOf();
+        registrySession.terminated = true;
+        expect(() => handler.pauseGoalForStop(SESSION_KEY, 'g1')).toThrow(/closed/);
+        expect(registrySession.goal).toMatchObject({ goalId: 'g1', status: 'active' });
+      });
+    });
+
     it('resume with no goal running: the paused goal becomes current and its turn takes the slot', async () => {
       registrySession.goalPaused = [goalOf({ status: 'paused', continuationCount: 6 })];
 
