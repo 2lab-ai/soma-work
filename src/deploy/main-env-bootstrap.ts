@@ -4,12 +4,13 @@ import path from 'path';
 const DEFAULT_DEV_SOURCE_DIR = '/opt/soma-work/dev';
 const DEFAULT_LEGACY_ROOT_DIR = '/Users/dd/app.claude-code-slack-bot';
 const MARKER_FILE_NAME = '.main-bootstrap.json';
-// Mirrors user-settings-store.DEFAULT_MODEL — the resolved `gpt` alias
-// (gpt-5.6-sol since 2026-07-10). Bootstrap is import-lean (runs before the main
-// process and must not pull in the settings store), so the literal is
-// duplicated here. Drift is caught by `VALID_MODELS + DEFAULT_MODEL stay in
-// sync` in main-env-bootstrap.test.ts.
-const DEFAULT_MODEL = 'gpt-5.6-sol';
+// Mirrors user-settings-store.DEFAULT_MODEL — the resolved `opus` alias
+// (claude-opus-5-5[1m]; DEFAULT_MODEL follows `opus` since 2026-11-19 and
+// followed the `gpt` alias, gpt-5.6-sol, from 2026-07-10). Bootstrap is
+// import-lean (runs before the main process and must not pull in the settings
+// store), so the literal is duplicated here. Drift is caught by
+// `VALID_MODELS + DEFAULT_MODEL stay in sync` in main-env-bootstrap.test.ts.
+const DEFAULT_MODEL = 'claude-opus-5-5[1m]';
 
 // Duplicated from user-settings-store.AVAILABLE_MODELS because bootstrap is
 // import-lean (it runs before the main process and must not pull in the
@@ -41,7 +42,6 @@ const VALID_MODELS = new Set([
   'claude-sonnet-4-6[1m]',
   'claude-sonnet-5-5[1m]',
   'claude-haiku-5-5[1m]',
-  'gpt-5.5',
   'gpt-5.6-sol',
   'gpt-5.6-sol[1m]',
   'gpt-5.6-terra',
@@ -93,6 +93,10 @@ function readCatalogSnapshotIds(dataDir: string | undefined): Set<string> {
           // stale or malformed catalog snapshot advertises it. Fable `[1m]`
           // remains a valid first-class id.
           if (/^grok-.*\[1m\]$/i.test(id)) continue;
+          // Same for retired ids (gpt-5.5, retired 2026-11-19): the runtime
+          // store refuses them (model-profile.ts RETIRED_MODEL_INPUTS), so a
+          // catalog that still advertises one must not keep it alive here.
+          if (/^gpt-?5\.5(\[1m\])?$/i.test(id)) continue;
           ids.add(id);
         }
       }

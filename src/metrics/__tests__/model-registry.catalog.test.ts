@@ -56,7 +56,7 @@ describe('resolveContextWindow — catalog overlay', () => {
       { id: 'gpt-5.6', aliases: [], name: 'GPT-5.6', efforts: [], max_context: 400_000, group: 'codex' },
     ]);
     expect(resolveContextWindow('gpt-5.6-sol')).toBe(372_000);
-    expect(resolveContextWindow('gpt-5.5')).toBe(275_000);
+    expect(resolveContextWindow('gpt-5.6-terra')).toBe(372_000);
   });
 
   it('keeps gpt-6-astra on its hardcoded 272k window despite a bigger catalog entry', () => {

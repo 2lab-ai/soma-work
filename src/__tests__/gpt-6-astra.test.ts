@@ -27,9 +27,6 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CANONICAL_MODEL_IDS, DEFAULT_COMPACT_HEADROOM, resolveModelProfile } from '../metrics/model-profile';
 import {
-  GPT_5_5_AUTO_COMPACT_TOKENS,
-  GPT_5_5_CONTEXT_WINDOW,
-  GPT_5_5_SDK_BLOCKING_LIMIT,
   GPT_5_6_AUTO_COMPACT_TOKENS,
   GPT_5_6_CONTEXT_WINDOW,
   GPT_5_6_SDK_BLOCKING_LIMIT,
@@ -38,7 +35,6 @@ import {
   GPT_6_SDK_BLOCKING_LIMIT,
   getModelSpec,
   isGpt6Model,
-  isGpt55Model,
   isGpt56Model,
   isNativeOneMModel,
   resolveAutoCompactTokens,
@@ -83,8 +79,8 @@ describe('gpt-6-astra — release wiring', () => {
     expect(CANONICAL_MODEL_IDS).not.toContain('gpt-6-astra[1m]');
   });
 
-  it('is SELECTABLE but NOT the default — gpt-5.6-sol stays DEFAULT_MODEL', () => {
-    expect(DEFAULT_MODEL).toBe('gpt-5.6-sol');
+  it('is SELECTABLE but NOT the default — DEFAULT_MODEL follows `opus`', () => {
+    expect(DEFAULT_MODEL).toBe(MODEL_ALIASES.opus);
     expect(MODEL_ALIASES.gpt).toBe('gpt-5.6-sol');
   });
 
@@ -99,7 +95,6 @@ describe('gpt-6-astra — release wiring', () => {
     expect(MODEL_ALIASES.astra).toBe('gpt-6.2-astra[1m]');
     // The older generations must NOT be silently upgraded.
     expect(MODEL_ALIASES['gpt5.6']).toBe('gpt-5.6-sol');
-    expect(MODEL_ALIASES['gpt5.5']).toBe('gpt-5.5');
     // `sol` follows the newest sol generation (gpt-6.2-sol), not gpt-6-astra.
     expect(MODEL_ALIASES.sol).toBe('gpt-6.2-sol[1m]');
   });
@@ -144,8 +139,8 @@ describe('gpt-6-astra — release wiring', () => {
     expect(coerceToAvailableModel('GPT-6-ASTRA[1M]')).toBe('gpt-6-astra[1m]');
     // The bare generation spelling is not in the allow-list — coerce (which
     // does NOT consult MODEL_ALIASES) still lands on DEFAULT_MODEL.
-    expect(coerceToAvailableModel('gpt-6')).toBe('gpt-5.6-sol');
-    expect(coerceToAvailableModel('some-nonsense-model')).toBe('gpt-5.6-sol');
+    expect(coerceToAvailableModel('gpt-6')).toBe(DEFAULT_MODEL);
+    expect(coerceToAvailableModel('some-nonsense-model')).toBe(DEFAULT_MODEL);
   });
 
   it('renders the curated display labels for both variants', () => {
@@ -188,11 +183,9 @@ describe('gpt-6-astra — canonical profile (272k / 249k / 240k)', () => {
     }
   });
 
-  it('does not disturb the gpt-5.6 / gpt-5.5 or claude profiles', () => {
+  it('does not disturb the gpt-5.6 or claude profiles', () => {
     expect(resolveContextWindow('gpt-5.6-sol')).toBe(372_000);
     expect(resolveAutoCompactTokens('gpt-5.6-sol')).toBe(340_000);
-    expect(resolveContextWindow('gpt-5.5')).toBe(275_000);
-    expect(resolveAutoCompactTokens('gpt-5.5')).toBe(250_000);
     expect(resolveContextWindow('claude-fable-5')).toBe(1_000_000);
   });
 
@@ -219,9 +212,8 @@ describe('gpt-6-astra — canonical profile (272k / 249k / 240k)', () => {
     }
   });
 
-  it('gpt-6-astra is not mistaken for gpt-5.6 / gpt-5.5 / native-1M', () => {
+  it('gpt-6-astra is not mistaken for gpt-5.6 / native-1M', () => {
     expect(isGpt56Model('gpt-6-astra')).toBe(false);
-    expect(isGpt55Model('gpt-6-astra')).toBe(false);
     expect(isNativeOneMModel('gpt-6-astra')).toBe(false);
   });
 });
@@ -233,7 +225,8 @@ describe('gpt-6-astra — canonical profile (272k / 249k / 240k)', () => {
 // If the trigger lands at or above the blocking limit, the SDK hard-blocks the
 // input BEFORE the turn-end checker can schedule `/compact` and the session
 // dead-ends. The first cut of gpt-6 had exactly that bug (250k trigger vs a
-// 249k limit), so all three gpt generations are pinned here.
+// 249k limit), so the gpt generations with a family default are pinned here
+// (gpt-5.5's row left with its 2026-11-19 retirement).
 describe('gpt generations — compact-before-hard-block invariant', () => {
   it('gpt-6: 240k ≤ 249k − 9k < 272k', () => {
     expect(GPT_6_AUTO_COMPACT_TOKENS).toBeLessThanOrEqual(GPT_6_SDK_BLOCKING_LIMIT - DEFAULT_COMPACT_HEADROOM);
@@ -243,11 +236,6 @@ describe('gpt generations — compact-before-hard-block invariant', () => {
   it('gpt-5.6: 340k ≤ 349k − 9k < 372k', () => {
     expect(GPT_5_6_AUTO_COMPACT_TOKENS).toBeLessThanOrEqual(GPT_5_6_SDK_BLOCKING_LIMIT - DEFAULT_COMPACT_HEADROOM);
     expect(GPT_5_6_SDK_BLOCKING_LIMIT).toBeLessThan(GPT_5_6_CONTEXT_WINDOW);
-  });
-
-  it('gpt-5.5: 250k < 252k < 275k (family default, below the limit)', () => {
-    expect(GPT_5_5_AUTO_COMPACT_TOKENS).toBeLessThan(GPT_5_5_SDK_BLOCKING_LIMIT);
-    expect(GPT_5_5_SDK_BLOCKING_LIMIT).toBeLessThan(GPT_5_5_CONTEXT_WINDOW);
   });
 
   it("gpt-6's declared trigger is REACHABLE — not clamped by the session policy", () => {

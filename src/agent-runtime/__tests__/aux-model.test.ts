@@ -30,7 +30,7 @@ describe('auxProviderOf', () => {
     ['claude-fable-5-2[1m]', 'claude'],
     ['opus', 'claude'],
     ['gpt-6.1-sol[1m]', 'codex'],
-    ['gpt-5.5', 'codex'],
+    ['gpt-5.6-sol', 'codex'],
     ['sol', 'codex'],
     ['terra', 'codex'],
     ['luna', 'codex'],
@@ -53,7 +53,7 @@ describe('auxModelFor — tier × main provider', () => {
   });
 
   it('Codex/GPT main: haiku → `luna`, sonnet → `terra`, no effort', () => {
-    for (const main of ['gpt-6.1-sol[1m]', 'gpt-6-astra', 'gpt-5.5', 'sol', 'astra']) {
+    for (const main of ['gpt-6.1-sol[1m]', 'gpt-6-astra', 'gpt-5.6-sol', 'sol', 'astra']) {
       expect(auxModelFor('haiku', { mainModel: main })).toEqual({ model: MODEL_ALIASES.luna });
       expect(auxModelFor('sonnet', { mainModel: main })).toEqual({ model: MODEL_ALIASES.terra });
     }
@@ -92,7 +92,10 @@ describe('auxModelFor — which model is the MAIN model', () => {
   });
 
   it('no session and no user → DEFAULT_MODEL decides the provider', () => {
-    const expected = auxProviderOf(DEFAULT_MODEL) === 'codex' ? MODEL_ALIASES.terra : MODEL_ALIASES.sonnet;
+    // DEFAULT_MODEL is opus since 2026-11-19 (it was gpt-5.6-sol → codex
+    // tiers), so default-driven aux calls run on the Claude tiers.
+    expect(auxProviderOf(DEFAULT_MODEL)).toBe('claude');
+    const expected = MODEL_ALIASES.sonnet;
     expect(auxModelFor('sonnet').model).toBe(expected);
     expect(auxModelFor('sonnet', {}).model).toBe(expected);
   });
@@ -114,10 +117,10 @@ describe('auxModelFor — operator override', () => {
   });
 
   it('an unset / empty override falls through to the tier', () => {
-    expect(auxModelFor('sonnet', { override: undefined, mainModel: 'gpt-5.5' })).toEqual({
+    expect(auxModelFor('sonnet', { override: undefined, mainModel: 'gpt-5.6-sol' })).toEqual({
       model: MODEL_ALIASES.terra,
     });
-    expect(auxModelFor('sonnet', { override: '', mainModel: 'gpt-5.5' })).toEqual({ model: MODEL_ALIASES.terra });
+    expect(auxModelFor('sonnet', { override: '', mainModel: 'gpt-5.6-sol' })).toEqual({ model: MODEL_ALIASES.terra });
   });
 });
 

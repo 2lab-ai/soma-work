@@ -14,9 +14,6 @@ import { resolveModelProfile } from './model-profile';
  */
 export {
   FALLBACK_CONTEXT_WINDOW,
-  GPT_5_5_AUTO_COMPACT_TOKENS,
-  GPT_5_5_CONTEXT_WINDOW,
-  GPT_5_5_SDK_BLOCKING_LIMIT,
   GPT_5_6_AUTO_COMPACT_TOKENS,
   GPT_5_6_CONTEXT_WINDOW,
   GPT_5_6_SDK_BLOCKING_LIMIT,
@@ -25,7 +22,6 @@ export {
   GPT_6_SDK_BLOCKING_LIMIT,
   hasOneMSuffix,
   isGpt6Model,
-  isGpt55Model,
   isGpt56Model,
   isNativeOneMModel,
   isRejectedModelInput,
@@ -409,12 +405,17 @@ const MODEL_REGISTRY: [pattern: string, spec: ModelSpec][] = [
       maxOutput: 128_000,
     },
   ],
-  // OpenAI gpt-5.5 — served via llmux's codex backend group (llmux routes
-  // `gpt-` prefixed ids to codex; see llmux src/routing.rs). Rates mirror
-  // llmux's built-in gpt-5.5 pricing (2026-04-23): $5 in / $30 out /
-  // $0.5 cache-read per MTok, and NO cache-creation charge (codex has no
-  // cache-write billing — both write rates are 0). Context window is 275k
-  // with harness-side auto-compact at 250k (see GPT_5_5_* constants below).
+  // OpenAI gpt-5.5 — RETIRED from selection on 2026-11-19 (owner
+  // instruction; the ChatGPT-account Codex backend rejects it since
+  // 2026-10-14). This row is KEPT for history: past gpt-5.5 usage must stay
+  // priced, and spend is re-read whenever SPEND_CALC_VERSION bumps — dropping
+  // it would re-book that usage at FALLBACK_SPEC's rates. It was served via
+  // llmux's codex backend group (llmux routes `gpt-` prefixed ids to codex;
+  // see llmux src/routing.rs). Rates mirror llmux's built-in gpt-5.5 pricing
+  // (2026-04-23): $5 in / $30 out / $0.5 cache-read per MTok, and NO
+  // cache-creation charge (codex has no cache-write billing — both write
+  // rates are 0). `contextWindow` (275k) is the legacy, non-authoritative
+  // field; model-profile.ts no longer carries a gpt-5.5 branch.
   [
     'gpt-5.5',
     {

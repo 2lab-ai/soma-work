@@ -37,7 +37,6 @@ import {
   getModelSpec,
   hasModelPricing,
   isGpt6Model,
-  isGpt55Model,
   isGpt56Model,
   isNativeOneMModel,
   resolveAutoCompactTokens,
@@ -106,8 +105,8 @@ describe('gpt-6.2 — release wiring', () => {
     }
   });
 
-  it('is SELECTABLE but NOT the default — gpt-5.6-sol stays DEFAULT_MODEL', () => {
-    expect(DEFAULT_MODEL).toBe('gpt-5.6-sol');
+  it('is SELECTABLE but NOT the default — DEFAULT_MODEL follows `opus`', () => {
+    expect(DEFAULT_MODEL).toBe(MODEL_ALIASES.opus);
     expect(MODEL_ALIASES.gpt).toBe('gpt-5.6-sol');
   });
 
@@ -172,8 +171,8 @@ describe('gpt-6.2 — release wiring', () => {
     expect(coerceToAvailableModel('gpt-6.2-astra')).toBe('gpt-6.2-astra');
     expect(coerceToAvailableModel('GPT-6.2-ASTRA[1M]')).toBe('gpt-6.2-astra[1m]');
     // coerce does NOT consult MODEL_ALIASES.
-    expect(coerceToAvailableModel('gpt-6.2')).toBe('gpt-5.6-sol');
-    expect(coerceToAvailableModel('astra')).toBe('gpt-5.6-sol');
+    expect(coerceToAvailableModel('gpt-6.2')).toBe(DEFAULT_MODEL);
+    expect(coerceToAvailableModel('astra')).toBe(DEFAULT_MODEL);
   });
 
   it('renders the curated display labels for all four ids', () => {
@@ -266,7 +265,6 @@ describe('gpt-6.2 — canonical profile', () => {
     for (const id of ['gpt-6.2-sol', 'gpt-6.2-astra']) {
       expect(isGpt6Model(id)).toBe(false);
       expect(isGpt56Model(id)).toBe(false);
-      expect(isGpt55Model(id)).toBe(false);
       expect(isNativeOneMModel(id)).toBe(false);
     }
   });

@@ -8,7 +8,7 @@
  * `InputProcessor` and converted into a `/compact` prompt (AC3).
  *
  * Models with a fixed token-count compaction point (`resolveAutoCompactTokens`,
- * e.g. gpt-5.5 → 250k of its 275k window) use that absolute trigger instead of
+ * e.g. gpt-5.6-sol → 340k of its 372k window) use that absolute trigger instead of
  * the per-user percent threshold.
  *
  * The check is idempotent within a turn — repeated calls while

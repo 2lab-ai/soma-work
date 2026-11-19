@@ -63,8 +63,10 @@ describe('fable-5 — release wiring', () => {
 
   it('does NOT change DEFAULT_MODEL (Fable is opt-in, not the default)', () => {
     // Fable 5 is double opus pricing and becomes credit-gated post-launch, so
-    // it must not silently become everyone's default.
-    expect(DEFAULT_MODEL).toBe('gpt-5.6-sol');
+    // it must not silently become everyone's default. The default follows
+    // `opus` since 2026-11-19.
+    expect(DEFAULT_MODEL).toBe(MODEL_ALIASES.opus);
+    expect(DEFAULT_MODEL).not.toMatch(/fable/);
   });
 
   it('coerce passes the bare id through and normalises an uppercase typo path', () => {

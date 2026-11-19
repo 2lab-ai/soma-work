@@ -182,9 +182,26 @@ describe('model-topic.applyModel', () => {
   });
 
   it('does NOT persist a rejected grok [1m] id as the user default', async () => {
-    const { userSettingsStore } = await import('../../../../user-settings-store');
+    const { DEFAULT_MODEL, userSettingsStore } = await import('../../../../user-settings-store');
     await applyModel({ userId: 'U_REJECT', value: 'grok-4.6[1m]' });
-    expect(userSettingsStore.getUserDefaultModel('U_REJECT')).not.toContain('[1m]');
+    // Nothing was stored — the user still reads the in-code default (which
+    // itself carries `[1m]` since it became opus on 2026-11-19).
+    expect(userSettingsStore.getUserDefaultModel('U_REJECT')).not.toBe('grok-4.6[1m]');
+    expect(userSettingsStore.getUserDefaultModel('U_REJECT')).toBe(DEFAULT_MODEL);
+  });
+
+  // --- Retired `gpt-5.5` (2026-11-19): rejected with a suggestion ---
+
+  it.each(['gpt-5.5', 'gpt5.5'])('rejects the retired %s VISIBLY and suggests gpt-5.6-sol', async (value) => {
+    const r = await applyModel({ userId: 'U_RETIRED', value });
+    expect(r.ok).toBe(false);
+    expect(r.summary).toContain(value);
+    expect(r.summary).not.toContain('not a real model');
+    expect(r.description ?? '').toContain('retired on 2026-11-19');
+    expect(r.description ?? '').toMatch(/use `gpt-5\.6-sol`/i);
+    expect(r.description ?? '').not.toContain('Available aliases');
+    const { DEFAULT_MODEL, userSettingsStore } = await import('../../../../user-settings-store');
+    expect(userSettingsStore.getUserDefaultModel('U_RETIRED')).toBe(DEFAULT_MODEL);
   });
 
   it('still reports an ordinary typo as an unknown model with the alias list', async () => {

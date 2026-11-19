@@ -27,7 +27,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { CANONICAL_MODEL_IDS, DEFAULT_COMPACT_HEADROOM, resolveModelProfile } from '../metrics/model-profile';
 import {
   getModelSpec,
-  isGpt55Model,
   isGpt56Model,
   isNativeOneMModel,
   resolveAutoCompactTokens,
@@ -63,8 +62,8 @@ describe('gpt-6.1-sol — release wiring', () => {
     expect(models).toContain('gpt-5.6-sol[1m]');
   });
 
-  it('is SELECTABLE but NOT the default — gpt-5.6-sol stays DEFAULT_MODEL', () => {
-    expect(DEFAULT_MODEL).toBe('gpt-5.6-sol');
+  it('is SELECTABLE but NOT the default — DEFAULT_MODEL follows `opus`', () => {
+    expect(DEFAULT_MODEL).toBe(MODEL_ALIASES.opus);
     expect(MODEL_ALIASES.gpt).toBe('gpt-5.6-sol');
   });
 
@@ -124,7 +123,7 @@ describe('gpt-6.1-sol — release wiring', () => {
     expect(coerceToAvailableModel('gpt-6.1-sol[1m]')).toBe('gpt-6.1-sol[1m]');
     expect(coerceToAvailableModel('GPT-6.1-SOL[1M]')).toBe('gpt-6.1-sol[1m]');
     // coerce does NOT consult MODEL_ALIASES.
-    expect(coerceToAvailableModel('gpt-6.1')).toBe('gpt-5.6-sol');
+    expect(coerceToAvailableModel('gpt-6.1')).toBe(DEFAULT_MODEL);
   });
 
   it('renders the curated display labels for both variants', () => {
@@ -190,9 +189,8 @@ describe('gpt-6.1-sol — canonical profile', () => {
     expect(resolveModelInputCompatibility('gpt-6.1-sol[1m]')).toBeNull();
   });
 
-  it('gpt-6.1-sol is not mistaken for gpt-5.6 / gpt-5.5 / native-1M', () => {
+  it('gpt-6.1-sol is not mistaken for gpt-5.6 / native-1M', () => {
     expect(isGpt56Model('gpt-6.1-sol')).toBe(false);
-    expect(isGpt55Model('gpt-6.1-sol')).toBe(false);
     expect(isNativeOneMModel('gpt-6.1-sol')).toBe(false);
   });
 });

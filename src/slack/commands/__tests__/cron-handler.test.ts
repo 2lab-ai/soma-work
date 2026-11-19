@@ -15,15 +15,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../../../user-settings-store', () => {
   const resolve = (input: string) => {
     const map: Record<string, string> = {
-      'gpt-5.5': 'gpt-5.5',
-      gpt: 'gpt-5.5',
+      'gpt-6.2-sol': 'gpt-6.2-sol',
+      gpt: 'gpt-6.2-sol',
       opus: 'claude-opus-4-8',
       'claude-fable-5': 'claude-fable-5',
     };
     return map[input] ?? null;
   };
   return {
-    AVAILABLE_MODELS: ['claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-4-6', 'gpt-5.5'],
+    AVAILABLE_MODELS: ['claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-4-6', 'gpt-6.2-sol'],
     userSettingsStore: {
       resolveModelInput: vi.fn(resolve),
       resolveModelInputWithRefresh: vi.fn(async (input: string) => resolve(input)),
@@ -105,7 +105,7 @@ describe('canHandle', () => {
     '스케줄러',
     '스케쥴러',
     'cron list',
-    'cron model daily gpt-5.5',
+    'cron model daily gpt-6.2-sol',
     'cron target daily dm',
     'cron delete daily',
     'cron help',
@@ -118,7 +118,7 @@ describe('canHandle', () => {
     '크론 잡 하나 만들어줘',
     'schedule a meeting tomorrow',
     'cronjob이 뭐야',
-    'model gpt-5.5',
+    'model gpt-6.2-sol',
     'goal list',
   ])('does NOT handle %s (falls through to the model)', (text) => {
     expect(handler.canHandle(text)).toBe(false);
@@ -159,7 +159,7 @@ describe('list', () => {
 
   it('admin sees all jobs with owner shown', async () => {
     seed();
-    seed({ name: 'other-job', owner: 'U_BOB', target: 'dm', modelConfig: { type: 'custom', model: 'gpt-5.5' } });
+    seed({ name: 'other-job', owner: 'U_BOB', target: 'dm', modelConfig: { type: 'custom', model: 'gpt-6.2-sol' } });
     const ctx = makeCtx({ user: 'U_ADMIN', text: 'cron' });
     await handler.execute(ctx);
     const out = saidText(ctx);
@@ -167,7 +167,7 @@ describe('list', () => {
     expect(out).toContain('other-job');
     expect(out).toContain('<@U_ALICE>');
     expect(out).toContain('<@U_BOB>');
-    expect(out).toContain('gpt-5.5');
+    expect(out).toContain('gpt-6.2-sol');
     expect(out).toContain('dm');
   });
 
@@ -186,11 +186,11 @@ describe('model change', () => {
     const ctx = makeCtx({ text: 'cron model daily-report gpt' });
     const r = await handler.execute(ctx);
     expect(r.handled).toBe(true);
-    expect(storage.getJobsByOwner('U_ALICE')[0].modelConfig).toEqual({ type: 'custom', model: 'gpt-5.5' });
+    expect(storage.getJobsByOwner('U_ALICE')[0].modelConfig).toEqual({ type: 'custom', model: 'gpt-6.2-sol' });
   });
 
   it('default clears the override (creator current model at fire time)', async () => {
-    seed({ modelConfig: { type: 'custom', model: 'gpt-5.5' } });
+    seed({ modelConfig: { type: 'custom', model: 'gpt-6.2-sol' } });
     const ctx = makeCtx({ text: 'cron model daily-report default' });
     await handler.execute(ctx);
     expect(storage.getJobsByOwner('U_ALICE')[0].modelConfig).toBeUndefined();
@@ -204,7 +204,7 @@ describe('model change', () => {
   });
 
   it('bare opus / fable store the floating alias type, not a pinned id', async () => {
-    seed({ modelConfig: { type: 'custom', model: 'gpt-5.5' } });
+    seed({ modelConfig: { type: 'custom', model: 'gpt-6.2-sol' } });
     for (const type of ['opus', 'fable'] as const) {
       const ctx = makeCtx({ text: `cron model daily-report ${type.toUpperCase()}` });
       await handler.execute(ctx);

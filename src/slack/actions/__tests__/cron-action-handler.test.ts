@@ -93,10 +93,10 @@ describe('authorization', () => {
     seed();
     const respond = vi.fn();
     await handler.handleAction(
-      body({ actionId: 'cron_model::U_ALICE::daily-report', user: 'U_ADMIN', selected: 'custom:gpt-5.5' }),
+      body({ actionId: 'cron_model::U_ALICE::daily-report', user: 'U_ADMIN', selected: 'custom:gpt-6.2-sol' }),
       respond,
     );
-    expect(storage.getJobsByOwner('U_ALICE')[0].modelConfig).toEqual({ type: 'custom', model: 'gpt-5.5' });
+    expect(storage.getJobsByOwner('U_ALICE')[0].modelConfig).toEqual({ type: 'custom', model: 'gpt-6.2-sol' });
   });
 
   it('non-owner non-admin is rejected with ephemeral, job untouched', async () => {
@@ -114,7 +114,7 @@ describe('authorization', () => {
 
 describe('model select', () => {
   it('default clears the override (creator current model at fire time)', async () => {
-    seed({ modelConfig: { type: 'custom', model: 'gpt-5.5' } });
+    seed({ modelConfig: { type: 'custom', model: 'gpt-6.2-sol' } });
     await handler.handleAction(
       body({ actionId: 'cron_model::U_ALICE::daily-report', user: 'U_ALICE', selected: 'default' }),
       vi.fn(),

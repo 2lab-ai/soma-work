@@ -17,8 +17,11 @@
  * Scope: `user-settings.json` defaults only. `sessions.json` is never opened —
  * a running session keeps the model it has. Users whose entry has no
  * `defaultModel` at all get one too ("every user"), since otherwise they would
- * keep resolving to the in-code DEFAULT_MODEL. DEFAULT_MODEL itself is NOT
- * changed: brand-new users after this boot still get the gpt flagship.
+ * keep resolving to the in-code DEFAULT_MODEL. DEFAULT_MODEL itself was NOT
+ * changed by this module: brand-new users after this boot still got the gpt
+ * flagship (gpt-5.6-sol). Since 2026-11-19 DEFAULT_MODEL is opus itself (it
+ * follows `MODEL_ALIASES.opus`, user-settings-store.ts), so brand-new users
+ * now get opus too — that change rewrote no stored user choice.
  *
  * Ordering — MARKER FIRST:
  *   1. read + shape-validate `user-settings.json`; an unreadable or mis-shaped

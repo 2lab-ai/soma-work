@@ -91,11 +91,11 @@ describe('buildCronCard', () => {
 
   it('preselects the current model and target', () => {
     const { blocks } = buildCronCard({
-      jobs: [job({ modelConfig: { type: 'custom', model: 'gpt-5.5' }, target: 'dm' })],
+      jobs: [job({ modelConfig: { type: 'custom', model: 'gpt-6.2-sol' }, target: 'dm' })],
       isAdmin: false,
     });
     const actions = blocks.find((b: any) => b.type === 'actions');
-    expect(actions.elements[0].initial_option.value).toBe('custom:gpt-5.5');
+    expect(actions.elements[0].initial_option.value).toBe('custom:gpt-6.2-sol');
     expect(actions.elements[1].initial_option.value).toBe('dm');
   });
 
@@ -133,12 +133,12 @@ describe('buildCronCard', () => {
 describe('current settings line (change visibility)', () => {
   it('job section shows model/target/mode as text so dropdown changes are visible after rerender', () => {
     const { blocks } = buildCronCard({
-      jobs: [job({ modelConfig: { type: 'custom', model: 'gpt-5.5' }, target: 'dm', mode: 'fastlane' })],
+      jobs: [job({ modelConfig: { type: 'custom', model: 'gpt-6.2-sol' }, target: 'dm', mode: 'fastlane' })],
       isAdmin: false,
     });
     const section = blocks.find((b: any) => b.type === 'section' && b.text.text.includes('daily-report'));
     expect(section.text.text).toContain('현재 설정');
-    expect(section.text.text).toContain('custom(gpt-5.5)');
+    expect(section.text.text).toContain('custom(gpt-6.2-sol)');
     expect(section.text.text).toContain('DM(오너)');
     expect(section.text.text).toContain('fastlane');
   });

@@ -543,13 +543,13 @@ describe('handleUpdate', () => {
 
   it('changes model to a specific model (model_type=custom)', () => {
     seedJob(storage);
-    const r = handleUpdate({ name: 'daily', model_type: 'custom', model_name: 'gpt-5.5' }, ownerContext, storage);
+    const r = handleUpdate({ name: 'daily', model_type: 'custom', model_name: 'gpt-6.2-sol' }, ownerContext, storage);
     expect(r.isError).toBe(false);
-    expect(storage.getJobsByOwner('U_OWNER')[0].modelConfig).toEqual({ type: 'custom', model: 'gpt-5.5' });
+    expect(storage.getJobsByOwner('U_OWNER')[0].modelConfig).toEqual({ type: 'custom', model: 'gpt-6.2-sol' });
   });
 
   it('changes model to the floating opus alias (model_type=opus) and lists it as opus(latest)', () => {
-    seedJob(storage, { modelConfig: { type: 'custom', model: 'gpt-5.5' } });
+    seedJob(storage, { modelConfig: { type: 'custom', model: 'gpt-6.2-sol' } });
     const r = handleUpdate({ name: 'daily', model_type: 'opus' }, ownerContext, storage);
     expect(r.isError).toBe(false);
     expect(storage.getJobsByOwner('U_OWNER')[0].modelConfig).toEqual({ type: 'opus' });
@@ -557,7 +557,7 @@ describe('handleUpdate', () => {
   });
 
   it('model_type=default clears override → creator current model at fire time', () => {
-    seedJob(storage, { modelConfig: { type: 'custom', model: 'gpt-5.5' } });
+    seedJob(storage, { modelConfig: { type: 'custom', model: 'gpt-6.2-sol' } });
     const r = handleUpdate({ name: 'daily', model_type: 'default' }, ownerContext, storage);
     expect(r.isError).toBe(false);
     expect(storage.getJobsByOwner('U_OWNER')[0].modelConfig).toBeUndefined();
@@ -695,7 +695,7 @@ describe('handleList admin scoping', () => {
       name: 'other-job',
       owner: 'U_OTHER',
       target: 'dm',
-      modelConfig: { type: 'custom', model: 'gpt-5.5' },
+      modelConfig: { type: 'custom', model: 'gpt-6.2-sol' },
     });
   });
   afterEach(() => cleanup());
@@ -723,7 +723,7 @@ describe('handleList admin scoping', () => {
     expect(r.text).toContain('model:default(creator current model)');
     expect(r.text).toContain('target:channel');
     const rAdmin = handleList(adminContext, storage);
-    expect(rAdmin.text).toContain('model:custom(gpt-5.5)');
+    expect(rAdmin.text).toContain('model:custom(gpt-6.2-sol)');
     expect(rAdmin.text).toContain('target:dm');
   });
 });

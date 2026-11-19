@@ -695,9 +695,10 @@ async function start() {
     // above (NOT the static config.auth.mode, which is `ccp` on hosts that
     // rely on the boot probe to default to llmux). Both are fail-soft.
     if (authState.mode === 'llmux') {
-      // Align the local llmux codex pin with the gpt-5.6 default. gpt-* ids
-      // only ROUTE via llmux; the upstream slug is pinned in llmux's own
-      // config, which deploys never touch. A stale gpt-5.5 pin would serve a
+      // Align the local llmux codex pin with gpt-5.6-sol (the `gpt` alias
+      // target; it was the default model until 2026-11-19). gpt-* ids only
+      // ROUTE via llmux; the upstream slug is pinned in llmux's own config,
+      // which deploys never touch. A stale gpt-5.5 pin would serve a
       // 272k-input model under soma-work's 372k window math.
       const llmuxSync = await syncLlmuxCodexModel({ baseUrl: authState.llmux.baseUrl });
       if (llmuxSync.status === 'failed') {

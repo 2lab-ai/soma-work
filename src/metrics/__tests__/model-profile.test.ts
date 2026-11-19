@@ -138,7 +138,6 @@ describe('resolveModelProfile — shared GPT 1M policy', () => {
     'gpt-5.6-sol[1m]',
     'gpt-5.6-terra[1m]',
     'gpt-5.6-luna[1m]',
-    'gpt-5.5[1m]',
     'gpt-99-future[1m]',
     '  GPT-99-FUTURE[1M] ',
   ])('%s uses the shared GPT 1M policy', (id) => {
@@ -209,7 +208,7 @@ describe('resolveModelProfile — sdkBlockingLimit is a window fact, not a class
       ['claude-opus-5[1m]', 977_000],
       ['gpt-5.6-sol', 349_000],
       ['gpt-5.6-sol[1m]', 977_000],
-      ['gpt-5.5', 252_000],
+      ['gpt-6-astra', 249_000],
       ['grok-4.6', 477_000],
       ['claude-opus-4-7', 177_000],
       ['claude-opus-4-7[1m]', 977_000],
@@ -269,11 +268,12 @@ describe('resolveModelProfile — non-policy models keep their prior resolution'
     }
   });
 
-  it('gpt-5.5 keeps 275k / 252k / 250k', () => {
+  it('gpt-5.5 (retired 2026-11-19) has no family branch any more — the 200k fallback', () => {
+    // It was 275k / 252k / 250k while selectable. A retired id never reaches a
+    // session (it coerces to DEFAULT_MODEL), so it keeps no profile.
     const p = resolveModelProfile('gpt-5.5');
-    expect(p.contextWindow).toBe(275_000);
-    expect(p.sdkBlockingLimit).toBe(252_000);
-    expect(p.autoCompactTokens).toBe(250_000);
+    expect(p.contextWindow).toBe(200_000);
+    expect(p.autoCompactTokens).toBeUndefined();
   });
 
   it('non-claude catalog models resolve from the catalog window (grok-4.5 → 500k/477k)', () => {
@@ -342,7 +342,7 @@ describe('resolveModelProfile — results are immutable across callers', () => {
   });
 
   it('freezes derived (non-policy) profiles too', () => {
-    for (const id of ['claude-fable-5', 'gpt-5.5', 'claude-opus-4-7', 'claude-opus-4-7[1m]', '']) {
+    for (const id of ['claude-fable-5', 'gpt-5.6-terra', 'claude-opus-4-7', 'claude-opus-4-7[1m]', '']) {
       expect(Object.isFrozen(resolveModelProfile(id))).toBe(true);
     }
   });
@@ -421,10 +421,10 @@ describe('model-registry delegates to the profile resolver', () => {
     expect(resolveContextWindow('claude-opus-4-8')).toBe(200_000);
     expect(resolveContextWindow('claude-opus-4-8[1m]')).toBe(1_000_000);
     expect(resolveContextWindow('claude-fable-5')).toBe(1_000_000);
-    expect(resolveContextWindow('gpt-5.5')).toBe(275_000);
+    expect(resolveContextWindow('gpt-5.6-terra')).toBe(372_000);
     expect(resolveContextWindow(undefined)).toBe(200_000);
     expect(resolveAutoCompactTokens('claude-fable-5')).toBeUndefined();
-    expect(resolveAutoCompactTokens('gpt-5.5')).toBe(250_000);
+    expect(resolveAutoCompactTokens('gpt-5.6-terra')).toBe(340_000);
     expect(resolveAutoCompactTokens(undefined)).toBeUndefined();
   });
 });
