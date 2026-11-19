@@ -11,13 +11,14 @@ import {
   collectCodeChanges,
   createCodeChangesScheduler,
   fileSources,
+  keepKnownPatches,
   keepLastRead,
   listView,
 } from '../collector';
 import { prFileOf, pullRefOf, sessionPrChanges } from '../pr-changes';
 import { CodeChangesStore, isStoreKey, MAX_COUNTED_COMMITS } from '../store';
 import { sanitizeCodeChangesSummary, summarizeCodeChanges } from '../summary';
-import type { CheckoutChanges, CodeChangesDoc } from '../types';
+import type { ChangedFile, CheckoutChanges, CodeChangesDoc } from '../types';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -951,6 +952,68 @@ describe('a PR GitHub does not answer for (a private repository the host token c
     );
     // GitHub's #1 took nearly all of the 6 MiB: the local #5's 2 MiB patch does not fit.
     expect(dropped).toEqual([true]);
+  });
+
+  it('a checkout read thrown away (its git dirs changed meanwhile) gives back what its PRs charged to the budget', async () => {
+    const s = store();
+    let calls = 0;
+    const readCheckout = vi.fn(
+      async (input: { dir: string; pulls?: Array<{ number: number }>; trimPulls?: (f: unknown[]) => boolean }) => {
+        calls++;
+        const p = {
+          ...localPull(5),
+          files: [{ ...localPull(5).files[0], patch: `@@ -1 +1 @@\n+${'y'.repeat(4 * 1024 * 1024)}` }],
+        };
+        const dropped = !!input.trimPulls?.(p.files);
+        // The first checkout's git dirs changed during the read: nothing of it is kept (checkoutChanges answers unread).
+        if (calls === 1)
+          return {
+            ...clean(input.dir),
+            uncommitted: { files: [], additions: 0, deletions: 0, skipped: 'repo-changed-during-read' },
+          };
+        return { ...clean(input.dir), pulls: [{ ...p, ...(dropped ? { patchesDropped: true as const } : {}) }] };
+      },
+    );
+    const { doc } = await collectCodeChanges(
+      { conversationId: 'c-local4', owner: { id: 'U', name: 'u' }, dirs: ['/s'], startedAt: START, prUrls: [url(5)] },
+      {
+        ...prDeps({}),
+        store: s,
+        listCheckoutDirs: async () => ({ dirs: ['/s/a', '/s/b'] }),
+        checkoutChanges: readCheckout as never,
+      },
+    );
+    // 4 MiB charged twice would not fit 6 MiB; given back once, the second read keeps its patch.
+    expect(doc.prs[0].files[0].patch?.length).toBeGreaterThan(4 * 1024 * 1024);
+    expect(doc.prs[0]).not.toHaveProperty('patchesDropped');
+  });
+
+  it('keepKnownPatches: a partial local read keeps the last read’s patches for the files it missed (same head and base)', () => {
+    const f = (path: string, patch?: string): ChangedFile => ({
+      path,
+      status: 'modified',
+      additions: 1,
+      deletions: 0,
+      ...(patch ? { patch } : { patchTruncated: true as const }),
+    });
+    const last = { ...localPull(5), headSha: 'h', baseSha: 'b', files: [f('a', '+a'), f('b')], fetchedAt: 1 };
+    const next = {
+      ...localPull(5),
+      headSha: 'h',
+      baseSha: 'b',
+      files: [f('a'), f('b', '+b')],
+      filesStale: true as const,
+      fetchedAt: 2,
+    };
+    keepKnownPatches(next, last);
+    expect(next.files.map((x) => [x.path, x.patch, x.patchTruncated])).toEqual([
+      ['a', '+a', undefined],
+      ['b', '+b', undefined],
+    ]);
+    // Another head: nothing carried over.
+    const moved = { ...next, headSha: 'h2', files: [f('a')] };
+    keepKnownPatches(moved, last);
+    expect(moved.files[0].patch).toBeUndefined();
   });
 
   it('sessionPrChanges: unread lists only what neither GitHub nor a stored record gives', async () => {

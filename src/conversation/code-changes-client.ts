@@ -42,8 +42,8 @@ var CHG_UNFOLD = '펼치기';
 var CHG_NO_FILES = '이 범위에 바뀐 파일이 없습니다';
 // A PR neither GitHub (a private repository the host's token cannot read) nor a session checkout could give.
 var CHG_UNREAD = '읽지 못함';
-var CHG_UNREAD_WHY = 'GitHub에서 읽을 수 없는 레포이고(호스트 토큰에 접근 권한 없음), 세션 폴더의 클론에서도 이 PR의 머지 기록을 찾지 못해 파일을 보여 줄 수 없어요';
-var CHG_LOCAL_WHY = 'GitHub에서 읽을 수 없는 레포라 세션 폴더 클론의 머지 커밋에서 읽은 변경입니다';
+var CHG_UNREAD_WHY = 'GitHub이 이 PR을 내주지 않았고(비공개 레포라 호스트 토큰에 권한이 없거나, 없는 PR이거나, 일시적 실패), 세션 폴더의 클론에서도 이 세션이 한 머지를 찾지 못해 파일을 보여 줄 수 없어요';
+var CHG_LOCAL_WHY = 'GitHub이 내주지 않은 PR이라 세션 폴더 클론의 머지 커밋에서 읽은 변경입니다';
 var CHG_BINARY = '바이너리 파일 — 줄 단위 변경을 보여 주지 않습니다';
 var CHG_TOO_BIG = '변경이 너무 커서 여기에 다 보여 주지 않습니다';
 var CHG_OPEN_GITHUB = 'GitHub에서 보기';

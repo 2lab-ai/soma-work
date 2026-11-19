@@ -283,11 +283,11 @@ describe('a PR the server could not read (a private repository the host token ca
     const row9 = html.split('data-chg-node="').find((r) => r.startsWith(id('pull/9'))) ?? '';
     expect(row9).toContain('class="chg-unread"');
     expect(row9).toContain('읽지 못함');
-    expect(row9).toContain('호스트 토큰에 접근 권한 없음');
+    expect(row9).toContain('호스트 토큰에 권한이 없거나, 없는 PR이거나, 일시적 실패');
     const row5 = html.split('data-chg-node="').find((r) => r.startsWith(id('pull/5'))) ?? '';
     expect(row5).not.toContain('chg-unread');
     expect(row5).toContain('세션 폴더 클론의 머지 커밋에서 읽은 변경');
-    expect(html).toContain('<div class="chg-note chg-note-unread">acme/web #9 — GitHub에서 읽을 수 없는 레포이고');
+    expect(html).toContain('<div class="chg-note chg-note-unread">acme/web #9 — GitHub이 이 PR을 내주지 않았고');
   });
 
   it('nothing unread: no mark, no note', () => {

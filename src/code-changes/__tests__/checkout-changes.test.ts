@@ -1156,10 +1156,16 @@ describe('PRs GitHub did not answer for, read from the checkout’s default bran
     // A commit whose subject only mentions #9 in passing names no PR.
     write(origin, 'notes.txt', 'n\n');
     commitAll(origin, 'notes about #9 and (#9) later');
+    // #11: a squash nobody in the clone worked on, at the tip of main — the clone's own main and HEAD are that commit:
+    // it is not its own evidence.
+    write(origin, 'eleven.txt', '11\n');
+    commitAll(origin, 'eleven (#11)');
     const dir = path.join(session, 'web');
     git(session, ['clone', '-q', origin, dir]);
     git(dir, ['remote', 'set-url', 'origin', 'git@github.com:acme/web.git']);
-    // The session's own PR branches are in its clone (it pushed them from there).
+    // The session's own PR branches are in its clone (it pushed them from there) — #4's too: only its merge time keeps
+    // it out.
+    git(dir, ['branch', '-q', 'feat/four', 'origin/feat/four']);
     git(dir, ['branch', '-q', 'feat/five', 'origin/feat/five']);
     git(dir, ['branch', '-q', 'feat/six', 'origin/feat/six']);
     return checkoutChanges({
@@ -1167,7 +1173,7 @@ describe('PRs GitHub did not answer for, read from the checkout’s default bran
       sessionRoot: session,
       roots: [session],
       sessionStartedAt: start,
-      pulls: [ask(4), ask(5), ask(6), ask(7), ask(8), ask(9), ask(5, 'acme/other')],
+      pulls: [ask(4), ask(5), ask(6), ask(7), ask(8), ask(9), ask(11), ask(5, 'acme/other')],
     }).then((read) => {
       const pulls = read?.pulls ?? [];
       expect(pulls.map((p) => p.number)).toEqual([6, 5]);
@@ -1316,6 +1322,107 @@ describe('PRs GitHub did not answer for, read from the checkout’s default bran
     expect(pr?.files.find((f) => f.path === 'one.txt')?.patch).toContain('+a');
     expect(pr?.files.find((f) => f.path === 'two.txt')?.patchTruncated).toBe(true);
     expect(pr?.filesStale).toBe(true);
+  });
+
+  it('the PR branch deleted after the merge (gh pr merge --delete-branch): a merge by its head in HEAD’s reflog; a squash after main moved on, by a subject its message names', async () => {
+    const session = tmp('cc-local-pr6-');
+    const dir = clone(session, 'web');
+    // #7: merged with a merge commit, then the branch deleted.
+    git(dir, ['checkout', '-q', '-b', 'feat/seven']);
+    write(dir, 'seven.txt', '7\n');
+    commitAll(dir, 'seven');
+    git(dir, ['checkout', '-q', 'main']);
+    git(dir, [
+      'merge',
+      '-q',
+      '--no-ff',
+      '-m',
+      'Merge pull request #7 from acme/feat/seven',
+      '-m',
+      'Seven',
+      'feat/seven',
+    ]);
+    git(dir, ['branch', '-q', '-D', 'feat/seven']);
+    // #8: branched, then main moved on, then squashed (another tree than the branch's), then the branch deleted.
+    git(dir, ['checkout', '-q', '-b', 'feat/eight']);
+    write(dir, 'eight.txt', '8\n');
+    commitAll(dir, 'eight: add the file');
+    git(dir, ['checkout', '-q', 'main']);
+    write(dir, 'other.txt', 'o\n');
+    commitAll(dir, 'main moves on');
+    git(dir, ['merge', '-q', '--squash', 'feat/eight']);
+    commitAll(dir, 'Eight (#8)\n\n* eight: add the file');
+    git(dir, ['branch', '-q', '-D', 'feat/eight']);
+    git(dir, ['update-ref', 'refs/remotes/origin/main', 'HEAD']);
+    const ask = (n: number): PullAsk => ({
+      id: `acme/web#${n}`,
+      url: `https://github.com/acme/web/pull/${n}`,
+      repo: 'acme/web',
+      number: n,
+    });
+    const read = await checkoutChanges({ dir, sessionRoot: session, roots: [session], pulls: [ask(7), ask(8)] });
+    expect((read?.pulls ?? []).map((p) => [p.number, p.files.map((f) => f.path)])).toEqual([
+      [8, ['eight.txt']],
+      [7, ['seven.txt']],
+    ]);
+  });
+
+  it('a read whose patches the PR budget cut says so (the collect reads it again)', async () => {
+    const session = tmp('cc-local-pr7-');
+    const dir = clone(session, 'web');
+    git(dir, ['checkout', '-q', '-b', 'feat/nine']);
+    write(dir, 'nine.txt', '9\n');
+    commitAll(dir, 'nine');
+    git(dir, ['checkout', '-q', 'main']);
+    git(dir, ['merge', '-q', '--no-ff', '-m', 'Merge pull request #9 from acme/feat/nine', 'feat/nine']);
+    git(dir, ['update-ref', 'refs/remotes/origin/main', 'HEAD']);
+    const pull = { id: 'acme/web#9', url: 'https://github.com/acme/web/pull/9', repo: 'acme/web', number: 9 };
+    const cut = await checkoutChanges({
+      dir,
+      sessionRoot: session,
+      roots: [session],
+      pulls: [pull],
+      trimPulls: () => true,
+    });
+    expect(cut?.pulls?.[0]?.patchesDropped).toBe(true);
+    const kept = await checkoutChanges({
+      dir,
+      sessionRoot: session,
+      roots: [session],
+      pulls: [pull],
+      trimPulls: () => false,
+    });
+    expect(kept?.pulls?.[0]).not.toHaveProperty('patchesDropped');
+  });
+
+  it('a file whose own patch is too big for one git answer is a size cut, not a failed read', async () => {
+    const session = tmp('cc-local-pr8-');
+    const dir = clone(session, 'web');
+    git(dir, ['checkout', '-q', '-b', 'feat/ten']);
+    write(dir, 'small.txt', 's\n');
+    // One line of 7 MB: within the line limit, past what one answer holds.
+    write(dir, 'bundle.js', `${'z'.repeat(7 * 1024 * 1024)}\n`);
+    commitAll(dir, 'ten');
+    git(dir, ['checkout', '-q', 'main']);
+    git(dir, ['merge', '-q', '--squash', 'feat/ten']);
+    commitAll(dir, 'ten (#10)');
+    git(dir, ['update-ref', 'refs/remotes/origin/main', 'HEAD']);
+    const capped: GitRun = (d, args) => {
+      if (args.includes('-U3') && args[args.length - 1] === '--') return Promise.resolve(undefined);
+      if (args.includes('-U3') && args[args.length - 1] === 'bundle.js') return Promise.resolve(undefined);
+      return runGit(d, args);
+    };
+    const read = await checkoutChanges({
+      dir,
+      sessionRoot: session,
+      roots: [session],
+      git: capped,
+      pulls: [{ id: 'acme/web#10', url: 'https://github.com/acme/web/pull/10', repo: 'acme/web', number: 10 }],
+    });
+    const pr = read?.pulls?.[0];
+    expect(pr?.files.find((f) => f.path === 'small.txt')?.patch).toContain('+s');
+    expect(pr?.files.find((f) => f.path === 'bundle.js')?.patchTruncated).toBe(true);
+    expect(pr).not.toHaveProperty('filesStale');
   });
 
   it('nothing is asked of a checkout of another repository, or with no remote default branch', async () => {

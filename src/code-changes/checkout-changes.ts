@@ -177,6 +177,21 @@ const MAX_EACH_LINES = 5000;
  */
 const MAX_EACH_BYTES = 2 * 1024 * 1024;
 
+/** A side of a file past this many bytes makes its patch more than one git answer holds (16 MiB, two sides and more). */
+const MAX_EACH_FILE_BYTES = 6 * 1024 * 1024;
+
+/** Either side of the file is bigger than its patch can be read in one answer. */
+async function tooBig(git: GitRun, dir: string, from: string, to: string, f: ChangedFile): Promise<boolean> {
+  for (const [rev, at] of [
+    [from, f.oldPath ?? f.path],
+    [to, f.path],
+  ]) {
+    const size = Number(trim(await git(dir, ['cat-file', '-s', `${rev}:${at}`])));
+    if (Number.isFinite(size) && size > MAX_EACH_FILE_BYTES) return true;
+  }
+  return false;
+}
+
 /** Data more often generated than written (JSON, tables, lock files, maps, minified code): its patches come last. */
 const DATA_FILE = /\.(?:json|jsonl|ndjson|tsv|csv|lock|svg|map|snap|min\.js|min\.css)$/i;
 
@@ -199,7 +214,8 @@ async function patchEach(git: GitRun, dir: string, from: string, to: string, fil
     const paths = f.oldPath ? [f.oldPath, f.path] : [f.path];
     const out = await git(dir, ['--literal-pathspecs', 'diff', ...DIFF_FLAGS, '-U3', from, to, '--', ...paths]);
     if (out === undefined) {
-      whole = false;
+      // A file too big for one answer (a one-line bundle within the line limit) is a size cut, not a failed read.
+      if (!(await tooBig(git, dir, from, to, f))) whole = false;
       continue;
     }
     const [one] = joinDiff(
@@ -784,27 +800,73 @@ const SQUASH_SUBJECT = /\(#(\d+)\)\s*$/;
 const MAX_HISTORY = 1000;
 
 /**
- * The PR's work was done in this clone — the number in a commit message alone is not the PR: a fork that synced its
- * upstream has upstream's `#N` merges in its history too (#1371 review). A merge's head is on a local branch that does
- * not hold the merge itself (the PR's branch, not the default branch pulled past it); a squash's tree is the tip of such
- * a branch (squashed while up to date with its base).
+ * Whether a PR's work was done in this clone — a number in a commit message alone is not the PR: a fork that synced its
+ * upstream has upstream's `#N` merges too (#1371 review). The evidence is what this checkout itself has been at, which a
+ * deleted branch leaves behind (#1371 review round 2): the commits in HEAD's reflog, and the local branch tips. Not the
+ * remote-tracking refs' reflogs — a fetch puts upstream's heads there.
+ *   merge: its head is one of them, or a local branch holds the head and not the merge;
+ *   squash: one of them other than the squash itself carries the squash's tree, or a subject its message names (GitHub
+ *   writes the PR title, then `* <subject>` per commit) — the default branch may have moved on since the branch left it.
  */
-async function ownWork(git: GitRun, dir: string, merge: string, head: string | undefined): Promise<boolean> {
+interface Provenance {
+  commits: Array<{ sha: string; tree: string; subject: string }>;
+  shas: Set<string>;
+}
+
+async function provenance(git: GitRun, dir: string): Promise<Provenance> {
+  const rows = [
+    ...(
+      (await git(dir, [
+        'log',
+        '-g',
+        '--no-show-signature',
+        `--max-count=${MAX_HISTORY}`,
+        '--format=%H%x1f%T%x1f%s',
+        'HEAD',
+        '--',
+      ])) ?? ''
+    ).split('\n'),
+    ...(
+      (await git(dir, ['for-each-ref', '--format=%(objectname)%1f%(tree)%1f%(contents:subject)', 'refs/heads/'])) ?? ''
+    ).split('\n'),
+  ];
+  const commits: Provenance['commits'] = [];
+  for (const row of rows) {
+    const [sha, tree, subject = ''] = row.split('\x1f');
+    if (sha && SHA.test(sha) && tree && SHA.test(tree)) commits.push({ sha, tree, subject: subject.trim() });
+  }
+  return { commits, shas: new Set(commits.map((c) => c.sha)) };
+}
+
+async function ownWork(
+  git: GitRun,
+  dir: string,
+  own: Provenance,
+  commit: string,
+  head: string | undefined,
+  subject: string,
+): Promise<boolean> {
   if (head) {
+    if (own.shas.has(head)) return true;
     const on = await git(dir, [
       'for-each-ref',
       '--count=1',
       `--contains=${head}`,
-      `--no-contains=${merge}`,
+      `--no-contains=${commit}`,
       '--format=%(refname)',
       'refs/heads/',
     ]);
     return !!on?.trim();
   }
-  const tree = trim(await git(dir, ['rev-parse', '--verify', '--quiet', `${merge}^{tree}`]));
-  if (!tree) return false;
-  const tips = await git(dir, ['for-each-ref', `--no-contains=${merge}`, '--format=%(tree)', 'refs/heads/']);
-  return !!tips && tips.split('\n').some((t) => t.trim() === tree);
+  const tree = trim(await git(dir, ['rev-parse', '--verify', '--quiet', `${commit}^{tree}`]));
+  const body = (await git(dir, ['log', '-1', '--no-show-signature', '--format=%b', commit, '--'])) ?? '';
+  const bullet = /^\s*\*\s+/;
+  const named = new Set(
+    [subject.replace(SQUASH_SUBJECT, ''), ...body.split('\n').map((l) => (bullet.test(l) ? l.replace(bullet, '') : ''))]
+      .map((l) => l.trim())
+      .filter(Boolean),
+  );
+  return own.commits.some((c) => c.sha !== commit && ((!!tree && c.tree === tree) || named.has(c.subject)));
 }
 
 /**
@@ -836,6 +898,7 @@ export async function mergedPulls(
   if (log === undefined) return [];
   const want = new Map(asks.map((a) => [a.number, a]));
   const out: LocalPull[] = [];
+  let own: Provenance | undefined;
   for (const line of log.split('\n')) {
     if (want.size === 0) break;
     const [sha, parentList, ct, subject = ''] = line.split('\x1f');
@@ -853,7 +916,8 @@ export async function mergedPulls(
       continue;
     }
     // Not this clone's work: an older commit naming the same number may be.
-    if (!(await ownWork(git, dir, sha, merge ? parents[1] : undefined))) continue;
+    own ??= await provenance(git, dir);
+    if (!(await ownWork(git, dir, own, sha, merge ? parents[1] : undefined, subject))) continue;
     want.delete(number);
     const head = merge ? parents[1] : sha;
     const base = merge ? trim(await git(dir, ['merge-base', parents[0], parents[1]])) : parents[0];
@@ -871,10 +935,7 @@ export async function mergedPulls(
       : subject.replace(SQUASH_SUBJECT, '').trim();
     const kept = files.slice(0, MAX_PR_FILES);
     const pr: LocalPull = {
-      id: ask.id,
-      url: ask.url,
-      repo: ask.repo,
-      number,
+      ...ask,
       state: 'merged',
       ...totals(files),
       changedFiles: files.length,
