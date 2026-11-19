@@ -1,6 +1,6 @@
 # 37 — 작업 큐 아키텍처
 
-Status: in-progress
+Status: in-progress · 2026-11-19 소유자 dev 호스트 배포(v0.3.97-dev), 고객 dev 호스트는 2026-11-20 정기 배포 — 남은 실측은 work-queue/loop.md
 
 > 한 줄 결론: 원장(순수 전이 + SQLite 트랜잭션 저장)은 `somalib/work-queue`에 하나만 있다(MCP 서버는
 > `@soma/process-shared/work-queue` 재export로 닿는다). MCP 프로세스(`packages/mcp-servers/work-queue`)는 그 원장으로 줄
