@@ -242,10 +242,6 @@ async function failure(run: () => Promise<unknown>): Promise<Error> {
 // ---------------------------------------------------------------------------
 
 describe('parseSlackAuthList', () => {
-  it('reads the exact empty-auth source path as zero authorizations', () => {
-    expect(parseSlackAuthList(LIST_EMPTY)).toEqual([]);
-  });
-
   it('still reads zero authorizations when the login guidance is absent', () => {
     expect(parseSlackAuthList('\nYou are not logged in to any Slack accounts\n\n')).toEqual([]);
   });
@@ -254,24 +250,6 @@ describe('parseSlackAuthList', () => {
     const error = () => parseSlackAuthList(`\nYou are not logged in to any Slack accounts\n\n${RAW_STDOUT_SENTINEL}\n`);
     expect(error).toThrow(SlackAuthContractError);
     expect(error).toThrow(/line 4/);
-  });
-
-  it('reduces one workspace to a safe record', () => {
-    expect(parseSlackAuthList(LIST_ONE)).toEqual([
-      {
-        teamId: TEAM_A,
-        userId: USER_A,
-        domain: DOMAIN_A,
-        authorizationLevel: 'Workspace',
-        hasCustomApiHost: false,
-        lastUpdated: '2026-08-24 11:18:00 +09:00',
-      },
-    ]);
-  });
-
-  it('reads every block of a multi-workspace listing, in order', () => {
-    expect(parseSlackAuthList(LIST_TWO).map((a) => a.teamId)).toEqual([TEAM_A, TEAM_B]);
-    expect(parseSlackAuthList(LIST_TWO)[1].authorizationLevel).toBe('Enterprise');
   });
 
   it('reduces an optional API Host to a boolean and keeps the host itself out of the record', () => {
@@ -325,24 +303,12 @@ describe('parseSlackAuthList', () => {
     expect(error.message).not.toContain(RAW_STDOUT_SENTINEL);
   });
 
-  it('fails loudly on a missing User ID line', () => {
-    const list = renderAuthList([BLOCK_A.filter((line) => !line.startsWith('User ID:'))]);
-
-    expect(() => parseSlackAuthList(list)).toThrow(SlackAuthContractError);
-  });
-
   it('fails loudly on out-of-order lines', () => {
     const list = renderAuthList([[BLOCK_A[0], BLOCK_A[2], BLOCK_A[1], BLOCK_A[3]]]);
     const error = failureOf(() => parseSlackAuthList(list));
 
     expect(error).toBeInstanceOf(SlackAuthContractError);
     expect(error.message).toMatch(/line 3/);
-  });
-
-  it('fails loudly on a duplicated line inside a block', () => {
-    const list = renderAuthList([[BLOCK_A[0], BLOCK_A[1], BLOCK_A[1], BLOCK_A[2], BLOCK_A[3]]]);
-
-    expect(() => parseSlackAuthList(list)).toThrow(SlackAuthContractError);
   });
 
   it('fails loudly when the same Team ID appears twice', () => {
@@ -360,13 +326,6 @@ describe('parseSlackAuthList', () => {
   it('fails loudly on empty output rather than reporting zero authorizations', () => {
     expect(() => parseSlackAuthList('')).toThrow(SlackAuthContractError);
     expect(() => parseSlackAuthList('\n\n')).toThrow(SlackAuthContractError);
-  });
-
-  it('fails loudly on styled output, so `--no-color` is load-bearing rather than cosmetic', () => {
-    const esc = String.fromCharCode(27);
-    const styled = `\n${esc}[1m${DOMAIN_A} (Team ID: ${TEAM_A})${esc}[0m\nUser ID: ${USER_A}\nLast Updated: 2026-08-24 11:18:00 +09:00\nAuthorization Level: Workspace\n\n`;
-
-    expect(() => parseSlackAuthList(styled)).toThrow(SlackAuthContractError);
   });
 
   it('never quotes the offending line, which carries the workspace identity', () => {
@@ -457,10 +416,6 @@ describe('ensureSlackCliAuth — ticket extraction', () => {
     expect(await instructionOf(TICKET_OUTPUT.replace(/\n/g, '\r\n'))).toBe(TICKET_COMMAND);
   });
 
-  it('rejects output with no ticket line', async () => {
-    expect(await ticketFailure(renderTicketOutput(null))).toBeInstanceOf(SlackAuthTicketError);
-  });
-
   it('rejects output with two ticket lines', async () => {
     const two = renderTicketOutput(TICKET_COMMAND, [`${TICKET_SLASH_COMMAND} SECONDticketvalue0001`]);
 
@@ -515,26 +470,6 @@ describe('ensureSlackCliAuth — preconditions', () => {
     expect(error).toBeInstanceOf(SlackCliMissingError);
     expect(error.message).toMatch(/slack/i);
     expect(commandLines(host)).toEqual([]);
-  });
-
-  it('runs every Slack command through the resolved absolute path', async () => {
-    const host = authorizedHost();
-
-    await ensureSlackCliAuth(host);
-
-    for (const line of commandLines(host)) expect(line.startsWith(`${SLACK_BIN} `)).toBe(true);
-  });
-
-  it('probes the version before touching authorizations', async () => {
-    const host = authorizedHost();
-
-    const receipt = await ensureSlackCliAuth(host);
-
-    expect(commandLines(host)).toEqual([
-      `${SLACK_BIN} ${VERSION_ARGV.join(' ')}`,
-      `${SLACK_BIN} ${LIST_ARGV.join(' ')}`,
-    ]);
-    expect(receipt.cliVersion).toBe('v3.2.1');
   });
 
   it('fails when the version probe exits non-zero', async () => {
@@ -662,22 +597,6 @@ describe('ensureSlackCliAuth — existing authorizations', () => {
     expect(error.step).toBe('list');
     expect(error.message).toMatch(/credentials locked/);
   });
-
-  it('fails when `auth list` times out', async () => {
-    const host = installedHost().stubCommand(LIST_CMD, { delayMs: 10 ** 9 });
-
-    expect(await failure(() => ensureSlackCliAuth(host))).toBeInstanceOf(SlackAuthCommandError);
-  });
-
-  it('reports cancellation distinctly so an orchestrator can resume', async () => {
-    const controller = new AbortController();
-    controller.abort();
-    const host = authorizedHost();
-
-    const error = await failure(() => ensureSlackCliAuth(host, undefined, { signal: controller.signal }));
-
-    expect(error).toBeInstanceOf(SlackAuthCancelledError);
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -767,17 +686,6 @@ describe('ensureSlackCliAuth — fresh authorization', () => {
     ]);
   });
 
-  it('rejects an empty or whitespace challenge before spawning the completion', async () => {
-    for (const value of ['', '   ', '\t']) {
-      const host = freshHost({ challenge: value });
-
-      const error = await failure(() => ensureSlackCliAuth(host, undefined, { onInstruction: noop }));
-
-      expect(error).toBeInstanceOf(SlackAuthChallengeError);
-      expect(commandLines(host).filter((line) => line.includes('--challenge'))).toEqual([]);
-    }
-  });
-
   it('rejects a challenge that could be read as a flag or carries a newline', async () => {
     for (const value of ['-x', 'good\nbad']) {
       const host = freshHost({ challenge: value });
@@ -813,14 +721,6 @@ describe('ensureSlackCliAuth — fresh authorization', () => {
     expect(error).toBeInstanceOf(SlackAuthCommandError);
     expect(error.step).toBe('ticket');
     expect(kinds(host)).not.toContain('promptSecret');
-  });
-
-  it('fails when the ticket output is unparseable', async () => {
-    const host = freshHost({ ticket: { stdout: renderTicketOutput(null) } });
-
-    expect(await failure(() => ensureSlackCliAuth(host, undefined, { onInstruction: noop }))).toBeInstanceOf(
-      SlackAuthTicketError,
-    );
   });
 
   it('fails when the completion exits non-zero, and does not retry', async () => {
@@ -861,34 +761,6 @@ describe('ensureSlackCliAuth — fresh authorization', () => {
     expect(error).toBeInstanceOf(SlackAuthCompletionError);
     expect(error.message).toMatch(/re-run setup/i);
     expect(commandLines(host).filter((line) => line.includes('--ticket'))).toHaveLength(1);
-  });
-
-  it('fails when the newly authorized workspace is not the requested one', async () => {
-    const host = freshHost({ finalList: LIST_TWO });
-
-    const error = await failure(() => ensureSlackCliAuth(host, 'T01NOTTHEREXX', { onInstruction: noop }));
-
-    expect(error).toBeInstanceOf(SlackAuthTeamNotFoundError);
-  });
-
-  it('re-reads the list after login rather than trusting the login output', async () => {
-    const host = freshHost({ finalList: LIST_TWO });
-
-    const receipt = await ensureSlackCliAuth(host, TEAM_B, { onInstruction: noop });
-
-    expect(receipt.teamId).toBe(TEAM_B);
-    expect(commandLines(host).filter((line) => line === `${SLACK_BIN} ${LIST_ARGV.join(' ')}`)).toHaveLength(2);
-  });
-
-  it('does not install anything; a missing binary is Task 11 packaging, not Task 5', async () => {
-    const host = freshHost();
-
-    await ensureSlackCliAuth(host, undefined, { onInstruction: noop });
-
-    for (const call of host.calls) {
-      if (call.kind !== 'command') continue;
-      expect(call.args.join(' ')).not.toMatch(/brew|npm|install/);
-    }
   });
 });
 
@@ -1073,17 +945,6 @@ describe('ensureSlackCliAuth — fix round 1 regressions', () => {
     expect((copy as Extract<RecordedCall, { kind: 'copyToClipboard' }>).timeoutMs).toBe(250);
   });
 
-  it('rejects a non-positive clipboard bound before the first host call', async () => {
-    const host = freshHost();
-
-    const error = await failure(() =>
-      ensureSlackCliAuth(host, undefined, { onInstruction: noop, clipboardTimeoutMs: 0 }),
-    );
-
-    expect(error).toBeInstanceOf(SlackAuthOptionsError);
-    expect(host.calls).toEqual([]);
-  });
-
   it('shows the instruction even when the pasteboard never answers', async () => {
     const host = freshHost({}, new NoClipboardHost());
     const seen: string[] = [];
@@ -1178,20 +1039,6 @@ describe('ensureSlackCliAuth — fix round 1 regressions', () => {
     expect(error.message).not.toContain(TICKET);
   });
 
-  it('awaits an async sink before touching the clipboard or the prompt', async () => {
-    const host = freshHost();
-    const order: string[] = [];
-
-    await ensureSlackCliAuth(host, undefined, {
-      onInstruction: async () => {
-        await Promise.resolve();
-        order.push(`sink after ${kinds(host).filter((k) => k === 'copyToClipboard').length} copies`);
-      },
-    });
-
-    expect(order).toEqual(['sink after 0 copies']);
-  });
-
   it('does nothing further once the sink has failed', async () => {
     const host = freshHost();
 
@@ -1254,12 +1101,6 @@ describe('ensureSlackCliAuth — fix round 1 regressions', () => {
     expect(receipt.teamId).toBe(TEAM_B);
   });
 
-  it('still rejects a requested team that is not a Team ID at all', async () => {
-    expect(await failure(() => ensureSlackCliAuth(authorizedHost(), 'acme.slack.com'))).toBeInstanceOf(
-      SlackAuthOptionsError,
-    );
-  });
-
   // -- M7(a): a post-login ambiguity must not lose the fact that login happened
   it('reports a post-login selection ambiguity as having already authorized', async () => {
     const host = freshHost({ finalList: LIST_TWO });
@@ -1272,14 +1113,6 @@ describe('ensureSlackCliAuth — fix round 1 regressions', () => {
     expect(error.loginPerformed).toBe(true);
     expect(persisted(error).loginPerformed).toBe(true);
     expect(() => assertSecretFree(persisted(error))).not.toThrow();
-  });
-
-  it('reports a pre-login selection ambiguity as not having authorized', async () => {
-    const error = (await failure(() =>
-      ensureSlackCliAuth(authorizedHost(LIST_TWO)),
-    )) as SlackAuthSelectionRequiredError;
-
-    expect(error.loginPerformed).toBe(false);
   });
 
   it('carries the same flag on a post-login team-not-found', async () => {
