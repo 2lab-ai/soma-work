@@ -366,7 +366,7 @@ var LAY_PLACE_HINT = {
 };
 var _layPlaceRev = 0; // bumped when a place is chosen here and when its save settles
 var _layPlaceSaving = 0; // 1 while a place PUT is on its way
-var _layPlaceQueued = null; // the newest choice made while a PUT was on its way: { place, shown }
+var _layPlaceQueued = null; // the changes made while a PUT was on its way: { patch, shown }
 var _layRefreshGen = 0; // refresh reads: only the newest answer is applied
 var _layFailed = ''; // why the last layouts save failed ('' = saved): a place save does not hide it
 // What a request saw of the place writes when it left; layPlaceStill says whether its answer's place is still the
@@ -413,14 +413,21 @@ function layPaintPlace() {
   var sec = document.getElementById('lay-place');
   if (sec) sec.setAttribute('data-locked', p.locked ? 'true' : 'false');
 }
-async function layPlaceSave(next) {
+// A choice saves only the field its control changed (patch: { side } or { locked }): the server keeps the other,
+// so a lock toggled here never moves back a card the dashboard moved elsewhere, and a side never undoes a lock.
+async function layPlaceSave(patch) {
   var shown = panelPlaceOf(_layDoc);
   _layPlaceRev++;
-  _layDoc.panel = { side: next.side === 'left' ? 'left' : 'right', locked: !!next.locked };
+  var change = {};
+  if (patch.side !== undefined) change.side = patch.side === 'left' ? 'left' : 'right';
+  if (patch.locked !== undefined) change.locked = !!patch.locked;
+  _layDoc.panel = layPlaceWith(shown, change);
   layPaintPlace();
   setLayStatus('저장 중…');
-  // One PUT at a time, in order: choices made while one is on its way send only the newest after it.
-  _layPlaceQueued = { place: _layDoc.panel, shown: shown };
+  // One PUT at a time, in order: changes made while one is on its way go together after it.
+  _layPlaceQueued = _layPlaceQueued
+    ? { patch: layPlaceWith(_layPlaceQueued.patch, change), shown: _layPlaceQueued.shown }
+    : { patch: change, shown: shown };
   if (_layPlaceSaving) return;
   _layPlaceSaving = 1;
   var saved = shown; // what the server has (the controls go back to it when the last save is refused)
@@ -429,15 +436,20 @@ async function layPlaceSave(next) {
       var job = _layPlaceQueued;
       _layPlaceQueued = null;
       var r;
-      try { r = await apiWrite('PUT', '/api/settings/dashboard-layout/panel', { panel: job.place }); }
+      try { r = await apiWrite('PUT', '/api/settings/dashboard-layout/panel', { panel: job.patch }); }
       catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
       _layPlaceRev++; // settled: a request that left while it was on its way may hold the place before it
       if (r && r.ok) {
-        // What the server now has — published at once, even with a newer choice still to go.
-        saved = r.data && r.data.layout && r.data.layout.doc && r.data.layout.doc.panel ? r.data.layout.doc.panel : job.place;
+        // What the server now has — published at once, even with a newer change still to go.
+        saved = r.data && r.data.layout && r.data.layout.doc && r.data.layout.doc.panel ? r.data.layout.doc.panel : layPlaceWith(saved, job.patch);
         layCachePutPlace(saved);
       }
-      if (_layPlaceQueued) continue; // a newer choice goes next
+      if (_layPlaceQueued) {
+        // The page shows the server's place with the changes still to go.
+        _layDoc.panel = layPlaceWith(saved, _layPlaceQueued.patch);
+        layPaintPlace();
+        continue;
+      }
       if (!r || !r.ok) {
         // Refused: the controls show what is saved, and say why.
         _layDoc.panel = saved;
@@ -458,6 +470,14 @@ async function layPlaceSave(next) {
   } finally {
     _layPlaceSaving = 0;
   }
+}
+// Pure: a place (or a patch) with the fields of another patch over it.
+function layPlaceWith(base, patch) {
+  var out = {};
+  var k;
+  for (k in base || {}) if (Object.prototype.hasOwnProperty.call(base, k)) out[k] = base[k];
+  for (k in patch || {}) if (Object.prototype.hasOwnProperty.call(patch, k)) out[k] = patch[k];
+  return out;
 }
 // Back on the page: a drag on the dashboard meanwhile shows here (unless a choice made here is still saving).
 async function layRefreshPlace() {
@@ -946,8 +966,8 @@ function layOnChange(e) {
   if (act === 'def-card') return layDefault('card', t.value);
   if (act === 'def-detail') return layDefault('detail', t.value);
   if (act === 'thread-mode') return layThreadSet(t.value);
-  if (act === 'place-side') return layPlaceSave({ side: t.value, locked: panelPlaceOf(_layDoc).locked });
-  if (act === 'place-lock') return layPlaceSave({ side: panelPlaceOf(_layDoc).side, locked: !!t.checked });
+  if (act === 'place-side') return layPlaceSave({ side: t.value });
+  if (act === 'place-lock') return layPlaceSave({ locked: !!t.checked });
   if (act === 'lay-preset') { _layPreset = t.value; return layPaint(); }
   if (act === 'lay-mode') { _layMode = t.value === 'advanced' ? 'advanced' : 'minimal'; return layPaint(); }
   if (act === 'lay-surface') { _laySurface = t.value; return layPaint(); }

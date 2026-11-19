@@ -633,8 +633,8 @@ async function settingsRun(browser: import('playwright').Browser) {
   await page.click('label.lay-place-opt:has(#lay-place-left)');
   await sleep(400);
   check(
-    JSON.stringify(placePuts[0]) === '{"panel":{"side":"left","locked":false}}' && wholePuts.length === 0,
-    'P8 왼쪽 saves the place alone',
+    JSON.stringify(placePuts[0]) === '{"panel":{"side":"left"}}' && wholePuts.length === 0,
+    'P8 왼쪽 saves the side alone',
     placePuts,
   );
   await page.click('label.ui-switch:has(#lay-place-lock)');
@@ -648,9 +648,9 @@ async function settingsRun(browser: import('playwright').Browser) {
   check(
     st1.left &&
       st1.lock &&
-      JSON.stringify(placePuts[1]) === '{"panel":{"side":"left","locked":true}}' &&
+      JSON.stringify(placePuts[1]) === '{"panel":{"locked":true}}' &&
       st1.status === '저장됨',
-    'P8 위치 잠금 saves the lock; the hint says the grip is gone',
+    'P8 위치 잠금 saves the lock alone; the hint says the grip is gone',
     st1,
   );
   if (sec)

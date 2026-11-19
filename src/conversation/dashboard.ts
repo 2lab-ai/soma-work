@@ -8818,6 +8818,7 @@ function syncPanelWidth() {
 var _panelPlace = { side: 'right', locked: false };
 var _pdrag = null; // a press on the grip or the bar: { id, x0, y0, left0, w, vw, from, live, off, vx, t, x, target }
 var _pdragSettle = 0; // the timer that ends a settle
+var _pdragSettleRaf = 0; // the frame that starts a settle's glide (cancelled by a press before it runs)
 var _panelPlaceSaving = 0; // 1 while a place save is on its way: an older answer must not move the card back
 var _panelPlaceQueued = null; // the newest place chosen while a save was on its way (sent after it)
 var _panelPlaceWritable = true; // false once the settings say the server refuses this user's writes: no grip
@@ -8888,6 +8889,8 @@ function panelDocked() {
 function pdragClear(panel) {
   clearTimeout(_pdragSettle);
   _pdragSettle = 0;
+  if (_pdragSettleRaf) cancelAnimationFrame(_pdragSettleRaf);
+  _pdragSettleRaf = 0;
   if (!panel) return;
   panel.removeAttribute('data-pdrag');
   panel.style.removeProperty('--pdrag-x');
@@ -8900,7 +8903,11 @@ function pdragSettle(panel, from) {
   panel.style.setProperty('--pdrag-x', Math.round(from) + 'px');
   void panel.offsetWidth; // the drawn offset is the transition's start
   panel.setAttribute('data-pdrag', 'settle');
-  requestAnimationFrame(function() { panel.style.setProperty('--pdrag-x', '0px'); });
+  // The glide starts next frame — unless the card was taken in hand again before it.
+  _pdragSettleRaf = requestAnimationFrame(function() {
+    _pdragSettleRaf = 0;
+    if (panel.getAttribute('data-pdrag') === 'settle') panel.style.setProperty('--pdrag-x', '0px');
+  });
   _pdragSettle = setTimeout(function() { pdragClear(panel); }, PDRAG_SETTLE_MS + 60);
 }
 // Put the card on a side. Docked and moving, its box glides from where it is drawn (a drag's offset included) to the
@@ -8946,7 +8953,7 @@ async function savePanelPlace(place) {
   var doc = JSON.parse(JSON.stringify(_viewLayout || { v: 1 }));
   doc.panel = { side: place.side, locked: place.locked };
   _viewLayout = doc;
-  try { localStorage.setItem(VIEW_LAYOUT_KEY, JSON.stringify(doc)); } catch (_e) {}
+  cachePanelPlace(doc.panel);
   _panelPlaceQueued = doc.panel;
   if (_panelPlaceSaving) return; // the save on its way sends the newest after it
   _panelPlaceSaving = 1;
@@ -8955,7 +8962,16 @@ async function savePanelPlace(place) {
       var next = _panelPlaceQueued;
       _panelPlaceQueued = null;
       try {
-        await putPanelPlace(next);
+        var ack = await putPanelPlace(next);
+        if (ack && (ack.side === 'left' || ack.side === 'right')) {
+          // The server's place is the truth: its lock may have been set elsewhere meanwhile (the move names the side
+          // only). A side still queued here stays the one shown.
+          var shown = { side: _panelPlaceQueued ? _panelPlaceQueued.side : ack.side, locked: !!ack.locked };
+          _viewLayout = JSON.parse(JSON.stringify(_viewLayout || { v: 1 }));
+          _viewLayout.panel = shown;
+          applyPanelPlace(shown);
+          cachePanelPlace({ side: ack.side, locked: !!ack.locked });
+        }
       } catch (e) {
         if (!_panelPlaceQueued)
           dashToast({ title: '디테일 카드 위치를 저장하지 못했어요', description: String((e && e.message) || e), tone: 'error' });
@@ -8984,6 +9000,20 @@ async function putPanelPlace(panel) {
     try { why = ((await res.json()) || {}).error || ''; } catch (_e) {}
     throw new Error(why || ('HTTP ' + res.status));
   }
+  // The place the server now has (its checked, merged copy), or null.
+  var data = null;
+  try { data = await res.json(); } catch (_e) {}
+  return data && data.layout && data.layout.doc ? data.layout.doc.panel || null : null;
+}
+// The shared copy (another tab's first paint) gets the place only: its layouts may be newer than this page's.
+function cachePanelPlace(place) {
+  var out = { v: 1 };
+  try {
+    var c = JSON.parse(localStorage.getItem(VIEW_LAYOUT_KEY) || 'null');
+    if (c && typeof c === 'object' && !Array.isArray(c)) out = c;
+  } catch (_e) {}
+  out.panel = place;
+  try { localStorage.setItem(VIEW_LAYOUT_KEY, JSON.stringify(out)); } catch (_e) {}
 }
 // The slots while a card is in hand: shown, the one it would land in lit.
 function paintDropZones(target) {

@@ -184,9 +184,9 @@ describe('P4 — a moved card saves the place alone', () => {
     };
     const toasts: unknown[] = [];
     const c = load<Saver & { layout(): unknown; saving(): number }>(
-      ['savePanelPlace', 'putPanelPlace'],
+      ['savePanelPlace', 'putPanelPlace', 'cachePanelPlace'],
       ['_panelPlaceSaving', '_panelPlaceRev', '_panelPlaceQueued', 'VIEW_LAYOUT_KEY'],
-      { fetch, localStorage, dashToast: (t: unknown) => toasts.push(t) },
+      { fetch, localStorage, dashToast: (t: unknown) => toasts.push(t), applyPanelPlace() {} },
       ', layout: function() { return _viewLayout; }, saving: function() { return _panelPlaceSaving; }',
       "var _viewLayout = { v: 1, active: { card: '2' } }; var _csrfToken = 'T1'; async function refreshCsrfToken() { _csrfToken = 'T2'; }",
     );
@@ -197,11 +197,8 @@ describe('P4 — a moved card saves the place alone', () => {
     const { c, calls, items, toasts } = saver([{ status: 200, body: { ok: true } }]);
     const done = c.savePanelPlace({ side: 'left', locked: false });
     expect(c.saving()).toBe(1);
-    expect(JSON.parse(items['soma-view-layout'])).toEqual({
-      v: 1,
-      active: { card: '2' },
-      panel: { side: 'left', locked: false },
-    });
+    // The shared copy gets the place only (its layouts are whatever the copy had).
+    expect(JSON.parse(items['soma-view-layout'])).toEqual({ v: 1, panel: { side: 'left', locked: false } });
     await done;
     expect(c.saving()).toBe(0);
     expect(calls).toHaveLength(1);
@@ -398,13 +395,14 @@ describe('P8 — PR review (review-of-legends): ordered saves, stale reads, the 
   function dash(n: ReturnType<typeof net>) {
     const placed: unknown[] = [];
     const c = load<Page>(
-      ['savePanelPlace', 'putPanelPlace', 'loadViewLayout'],
+      ['savePanelPlace', 'putPanelPlace', 'cachePanelPlace', 'loadViewLayout'],
       ['_panelPlaceSaving', '_panelPlaceRev', '_panelPlaceQueued', 'VIEW_LAYOUT_KEY', '_layoutLoads'],
       {
         fetch: n.fetch,
         localStorage: { setItem() {}, getItem: () => null },
         dashToast() {},
         setViewLayout: (d: unknown) => placed.push(JSON.parse(JSON.stringify(d))),
+        applyPanelPlace() {},
       },
       ', layout: function() { return _viewLayout; }',
       "var _viewLayout = { v: 1 }; var _csrfToken = 'T'; async function refreshCsrfToken() {}",
@@ -572,5 +570,158 @@ describe('P8 — PR review (review-of-legends): ordered saves, stale reads, the 
     c.pdragMove({ pointerId: 7, clientX: 910, clientY: 20, timeStamp: 16, preventDefault() {} });
     // 10px right of where it was drawn — not 10px right of its dock (which would be +10px).
     expect(panel.props['--pdrag-x']).toBe('-290px');
+  });
+});
+
+describe('P9 — PR review round 4 (2026-11-19)', () => {
+  const tick = async () => {
+    for (let i = 0; i < 6; i++) await new Promise((r) => setImmediate(r));
+  };
+  function page(answer: unknown, seed: Record<string, string> = {}) {
+    const items: Record<string, string> = { ...seed };
+    const localStorage = {
+      setItem: (k: string, v: string) => (items[k] = v),
+      getItem: (k: string) => items[k] ?? null,
+    };
+    const applied: unknown[] = [];
+    const fetch = vi.fn(async () => ({ ok: true, status: 200, json: async () => answer }));
+    const c = load<{ savePanelPlace(p: unknown): Promise<void>; layout(): any }>(
+      ['savePanelPlace', 'putPanelPlace', 'cachePanelPlace'],
+      ['_panelPlaceSaving', '_panelPlaceRev', '_panelPlaceQueued', 'VIEW_LAYOUT_KEY'],
+      { fetch, localStorage, dashToast() {}, applyPanelPlace: (p: unknown) => applied.push(p) },
+      ', layout: function() { return _viewLayout; }',
+      "var _viewLayout = { v: 1, active: { card: '2' } }; var _csrfToken = 'T'; async function refreshCsrfToken() {}",
+    );
+    return { c, items, applied };
+  }
+
+  it('a move publishes only the place: presets another tab saved to the shared copy stay', async () => {
+    const { c, items } = page(
+      { ok: true, layout: { doc: { v: 1, panel: { side: 'left', locked: false } } } },
+      { 'soma-view-layout': JSON.stringify({ v: 1, active: { card: '3' } }) },
+    );
+    await c.savePanelPlace({ side: 'left', locked: false });
+    expect(JSON.parse(items['soma-view-layout'])).toEqual({
+      v: 1,
+      active: { card: '3' },
+      panel: { side: 'left', locked: false },
+    });
+  });
+
+  it('the lock the server answers with (set elsewhere meanwhile) is the page’s: the grip goes', async () => {
+    const { c, items, applied } = page({ ok: true, layout: { doc: { v: 1, panel: { side: 'left', locked: true } } } });
+    await c.savePanelPlace({ side: 'left', locked: false });
+    expect(c.layout().panel).toEqual({ side: 'left', locked: true });
+    expect(applied).toEqual([{ side: 'left', locked: true }]);
+    expect(JSON.parse(items['soma-view-layout']).panel).toEqual({ side: 'left', locked: true });
+  });
+
+  it('a press on a title-bar control never starts a drag, however far it moves within it (the real predicate)', () => {
+    const panel = el('slide-panel');
+    (panel as any).querySelector = () => null;
+    const document = {
+      documentElement: el('html'),
+      getElementById: (id: string) => (id === 'slide-panel' ? panel : null),
+    };
+    const listened: string[] = [];
+    const window = {
+      addEventListener: (t: string) => listened.push(t),
+      removeEventListener() {},
+      getSelection: () => null,
+    };
+    const placed: unknown[] = [];
+    const c = load<{ pdragDown(e: unknown): void; pdragMove(e: unknown): void; pdragUp(e: unknown): void }>(
+      [
+        'pdragDown',
+        'pdragMove',
+        'pdragEnd',
+        'pdragUp',
+        'pdragCancel',
+        'pdragSource',
+        'panelDragOffset',
+        'panelDropSide',
+      ],
+      ['_pdrag', 'PDRAG_SLOP', 'PDRAG_FLICK', '_panelPlace'],
+      {
+        document,
+        window,
+        setTimeout: () => 0,
+        panelBoxNow: () => ({ left: 1000, w: 440 }),
+        panelMovable: () => true,
+        panelDocked: () => true,
+        pdragClear() {},
+        panelViewW: () => 1440,
+        paintDropZones() {},
+        placePanel: (p: unknown) => placed.push(p),
+        pdragSettle() {},
+      },
+    );
+    // A target inside the title bar: closest(sel) answers for the selectors it is inside.
+    const inside = (...kinds: string[]) => ({
+      closest: (sel: string) => (sel.split(',').some((x) => kinds.includes(x.trim())) ? {} : null),
+    });
+    for (const target of [
+      inside('.panel-header', 'button'),
+      inside('.panel-header', 'a'),
+      inside('.panel-header', 'ui-status-bar'),
+    ]) {
+      listened.length = 0;
+      c.pdragDown({
+        button: 0,
+        isPrimary: true,
+        pointerId: 1,
+        clientX: 1100,
+        clientY: 20,
+        timeStamp: 0,
+        target,
+        preventDefault() {},
+      });
+      c.pdragMove({ pointerId: 1, clientX: 1110, clientY: 20, timeStamp: 16, preventDefault() {} });
+      c.pdragUp({ pointerId: 1, clientX: 1110, clientY: 20, timeStamp: 32 });
+      expect(panel.hasAttribute('data-pdrag')).toBe(false);
+      expect(listened).toEqual([]); // no drag listeners, so no click is swallowed
+    }
+    expect(placed).toEqual([]);
+    // The title's words (only inside the bar) do drag.
+    c.pdragDown({
+      button: 0,
+      isPrimary: true,
+      pointerId: 2,
+      clientX: 1100,
+      clientY: 20,
+      timeStamp: 0,
+      target: inside('.panel-header'),
+      preventDefault() {},
+    });
+    c.pdragMove({ pointerId: 2, clientX: 1090, clientY: 20, timeStamp: 16, preventDefault() {} });
+    expect(panel.getAttribute('data-pdrag')).toBe('drag');
+  });
+
+  it('a re-grab before the settle’s first frame keeps the card where it is held (the frame is cancelled)', () => {
+    const panel = el('slide-panel');
+    (panel as any).offsetWidth = 1;
+    const frames: Array<() => void> = [];
+    const cancelled: number[] = [];
+    const c = load<{ pdragSettle(p: unknown, from: number): void; pdragClear(p: unknown): void }>(
+      ['pdragSettle', 'pdragClear'],
+      ['_pdragSettle', '_pdragSettleRaf', 'PDRAG_SETTLE_MS'],
+      {
+        reduceMotion: () => false,
+        canAnimate: () => true,
+        setTimeout: () => 9,
+        clearTimeout() {},
+        requestAnimationFrame: (fn: () => void) => frames.push(fn),
+        cancelAnimationFrame: (id: number) => cancelled.push(id),
+      },
+    );
+    c.pdragSettle(panel, -300);
+    expect(frames).toHaveLength(1);
+    c.pdragClear(panel); // the press: the settle is dropped
+    expect(cancelled).toEqual([1]);
+    panel.setAttribute('data-pdrag', 'drag');
+    panel.style.setProperty('--pdrag-x', '-280px'); // held where it is drawn
+    // Even if the browser had already queued the frame, it must not move a card in hand.
+    frames[0]();
+    expect(panel.props['--pdrag-x']).toBe('-280px');
   });
 });
