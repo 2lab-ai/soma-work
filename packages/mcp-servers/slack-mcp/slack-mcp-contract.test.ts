@@ -217,6 +217,9 @@ describe('the tools offered', () => {
     expect(props('send_thread_message')).toContain('thread');
     expect(props('send_file')).toEqual(expect.arrayContaining(['filename', 'url', 'thread', 'artifact_key']));
     expect(props('send_media')).toEqual(expect.arrayContaining(['alt_text', 'thread', 'artifact_key']));
+    // Schema-driven clients fill these from the advertised type: a served address is a string.
+    expect(tools.get('send_file')).toMatchObject({ properties: { url: { type: 'string' } } });
+    expect(tools.get('send_link')).toMatchObject({ properties: { url: { type: 'string' } } });
   });
 
   it('tells the model how to page a thread and when a link goes with send_link instead of send_file', async () => {
