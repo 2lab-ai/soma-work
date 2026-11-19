@@ -1127,6 +1127,20 @@ export class GoalLoopController {
     activeGoal: SessionGoal,
     opts: { reused?: GoalVerdictReuse; spent?: boolean } = {},
   ): void {
+    // The notice before this call was awaited: a pause, delete or stop that landed meanwhile (the dashboard's
+    // confirmed "pause the goal, then stop" while the turn had already ended — nothing to cut) leaves a goal that no
+    // longer drives. Re-read it: the same goal, the same epoch, still active — or no continuation (SSOT 2026-11-19).
+    const live = this.deps.registry.getSessionByKey(sessionKey)?.goal;
+    if (
+      !this.epochStillValid(live, { goalId: activeGoal.goalId, epoch: activeGoal.epoch ?? 0 }) ||
+      live?.status !== 'active'
+    ) {
+      this.deps.logger.info('Goal continuation dropped — the goal changed while its notice posted', {
+        sessionKey,
+        goalId: activeGoal.goalId,
+      });
+      return;
+    }
     const now = this.now();
     const syntheticEvent: SyntheticMessageEvent = {
       user: activeGoal.createdBy,

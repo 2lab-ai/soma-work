@@ -319,7 +319,30 @@ describe('Dashboard — work item goal list (SSOT T2/T3)', () => {
       expect(handler).toHaveBeenCalledWith('C1:t1', { pauseGoalId: 'g1' });
     });
 
-    it('no body: a plain stop, as before', async () => {
+    it('a plain stop while a goal runs (a stale card that did not ask): refused with the goal, so the card asks', async () => {
+      dashboard.setDashboardSessionAccessor(
+        () =>
+          new Map([
+            [
+              'C1:t1',
+              liveSession({ goal: goal(), goalQueue: [goal({ goalId: 'g2', objective: '다음', status: 'queued' })] }),
+            ],
+          ]),
+      );
+      const handler = vi.fn();
+      dashboard.setDashboardStopHandler(handler);
+
+      const res = await stop();
+
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body).goal).toEqual({ goalId: 'g1', objective: '대시보드 개선', queued: 1 });
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('no body: a plain stop, as before (no goal runs)', async () => {
+      dashboard.setDashboardSessionAccessor(
+        () => new Map([['C1:t1', liveSession({ goal: goal({ status: 'paused' }) })]]),
+      );
       const handler = vi.fn().mockResolvedValue(undefined);
       dashboard.setDashboardStopHandler(handler);
 

@@ -4618,6 +4618,20 @@ export async function registerDashboardRoutes(
       const { wireKey: key, originalKey } = resolved;
       // Who may see the task, read before the stop (it may take the session away).
       const task = _getSessionsFn?.()?.get(originalKey);
+      // A plain stop while a goal runs would not hold (the goal starts its next turn): a card that did not ask (its
+      // board was stale) gets the goal back, and asks.
+      const running = task?.goal?.status === 'active' ? task.goal : undefined;
+      if (!pauseGoalId && running && typeof running.goalId === 'string') {
+        reply.status(409).send({
+          error: 'A goal is running — confirm pausing it to stop the work',
+          goal: {
+            goalId: running.goalId,
+            objective: String(running.objective ?? ''),
+            queued: Array.isArray(task?.goalQueue) ? task.goalQueue.length : 0,
+          },
+        });
+        return;
+      }
       try {
         if (_stopHandlerFn) {
           if (pauseGoalId) await _stopHandlerFn(originalKey, { pauseGoalId });
@@ -19382,6 +19396,7 @@ async function doAction(key, action, opts) {
   refreshCard(key);
   if (panelOpen && panelSessionKey === key) renderPanelHead();
   var done = false;
+  var askGoal = null; // a goal the server says runs — asked once the action is no longer busy
   try {
     const url = '/api/dashboard/session/' + encodeURIComponent(key) + '/' + action;
     const body = pauseGoalId ? JSON.stringify({ pauseGoalId: pauseGoalId }) : undefined;
@@ -19405,14 +19420,20 @@ async function doAction(key, action, opts) {
       // A refusal (409) carries its reason: show it instead of the bare status. So does a goal pause the server
       // refused (then nothing was stopped).
       var reason = '';
+      var failed = null;
       if (res.status === 409 || pauseGoalId) {
-        try { var failed = await res.json(); reason = (failed && typeof failed.error === 'string') ? failed.error : ''; } catch (_) {}
+        try { failed = await res.json(); reason = (failed && typeof failed.error === 'string') ? failed.error : ''; } catch (_) {}
       }
-      // Retry asks again when a goal still runs (the goal may have changed): never a stale goal id.
-      dashToast(
-        { title: (DA_LABEL[action] || action) + ' 실패', description: (reason || 'HTTP ' + res.status) + (title ? ' · ' + title : ''), tone: 'error', action: { id: 'retry' } },
-        function() { doAction(key, action); },
-      );
+      // A goal this page did not know about runs (a stale board): the server sent it back — ask, no error.
+      if (action === 'stop' && !pauseGoalId && res.status === 409 && failed && failed.goal && failed.goal.goalId) {
+        askGoal = { goalId: String(failed.goal.goalId), objective: String(failed.goal.objective || ''), queued: toNum(failed.goal.queued) };
+      } else {
+        // Retry asks again when a goal still runs (the goal may have changed): never a stale goal id.
+        dashToast(
+          { title: (DA_LABEL[action] || action) + ' 실패', description: (reason || 'HTTP ' + res.status) + (title ? ' · ' + title : ''), tone: 'error', action: { id: 'retry' } },
+          function() { doAction(key, action); },
+        );
+      }
     }
   } catch (e) {
     console.error('Action error', e);
@@ -19431,6 +19452,7 @@ async function doAction(key, action, opts) {
   refreshCard(key);
   if (panelOpen && panelSessionKey === key) renderPanelHead();
   if (!(done && action === 'close')) loadSessions();
+  if (askGoal) askStopGoal(key, askGoal);
 }
 
 // ── Task star + revive (SSOT 2026-10-30) ──

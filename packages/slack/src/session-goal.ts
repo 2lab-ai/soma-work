@@ -599,17 +599,7 @@ export function pauseCurrentGoal(
   dropScheduledEval(current);
   current.epoch = (current.epoch ?? 0) + 1;
   current.updatedAt = Date.now();
-  // A task another waiting goal already holds stays that goal's: holding it
-  // twice would let it escape its owner's gate once the owner runs again.
-  // Only a hold on this same list counts — one on an older list no longer applies.
-  const heldElsewhere = new Set(
-    [...(session.goalPaused ?? []), ...(session.goalQueue ?? [])]
-      .filter((g) => g !== current && g.heldListAt === opts.heldListAt)
-      .flatMap((g) => g.heldTaskIds ?? []),
-  );
-  const own = (opts.heldTaskIds ?? []).filter((id) => !heldElsewhere.has(id));
-  current.heldTaskIds = own.length ? own : undefined;
-  current.heldListAt = own.length ? opts.heldListAt : undefined;
+  holdOpenTasks(session, current, opts);
   session.goalPaused = (session.goalPaused ?? []).filter((g) => g.goalId !== current.goalId);
   session.goalPaused.push(current);
   const next = session.goalQueue && session.goalQueue.length > 0 ? session.goalQueue.shift() : undefined;
@@ -653,8 +643,31 @@ export function pauseCurrentGoalHoldingQueue(
   dropScheduledEval(current);
   current.epoch = (current.epoch ?? 0) + 1;
   current.updatedAt = Date.now();
+  // Its open tasks stay its own while it waits, as for a goal set aside: another goal resumed into the slot later
+  // must not count them.
+  holdOpenTasks(session, current, opts);
   session.systemPrompt = undefined;
   return { paused: current, inPlace: true };
+}
+
+/**
+ * Record the open tasks a goal leaves as it is paused ({@link SessionGoalState.heldTaskIds}). A task another
+ * waiting goal already holds stays that goal's: holding it twice would let it escape its owner's gate once the
+ * owner runs again. Only a hold on this same list counts — one on an older list no longer applies.
+ */
+function holdOpenTasks(
+  session: GoalQueueSession,
+  goal: SessionGoalState,
+  opts: { heldTaskIds?: readonly string[]; heldListAt?: number },
+): void {
+  const heldElsewhere = new Set(
+    [...(session.goalPaused ?? []), ...(session.goalQueue ?? [])]
+      .filter((g) => g !== goal && g.heldListAt === opts.heldListAt)
+      .flatMap((g) => g.heldTaskIds ?? []),
+  );
+  const own = (opts.heldTaskIds ?? []).filter((id) => !heldElsewhere.has(id));
+  goal.heldTaskIds = own.length ? own : undefined;
+  goal.heldListAt = own.length ? opts.heldListAt : undefined;
 }
 
 /**

@@ -1050,3 +1050,71 @@ describe('GoalLoopController — blocked eval after a close/restore (review roun
     expect(haltSafeguardByKey).toHaveBeenCalledWith(SESSION_KEY, expect.objectContaining({ requestId: 'req_r6' }));
   });
 });
+
+// SSOT 2026-11-19 (review of PR #1378, P2) — the dashboard's confirmed "pause the goal, then stop" can land while the
+// loop is posting the notice that precedes a continuation (the eval said "continue", the turn already ended, so the
+// stop has nothing to cut). The continuation must not go out for a goal that no longer drives.
+describe('GoalLoopController — a pause that lands while the continuation notice posts', () => {
+  function rig(verdict: GoalEvalVerdict, mutate: (session: ConversationSession) => void, queued?: SessionGoal) {
+    const goal = makeGoal();
+    const session = makeSession(goal);
+    if (queued) (session as any).goalQueue = [queued];
+    const injected: SyntheticMessageEvent[] = [];
+    const notices: string[] = [];
+    const controller = new GoalLoopController({
+      registry: { getSessionByKey: () => session, getActivityStateByKey: () => 'idle', saveSessions: () => {} },
+      requestCoordinator: { isRequestActive: () => false },
+      dispatcher: async () => JSON.stringify(verdict),
+      injectContinuation: async (event) => {
+        injected.push(event);
+      },
+      postNotice: async (_channel, _threadTs, text) => {
+        notices.push(text);
+        // The owner's confirm lands during the notice that precedes the continuation.
+        if (text.startsWith('🔄') || text.startsWith('▶️')) mutate(session);
+        return undefined;
+      },
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      fallbackModel: () => ({ model: 'claude-sonnet-4' }),
+    });
+    return { controller, session, injected, notices };
+  }
+  const pauseInPlace = (session: ConversationSession) => {
+    const g = session.goal as SessionGoal;
+    g.status = 'paused';
+    g.epoch = (g.epoch ?? 0) + 1;
+  };
+
+  it('control: nothing lands — the continuation goes out', async () => {
+    const h = rig({ completed: false, reason: 'not yet', remaining: ['do X'] }, () => {});
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(h.injected).toHaveLength(1);
+  });
+
+  it('"continue": the goal paused meanwhile — no continuation', async () => {
+    const h = rig({ completed: false, reason: 'not yet', remaining: ['do X'] }, pauseInPlace);
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(h.notices.some((n) => n.startsWith('🔄'))).toBe(true);
+    expect(h.injected).toHaveLength(0);
+  });
+
+  it('"continue": the goal set aside meanwhile (no current goal) — no continuation', async () => {
+    const h = rig({ completed: false, reason: 'not yet', remaining: ['do X'] }, (s) => {
+      (s as any).goal = undefined;
+    });
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(h.injected).toHaveLength(0);
+  });
+
+  it('complete → the next queued goal starts: paused meanwhile — its first continuation does not go out', async () => {
+    const next = makeGoal({ goalId: 'goal-next', objective: 'next one', status: 'queued' });
+    const h = rig({ completed: true, reason: 'done', remaining: [] }, pauseInPlace, next);
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(h.session.goal?.goalId).toBe('goal-next');
+    expect(h.injected).toHaveLength(0);
+  });
+});

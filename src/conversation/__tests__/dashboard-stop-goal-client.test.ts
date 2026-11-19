@@ -102,6 +102,7 @@ function rig(session: unknown, res: { ok: boolean; status: number; body?: unknow
   const page = load<Page>(
     [
       'esc',
+      'toNum',
       'isBusy',
       'setBusy',
       'stopGoalOf',
@@ -223,6 +224,34 @@ describe('Q4 — no goal runs: Stop stops at once, as before', () => {
     expect(r.calls).toHaveLength(1);
     expect(r.calls[0].init.body).toBeUndefined();
     expect(r.toasts[0][0]).toMatchObject({ title: '세션을 중지했어요', tone: 'success' });
+  });
+});
+
+describe('Q6 — a card that did not know its goal runs (stale board): the server says so, the card asks', () => {
+  it('a plain stop answered 409 with the goal: the question opens, no error toast', async () => {
+    const r = rig(withGoal(null), {
+      ok: false,
+      status: 409,
+      body: { error: 'A goal is running', goal: { goalId: 'g9', objective: '방금 시작한 goal', queued: 0 } },
+    });
+    await r.page.doAction(KEY, 'stop');
+
+    expect(r.calls).toHaveLength(1);
+    expect(r.toasts).toEqual([]);
+    expect(r.dialog.show).toHaveBeenCalledTimes(1);
+    expect(r.body.innerHTML).toContain('방금 시작한 goal');
+    expect(r.page.isBusy(KEY, 'action')).toBe(false);
+    // The yes pauses that goal.
+    r.page.confirmStopGoal();
+    await vi.waitFor(() => expect(r.calls).toHaveLength(2));
+    expect(JSON.parse(r.calls[1].init.body)).toEqual({ pauseGoalId: 'g9' });
+  });
+
+  it('a 409 without a goal (another refusal) is still an error toast', async () => {
+    const r = rig(withGoal(null), { ok: false, status: 409, body: { error: '닫는 중이에요' } });
+    await r.page.doAction(KEY, 'stop');
+    expect(r.dialog.show).not.toHaveBeenCalled();
+    expect(r.toasts[0][0]).toMatchObject({ title: '중지 실패', tone: 'error' });
   });
 });
 

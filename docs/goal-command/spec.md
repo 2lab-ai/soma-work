@@ -238,6 +238,9 @@ A stop alone does not hold while a goal runs: the stop (`abortSession(…, 'user
 - **The yes pauses first, then stops.** `POST /api/dashboard/session/:key/stop` takes `{ pauseGoalId }`. The stop handler (`createDashboardStopHandler`) calls `SlackHandler.pauseGoalForStop` and aborts in the same tick, so no turn end can fall between the two.
 - **Nothing starts in its place** (`pauseCurrentGoalHoldingQueue`). With nothing queued it is the ordinary pause (the goal moves to `goalPaused`). With goals queued it is paused in place — the current slot keeps it as `paused`, so the head of the queue does not start either; ▶️ on the goal card resumes it.
 - **Refusals stop nothing.** No goal runs any more (it finished, was paused or deleted meanwhile): the stop goes through. Another goal runs now: 409 — the owner did not confirm pausing that one; the toast's Retry asks again on fresh data. A closed or missing session: 409 / 404.
+- **The server checks too.** A plain stop (no `pauseGoalId`) on a session whose goal is `active` is refused with 409 and `{ goal: { goalId, objective, queued } }` — a card whose board was stale did not ask; it opens the same question from that goal.
+- **A continuation already on its way is dropped.** The loop posts a notice before it injects a continuation (or the next queued goal's first turn); a pause that lands during that post — the turn had already ended, so the stop had nothing to cut — would otherwise let one more turn run. `injectContinuationTurn` re-reads the goal and injects only for the same goal at the same epoch, still `active`.
+- **Paused in place, it keeps its open tasks** (`heldTaskIds`, as for a goal set aside), so a goal resumed into the slot later does not count them.
 
 ## Goal Commands While a Turn Runs
 

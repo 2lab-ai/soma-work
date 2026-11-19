@@ -204,6 +204,24 @@ describe('pauseCurrentGoalHoldingQueue (a stop pauses the goal)', () => {
     expect(session.systemPrompt).toBeUndefined();
   });
 
+  it('paused in place, it still keeps its open tasks as its own — minus any another waiting goal holds (review P2)', () => {
+    const session = sessionWithQueue();
+    const a = session.goal!;
+    // Goal B (queued) already holds t3 on the same list.
+    session.goalQueue![0].heldTaskIds = ['t3'];
+    session.goalQueue![0].heldListAt = 50;
+
+    pauseCurrentGoalHoldingQueue(session, { heldTaskIds: ['t1', 't2', 't3'], heldListAt: 50 });
+
+    expect(a.heldTaskIds).toEqual(['t1', 't2']);
+    expect(a.heldListAt).toBe(50);
+    // Set aside later (another goal resumed into the slot), it takes them along: they hold no other goal.
+    session.goalPaused = [makeSession().goal ?? createActiveSessionGoal('goal P', 'U123')];
+    session.goalPaused[0].status = 'paused';
+    resumePausedGoal(session, session.goalPaused[0].goalId);
+    expect(session.goalPaused.find((g) => g.goalId === a.goalId)?.heldTaskIds).toEqual(['t1', 't2']);
+  });
+
   it('a goal paused in place comes back with resume (▶️): it runs again, the queue still behind it', () => {
     const session = sessionWithQueue();
     const a = session.goal!;
