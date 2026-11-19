@@ -1,6 +1,6 @@
 # loop — code-changes 구현 드라이브
 
-Status: done (라운드 1 · 2 닫힘) · 열린 gap = G1–G3 · G5 · G10 · G14 🚪, 리뷰 리포트(2026-11-16)의 G6–G9 · G11–G13 🔴🟡 — 근거 [`../research/2026-11-16-code-changes-review.md`](../research/2026-11-16-code-changes-review.md) · 스펙 = [`../26-session-code-changes-spec.md`](../26-session-code-changes-spec.md) ·
+Status: done (라운드 1 · 2 닫힘, SSOT_6 #1326 · SSOT_7 #1371 shipped) · 열린 gap = G1–G3 · G5 · G10 · G14 🚪, 리뷰 리포트(2026-11-16)의 G6–G9 · G11–G13 🔴🟡, #1371 6차 리뷰의 G15–G20 🟡 — 근거 [`../research/2026-11-16-code-changes-review.md`](../research/2026-11-16-code-changes-review.md) · 스펙 = [`../26-session-code-changes-spec.md`](../26-session-code-changes-spec.md) ·
 아키텍처 = [`../27-session-code-changes-architecture.md`](../27-session-code-changes-architecture.md) · ssot = [`ssot.md`](ssot.md) ·
 끝난 것 = [`loop.done.md`](loop.done.md)
 
@@ -21,6 +21,12 @@ Status: done (라운드 1 · 2 닫힘) · 열린 gap = G1–G3 · G5 · G10 · G
 | G12 | 잘림과 오래됨을 화면이 말하지 않는다 — 층 1,000파일 상한, PR 300파일 잘림(행 "파일 500" · 트리 300), `filesStale`, 기준 시각 HH:MM뿐, 새로 고침의 바쁨 표시 없음 · 닫힌 세션에서 조용히 무동작. F7 | 🔴 | 잘림 · 오래됨 줄, 날짜가 있는 기준 시각, 새로 고침 상태 표시 |
 | G13 | 탭을 열 때마다 `refresh=1`로 전체 수집(GitHub 호출 포함), 서브에이전트를 바꿔도 다시. F8 | 🔴 | 저장본이 N초보다 오래됐을 때만 다시 모은다 |
 | G14 | 배포 전 명령 출력 파서가 만든 가짜 커밋 지표 6행이 남아 있다(테스트 픽스처 `[main abc1234] …`) — 스펙대로 지우지 않았다 | 🚪 | 원하면 sha가 실제로 없는 `commit_created` 행을 지우는 1회 정리 |
+| G15 | 로컬 PR 읽기의 `log --first-parent --merges --max-count=1000`은 출력할 머지 수를 세지 탐색 수를 세지 않는다 — 스쿼시 · 리베이스만 쓰는 큰 저장소는 이력 전체를 걷다 10초 상한에 걸릴 수 있다(#1371 6차 P2) | 🟡 | `--merges`를 빼고 1,000 커밋 안에서 부모 둘인 것만 고른다 |
+| G16 | 포크 클론이 업스트림 PR head를 체크아웃한 적이 있으면, 같은 번호의 포크 PR로 그 업스트림 머지를 붙일 수 있다(#1371 6차 P2) | 🟡 | 머지 메시지의 `from owner/branch`와 클론의 push 기록(그 브랜치의 upstream)을 같이 본다 |
+| G17 | 다시 묻는 부분 PR의 예산 환급이 그 클론의 저장소가 아닌 PR까지 미리 돌려준다 — 읽는 동안만 예산을 넘는다(#1371 6차 P2) | 🟡 | 체크아웃의 저장소를 먼저 읽고(원격 URL) 그 저장소 PR만 환급한다 |
+| G18 | 전체 diff가 타임아웃으로 실패하면 파일별 읽기도 파일마다 타임아웃을 반복할 수 있다(#1371 6차 P2) | 🟡 | 연속 실패 N번이면 남은 파일은 다음 수집으로 미룬다(`filesStale`) |
+| G19 | 저장된 `unreadPrs`가 다음 수집에서 읽히는 전환(목록에서 빠지고 머지됨 층 · `newMerges`로)의 직접 시험이 없다(#1371 6차 P2) | 🟡 | 같은 저장소 상태로 두 번 수집하는 시험 |
+| G20 | 로컬 PR 읽기 중 git 폴더가 바뀌면 witness가 결과를 버리는지 실제 git으로 시험하지 않는다(#1371 6차 P2) | 🟡 | 읽는 사이 `.git` 링크를 바꾸는 시험(체크아웃 층 시험과 같은 방식) |
 
 ## build facts (실측)
 
