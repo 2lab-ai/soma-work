@@ -48,17 +48,16 @@ const CONNECT_TIMEOUT_MS = 15_000;
 const LEASE_RENEW_MS = 10_000;
 /** A line phrase not synthesized in this long is given up, so the next idle pass can try again (a stalled host). */
 const PHRASE_SYNTH_MS = 30_000;
+/**
+ * An outbound call not set up (credentials + the dial request) in this long gives the voice host back: a stuck setup
+ * must not keep the one shared host from everybody else. What comes back later is put down.
+ */
+const OUTBOUND_SETUP_MS = 60_000;
 
 export interface DialogAuth {
   env: Record<string, string | undefined>;
   model: string;
   effort?: string;
-  release(): Promise<void>;
-}
-
-/** A claimed voice host, kept alive from the claim on (call setup can take a while) until it is given back. */
-interface HeldLease {
-  /** Stop renewing and give the host back. Idempotent. */
   release(): Promise<void>;
 }
 
@@ -110,7 +109,7 @@ interface PhoneLine {
    * Leases on the voice host (it does one job at a time), renewed until given back: by call id, and an outbound call
    * still being set up by `setup:<request id>`. Teardown gives back every one, also those of a setup still pending.
    */
-  voiceLeases: Map<string, HeldLease>;
+  voiceLeases: Map<string, () => Promise<void>>;
   /** Line phrases are being synthesized (at most one pass at a time). */
   preparing: boolean;
   /** Phrases whose synthesis failed, said once in the log until they are made. */
@@ -396,6 +395,24 @@ export class PhoneService {
     const notice = host.kind === 'busy' ? this.noticeFor(line, 'outbound') : undefined;
     if (host.kind === 'busy' && !notice)
       return { ok: false, error: `the voice host cannot take a call now (${host.reason}) and no notice is ready` };
+    const deadline = lease ? this.setTimer(() => void this.dropLease(line, setupKey), OUTBOUND_SETUP_MS) : null;
+    /** The setup lost its lease meanwhile (the deadline, or the line closed): what it got is given back. */
+    const abandoned = () => !!lease && line.voiceLeases.get(setupKey) !== lease;
+    try {
+      return await this.setUpOutbound(line, req, host, notice, setupKey, abandoned);
+    } finally {
+      if (deadline !== null) this.clearTimer(deadline);
+    }
+  }
+
+  private async setUpOutbound(
+    line: PhoneLine,
+    req: PhoneCallRequest,
+    host: VoiceHostClaim,
+    notice: { text: string; frames: Buffer[] } | undefined,
+    setupKey: string,
+    abandoned: () => boolean,
+  ): Promise<PhoneCallRequestResult> {
     let auth: DialogAuth | undefined;
     if (!notice) {
       try {
@@ -403,6 +420,10 @@ export class PhoneService {
       } catch (err) {
         await this.dropLease(line, setupKey);
         return { ok: false, error: `no model credentials for the call: ${(err as Error).message}` };
+      }
+      if (abandoned()) {
+        await auth.release().catch(() => undefined);
+        return { ok: false, error: 'call setup took too long (or the line closed): not dialed' };
       }
     }
     let call: CallSessionLike;
@@ -412,6 +433,13 @@ export class PhoneService {
       await auth?.release().catch(() => undefined);
       await this.dropLease(line, setupKey);
       return { ok: false, error: `dial failed: ${(err as Error).message}` };
+    }
+    // Late: the setup lost its lease, or the platform already ended the call. Nothing is set up on it.
+    if (abandoned() || this.finished.has(call.callId)) {
+      await auth?.release().catch(() => undefined);
+      await this.dropLease(line, setupKey);
+      void call.hangup().catch(() => undefined);
+      return { ok: false, error: `call ${call.callId} was put down: its setup took too long or it ended at once` };
     }
     const maxMinutes = Math.min(req.maxMinutes, line.cfg.outbound.maxMinutes);
     const record: PhoneCallRecord = {
@@ -455,9 +483,10 @@ export class PhoneService {
       record.work.push({ kind: 'instruction', at: record.createdAt, text: systemPrompt });
       this.deps.store.create(record);
       line.auths.set(call.callId, dialogAuth);
-      if (lease && line.voiceLeases.get(setupKey) === lease) {
+      const release = line.voiceLeases.get(setupKey);
+      if (release) {
         line.voiceLeases.delete(setupKey);
-        line.voiceLeases.set(call.callId, lease);
+        line.voiceLeases.set(call.callId, release);
       }
       run = this.makeRun(
         line,
@@ -534,10 +563,10 @@ export class PhoneService {
 
   /**
    * Renew a held host from the claim on — dialog credentials and the dial can take longer than the host's 30 s — until
-   * {@link HeldLease.release}, registered on the line under `key` at once so that teardown finds it. Null when nothing
-   * is held.
+   * the returned release (stop renewing, give the host back; idempotent) runs, registered on the line under `key` at
+   * once so that teardown finds it. Null when nothing is held.
    */
-  private holdLease(line: PhoneLine, key: string, host: VoiceHostClaim): HeldLease | null {
+  private holdLease(line: PhoneLine, key: string, host: VoiceHostClaim): (() => Promise<void>) | null {
     if (host.kind !== 'held') return null;
     let over = false;
     let timer: unknown;
@@ -554,22 +583,20 @@ export class PhoneService {
       }, LEASE_RENEW_MS);
     };
     arm();
-    const lease: HeldLease = {
-      release: async () => {
-        if (over) return;
-        over = true;
-        this.clearTimer(timer);
-        await host.release();
-      },
+    const release = async () => {
+      if (over) return;
+      over = true;
+      this.clearTimer(timer);
+      await host.release();
     };
-    line.voiceLeases.set(key, lease);
-    return lease;
+    line.voiceLeases.set(key, release);
+    return release;
   }
 
   private async dropLease(line: PhoneLine, callId: string): Promise<void> {
-    const lease = line.voiceLeases.get(callId);
+    const release = line.voiceLeases.get(callId);
     line.voiceLeases.delete(callId);
-    await lease?.release();
+    await release?.();
   }
 
   // ── inbound ─────────────────────────────────────────────────
@@ -739,7 +766,9 @@ export class PhoneService {
         if (line.phrases.has(text)) continue;
         if (this.busy(line)) return; // a call has the voice host now
         try {
-          line.phrases.set(text, await this.synthFrames(line, text));
+          const frames = await this.synthFrames(line, text);
+          line.phrases.set(text, frames);
+          if (text === greeting) line.greeting = { text, frames }; // usable at once, not after the whole pass
           line.unprepared.delete(text);
         } catch (err) {
           if (line.unprepared.has(text)) continue;
@@ -753,8 +782,6 @@ export class PhoneService {
       }
     } finally {
       line.preparing = false;
-      const frames = greeting ? line.phrases.get(greeting) : undefined;
-      if (greeting && frames) line.greeting = { text: greeting, frames };
     }
   }
 

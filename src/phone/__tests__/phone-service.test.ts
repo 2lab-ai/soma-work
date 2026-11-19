@@ -890,6 +890,142 @@ describe('PhoneService', () => {
       expect(host.log.filter((l) => l === 'renew')).toHaveLength(renewed);
     });
 
+    it('a setup stuck past 60 s gives the host back; credentials that come later dial nothing', async () => {
+      const host = voiceHost(() => 'held');
+      let letAuthGo!: () => void;
+      const authGate = new Promise<void>((r) => {
+        letAuthGo = r;
+      });
+      const authReleased: string[] = [];
+      const { svc, agents, timers } = make(serverTools(), undefined, {
+        voiceClientFor: () => host.voice,
+        dialogAuth: async () => {
+          await authGate;
+          return { env: {}, model: 'm', release: async () => void authReleased.push('auth') };
+        },
+      });
+      await svc.start();
+      await settleAll();
+      const dialing = svc.dial(request() as never);
+      await settleAll();
+      for (let i = 0; i < 6; i++) {
+        timers.advance(10_000);
+        await settleAll();
+      }
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1); // the deadline
+      const renewed = host.log.filter((l) => l === 'renew').length;
+      letAuthGo();
+      expect(await dialing).toMatchObject({ ok: false, error: expect.stringContaining('too long') });
+      expect(agents[0].dialed).toHaveLength(0);
+      expect(authReleased).toEqual(['auth']);
+      timers.advance(30_000);
+      await settleAll();
+      expect(host.log.filter((l) => l === 'renew')).toHaveLength(renewed);
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1);
+      await svc.stop();
+    });
+
+    it('a dial request that answers after the setup deadline is put down, not set up', async () => {
+      const host = voiceHost(() => 'held');
+      const { svc, agents, timers, store } = make(serverTools(), undefined, { voiceClientFor: () => host.voice });
+      await svc.start();
+      await settleAll();
+      let answer!: (c: CallSessionLike) => void;
+      agents[0].call = () =>
+        new Promise<CallSessionLike>((r) => {
+          answer = r;
+        });
+      const dialing = svc.dial(request() as never);
+      await settleAll();
+      timers.advance(60_000);
+      await settleAll();
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1);
+      let hungUp = 0;
+      answer({
+        ...fakeCall('CA7', 'outbound'),
+        hangup: async () => {
+          hungUp++;
+        },
+      });
+      expect(await dialing).toMatchObject({ ok: false, error: expect.stringContaining('CA7') });
+      await settleAll();
+      expect(hungUp).toBe(1);
+      expect(store.get('CA7')).toBeUndefined();
+      await svc.stop();
+    });
+
+    it('a call the platform ended before its dial request answered is not set up, and its host goes back', async () => {
+      const host = voiceHost(() => 'held');
+      const { svc, agents, store } = make(serverTools(), undefined, { voiceClientFor: () => host.voice });
+      await svc.start();
+      await settleAll();
+      let answer!: (c: CallSessionLike) => void;
+      agents[0].call = () =>
+        new Promise<CallSessionLike>((r) => {
+          answer = r;
+        });
+      const dialing = svc.dial(request() as never);
+      await settleAll();
+      await agents[0].handlers.call_failed(fakeCall('CA8', 'outbound', 'failed'), 'failed'); // before the answer
+      answer(fakeCall('CA8', 'outbound'));
+      expect(await dialing).toMatchObject({ ok: false });
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1);
+      expect(store.get('CA8')).toBeUndefined();
+      await svc.stop();
+    });
+
+    it('credentials that fail give the host back at once — outbound and inbound', async () => {
+      const host = voiceHost(() => 'held');
+      const { svc, agents, timers, dialogs } = make(serverTools(), undefined, {
+        voiceClientFor: () => host.voice,
+        dialogAuth: async () => {
+          throw new Error('no slot');
+        },
+      });
+      await svc.start();
+      await settleAll();
+      expect(await svc.dial(request() as never)).toMatchObject({
+        ok: false,
+        error: expect.stringContaining('no slot'),
+      });
+      expect(agents[0].dialed).toHaveLength(0);
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1);
+      await agents[0].incoming?.(incoming('IN1', []));
+      await agents[0].start(fakeCall('IN1', 'inbound'));
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(2);
+      expect(dialogs).toHaveLength(0);
+      timers.advance(60_000);
+      await settleAll();
+      expect(host.log.filter((l) => l === 'renew')).toHaveLength(0);
+      await svc.stop();
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(2);
+    });
+
+    it('busy on an inbound call with no notice made: the call is put down, nothing opened, the line free again', async () => {
+      const host = voiceHost(() => 'busy', { speakFails: () => true });
+      let authCalls = 0;
+      const { svc, agents, dialogs, store } = make(serverTools(), undefined, {
+        voiceClientFor: () => host.voice,
+        dialogAuth: async () => {
+          authCalls++;
+          return { env: {}, model: 'm', release: async () => undefined };
+        },
+      });
+      await svc.start();
+      await settleAll();
+      await agents[0].incoming?.(incoming('IN1', []));
+      const call = liveCall('IN1', 'inbound');
+      await agents[0].start(call);
+      expect(call.hungUp).toBe(1);
+      expect(authCalls).toBe(0);
+      expect(dialogs).toHaveLength(0);
+      expect(store.get('IN1')).toBeUndefined();
+      const rejected: string[] = [];
+      await agents[0].incoming?.(incoming('IN2', rejected));
+      expect(rejected).toEqual([]); // the line takes the next call
+      await svc.stop();
+    });
+
     it('a dial that fails gives the host back at once', async () => {
       const host = voiceHost(() => 'held');
       const { svc, agents } = make(serverTools(), undefined, { voiceClientFor: () => host.voice });

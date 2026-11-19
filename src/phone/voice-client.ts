@@ -179,7 +179,6 @@ export function createVoiceClient(
       const first = await takeLease(owner);
       if (first.kind !== 'token') return first;
       const lease = { token: first.token };
-      const leased = () => ({ ...bearer, [LEASE_HEADER]: lease.token });
       /** Released: a renewal still in flight must not take the host again behind it. */
       let closed = false;
       return {
@@ -191,7 +190,7 @@ export function createVoiceClient(
           try {
             const r = await fetchImpl(`${base}/api/lease/renew`, {
               method: 'POST',
-              headers: { 'content-type': 'application/json', ...leased() },
+              headers: { 'content-type': 'application/json', ...bearer, [LEASE_HEADER]: lease.token },
               body: JSON.stringify({ ttl_ms: LEASE_TTL_MS }),
               signal: AbortSignal.timeout(LEASE_REQUEST_MS),
             });
