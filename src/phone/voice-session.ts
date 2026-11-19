@@ -61,8 +61,14 @@ export interface CallRunPlan {
   maxMinutes: number;
   /** Inbound: the greeting already synthesized (μ-law frames) and its words. */
   greeting?: { text: string; frames: Buffer[] };
+  /** Phrases already synthesized (μ-law frames): said at once, no synthesis. "네." is the opener of most replies. */
+  phrases?: ReadonlyMap<string, Buffer[]>;
   model?: string;
 }
+
+/** The opener a reply often starts with: said from {@link CallRunPlan.phrases} while the rest is being made. */
+export const OPENER = '네.';
+const OPENER_RE = /^네[,.]\s*/;
 
 interface Buffered {
   text: string;
@@ -104,7 +110,21 @@ export class CallRun {
   private firstTokenAt = 0;
   private turnModel: string | undefined;
 
+  /**
+   * The other side has the floor: talking now, or its last words are still being transcribed. The agent's audio made
+   * meanwhile is held here — never played over them — and played if those words turn out to be nothing, dropped if
+   * they are words (the reply is then made again with them).
+   */
+  private floorHeld: Buffer[] = [];
+  /** The lines whose audio is (partly) in floorHeld: unheard if it is dropped. */
+  private heldLines: Array<{ text: string; at: number; role: 'agent'; interrupted?: boolean }> = [];
+  private transcribing = 0;
+  /** The start of the reply being written, until it is known whether it opens with "네,". */
+  private openerOpen = false;
+  private openerBuf = '';
+
   private hangupRequested = false;
+  private hangupTimer: unknown = null;
   private ended = false;
   private readonly timers = new Set<unknown>();
   private silenceTimer: unknown = null;
@@ -161,18 +181,20 @@ export class CallRun {
   feedAudio(ulaw: Buffer): void {
     if (this.ended || !this.answered) return;
     const pcm = this.deps.ulawToPcm16(ulaw);
-    for (const ev of this.vad.push(pcm, this.agentSpeaking())) {
+    // Held audio is not playing: nothing of the agent's can echo back while the other side has the floor.
+    for (const ev of this.vad.push(pcm, this.agentSpeaking() && !this.floorHeld.length)) {
       if (ev.type === 'speech_start') {
         // The other side is talking: no silence timer, and the next quiet spell starts with a fresh nudge.
         this.clearSilence();
         this.silenceNudged = false;
-        if (this.released && this.agentSpeaking()) this.bargeIn();
+        if (this.released && this.replyPending()) this.bargeIn();
       } else if (ev.type === 'utterance') {
         const first = this.peerUtterances++ === 0;
         if (!this.released) this.release('상대의 첫 말이 끝남');
         void this.transcribe(ev.pcm, ev.totalMs, first);
-      } else if (ev.type === 'noise' && !this.released) {
-        this.release('상대가 조용해서 첫 마디 시작');
+      } else if (ev.type === 'noise') {
+        if (!this.released) this.release('상대가 조용해서 첫 마디 시작');
+        else this.yieldFloor(); // a cough, not words: what was held is said now
       }
     }
   }
@@ -198,6 +220,36 @@ export class CallRun {
 
   private agentSpeaking(): boolean {
     return this.speaking || this.queue.length > 0 || this.now() < this.playEndAt;
+  }
+
+  /** Speaking, or holding audio until the other side is done. */
+  private replyPending(): boolean {
+    return this.agentSpeaking() || this.floorHeld.length > 0;
+  }
+
+  private floorTaken(): boolean {
+    return this.vad.speaking || this.transcribing > 0;
+  }
+
+  /**
+   * From here the goodbye is said whatever the line does. Audio held for the caller goes out first, now, so nothing
+   * said later overtakes it and the hang-up waits for it (it is in playEndAt).
+   */
+  private enterHangup(): void {
+    this.hangupRequested = true;
+    const held = this.floorHeld;
+    this.floorHeld = [];
+    this.heldLines = [];
+    for (const f of held) this.sendFrame(f);
+  }
+
+  /** The other side is done and said nothing that needs an answer: the held audio is played. */
+  private yieldFloor(): void {
+    if (this.floorTaken() || !this.floorHeld.length) return;
+    const held = this.floorHeld;
+    this.floorHeld = [];
+    this.heldLines = [];
+    for (const f of held) this.sendFrame(f);
   }
 
   private enqueue(sentence: string): void {
@@ -233,6 +285,13 @@ export class CallRun {
   }
 
   private async speakOne(text: string): Promise<void> {
+    const cached = this.released ? this.plan.phrases?.get(text) : undefined;
+    if (cached) {
+      this.addAgentLine(text);
+      for (const f of cached) this.sendFrame(f);
+      this.work({ kind: 'tts', at: this.now(), text, firstByteMs: 0, audioMs: cached.length * FRAME_MS });
+      return;
+    }
     const abort = new AbortController();
     this.synthAbort = abort;
     const started = this.now();
@@ -281,6 +340,12 @@ export class CallRun {
 
   private sendFrame(frame: Buffer): void {
     if (!this.call || this.ended) return;
+    if (this.released && !this.hangupRequested && this.floorTaken()) {
+      this.floorHeld.push(frame); // never over the other side's words
+      const line = this.lastAgentLine;
+      if (line && this.heldLines[this.heldLines.length - 1] !== line) this.heldLines.push(line);
+      return;
+    }
     this.call.sendAudio(frame);
     const now = this.now();
     this.playEndAt = Math.max(this.playEndAt, now) + FRAME_MS;
@@ -321,14 +386,19 @@ export class CallRun {
     this.call?.clearAudio();
     this.synthAbort?.abort('barge-in');
     this.queue = [];
+    this.floorHeld = [];
     this.playEndAt = this.now();
-    if (this.lastAgentLine && !this.lastAgentLine.interrupted) {
-      const line = this.lastAgentLine;
+    // The line playing, and every line held back that will now never be heard.
+    const cut = [...this.heldLines, ...(this.lastAgentLine ? [this.lastAgentLine] : [])].filter((l) => !l.interrupted);
+    this.heldLines = [];
+    if (cut.length) {
       this.deps.update((r) => {
-        const hit = r.transcript.find((l) => l.at === line.at && l.role === 'agent' && l.text === line.text);
-        if (hit) hit.interrupted = true;
+        for (const line of cut) {
+          const hit = r.transcript.find((l) => l.at === line.at && l.role === 'agent' && l.text === line.text);
+          if (hit) hit.interrupted = true;
+        }
       });
-      line.interrupted = true;
+      for (const line of cut) line.interrupted = true;
     }
     this.work({ kind: 'event', at: this.now(), text: why });
   }
@@ -351,13 +421,13 @@ export class CallRun {
     if (this.generating) {
       this.pendingPeer.push(text);
       if (!this.dropTurn) {
-        if (this.agentSpeaking()) this.cutSpeech('상대가 말을 이어감 — 말하기 멈춤');
+        if (this.replyPending()) this.cutSpeech('상대가 말을 이어감 — 말하기 멈춤');
         else this.work({ kind: 'event', at: this.now(), text: '상대가 말을 이어감 — 쓰던 답을 버림' });
         this.dropReply();
-      }
+      } else if (this.replyPending()) this.cutSpeech('상대가 말을 이어감 — 말하기 멈춤');
       return;
     }
-    if (this.agentSpeaking()) this.cutSpeech('상대가 말을 이어감 — 말하기 멈춤');
+    if (this.replyPending()) this.cutSpeech('상대가 말을 이어감 — 말하기 멈춤');
     this.sendToDialog(text);
   }
 
@@ -376,16 +446,21 @@ export class CallRun {
     const at = this.now();
     let text = '';
     let ms = 0;
+    this.transcribing++;
     try {
       const t = await this.deps.voice.transcribe(pcm16ToWav(pcm, LINE_SAMPLE_RATE));
       text = t.text;
       ms = t.ms;
     } catch (err) {
+      this.transcribing--;
       this.fail('stt', err);
+      this.yieldFloor();
       this.armSilenceIfIdle();
       return;
     }
+    this.transcribing--;
     if (this.ended) return;
+    if (!text || !this.released || this.hangupRequested) this.yieldFloor();
     this.work({ kind: 'stt', at, text, ms, audioMs });
     if (!text) {
       this.armSilenceIfIdle(); // a cough or line noise: nothing for the model, but the line is quiet again
@@ -405,6 +480,7 @@ export class CallRun {
     this.warmEngine();
     // The other side's "여보세요" as it picks up is heard and logged, but it is not a turn: the opening answers it.
     if (first && this.plan.direction === 'outbound' && isBareGreeting(text)) {
+      this.yieldFloor();
       this.armSilenceIfIdle();
       return;
     }
@@ -421,6 +497,8 @@ export class CallRun {
       this.turnStartAt = this.now();
       this.firstTokenAt = 0;
       this.turnText = '';
+      this.openerOpen = !!this.plan.phrases?.has(OPENER);
+      this.openerBuf = '';
     }
     this.generating = true;
     this.dialog.send(text);
@@ -434,7 +512,7 @@ export class CallRun {
           if (this.dropTurn || this.dropAfterHangup) break;
           if (!this.firstTokenAt) this.firstTokenAt = this.now();
           this.turnText += ev.text;
-          for (const s of this.splitter.push(ev.text)) this.enqueue(s);
+          for (const s of this.splitter.push(this.takeOpener(ev.text))) this.enqueue(s);
           break;
         case 'assistant':
           this.turnModel = ev.model ?? this.turnModel;
@@ -451,15 +529,23 @@ export class CallRun {
               this.work({ kind: 'event', at: this.now(), text: '끊기 취소 — 상대가 말을 이어감' });
               break;
             }
-            this.hangupRequested = true;
-            if (!this.dropTurn && !this.dropAfterHangup) for (const s of this.splitter.flush()) this.enqueue(s);
+            this.enterHangup();
+            if (!this.dropTurn && !this.dropAfterHangup) {
+              for (const s of this.splitter.push(this.drainOpener())) this.enqueue(s);
+              for (const s of this.splitter.flush()) this.enqueue(s);
+            }
             this.dropAfterHangup = true;
             this.finishWhenQuiet();
           }
           break;
         case 'turn_end': {
-          if (!this.dropTurn && !this.dropAfterHangup) for (const s of this.splitter.flush()) this.enqueue(s);
-          else this.splitter.flush();
+          if (!this.dropTurn && !this.dropAfterHangup) {
+            for (const s of this.splitter.push(this.drainOpener())) this.enqueue(s);
+            for (const s of this.splitter.flush()) this.enqueue(s);
+          } else {
+            this.drainOpener();
+            this.splitter.flush();
+          }
           const at = this.now();
           if (this.turnText.trim()) {
             this.work({
@@ -496,6 +582,36 @@ export class CallRun {
     }
   }
 
+  /**
+   * The reply's first words: a reply that opens with "네," says the ready-made "네." at once (no synthesis) and the
+   * rest follows; any other start goes to the splitter unchanged. Returns the text for the splitter.
+   */
+  private takeOpener(delta: string): string {
+    if (!this.openerOpen) return delta;
+    this.openerBuf += delta;
+    const head = this.openerBuf.trimStart();
+    if (head.length < 2) return ''; // "네" alone could still be "네 시"
+    this.openerOpen = false;
+    this.openerBuf = '';
+    const m = OPENER_RE.exec(head);
+    if (!m) return head;
+    this.enqueue(OPENER);
+    return head.slice(m[0].length);
+  }
+
+  /** What takeOpener still holds (a reply shorter than two letters), for the end of the turn; a bare "네" is the opener. */
+  private drainOpener(): string {
+    const rest = this.openerBuf;
+    const open = this.openerOpen;
+    this.openerOpen = false;
+    this.openerBuf = '';
+    if (open && /^네[,.!]?$/.test(rest.trim())) {
+      this.enqueue(OPENER); // the whole reply was "네": the ready-made one
+      return '';
+    }
+    return rest;
+  }
+
   private tools(): VoiceDialogTool[] {
     return [
       {
@@ -515,7 +631,7 @@ export class CallRun {
             });
             return HANG_UP_TOOL.cancelled;
           }
-          this.hangupRequested = true;
+          this.enterHangup();
           this.work({ kind: 'tool', at: this.now(), name: 'hang_up', input: args, result: '말을 마치면 끊음' });
           return HANG_UP_TOOL.result;
         },
@@ -545,7 +661,13 @@ export class CallRun {
     if (this.ended || !this.hangupRequested) return;
     if (this.speaking || this.queue.length) return; // speakQueue calls back when done
     const wait = Math.max(0, this.playEndAt - this.now()) + HANGUP_TAIL_MS;
-    this.later(() => {
+    // One hang-up: a later call (the tool event, then the turn's end) moves it to the newest end of playback.
+    if (this.hangupTimer !== null) {
+      this.clearTimer(this.hangupTimer);
+      this.timers.delete(this.hangupTimer);
+    }
+    this.hangupTimer = this.later(() => {
+      this.hangupTimer = null;
       if (this.ended) return;
       if (this.speaking || this.queue.length) return;
       void this.call?.hangup().catch((err) => this.fail('hangup', err));

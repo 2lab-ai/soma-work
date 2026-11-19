@@ -162,7 +162,10 @@ describe('createVoiceClient().warm', () => {
     const b = lineB.transcribe(Buffer.alloc(44));
     await new Promise((r) => setTimeout(r, 0));
     expect(stt).toHaveLength(2);
-    stt[0].fail(); // line A's transcription fails
+    stt[0].fail(); // line A's transcription fails …
+    await new Promise((r) => setTimeout(r, 0));
+    expect(stt).toHaveLength(3); // … is tried once more …
+    stt[2].fail(); // … and fails again
     await expect(a).rejects.toThrow('speech-to-text unreachable');
     await lineC.warm?.(); // line B's is still running
     expect(tts).toEqual([]);
@@ -170,6 +173,89 @@ describe('createVoiceClient().warm', () => {
     await b;
     await lineC.warm?.(); // nothing left on the host: wake-ups go out again
     expect(tts).toHaveLength(1);
+  });
+
+  it('a transcription whose request fails is tried once more, and the words are not lost', async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls++;
+      if (calls === 1) throw new Error('connect timeout');
+      return new Response(JSON.stringify({ text: '회의실 예약도 부탁드려요', ms: 3 }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const v = createVoiceClient(
+      { url: 'http://retry-voice:9999', voice: 'v', model: 'drama-3', language: 'ko' },
+      fetchImpl,
+    );
+    await expect(v.transcribe(Buffer.alloc(44))).resolves.toEqual({ text: '회의실 예약도 부탁드려요', ms: 3 });
+    expect(calls).toBe(2);
+  });
+
+  it('an answer whose body stalls after the headers is given up and tried again', async () => {
+    let calls = 0;
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      calls++;
+      if (calls === 1) {
+        const body = new ReadableStream({
+          start(c) {
+            init.signal?.addEventListener('abort', () => c.error(new Error('aborted')));
+          },
+        });
+        return new Response(body, { status: 200 });
+      }
+      return new Response(JSON.stringify({ text: '회의실 예약도요', ms: 2 }), { status: 200 });
+    }) as unknown as typeof fetch;
+    vi.useFakeTimers();
+    try {
+      const v = createVoiceClient(
+        { url: 'http://stall-voice:9999', voice: 'v', model: 'drama-3', language: 'ko' },
+        fetchImpl,
+      );
+      const p = v.transcribe(Buffer.alloc(44));
+      await vi.advanceTimersByTimeAsync(4_100);
+      await expect(p).resolves.toEqual({ text: '회의실 예약도요', ms: 2 });
+      expect(calls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('an HTTP error is not retried', async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls++;
+      return new Response('busy', { status: 503 });
+    }) as unknown as typeof fetch;
+    const v = createVoiceClient(
+      { url: 'http://err-voice:9999', voice: 'v', model: 'drama-3', language: 'ko' },
+      fetchImpl,
+    );
+    await expect(v.transcribe(Buffer.alloc(44))).rejects.toThrow('speech-to-text answered 503');
+    expect(calls).toBe(1);
+  });
+
+  it('a transcription request that hangs is given up and tried again', async () => {
+    const signals: AbortSignal[] = [];
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      signals.push(init.signal as AbortSignal);
+      if (signals.length === 1)
+        return new Promise((_, fail) => init.signal?.addEventListener('abort', () => fail(new Error('aborted'))));
+      return new Response(JSON.stringify({ text: '네', ms: 1 }), { status: 200 });
+    }) as unknown as typeof fetch;
+    vi.useFakeTimers();
+    try {
+      const v = createVoiceClient(
+        { url: 'http://hang-voice:9999', voice: 'v', model: 'drama-3', language: 'ko' },
+        fetchImpl,
+      );
+      const p = v.transcribe(Buffer.alloc(44));
+      await vi.advanceTimersByTimeAsync(3_900);
+      expect(signals).toHaveLength(1); // still waiting for the first
+      await vi.advanceTimersByTimeAsync(200);
+      expect(signals).toHaveLength(2); // given up at 4 s, tried again
+      await expect(p).resolves.toEqual({ text: '네', ms: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('a transcription that starts cancels a wake-up already running on the same host', async () => {
