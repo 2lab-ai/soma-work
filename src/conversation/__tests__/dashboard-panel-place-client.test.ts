@@ -560,9 +560,6 @@ describe('P8 — PR review (review-of-legends): ordered saves, stale reads, the 
 });
 
 describe('P9 — PR review round 4 (2026-11-19)', () => {
-  const tick = async () => {
-    for (let i = 0; i < 6; i++) await new Promise((r) => setImmediate(r));
-  };
   function page(answer: unknown, seed: Record<string, string> = {}) {
     const items: Record<string, string> = { ...seed };
     const localStorage = {
