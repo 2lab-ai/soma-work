@@ -15,13 +15,14 @@ PR https://github.com/2lab-ai/soma-work/pull/1380 · 이슈 https://github.com/2
 | W5 | hand-off 추적 + 끝 = `whenFree` · 목표 루프 · 후속 질문 술어 | 🟡 | 커밋 005b9002. hand-off 48 GREEN(v1 때 깨지던 env-skill-handoff-host 6건 포함) |
 | W6 | 보드: `queueWait` 서버 · 클라이언트 · 보라 태그 · i18n | 🟡 | 커밋 005b9002. 화면 실측은 W9 |
 | W7 | 레인 소비자: `deploy.prompt` · `deploy-qa` · RUN_ENV_SKILL 설명 · CLAUDE.md · architecture.md | 🟡 | 커밋 6d9aa65f. 257 GREEN |
-| W8 | 게이트: tsc · biome · vitest 전체 · 리뷰 · PR 본문 | 🔴 | 모두 뒤 |
+| W8 | 게이트: tsc · biome · vitest 전체 · 리뷰 · PR 본문 | 🟡 | tsc 0 · biome 오류 0 · Lean ok. 독립 리뷰 R1 9건 → 커밋 84934889 반영. 전체 vitest 재실행 중 |
 | W9 | 배포 · 설정: 소유자 dev 호스트 `{"deploy":["dev"],"qa":["dev"]}`, 고객 dev 호스트 `dev2` · `stage0` → 실측(A2–A5) | 🔴 | 머지 뒤 |
 
 ## build facts
 
 - 패키지 먼저 빌드: `npm run build:packages && npm run build:somalib` (안 하면 `@soma/common/logger`를 못 찾는다).
 - 게이트: `npx tsc --noEmit` · `npx biome check <files>` · `npx vitest run`.
+- `somalib/` 테스트는 옆의 컴파일된 `.js`를 먼저 읽는다: `.ts`를 고쳤으면 `npm run build:somalib` 뒤에 돌린다(안 하면 옛 코드로 GREEN/RED가 나온다).
 
 ## 열린 gap
 

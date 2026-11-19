@@ -88,9 +88,12 @@ interface WorkQueueEnded extends WorkQueueEntry { endedAt: number; end: 'done' |
 
 ### 2.3 잠금 · 저장 — `WorkQueueStore`
 
-- `mutate(fn)`: `<file>.lock`을 배타 생성(`wx`)으로 잡는다. 이미 있으면 20 ms씩 최대 3 s 다시 본다. 잠금 파일이
-  10 s보다 오래됐으면(잡은 프로세스가 죽었다) 지우고 다시 잡는다. 잠금 안에서 읽기 → `fn` → 바뀌었으면
-  tmp(`<file>.<pid>.<rand>.tmp`) 쓰기 + fsync + rename → 잠금 해제. 동기 API(MCP · 호스트 모두 짧은 트랜잭션).
+- `mutate(fn)`: `<file>.lock`을 배타 생성(`wx`)으로 잡고 `<pid> <시각> <토큰>`을 쓴다. 이미 있으면 20 ms씩 다시 보고,
+  3 s 마감은 모든 길(탈취 포함)에 걸린다. 10 s보다 오래됐고 그 pid가 살아 있지 않은 잠금만 탈취한다: 옆으로 rename한 뒤
+  옮긴 파일이 오래됐다고 본 그 파일일 때만 지운다(다른 대기자가 먼저 탈취해 새로 잡은 잠금을 옮겼으면 되돌린다).
+  해제는 자기 토큰일 때만. 잠금 안에서 읽기 → `fn` → 바뀌었으면 tmp(`<file>.<pid>.<rand>.tmp`) 쓰기 + fsync + rename →
+  해제. 동기 API(MCP · 호스트 모두 짧은 트랜잭션).
+- `stamp()`: inode · mtime · 크기. 쓰기는 늘 rename(새 inode)이라 한 시계 틱 안의 두 쓰기도 다른 stamp다.
 - `read()`: 잠금 없이 읽는다(rename이라 반쯤 쓴 파일은 없다). 파일이 없으면 빈 원장. 깨졌으면 `.bak`(마지막으로 잘 읽힌
   내용을 쓰기 전에 복사)로, 그것도 없으면 오류 — 빈 원장으로 떨어뜨리지 않는다(rules/config.md 4).
 - `mtimeMs()`: 호스트 틱이 바뀐 것만 다시 읽게.
@@ -117,14 +120,17 @@ interface WorkQueueEnded extends WorkQueueEntry { endedAt: number; end: 'done' |
 - **틱(3 s)**: `store.mtimeMs()`가 바뀌었거나 정리 주기(15 s)가 됐으면 읽는다.
   1. 깨우기: `running`이고 `notifiedAt`이 없고 아직 보내는 중이 아닌 항목 → `deliver`. 결과 `injected` → `mutate`로
      `notifiedAt = now`. `gone` → 그 항목 반납(`holder-gone`). 보내는 중인 번호는 메모리에 둔다(두 번 보내지 않게).
-  2. 정리(15 s마다): 대기 항목의 주인이 없으면 뺀다. 진행 항목은 D7 규칙으로 살아 있는지 본다: 턴이 돈다(6 h 상한)
-     · hand-off가 돈다 · 사람 답을 기다린 지 10분 미만 · 쉬기 시작한 지 5분 미만(쉬기 시작 = max(활동이 바뀐 시각,
-     `notifiedAt`)) · 아직 깨우는 중. 아니면 반납(`holder-idle` / `holder-asking` / `holder-gone`) + 스레드에 `⏹` 한 줄.
+  2. 정리(15 s마다, 원장을 늘 다시 읽는다): 대기 항목의 주인이 없으면 뺀다. 진행 항목(깨웠든 아직 깨우는 중이든)은 D7
+     규칙으로 본다: 턴이 돈다(6 h 상한) · hand-off가 돈다 · 사람 답을 기다린 지 10분 미만 · 쉰 지 5분 미만. 시계의 시작 =
+     max(활동이 바뀐 시각, 마지막 hand-off가 끝난 시각, `notifiedAt` 또는 `grantedAt`, 이 호스트가 뜬 시각) — 재시작은 쉰
+     시간이 아니다. 아니면 반납(`holder-idle` / `holder-asking` / `holder-stuck` / `holder-gone`) + 스레드에 `⏹` 한 줄,
+     기다리던 깨우기는 더는 유효하지 않다(`current` = false). 깨우기가 만료(`wake-expired`)돼도 같은 반납 + `⏹`.
   3. `whenFree` 대기자 풀기, 캐시 갱신.
 - **읽기**(보드 · 목표 루프 · 후속 질문 · hand-off): 마지막으로 읽은 원장에서.
   - `statusFor(channel, threadTs) → {queue, entry, state, position, keys, since} | undefined`
   - `awaitsHost(channel, threadTs)` = 대기 항목이 있다.
-  - `whenFree(channel, threadTs): Promise<void>` = 그 스레드의 항목이 하나도 없으면 풀린다.
+  - `whenFree(channel, threadTs): Promise<void>` = 그 스레드의 항목이 하나도 없고 그 턴이 돌고 있지 않으면 풀린다(깨운 턴이
+    `queue_done` 뒤 마무리를 쓰는 중에 hand-off가 끝나지 않게).
 - 시작: `start()`가 틱을 켠다(unref). 큐가 설정되지 않아도 켠다(설정은 실행 중에 더할 수 있다).
 
 ## 5. hand-off와 이어 붙이기
