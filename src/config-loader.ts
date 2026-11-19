@@ -165,12 +165,12 @@ export interface Config {
    */
   deploySandbox?: Record<string, unknown>;
   /**
-   * Work queues (`@soma/slack/work-queue`): which work runs at most N at a
-   * time across all users — the built-in one serialises dev2 deploys. Kept
-   * OPAQUE here; `parseWorkQueuesConfig` owns validation (and keeps the
-   * built-in queue when the value is malformed). Passed through for the same
-   * round-trip reason as `ui`/`deploySandbox`, from the pre-substitution
-   * object. Absent key = built-in queues; `[]` = none.
+   * Work queues (.prd/36, `somalib/work-queue`): lane → environments, e.g.
+   * `{ "deploy": ["dev2"], "qa": ["dev2"] }` — one entry runs per
+   * `<lane>:<env>` at a time. Kept OPAQUE here; `parseWorkQueuesConfig` owns
+   * validation (the old #726 array form still reads, with a warning). Passed
+   * through for the same round-trip reason as `ui`/`deploySandbox`, from the
+   * pre-substitution object. Absent key = no queues.
    */
   workQueues?: unknown;
 }

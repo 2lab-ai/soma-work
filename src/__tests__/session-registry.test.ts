@@ -201,21 +201,21 @@ describe('SessionRegistry persistence', () => {
     expect(restored?.actionPanel?.threadTs).toBe('171.001');
   });
 
-  // Work queue (#726): a deploy session stays bound to its queue across a
-  // restart, so its later turns still need the queue's slot; `new` unbinds it.
-  it('restores the work queue binding and clears it on reset', () => {
+  // .prd/36 D1 — the #726 queue binding is gone; a sessions.json saved with it still loads (the field is dropped).
+  it('loads a session saved with the old work queue binding and drops it', () => {
     const writer = new SessionRegistry();
     const session = writer.createSession('U123', 'Tester', 'C123', '171.0021');
     session.sessionId = 'session-wq';
-    session.workQueueId = 'deploy-dev2';
     writer.saveSessions();
+    const raw = JSON.parse(fs.readFileSync(`${TEST_DATA_DIR}/sessions.json`, 'utf8'));
+    const list: any[] = Array.isArray(raw) ? raw : (raw.sessions ?? Object.values(raw));
+    list.find((s: any) => s.threadTs === '171.0021').workQueueId = 'deploy-dev2';
+    fs.writeFileSync(`${TEST_DATA_DIR}/sessions.json`, JSON.stringify(raw));
 
     const reader = new SessionRegistry();
     reader.loadSessions();
-    expect(reader.getSession('C123', '171.0021')?.workQueueId).toBe('deploy-dev2');
-
-    reader.resetSessionContext('C123', '171.0021');
-    expect(reader.getSession('C123', '171.0021')?.workQueueId).toBeUndefined();
+    expect(reader.getSession('C123', '171.0021')?.sessionId).toBe('session-wq');
+    expect((reader.getSession('C123', '171.0021') as any)?.workQueueId).toBeUndefined();
   });
 
   // #810: "the model was told the display language" survives a restart, so a restart never re-sends
@@ -245,19 +245,6 @@ describe('SessionRegistry persistence', () => {
     expect(reader.getSession('C123', '171.0032')?.displayLangTold).toBe(false);
     // Saved as an explicit false, so the pre-#810 rule never mistakes it for told.
     expect(reader.getSession('C123', '171.0033')?.displayLangTold).toBe(false);
-  });
-
-  // Trinity R2 (astra P1): a deploy held by the work queue before its first
-  // turn has no sessionId — `new` must still reset it, or its stale queued
-  // request would run in the new conversation.
-  it('resets a never-run session that is bound to a work queue', () => {
-    const registry = new SessionRegistry();
-    const session = registry.createSession('U123', 'Tester', 'C123', '171.0022');
-    session.workflow = 'deploy';
-    session.workQueueId = 'deploy-dev2';
-    expect(registry.resetSessionContext('C123', '171.0022')).toBe(true);
-    expect(registry.getSession('C123', '171.0022')?.workQueueId).toBeUndefined();
-    expect(registry.getSession('C123', '171.0022')?.workflow).toBeUndefined();
   });
 
   it('restores bot-initiated thread metadata', () => {

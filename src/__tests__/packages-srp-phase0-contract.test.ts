@@ -26,6 +26,7 @@ const internalServers = [
   { id: 'server-tools', dir: 'server-tools', basename: 'server-tools-mcp-server' },
   { id: 'slack-mcp', dir: 'slack-mcp', basename: 'slack-mcp-server' },
   { id: 'user-action', dir: 'user-action', basename: 'user-action-mcp-server' },
+  { id: 'work-queue', dir: 'work-queue', basename: 'work-queue-mcp-server' },
 ] as const;
 
 interface PackageJson {

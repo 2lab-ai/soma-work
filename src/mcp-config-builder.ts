@@ -206,6 +206,8 @@ export class McpConfigBuilder {
       // own Bash and shown in their own Slack card and dashboard section — never a question (ASK_USER_QUESTION).
       const { command, args } = this.getInternalServerCommand('user-action');
       internalServers['user-action'] = { command, args };
+      // .prd/36 — lanes (deploy, QA, …) are lined up by keys in one ledger; this thread is the holder.
+      internalServers['work-queue'] = this.buildWorkQueueServer(slackContext);
     }
 
     // slack-mcp on every Slack turn with a thread (hasSlackThread): its file and link tools feed 산출물.
@@ -400,6 +402,28 @@ export class McpConfigBuilder {
     );
   }
 
+  /**
+   * The work-queue server (.prd/37 §3): it changes the shared ledger (`DATA_DIR/work-queues.sqlite3`) for this thread
+   * and reads the queues from `config.json#workQueues`. The thread is set here, in the parent — the model cannot line
+   * up (or end an entry) for another thread.
+   */
+  private buildWorkQueueServer(slackContext: SlackContext): Record<string, any> {
+    const command = this.getInternalServerCommand('work-queue');
+    return {
+      command: command.command,
+      args: command.args,
+      env: {
+        SOMA_WORK_QUEUE_CONTEXT: JSON.stringify({
+          user: slackContext.user,
+          channel: slackContext.channel,
+          threadTs: slackContext.threadTs ?? '',
+        }),
+        SOMA_DATA_DIR: DATA_DIR,
+        SOMA_CONFIG_FILE: CONFIG_FILE,
+      },
+    };
+  }
+
   /** The user-action server: stateless — it validates and inspects; the host stores and shows the record. */
   /** The model-command server process for `context` (a Slack thread's). */
   private modelCommandServerFor(context: ModelCommandContext): Record<string, any> {
@@ -534,6 +558,7 @@ export class McpConfigBuilder {
     if (slackContext) {
       allowedTools.push('mcp__model-command');
       allowedTools.push('mcp__user-action');
+      allowedTools.push('mcp__work-queue');
     }
 
     // slack-mcp tools wherever the server is built (hasSlackThread)

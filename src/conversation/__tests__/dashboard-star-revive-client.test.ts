@@ -131,7 +131,9 @@ const CARD_OF_FNS = [
   'permissionSummary',
   'cardSummary',
   'pendingAutoResume',
+  'pendingQueueWait',
   'autoResumeLabel',
+  'queueWaitLabel',
   'cardCurrentTask',
   'cardTaskRow',
   'agentStatusOf',
@@ -194,7 +196,17 @@ describe('T1.3 — the star left the lead for the face toggle (SSOT 2026-11-01)'
 
 describe('T1.3 / T4.3 — Star and 살리기 on the open card and in the panel head', () => {
   const m = load<{ sessionActionHtml(s: unknown, col: string, where: string): string }>(
-    ['esc', 'escAttr', 'escJs', 'toNum', 'pendingAutoResume', 'isBusy', 'sessionActionsOf', 'sessionActionHtml'],
+    [
+      'esc',
+      'escAttr',
+      'escJs',
+      'toNum',
+      'pendingAutoResume',
+      'pendingQueueWait',
+      'isBusy',
+      'sessionActionsOf',
+      'sessionActionHtml',
+    ],
     ['SESSION_ACTION_TONE'],
     { _busy: Object.create(null), currentUserId: 'U1', SELF_INSTANCE_NAME: '', READ_ONLY_MSG: 'ro' },
   );
@@ -226,7 +238,17 @@ describe('T1.3 / T4.3 — Star and 살리기 on the open card and in the panel h
 
   it('a sibling instance’s card gets no star and no revive here', () => {
     const sib = load<{ sessionActionHtml(s: unknown, col: string, where: string): string }>(
-      ['esc', 'escAttr', 'escJs', 'toNum', 'pendingAutoResume', 'isBusy', 'sessionActionsOf', 'sessionActionHtml'],
+      [
+        'esc',
+        'escAttr',
+        'escJs',
+        'toNum',
+        'pendingAutoResume',
+        'pendingQueueWait',
+        'isBusy',
+        'sessionActionsOf',
+        'sessionActionHtml',
+      ],
       ['SESSION_ACTION_TONE'],
       { _busy: Object.create(null), currentUserId: 'U1', SELF_INSTANCE_NAME: 'me', READ_ONLY_MSG: 'ro' },
     );

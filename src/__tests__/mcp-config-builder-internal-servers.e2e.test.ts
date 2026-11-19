@@ -65,6 +65,7 @@ describe('McpConfigBuilder internal MCP servers e2e', () => {
       'permission-prompt',
       'slack-mcp',
       'user-action',
+      'work-queue',
     ]);
 
     expect(config.allowedTools).toEqual(
@@ -77,6 +78,7 @@ describe('McpConfigBuilder internal MCP servers e2e', () => {
         'mcp__permission-prompt__permission_prompt',
         'mcp__slack-mcp',
         'mcp__user-action',
+        'mcp__work-queue',
         'EnterPlanMode',
         'ExitPlanMode',
       ]),
@@ -92,6 +94,15 @@ describe('McpConfigBuilder internal MCP servers e2e', () => {
     expect(path.basename(executablePath(servers['model-command']))).toMatch(/^model-command-mcp-server\.(ts|js)$/);
     expect(path.basename(executablePath(servers['slack-mcp']))).toMatch(/^slack-mcp-server\.(ts|js)$/);
     expect(path.basename(executablePath(servers['user-action']))).toMatch(/^user-action-mcp-server\.(ts|js)$/);
+    // .prd/37 §3 — the work-queue server knows the thread it lines up for (the model cannot name another one).
+    expect(path.basename(executablePath(servers['work-queue']))).toMatch(/^work-queue-mcp-server\.(ts|js)$/);
+    expect(JSON.parse(servers['work-queue'].env.SOMA_WORK_QUEUE_CONTEXT)).toEqual({
+      user: 'U123',
+      channel: 'C123',
+      threadTs: '1700000000.000000',
+    });
+    expect(servers['work-queue'].env.SOMA_DATA_DIR).toEqual(expect.any(String));
+    expect(servers['work-queue'].env.SOMA_CONFIG_FILE).toEqual(expect.any(String));
     expect(servers['permission-prompt']).toMatchObject({
       type: 'sdk',
       name: 'permission-prompt',

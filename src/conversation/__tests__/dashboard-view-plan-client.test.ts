@@ -415,7 +415,10 @@ describe('P2 — the card face follows the plan', () => {
   });
 
   it('what asks: a permission, a goal decision, a waiting question, a retry’s error — never on a closed card', () => {
-    const asks = load<{ cardAsks(s: unknown, col: string): boolean }>(['pendingAutoResume', 'cardAsks'], []).cardAsks;
+    const asks = load<{ cardAsks(s: unknown, col: string): boolean }>(
+      ['pendingAutoResume', 'pendingQueueWait', 'cardAsks'],
+      [],
+    ).cardAsks;
     expect(asks({ pendingPermissions: [{}] }, 'working')).toBe(true);
     expect(asks({ pendingPermissions: [{}] }, 'closed')).toBe(false);
     expect(asks({ pendingGoalDecision: {} }, 'idle')).toBe(true);
@@ -469,7 +472,9 @@ describe('P3 — the open card follows the plan', () => {
       'toNum',
       'formatTaskTime',
       'pendingAutoResume',
+      'pendingQueueWait',
       'autoResumeLabel',
+      'queueWaitLabel',
       'permissionSummary',
       'cardSummary',
       'cardCurrentTask',

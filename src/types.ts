@@ -687,14 +687,6 @@ export interface ConversationSession {
    */
   titleProvisional?: boolean;
   /**
-   * The work queue (`config.json#workQueues`, e.g. `deploy-dev2`) this
-   * session's work belongs to, set by the work queue gate on its first queued
-   * turn. Persisted, so a later turn of the same deploy session — an answer to
-   * the deploy confirmation, "다시 배포해줘" — still has to hold the queue's
-   * slot after a restart. Cleared by `new`.
-   */
-  workQueueId?: string;
-  /**
    * #767 — people the owner approved for THIS session ("이 세션에서 항상
    * 승인"): their instructions here run without asking the owner again.
    * Persisted with the session; it ends with the session.

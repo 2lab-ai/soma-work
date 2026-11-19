@@ -58,6 +58,14 @@ For each repo, before the confirmation question (and again after `Modify target`
 
 **The answer covers these SHAs only.** Steps 2–3 build the working branch at `target_sha` and merge `source_sha` into it. Right before the step 4 merge, pin both tips again; if either differs from the approved SHAs, run this check again and ask again; after the new answer, merge the new `target_sha` and the new `source_sha` into the same working branch, push it, keep the same PR, update both SHAs in `deploy-state.json` and wait for CI on the new head again. If an old SHA is not an ancestor of its new one (source or target rewritten), stop and ask instead.
 
+## Work Queue (before the confirmation)
+
+Deploys to one target run one at a time through the host's work queue (`work-queue` tools). The queue is `deploy:<target>` — the target without a `deploy/` prefix, lower case (e.g. `deploy:dev2`); its keys are the PRs this deploy ships.
+
+1. After the Delta and Risk Check, `queue_enter {"queue": "deploy:<target>", "keys": [every PR of every repo's delta as owner/repo#N], "note": "<repos> <source> -> <target>"}`. A delta with no PR number: use the issue keys the request names; with no key at all, go on without a line and say so in one line.
+2. `NO_QUEUES` → this host has no work queues: go on without a line. `UNKNOWN_QUEUE` → compare its `queues` list with the target: a queue for this target under another spelling → enter that one; none → go on without a line. `ALREADY_IN_QUEUE` → this thread already holds that entry (a restart): use it. `CONFLICT` → those PRs already ship in another deploy (running or waiting): drop them and enter again with the rest; none left → post "`<target>`: every PR here already ships in <entry>" and stop — no confirmation, no PR, no merge. `queued` → post one line (`deploy:<target>` #N, ahead: …) and end the turn: no polling, no cron, no question. The host wakes this thread when the entry runs; then run the Delta and Risk Check again (the tips moved) and go on. `running` → the confirmation.
+3. Hold the entry until the deploy is `done` (step 7's last line) or stops (cancel, a stop above, a failure), then `queue_done` (`queue_cancel` on Cancel). The host takes an entry back from a thread that waits on a person for 10 minutes. So after any answer to a question asked while holding it (the confirmation, a CI failure), call `queue_list` and find the entry in `mine`; not running → `queue_enter` again before step 2 or the merge.
+
 ## Pre-Execution Confirmation (Required)
 
 A confirmation must be obtained via `local:UIAskUserQuestion` before execution.

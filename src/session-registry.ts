@@ -256,8 +256,6 @@ interface SerializedSession {
   titleProvisional?: boolean;
   /** #810 — the model was told the display language (`<display-lang>`) in this SDK session. */
   displayLangTold?: boolean;
-  /** The work queue the session's work belongs to (see ConversationSession.workQueueId). */
-  workQueueId?: string;
   /** #767 — people the owner approved for this session (see ConversationSession.approvedInstructors). */
   approvedInstructors?: string[];
   /** SSOT 2026-10-30 — the dashboard star (kept alive) and when it was last removed. */
@@ -3243,10 +3241,7 @@ export class SessionRegistry {
     // would leak the previous goal into the fresh conversation. Mirrors the
     // saveSessions() guard which now persists `sessionId || handoffContext
     // || goal` (#959).
-    // A session the work queue held before its first turn has neither, yet
-    // `new` must still unbind it so its queued request never runs in the new
-    // conversation (#726).
-    if (!session || (!session.sessionId && !session.goal && !session.workQueueId)) {
+    if (!session || (!session.sessionId && !session.goal)) {
       return false;
     }
 
@@ -3267,8 +3262,6 @@ export class SessionRegistry {
     // The placeholder mark belongs to the cleared title; the cron origin
     // (`cronJob`) is a fact about the thread and stays.
     session.titleProvisional = undefined;
-    // The new conversation is dispatched again; its queue (if any) is decided then.
-    session.workQueueId = undefined;
     session.lastActivity = new Date();
     // The old task list stays as history; none of it is in progress any more,
     // so the new conversation's work is not attributed to it (dashboard T7/T10).
@@ -4003,7 +3996,6 @@ export class SessionRegistry {
             titleProvisional: session.titleProvisional || undefined,
             // Always a boolean: only a file saved before #810 lacks it (see the load rule).
             displayLangTold: session.displayLangTold === true,
-            workQueueId: session.workQueueId,
             approvedInstructors: session.approvedInstructors?.length ? [...session.approvedInstructors] : undefined,
             starred: session.starred === true ? true : undefined,
             starClearedAt: session.starClearedAt,
@@ -4546,7 +4538,6 @@ export class SessionRegistry {
           // A session saved before the mark existed (#810) was told on its first prompt if it has an SDK session.
           displayLangTold:
             typeof serialized.displayLangTold === 'boolean' ? serialized.displayLangTold : !!serialized.sessionId,
-          workQueueId: typeof serialized.workQueueId === 'string' ? serialized.workQueueId : undefined,
           approvedInstructors: sanitizeApprovedInstructors(serialized.approvedInstructors),
           starred: starred ? true : undefined,
           starClearedAt: finiteStamp(serialized.starClearedAt),

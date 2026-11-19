@@ -58,6 +58,8 @@ const CARD_OF_FNS = [
   'cardSummary',
   'pendingAutoResume',
   'autoResumeLabel',
+  'pendingQueueWait',
+  'queueWaitLabel',
   'cardCurrentTask',
   'cardTaskRow',
   'agentStatusOf',
@@ -340,5 +342,48 @@ describe('the card summary never names a task other than the running one (SSOT 2
     const between = { key: 'k', activityState: 'working', tasks: [tasks[0], tasks[2]] };
     expect(card.cardSummary(between, 'working', 'Headline')).toBe('');
     expect(card.cardOf(between, 'working').summary).toBeUndefined();
+  });
+});
+
+/**
+ * .prd/36 §4.3 — a session that waits on the host is in RUNNING, not NEEDS YOU: its card says where it stands — 큐 대기
+ * with the queue and its place (the purple queue tint), the queue it holds (진행 중), or 환경 작업 중 — with the clock
+ * from when that began.
+ */
+describe('cardOf — waiting on the host (queueWait)', () => {
+  const cardApi = () => card;
+  const base = { key: 'k1', title: 't', activityState: 'idle', model: 'claude-opus-5-5' };
+  it('a queued card in RUNNING reads 큐 대기 with its queue and place in line', () => {
+    const card = cardApi().cardOf(
+      { ...base, queueWait: { kind: 'queued', queue: 'qa:dev2', position: 2, since: 5_000 } },
+      'working',
+    );
+    expect(card.status).toBe('running');
+    expect(card.statusText).toBe('큐 대기 · qa:dev2 · #2');
+    expect(card.since).toBe(5_000);
+  });
+  it('a card holding a running entry without a turn reads the queue and 진행 중', () => {
+    const card = cardApi().cardOf(
+      { ...base, queueWait: { kind: 'running', queue: 'deploy:dev', since: 6_000 } },
+      'working',
+    );
+    expect(card.status).toBe('running');
+    expect(card.statusText).toBe('deploy:dev · 진행 중');
+  });
+  it('a card whose environment hand-off runs reads 환경 작업 중', () => {
+    const card = cardApi().cardOf(
+      { ...base, queueWait: { kind: 'env', owner: 'env:acme-dev2', since: 7_000 } },
+      'working',
+    );
+    expect(card.status).toBe('running');
+    expect(card.statusText).toBe('환경 작업 중');
+    expect(card.since).toBe(7_000);
+  });
+  it('its own running turn wins: no queue words while the session itself works', () => {
+    const card = cardApi().cardOf(
+      { ...base, activityState: 'working', queueWait: { kind: 'queued', queue: 'qa:dev2', position: 1, since: 1 } },
+      'working',
+    );
+    expect(card.statusText).toBeUndefined();
   });
 });

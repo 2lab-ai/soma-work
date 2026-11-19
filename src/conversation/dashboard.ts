@@ -207,6 +207,7 @@ import { getUserMediaStore } from './user-media';
 import { restoreUserActions, type UserActionRecord } from 'somalib/user-action/user-action';
 import { VIEW_LAYOUT_CLIENT_JS } from './view-layout-client';
 import { CARD_FINISH_CLIENT_JS, CARD_FINISH_CSS } from './card-finish-client';
+import { type HostWait, hostWaitFor } from '../work-queue/host-wait';
 import type { WorkLogEntry } from './work-log';
 
 const logger = new Logger('Dashboard');
@@ -511,6 +512,12 @@ export interface KanbanSession {
    * the board puts it in `working`, not `idle`. Absent otherwise.
    */
   autoResume?: KanbanAutoResume;
+  /**
+   * .prd/36 D8 — where the session stands with the host: its work-queue entry waits (`queued` — the card is tinted
+   * apart, 큐 대기), it holds a running entry (`running`), or an environment hand-off it asked for runs (`env`). The
+   * board puts an idle one in `working`, never DONE or NEEDS YOU. Absent otherwise.
+   */
+  queueWait?: HostWait;
   /**
    * Anthropic safeguards halted the session: nothing runs in it until an admin
    * lifts the lock from the Slack notice. The card says so instead of "대기".
@@ -2857,6 +2864,8 @@ const CUSTOM_CHOICE_ID = '직접입력';
 
 function sessionToKanban(key: string, s: any): KanbanSession {
   const autoResume = deriveAutoResume(s, Date.now());
+  // .prd/36 D8 — the session waits on the host: a work-queue entry, or an environment hand-off it asked for.
+  const queueWait = hostWaitFor(s?.channelId, s?.threadTs);
   const taskView = _getTasksFn ? _getTasksFn(key) : undefined;
   const aggregate = computeThreadAggregate(s.channelId, s.threadTs, getAllSessions(), Date.now());
   const headline = displayTitle(s);
@@ -2928,7 +2937,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     finishedAt: liveFinishedAt(s),
     ...modelFields(s),
     ...contextFields(s),
-    tasks: normalizeTaskProgress(taskView?.current, sessionHasCurrentTask(s, autoResume)),
+    tasks: normalizeTaskProgress(taskView?.current, sessionHasCurrentTask(s, autoResume) || queueWait !== undefined),
     earlierTasks: taskView?.earlier.length ? taskView.earlier : undefined,
     tasksOutside: taskView?.outside,
     botName: _botDisplayName || undefined,
@@ -2982,6 +2991,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
         }
       : {}),
     ...(autoResume ? { autoResume } : {}),
+    ...(queueWait ? { queueWait } : {}),
     ...(s.safeguardHalt && Number.isFinite(Number(s.safeguardHalt.atMs))
       ? {
           safeguardHalt: {
@@ -3245,7 +3255,8 @@ function placeOnBoard(board: KanbanBoard, kanban: KanbanSession, session: { stat
     default:
       // Idle but with an armed automatic resume (turn retry, goal
       // re-check) is unfinished work — RUNNING, not DONE.
-      if (kanban.autoResume) board.working.push(kanban);
+      // So is one that waits on the host — its work-queue entry, or a hand-off it asked for (.prd/36 D8).
+      if (kanban.autoResume || kanban.queueWait) board.working.push(kanban);
       else board.idle.push(kanban);
       break;
   }
@@ -3274,7 +3285,7 @@ function bundledChildrenOf(epic: { taskId?: string; ownerId?: string }): Array<[
 
 /** What the board shows a card doing: an idle card with an armed automatic resume is at work. */
 function shownActivity(card: KanbanSession): ConversationSession['activityState'] {
-  return card.activityState === 'idle' && card.autoResume ? 'working' : card.activityState;
+  return card.activityState === 'idle' && (card.autoResume || card.queueWait) ? 'working' : card.activityState;
 }
 
 /** E4 ⑧ (D11) — an epic's bundle: its view and its children's cards (every card of an epic carries it). */
@@ -12663,9 +12674,10 @@ function syncCardFinish() {
   var seen = Object.create(null);
   for (var k in _cardData) {
     if (!_cardDrawn[k] || !_sessionCache[k]) continue;
-    seen[k] = cardFinishOf(_sessionCache[k].model);
+    var queued = cardQueued(k);
+    seen[k] = cardFinishOf(_sessionCache[k].model) + (queued ? '|queue' : '');
     var list = lists.get(_cardHost[k]);
-    if (list) list.push({ key: k, model: _sessionCache[k].model });
+    if (list) list.push({ key: k, model: _sessionCache[k].model, queued: queued });
   }
   _cardFinishSeen = seen;
   lists.forEach(function(cards, host) { cardFinishPaint(host, cards); });
@@ -12674,7 +12686,13 @@ function syncCardFinish() {
 // path — a push that changed nothing the finish reads costs no board-wide pass).
 function cardFinishStale(key) {
   var s = _sessionCache[key];
-  return !!s && cardFinishOf(s.model) !== (_cardFinishSeen[key] || '');
+  return !!s && cardFinishOf(s.model) + (cardQueued(key) ? '|queue' : '') !== (_cardFinishSeen[key] || '');
+}
+// .prd/36 §4.3 — a drawn RUNNING card that waits in a work queue (the queue tint).
+function cardQueued(key) {
+  var s = _sessionCache[key];
+  var w = s && _cardCol[key] === 'working' ? pendingQueueWait(s, 'working') : null;
+  return !!w && w.kind === 'queued';
 }
 if (window.customElements && typeof customElements.whenDefined === 'function') {
   customElements.whenDefined('ui-agent-inbox').then(function() { syncCardFinish(); });
@@ -12977,6 +12995,25 @@ function pendingAutoResume(s, col) {
   return s.autoResume;
 }
 
+// .prd/36 §4.3 — where the session stands with the host (server queueWait): its work-queue entry waits or runs, or
+// an environment hand-off it asked for runs. A RUNNING card only, and only while no turn of its own runs (its own
+// turn reads as running).
+function pendingQueueWait(s, col) {
+  if (col !== 'working' || s.activityState === 'working' || !s.queueWait) return null;
+  return s.queueWait;
+}
+// One line for it: 큐 대기 · <queue> · #<place>, <queue> · 진행 중, or 환경 작업 중.
+function queueWaitLabel(w) {
+  if (!w) return '';
+  var queue = typeof w.queue === 'string' ? w.queue : '';
+  if (w.kind === 'queued') {
+    var line = queue ? '큐 대기' + ' · ' + queue : '큐 대기';
+    return Number(w.position) > 0 ? line + ' · #' + Number(w.position) : line;
+  }
+  if (w.kind === 'running') return queue ? queue + ' · ' + '진행 중' : '진행 중';
+  return '환경 작업 중';
+}
+
 // One line for an armed resume: what starts the session again, when, which
 // attempt. Absolute clock time (no countdown), so equal data renders equal HTML.
 function autoResumeLabel(r) {
@@ -13151,6 +13188,7 @@ function cardOf(s, col) {
   if (summary) card.summary = summary;
   // Status (the tinted tag, re-agent-inbox D1): an armed automatic resume waits.
   var resume = pendingAutoResume(s, col);
+  var queueWait = pendingQueueWait(s, col);
   var acc = Number(s.activeAccumulatedMs) || 0;
   if (s.safeguardHalt && col !== 'working') {
     // Anthropic safeguards halted it: nothing runs until an admin lifts the lock.
@@ -13159,6 +13197,11 @@ function cardOf(s, col) {
   } else if (resume) {
     card.status = 'waiting';
     card.statusText = autoResumeLabel(resume);
+  } else if (queueWait) {
+    // It waits on the host (a work queue, an environment hand-off): running, not a question (the tint marks 큐 대기).
+    card.status = 'running';
+    card.statusText = queueWaitLabel(queueWait);
+    if (toNum(queueWait.since) > 0) card.since = toNum(queueWait.since);
   } else if (col === 'waiting') {
     card.status = 'waiting';
     if (toNum(s.waitingSince) > 0) card.since = toNum(s.waitingSince);

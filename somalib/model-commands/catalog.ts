@@ -788,7 +788,11 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
         "approves. Only an environment user's existing skill; one per call; no other `$skill` refs in text. " +
         'The call answers `submitted`; the host decides after it and tells you in a host turn (`[env-skill]`, ' +
         "not the user's words): rejected with the reason, waiting for an admin, or — when the environment " +
-        "user's turn ends — the link to its thread. Do not wait for it inside this turn.",
+        "user's work ends — the link to its thread. Do not wait for it inside this turn. A lane (a deploy, a QA run) " +
+        "lines up in the host work queue by its keys; when the environment user's run has to wait there, it ends " +
+        'its turn and the host wakes it in turn — your session reads as waiting on the host, and you hear the end ' +
+        'once its work is over. Never poll the lane or its lock, sleep, or create a cron to retry it — send it once ' +
+        'and end your turn; never ask the user whether to wait.',
       paramsSchema: RUN_ENV_SKILL_SCHEMA,
     });
   }
@@ -1474,7 +1478,9 @@ export function runModelCommand(
           'The host now hands this to the environment user exactly as a typed message — nothing has run yet. ' +
           'You will get a host turn ([env-skill]) with the outcome: rejected (with the reason), waiting for an ' +
           "admin's approval, or the link to the environment user's thread once its turn ends. Do not call this " +
-          'again for the same task; end this turn or continue with work that does not depend on it.',
+          'again for the same task; end this turn or continue with work that does not depend on it. If its lane ' +
+          'is busy, the run waits in the host work queue and the host wakes it in turn — do not poll the lane or ' +
+          'its lock, sleep, or create a cron for it, and do not ask the user whether to wait.',
       },
     };
   }

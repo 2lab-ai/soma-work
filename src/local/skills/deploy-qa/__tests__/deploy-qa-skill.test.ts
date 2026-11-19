@@ -259,8 +259,9 @@ describe('deploy-qa carries every open key when QA cannot run', () => {
   const fullStep8 = step8.slice(0, step8.indexOf('- **Without a lock**'));
   const noLock = step8.slice(step8.indexOf('- **Without a lock**'));
 
-  it('busy: still waits, then reads steps 1–5 without QA', () => {
+  it('busy: still waits (only a run with no work-queue entry), then reads steps 1–5 without QA', () => {
     expect(busy).toContain('re-checking every 5 min for up to 60 min');
+    expect(busy).toMatch(/holds a work-queue entry[^\n]*does not wait/);
     expect(busy).toContain('steps 1–5 read-only');
     expect(busy).toContain('no `qa-issue` call');
     expect(busy).toContain('no tracker transition');
@@ -800,5 +801,51 @@ describe('deploy-qa checks an MCP-tool adapter by the profile liveness call', ()
   it('reduced mode covers an MCP tool that is absent or not answering', () => {
     expect(md).toContain('**An adapter missing (executable absent, or MCP tool absent or not answering)');
     expect(md).not.toContain('An adapter executable missing');
+  });
+});
+
+/**
+ * .prd/36 G9 — a QA run lines up in the host's work queue (`qa:<target>`) by its issue keys before it takes the lock:
+ * keys another run already QAs are not QA'd twice, a run that has to wait ends its turn (no lock held, no polling, no
+ * question, no cron) and the host wakes its thread when its turn comes.
+ */
+describe('deploy-qa lines up in the work queue', () => {
+  const md = read('deploy-qa');
+  const queue = md.slice(md.indexOf('## Work queue'), md.indexOf('## Lock'));
+
+  it('has a Work queue section before the Lock', () => {
+    expect(md.indexOf('## Work queue')).toBeGreaterThan(0);
+    expect(md.indexOf('## Work queue')).toBeLessThan(md.indexOf('## Lock'));
+  });
+
+  it('enters qa:<target> with the admitted target keys, after steps 1–5 read-only', () => {
+    expect(queue).toContain('queue_enter');
+    expect(queue).toContain('qa:<target>');
+    expect(queue).toContain('steps 1–5 read-only');
+    expect(queue).toMatch(/admitted target keys/);
+  });
+
+  it('a conflict defers those keys to the run that has them and enters again with the rest', () => {
+    expect(queue).toContain('CONFLICT');
+    expect(queue).toMatch(/`deferred`, reason `in QA in another run/);
+    expect(queue).toContain('`deployed, QA not needed: every key is in QA in another run`');
+  });
+
+  it('queued: ends the turn holding no lock, with no wait, no question and no cron; the host wakes it', () => {
+    expect(queue).toContain('`deployed, QA queued: qa:<target> #<n>`');
+    expect(queue).toMatch(/no lock/);
+    expect(queue).toMatch(/no question/);
+    expect(queue).toMatch(/cron/);
+    expect(queue).toMatch(/host wakes this thread/);
+  });
+
+  it('running: takes the lock; every exit ends the entry with queue_done', () => {
+    expect(queue).toContain('queue_done');
+    expect(queue).toMatch(/every exit path/);
+  });
+
+  it('a host with no queue for the target runs as before', () => {
+    expect(queue).toContain('NO_QUEUES');
+    expect(queue).toContain('UNKNOWN_QUEUE');
   });
 });

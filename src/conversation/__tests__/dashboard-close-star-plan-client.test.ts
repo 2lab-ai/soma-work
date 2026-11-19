@@ -72,7 +72,16 @@ const session = (over: Record<string, unknown> = {}) => ({
 });
 type Action = { id: string; label: string; busy?: boolean; tone?: string; armed?: boolean; lock?: string };
 
-const ACTION_FNS = ['esc', 'escAttr', 'escJs', 'toNum', 'pendingAutoResume', 'isBusy', 'sessionActionsOf'];
+const ACTION_FNS = [
+  'esc',
+  'escAttr',
+  'escJs',
+  'toNum',
+  'pendingAutoResume',
+  'pendingQueueWait',
+  'isBusy',
+  'sessionActionsOf',
+];
 const actions = (busy: Record<string, boolean> = {}, inject: Record<string, unknown> = {}) =>
   load<{
     sessionActionsOf(s: unknown, col: string): Action[];
@@ -89,7 +98,15 @@ const actions = (busy: Record<string, boolean> = {}, inject: Record<string, unkn
 type BarData = { actions: Array<{ id: string; label: string; tone?: string; busy?: boolean; disabled?: unknown }> };
 const head = (s: unknown, col: string, busy: Record<string, boolean> = {}, inject: Record<string, unknown> = {}) =>
   load<{ panelHeadData(s: unknown, col: string): BarData }>(
-    [...ACTION_FNS, 'formatTaskTime', 'autoResumeLabel', 'rootStatusOf', 'planHeadActions', 'panelHeadData'],
+    [
+      ...ACTION_FNS,
+      'formatTaskTime',
+      'autoResumeLabel',
+      'queueWaitLabel',
+      'rootStatusOf',
+      'planHeadActions',
+      'panelHeadData',
+    ],
     ['AGENT_STATUS_LABEL', 'PS_BAR_STATUS', 'SESSION_ACTION_ARIA'],
     {
       currentUserId: 'U1',

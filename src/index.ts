@@ -43,9 +43,10 @@ import { App, LogLevel, SocketModeReceiver } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
 import type { AgentTreeEvent } from '@soma/slack/agent-tree';
 import type { LiveUsageCall } from '@soma/slack/live-usage';
-import { setWorkQueuesConfig } from '@soma/slack/work-queue';
 import * as path from 'path';
 import { CronStorage } from 'somalib/cron/cron-storage';
+import { parseWorkQueuesConfig } from 'somalib/work-queue/config';
+import { WORK_QUEUE_FILE, WorkQueueStore, workQueueStoreAvailable } from 'somalib/work-queue/store';
 import {
   initA2tService,
   initDictationA2tService,
@@ -208,6 +209,7 @@ import {
   installRespondTranslation,
   installSlackDisplayTranslation,
 } from './slack/display-translate';
+import { envHandoffRuns } from './slack/env-handoff-runs';
 import { captureSessionIdentity, createEnvSkillHandoffHost, envSkillWakeState } from './slack/env-skill-handoff-host';
 import {
   answerGoalCapDecision,
@@ -254,6 +256,8 @@ import { getTokenManager } from './token-manager';
 import { buildThreadPermalink } from './turn-notifier';
 import type { ConversationSession } from './types';
 import { productionSettingsRegistry } from './user-settings-registry-production';
+import { setActiveWorkQueueHost, WorkQueueHost } from './work-queue/host';
+import { waitsOnHost } from './work-queue/host-wait';
 
 const logger = new Logger('Main');
 
@@ -677,15 +681,13 @@ async function start() {
     if (appConfig.ui) {
       timing(`UI surface config applied (${Object.keys(uiConfigResult.config).length} surfaces overridden)`);
     }
-    // Install the work queues (config.json#workQueues; absent = the built-in
-    // dev2 deploy queue, concurrency 1). Boot-time only, like `ui`.
-    const workQueueConfig = setWorkQueuesConfig(appConfig.workQueues);
+    // Work queues (.prd/36): `config.json#workQueues` (lane → environments). The work-queue MCP re-reads it on every
+    // call, so this only reports what the file says now.
+    const workQueueConfig = parseWorkQueuesConfig(appConfig.workQueues);
     for (const warning of workQueueConfig.warnings) {
       logger.warn(`config.json#workQueues: ${warning}`);
     }
-    timing(
-      `Work queues: ${workQueueConfig.queues.map((q) => `${q.id}(${q.targets.join('|')} ×${q.concurrency})`).join(', ') || 'none'}`,
-    );
+    timing(`Work queues: ${workQueueConfig.queues.map((q) => q.id).join(', ') || 'none'}`);
 
     // The one injection point for the dashboard deep link: the thread header
     // `dashboardLink` field and the user-started thread link both resolve
@@ -2271,6 +2273,68 @@ async function start() {
       },
       logger,
     });
+    // .prd/36 — the work queue's host side: wake the thread whose turn came (the same settled delivery, as the entry's
+    // holder), give back a turn its thread stopped working on, and answer "does this thread wait on the host?".
+    const workQueueDelivery = createSettledDelivery({
+      state: (sessionKey) =>
+        envSkillWakeState(envWakeRegistry.getSessionByKey(sessionKey), (channel, threadTs) =>
+          slackHandler.isHostTurnFree(channel, threadTs),
+        ),
+      inject: async (sessionKey, text, as) => {
+        const s = envWakeRegistry.getSessionByKey(sessionKey);
+        if (!s?.channelId) return;
+        await messageInjector({
+          user: as ?? s.ownerId,
+          channel: s.channelId,
+          thread_ts: s.threadTs,
+          ts: `${Date.now() / 1000}`,
+          text,
+          synthetic: true,
+          skipDispatch: true,
+          routeContext: { skipAutoBotThread: true, verbatimPrompt: true, hostTurn: true },
+        });
+      },
+      logger,
+    });
+    // Without node:sqlite (Node < 22.5) there is no shared ledger: the host keeps no work queue and the tools say so.
+    if (workQueueStoreAvailable()) {
+      const workQueueHost = new WorkQueueHost({
+        store: new WorkQueueStore(path.join(DATA_DIR, WORK_QUEUE_FILE)),
+        probe: (holder) => {
+          const s = envWakeRegistry.getSessionByKey(envWakeRegistry.getSessionKey(holder.channel, holder.threadTs));
+          if (!s || s.terminated || s.state === 'SLEEPING') return { exists: false };
+          return {
+            exists: true,
+            activity: s.activityState,
+            // A hand-off that just ended restarts the idle clock: its result's wake is on the way.
+            activityChangedAt: Math.max(
+              Number(s.activityStateChangedAt) || 0,
+              envHandoffRuns.lastEndedAt(holder.channel, holder.threadTs) ?? 0,
+            ),
+            handoffActive: envHandoffRuns.isRunning(holder.channel, holder.threadTs),
+          };
+        },
+        deliver: (holder, text, done, current) => {
+          const key = envWakeRegistry.getSessionKey(holder.channel, holder.threadTs);
+          // `false` = refused at once (the session is gone): the delivery never calls `done` then.
+          void workQueueDelivery
+            .deliver(key, text, done, current, holder.user)
+            .then((queued) => {
+              if (!queued) done('gone');
+            })
+            .catch(() => done('gone'));
+        },
+        post: (holder, text) =>
+          slackHandler
+            .getSlackApi()
+            .postMessage(holder.channel, text, { threadTs: holder.threadTs })
+            .catch(() => undefined),
+      });
+      setActiveWorkQueueHost(workQueueHost);
+      workQueueHost.start();
+    } else {
+      logger.warn('Work queue off: this Node has no node:sqlite (needs >= 22.5)');
+    }
     setStreamExecutorProviders({
       handOffEnvironmentSkill: createEnvSkillHandoffHost({
         handler: new SkillForceHandler(undefined, {
@@ -2370,6 +2434,12 @@ async function start() {
         // Deferred: this runs inside the loop's queue entry, which `isActing` still sees until it drains.
         onRunSettled: (sessionKey, { continued, queued }) => {
           if (!continued && !queued) setImmediate(() => void slackHandler.askFollowUpQuestion(sessionKey));
+        },
+        // .prd/36 D8 — the session waits on the host (its work-queue entry waits, or a hand-off it asked for runs):
+        // a wait, not a stall; the host's wake or the hand-off's result turn drives the loop again.
+        awaitingHostWork: (key) => {
+          const s = registry.getSessionByKey(key);
+          return waitsOnHost(s?.channelId, s?.threadTs);
         },
         // #788: while the host stops, no loop run starts and a landing verdict is dropped.
         isShuttingDown: () => slackHandler.isShuttingDown(),
