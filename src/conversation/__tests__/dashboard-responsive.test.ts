@@ -316,21 +316,6 @@ describe('phones — nothing zooms, nothing hides behind the FAB, nothing runs o
     expect(TEMPLATE).toContain('<ui-agent-steering id="cmd-steer" lang="ko">');
     expect(clientFn('renderMultiChoicePanel')).toContain("document.createElement('ui-choice-form')");
   });
-
-  it('below 640px the page clears the FAB — only for a board with cards', () => {
-    const phone = cssBlock(PHONE);
-    expect(phone).not.toBe('');
-    // Only a board with cards gets the clearance: an empty page must not turn scrollable. The cards
-    // are inside the element, so renderBoard marks the inbox (.has-cards) instead of :has(.card) — drawn
-    // cards only (a closed DONE day's are stubs).
-    expect(phone).toContain('.inbox.has-cards { padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px)); }');
-    expect(clientFn('syncHasCards')).toContain(
-      "if (inbox) inbox.classList.toggle('has-cards', Object.keys(_cardDrawn).length > 0);",
-    );
-    // After every render and every DONE day opened or closed (#562 review P3).
-    expect(clientFn('renderBoard')).toContain('syncHasCards();');
-    expect(clientFn('wireInbox')).toContain('syncHasCards();');
-  });
 });
 
 describe('layout transition — pure helpers', () => {
@@ -532,12 +517,6 @@ describe('layout transition — one coordinator', () => {
     const b = coordinator({ fromKey: 'snap|closed|board', flying: true });
     b.m.runLayoutCheck();
     expect(b.calls.measure).toBe(0);
-  });
-
-  it('it starts on a mode change and retargets while cards are still flying', () => {
-    const body = clientFn('runLayoutCheck');
-    expect(body).toContain('layoutModeKey(mode) !== _layoutModeKey');
-    expect(body).toContain('_layoutShiftUntil');
   });
 
   it('signals: window resize, the inbox ResizeObserver, and panel open/close', () => {

@@ -1150,6 +1150,13 @@ describe('T2 — 카드 열기 opens the launch’s card on the board, never Sla
     });
   });
 
+  it('the page no longer falls back to the Slack thread from 카드 열기', () => {
+    expect(TEMPLATE).not.toContain('function ntOpenLaunched(');
+    expect(TEMPLATE).not.toContain('window.open(launch.permalink');
+    // One mechanism opens a launch's card on arrival: not the URL deep link's.
+    expect(clientFn('ntOpenLaunch')).not.toContain('_deepLinkSession');
+  });
+
   it('a press on a 시작 중 or 시작 실패 card (no session) goes to ntOpenLaunch instead of doing nothing', () => {
     const wire = clientFn('wireInbox');
     expect(wire).toContain('var launch = ntPendingOf(key);');

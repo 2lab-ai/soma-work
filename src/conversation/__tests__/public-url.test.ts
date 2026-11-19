@@ -604,7 +604,9 @@ describe('the running viewer follows the check (T1 end to end)', () => {
         url: '/dashboard',
         headers: { host: 'old-host.example.net:33443' },
       });
-      expect(String(res.headers.location ?? '')).not.toContain('agent.example.com');
+      // Signed out, it lands on the sign-in page of the origin it came from — not on the dead public URL.
+      expect(res.statusCode).toBe(302);
+      expect(res.headers.location).toBe('/login');
     });
 
     it('the Slack sign-in confirm from the callback origin is same-origin, and its cookie fits http', async () => {

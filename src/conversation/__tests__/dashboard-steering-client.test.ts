@@ -438,7 +438,10 @@ describe('the page loads <ui-agent-steering> from the dashboard origin', () => {
     expect(dir).toBeTruthy();
     const file = join(dir as string, 'agent-steering.js');
     expect(existsSync(file)).toBe(true);
-    for (const imp of readFileSync(file, 'utf-8').match(/from\s*"\.\/([^"]+)"/g) ?? []) {
+    const imports = readFileSync(file, 'utf-8').match(/from\s*"\.\/([^"]+)"/g) ?? [];
+    // The element ships in chunks: a build whose imports this pattern no longer finds would check nothing.
+    expect(imports.length).toBeGreaterThan(0);
+    for (const imp of imports) {
       const name = /"\.\/([^"]+)"/.exec(imp)?.[1] as string;
       expect(UI_LIB_FILE.test(name), name).toBe(true);
       expect(existsSync(join(dir as string, name)), name).toBe(true);

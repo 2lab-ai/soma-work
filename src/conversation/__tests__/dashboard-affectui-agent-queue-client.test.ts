@@ -226,6 +226,8 @@ describe('capData — the capacity view as the element’s providers', () => {
 
   it('events become refills: same time (seconds), cause and account; dWeek → weekly (no 5-hour gain)', () => {
     const [claude] = capFns().capData(MAIN).providers;
+    // The fixture's Claude pool has refills: an empty list would check no mapping at all.
+    expect(CLAUDE.events.length).toBeGreaterThan(0);
     expect(claude.refills).toHaveLength(CLAUDE.events.length);
     CLAUDE.events.forEach((e: any, i: number) => {
       expect(claude.refills[i]).toEqual({

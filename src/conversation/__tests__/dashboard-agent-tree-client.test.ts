@@ -371,7 +371,10 @@ describe('the open card’s tree is <ui-agent-tree> (affectUI review batch 2) �
     const { UI_LIB_FILE, uiLibDistDir } = await import('../dashboard');
     const dir = uiLibDistDir() as string;
     expect(existsSync(join(dir, 'agent-tree.js'))).toBe(true);
-    for (const imp of readFileSync(join(dir, 'agent-tree.js'), 'utf-8').match(/from\s*"\.\/([^"]+)"/g) ?? []) {
+    const imports = readFileSync(join(dir, 'agent-tree.js'), 'utf-8').match(/from\s*"\.\/([^"]+)"/g) ?? [];
+    // The element ships in chunks: a build whose imports this pattern no longer finds would check nothing.
+    expect(imports.length).toBeGreaterThan(0);
+    for (const imp of imports) {
       const file = /"\.\/([^"]+)"/.exec(imp)?.[1] as string;
       expect(UI_LIB_FILE.test(file), file).toBe(true);
       expect(existsSync(join(dir, file)), file).toBe(true);
@@ -1439,6 +1442,7 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
       sets: 0,
       data: null as TreeData | null,
       upserts: 0,
+      upsertOpts: [] as unknown[],
       cleared: 0,
       scroller: [] as unknown[],
       prepends: [] as unknown[],
@@ -1462,8 +1466,9 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     let item: unknown = null;
     const host: Record<string, unknown> = {
       querySelector: (sel: string) => (sel === 'ui-agent-tree' ? item : null),
-      upsertItem: (key: string, node: unknown) => {
+      upsertItem: (key: string, node: unknown, opts?: unknown) => {
         out.upserts++;
+        out.upsertOpts.push(opts);
         if (key !== 'tree') throw new Error(key);
         item = node;
       },
@@ -1616,6 +1621,8 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     m.paintTreeTab();
     // The element itself is the scroller's item (its rows carry data-anchor in its shadow root — the scroller reads them).
     expect(out.upserts).toBe(1);
+    // Put in place without the scroller's entrance motion: the tree is the box's one item, not a new arrival.
+    expect(out.upsertOpts).toEqual([{ animate: false }]);
     expect(tree.attrs).toEqual({ lang: 'ko', 'data-item': 'tree', 'data-at-ns': 'p|k' });
     expect(tree.className).toBe('pa-tree');
     expect(tree.innerHTML).toBe('<span class="at-fallback">에이전트 트리</span>');

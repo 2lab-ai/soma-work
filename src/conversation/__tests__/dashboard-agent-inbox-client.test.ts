@@ -1354,6 +1354,7 @@ describe('model-controlled values in card markup (shipped renderers)', () => {
           { content: 'done', status: 'completed', startedAt: bad, completedAt: bad },
         ],
       });
+      expect(d.steps).toHaveLength(2);
       for (const step of d.steps)
         for (const k of ['startedAt', 'endedAt'])
           expect(step[k] === undefined || Number.isFinite(step[k]), `${k}=${String(step[k])}`).toBe(true);

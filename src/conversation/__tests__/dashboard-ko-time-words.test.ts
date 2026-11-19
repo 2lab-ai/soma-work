@@ -172,7 +172,10 @@ describe('T2 — every live time is the element in Korean; the settled ones say 
   });
   it('the viewer page writes its <ui-elapsed> in Korean too', () => {
     const VIEWER_TS = readFileSync(join(__dirname, '..', 'viewer.ts'), 'utf-8');
-    for (const tag of VIEWER_TS.match(/<ui-elapsed [^>]*>/g) ?? []) expect(tag, tag).toContain('lang="ko"');
+    const tags = VIEWER_TS.match(/<ui-elapsed [^>]*>/g) ?? [];
+    // The viewer writes one today: a tag this pattern no longer finds would check nothing.
+    expect(tags.length).toBeGreaterThan(0);
+    for (const tag of tags) expect(tag, tag).toContain('lang="ko"');
   });
 });
 

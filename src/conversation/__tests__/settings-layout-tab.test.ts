@@ -192,8 +192,9 @@ describe('E3 — editing saves at once', () => {
     api.layMove('rows', 3, 0); // 산출물 줄 to the top
     const card = api.get('_layDoc').presets['1'].minimal.card;
     expect(card.rows.map((r: { id: string }) => r.id)).toEqual(['arts', 'summary', 'task', 'links', 'agents', 'usage']);
-    expect(els['lay-live'].textContent === '' || true).toBe(true);
     await flush();
+    // The move is announced (the live region is set after a tick, so a repeat is read again).
+    expect(els['lay-live'].textContent).toBe('산출물 줄 — 4번째에서 1번째로 옮겼습니다');
     expect(puts).toHaveLength(1);
     expect(puts[0]).toMatchObject({ method: 'PUT', url: '/api/settings/dashboard-layout' });
     expect((puts[0] as any).body.doc.presets['1'].minimal.card.rows[0].id).toBe('arts');

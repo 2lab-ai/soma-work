@@ -277,7 +277,9 @@ describe('ConversationWebServer canonical-origin redirect', () => {
 
       // injectWS hands headers to the route as-is, so the key must be lowercase
       // for request.headers.host to see it.
+      // A redirect would reject here (injectWS: "Unexpected server response: 302"); the upgrade opens instead.
       const ws = await web.injectWebServerWS('/ws/dashboard', { headers: { host: OLD_HOST } });
+      expect(ws.readyState).toBe(ws.OPEN);
       ws.terminate();
     });
   });

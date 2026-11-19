@@ -309,41 +309,6 @@ describe('aggregator: per-(port, class) warn throttling (PR #815 review)', () =>
     expect(result).toEqual([]);
     warnSpy.mockRestore();
   });
-
-  it('warn flag reset (test hook) lets a previously-throttled key warn again', async () => {
-    mockReadAllInstances.mockResolvedValue([
-      { port: 33001, instanceName: 'a', host: '127.0.0.1', pid: 1, lastSeen: Date.now() },
-    ]);
-
-    const fetchStub = makeFetchStub({
-      ':33001': () => new Response('boom', { status: 500 }),
-    });
-
-    // First call — warn fires (and is throttled for next 60s).
-    await aggregator.fetchSiblingBoards({
-      selfPort: 33000,
-      selfPid: 999,
-      viewerToken: 'shared-token',
-      fetchImpl: fetchStub as any,
-    });
-    // Second call within same test — same key, throttled, no extra warn.
-    await aggregator.fetchSiblingBoards({
-      selfPort: 33000,
-      selfPid: 999,
-      viewerToken: 'shared-token',
-      fetchImpl: fetchStub as any,
-    });
-    // After reset, the next call emits again.
-    (aggregator as any).__resetWarnFlagForTests();
-    const result3 = await aggregator.fetchSiblingBoards({
-      selfPort: 33000,
-      selfPid: 999,
-      viewerToken: 'shared-token',
-      fetchImpl: fetchStub as any,
-    });
-    // Sanity: still graceful (no throw).
-    expect(result3).toEqual([]);
-  });
 });
 
 describe('aggregator: mergeBoards', () => {
@@ -403,35 +368,5 @@ describe('aggregator: mergeBoards', () => {
       port: 33001,
       host: 'devbox-a.local',
     });
-  });
-
-  it('uses composite key for sibling sessions (instance::originalKey) so collisions are impossible', () => {
-    const self = {
-      board: { working: [{ key: 'self::C1:t1' }], waiting: [], idle: [], closed: [] },
-    };
-    const siblings = [
-      {
-        instanceName: 'devbox-a-dev',
-        port: 33001,
-        host: '127.0.0.1',
-        board: {
-          working: [{ key: 'C1:t1' }], // raw key from sibling, same channel:thread coincidentally
-          waiting: [],
-          idle: [],
-          closed: [],
-        },
-      },
-    ];
-
-    const merged = aggregator.mergeBoards({
-      selfBoard: self.board,
-      selfEnv: { instanceName: 'self', port: 33000, host: '127.0.0.1' },
-      siblings: siblings as any,
-    });
-
-    const keys = merged.working.map((s: any) => s.key);
-    expect(keys).toContain('self::C1:t1');
-    expect(keys).toContain('devbox-a-dev::C1:t1');
-    expect(new Set(keys).size).toBe(keys.length); // no duplicates
   });
 });

@@ -717,6 +717,7 @@ describe('panel header — <ui-status-bar>: the session status, its time and its
 
   it('a reader who does not own it, or a sibling instance, gets a locked action that says why', () => {
     const ro = head(card({ ownerId: 'U9' }), 'working');
+    expect(ro.actions.map((a) => a.id)).toEqual(['stop']);
     for (const a of ro.actions) expect(a.disabled, a.id).toBe('read only');
     const sib = head(card({ environment: { instanceName: 'other', host: 'h', port: 1 } }), 'working', {
       SELF_INSTANCE_NAME: 'me',
@@ -729,6 +730,7 @@ describe('panel header — <ui-status-bar>: the session status, its time and its
 
   it('a write in flight is busy in the bar (Stop / Close / Trash; Star and 살리기 together)', () => {
     const d = head(card(), 'working', { _busy: { 'inst::C1:t1|action': true, 'inst::C1:t1|life': true } });
+    expect(d.actions.map((a) => a.id)).toEqual(['stop']);
     for (const a of d.actions) expect(a.busy, a.id).toBe(true);
   });
 

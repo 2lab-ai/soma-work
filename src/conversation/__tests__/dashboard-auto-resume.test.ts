@@ -207,6 +207,8 @@ describe('Dashboard — sessions waiting out an automatic resume, and the one cu
         ]),
       );
       expect(b.working).toHaveLength(0);
+      // Both sessions stay on the board (DONE), each without a resume.
+      expect(b.idle.length + b.closed.length).toBe(2);
       for (const card of [...b.idle, ...b.closed]) expect(card.autoResume).toBeUndefined();
     });
 
@@ -273,6 +275,9 @@ describe('Dashboard — sessions waiting out an automatic resume, and the one cu
           ['C1:ask', session({ threadTs: 'ask', activityState: 'waiting' })],
         ]),
       );
+      // The armed resume runs (working), the question waits (waiting): one card each.
+      expect(b.working).toHaveLength(1);
+      expect(b.waiting).toHaveLength(1);
       for (const card of [...b.working, ...b.waiting]) {
         expect(card.tasks.map((t: any) => t.status)).toEqual(['completed', 'in_progress', 'pending', 'pending']);
       }

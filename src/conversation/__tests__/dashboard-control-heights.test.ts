@@ -74,7 +74,11 @@ describe('one row, one control height — the top bar and the board tools', () =
 
   it('no padding rule of this pass reaches the select chip (its chevron sits in the kit’s right padding)', () => {
     const start = TEMPLATE.indexOf('ONE ROW, ONE HEIGHT');
-    const block = TEMPLATE.slice(start, TEMPLATE.indexOf('/* ── CRON lane', start));
+    const end = TEMPLATE.indexOf('/* ── CRON lane', start);
+    // The pass's block must be found: a renamed banner would leave an empty slice that matches nothing.
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const block = TEMPLATE.slice(start, end);
     expect(block).not.toMatch(/ui-select-chip\)[^{]*\{[^}]*padding/);
   });
 

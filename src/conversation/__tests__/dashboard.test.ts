@@ -1395,17 +1395,17 @@ describe('Dashboard API', () => {
     //
     // Check: every occurrence of "Action(" or "Panel(" in handler-building
     // lines must be followed by \' not just '
-    const handlerCalls = script.match(/(?:doAction|openPanel|closePanel|sendCommand)\(/g);
-    if (handlerCalls) {
-      // For each unique handler function name found, verify escaping is used
-      const uniqueHandlers = [...new Set(handlerCalls.map((h: string) => h.replace('(', '')))];
-      for (const handler of uniqueHandlers) {
-        // If this handler appears in a string-building context (with quotes),
-        // it must use escaped quotes
-        const buildPattern = new RegExp(`${handler}\\(''`, 'g');
-        const broken = script.match(buildPattern);
-        expect(broken).toBeNull();
-      }
+    const handlerCalls = script.match(/(?:doAction|openPanel|closePanel|sendCommand)\(/g) ?? [];
+    // The script builds these handlers today: an empty match would check nothing.
+    expect(handlerCalls.length).toBeGreaterThan(0);
+    // For each unique handler function name found, verify escaping is used
+    const uniqueHandlers = [...new Set(handlerCalls.map((h: string) => h.replace('(', '')))];
+    for (const handler of uniqueHandlers) {
+      // If this handler appears in a string-building context (with quotes),
+      // it must use escaped quotes
+      const buildPattern = new RegExp(`${handler}\\(''`, 'g');
+      const broken = script.match(buildPattern);
+      expect(broken).toBeNull();
     }
   });
 

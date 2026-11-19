@@ -199,7 +199,10 @@ describe('Dashboard — permission prompts (SSOT 2026-10-24)', () => {
     it('a prompt for another thread stays off this card', async () => {
       await seed({ thread_ts: 't-other' });
       await dashboard.refreshPendingPermissions();
-      expect(card((await board()).board)?.card.pendingPermissions).toBeUndefined();
+      const hit = card((await board()).board);
+      // The session's card is still there (a missing card would pass the check below too).
+      expect(hit?.col).toBe('working');
+      expect(hit?.card.pendingPermissions).toBeUndefined();
     });
 
     it('a prompt rewritten with other matched rules is reported as a change', async () => {
