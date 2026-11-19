@@ -115,7 +115,20 @@ export interface PrChanges {
   filesStale?: true;
   /** Patches were dropped for the document's size budget: the next collect reads the files again. */
   patchesDropped?: true;
+  /**
+   * `local`: GitHub did not answer for this PR (a private repository the host's token cannot read), so it was read from
+   * a session checkout of its repository — the commit on the default branch that merged it. Merged PRs only.
+   */
+  source?: 'local';
   fetchedAt: number;
+}
+
+/** A PR on the session's card that neither GitHub nor a session checkout could read: listed, so the tab can say why. */
+export interface UnreadPr {
+  url: string;
+  /** `owner/name`, lower case. */
+  repo: string;
+  number: number;
 }
 
 export interface CodeChangesDoc {
@@ -127,6 +140,8 @@ export interface CodeChangesDoc {
   checkouts: CheckoutChanges[];
   /** The session's own pull requests (created after it started), newest first. */
   prs: PrChanges[];
+  /** The card's PRs that could not be read at all (absent when there are none). */
+  unreadPrs?: UnreadPr[];
   /**
    * What the metrics already took for this conversation — commit shas and merged PR ids — marked once the result was
    * handed on (`CodeChangesStore.markCounted`); until then each collect hands them on again.

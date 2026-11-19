@@ -16,7 +16,7 @@ import {
   type SessionCommit,
   UNREAD_CHECKOUT,
 } from './checkout-changes';
-import { type PrDeps, sessionPrChanges } from './pr-changes';
+import { type PrDeps, type PullAsk, sessionPrChanges } from './pr-changes';
 import { type CodeChangesStore, MAX_COUNTED_COMMITS } from './store';
 import { summarizeCodeChanges } from './summary';
 import type { ChangedFile, CheckoutChanges, CodeChangesDoc, CodeChangesSummary, PrChanges } from './types';
@@ -123,8 +123,15 @@ export async function collectCodeChanges(input: CollectInput, deps: CollectDeps)
   // would otherwise sit in memory before the budget drops all but 6 MiB of them (#1299 review). The document's own
   // order (uncommitted, committed, PRs) is applied again at the end.
   const prBudget: PatchBudget = { used: 0, max: MAX_DOC_PATCH_BYTES };
-  const prs = await sessionPrChanges(input.prUrls, input.startedAt, prev?.prs ?? [], deps, (files) =>
-    trimPatches(files, prBudget),
+  // The PRs GitHub did not answer for (a private repository the host's token cannot read): asked of the checkouts below.
+  const unread: PullAsk[] = [];
+  const prs = await sessionPrChanges(
+    input.prUrls,
+    input.startedAt,
+    prev?.prs ?? [],
+    deps,
+    (files) => trimPatches(files, prBudget),
+    unread,
   );
   // One running budget per layer: a later checkout's uncommitted patch is never pushed out by an earlier checkout's
   // committed one — the end-of-document pass (uncommitted first) would never have dropped it (#1299 review).
@@ -139,7 +146,9 @@ export async function collectCodeChanges(input: CollectInput, deps: CollectDeps)
   const lastRead = new Map((prev?.checkouts ?? []).map((c) => [c.id, c]));
   const checkouts: CheckoutChanges[] = [];
   const newCommits: CollectResult['newCommits'] = [];
+  const local = new Map<string, PrChanges>();
   for (const dir of dirs.slice(0, MAX_CHECKOUTS)) {
+    const asks = unread.filter((a) => !local.has(a.id));
     const read = await readCheckout({
       dir,
       sessionRoot: input.sessionRoot,
@@ -150,9 +159,11 @@ export async function collectCodeChanges(input: CollectInput, deps: CollectDeps)
       ...(input.startedAt !== undefined
         ? { commits: { since: Math.max(input.startedAt, input.commitsSince ?? 0), skip: counted } }
         : {}),
+      ...(asks.length ? { pulls: asks } : {}),
     });
     if (!read) continue;
-    const { sessionCommits: made, ...changes } = read;
+    const { sessionCommits: made, pulls: found, ...changes } = read;
+    for (const p of found ?? []) if (!local.has(p.id)) local.set(p.id, { ...p, fetchedAt: deps.now() });
     const c = keepLastRead(changes, lastRead.get(changes.id));
     trimPatches(c.uncommitted.files, uncommittedBudget);
     trimPatches(c.committed.files, committedBudget);
@@ -162,6 +173,18 @@ export async function collectCodeChanges(input: CollectInput, deps: CollectDeps)
     for (const commit of made ?? []) newCommits.push({ ...commit, repo: c.repo });
   }
   checkouts.sort((a, b) => (a.repo < b.repo ? -1 : a.repo > b.repo ? 1 : a.dir < b.dir ? -1 : 1));
+  // A PR found in a checkout takes the place of its stored record (one read there before, asked again), else joins.
+  for (const p of local.values()) {
+    if (trimPatches(p.files, prBudget)) p.patchesDropped = true;
+    const at = prs.findIndex((x) => x.id === p.id);
+    if (at >= 0) prs[at] = p;
+    else prs.push(p);
+  }
+  // A local read has no creation time: its merge stands in for the order (newest first).
+  prs.sort((a, b) => (b.createdAt ?? b.mergedAt ?? 0) - (a.createdAt ?? a.mergedAt ?? 0));
+  const unreadPrs = unread
+    .filter((a) => !prs.some((p) => p.id === a.id))
+    .map((a) => ({ url: a.url, repo: a.repo, number: a.number }));
   const doc: CodeChangesDoc = {
     version: 1,
     conversationId: input.conversationId,
@@ -173,6 +196,7 @@ export async function collectCodeChanges(input: CollectInput, deps: CollectDeps)
     counted: { commits: [...counted].slice(-MAX_COUNTED_COMMITS), merges: [...countedMerges] },
   };
   if (input.startedAt !== undefined) doc.sessionStartedAt = input.startedAt;
+  if (unreadPrs.length) doc.unreadPrs = unreadPrs;
   applyPatchBudget(doc);
   deps.store.write(doc);
   return {

@@ -802,3 +802,128 @@ describe('the fourth review round (#1299)', () => {
     expect(a.committed.files[0].patch).toBeUndefined();
   });
 });
+
+describe('a PR GitHub does not answer for (a private repository the host token cannot read)', () => {
+  const url = (n: number, repo = 'acme/web') => `https://github.com/${repo}/pull/${n}`;
+  const localPull = (n: number) => ({
+    id: `acme/web#${n}`,
+    url: url(n),
+    repo: 'acme/web',
+    number: n,
+    state: 'merged' as const,
+    additions: 3,
+    deletions: 1,
+    changedFiles: 1,
+    files: [
+      { path: `f${n}.ts`, status: 'modified' as const, additions: 3, deletions: 1, patch: '@@ -1 +1 @@\n-a\n+b' },
+    ],
+    mergedAt: START + n * 1000,
+    source: 'local' as const,
+  });
+  const clean = (dir: string): CheckoutChanges => ({
+    id: dir,
+    repo: 'acme/web',
+    dir,
+    uncommitted: { files: [], additions: 0, deletions: 0 },
+    committed: { files: [], additions: 0, deletions: 0, commits: [] },
+  });
+
+  it('is asked of the checkouts: found → a merged PR read there; not found anywhere → listed as unread', async () => {
+    const s = store();
+    const deps = prDeps({});
+    const readCheckout = vi.fn(async (input: { dir: string; pulls?: Array<{ number: number; repo: string }> }) => ({
+      ...clean(input.dir),
+      // The first checkout has #5 merged; the second has #6. #9 is in neither.
+      pulls: (input.pulls ?? [])
+        .filter((a) => (input.dir === '/s/a' ? a.number === 5 : a.number === 6))
+        .map((a) => localPull(a.number)),
+    }));
+    const input = {
+      conversationId: 'c-local',
+      owner: { id: 'U', name: 'u' },
+      dirs: ['/s'],
+      startedAt: START,
+      prUrls: [url(5), url(6), url(9)],
+    };
+    const ctx = {
+      ...deps,
+      store: s,
+      listCheckoutDirs: async () => ({ dirs: ['/s/a', '/s/b'] }),
+      checkoutChanges: readCheckout as never,
+    };
+    const { doc, newMerges } = await collectCodeChanges(input, ctx);
+    // What was found in the first checkout is not asked of the second.
+    expect(readCheckout.mock.calls.map((c) => [c[0].dir, (c[0].pulls ?? []).map((a) => a.number)])).toEqual([
+      ['/s/a', [5, 6, 9]],
+      ['/s/b', [6, 9]],
+    ]);
+    expect(readCheckout.mock.calls[0][0].pulls?.[0]).toEqual({
+      id: 'acme/web#5',
+      url: url(5),
+      repo: 'acme/web',
+      number: 5,
+    });
+    // Newest merge first; stamped when collected.
+    expect(doc.prs.map((p) => [p.number, p.source, p.fetchedAt])).toEqual([
+      [6, 'local', START + 7200_000],
+      [5, 'local', START + 7200_000],
+    ]);
+    expect(doc.unreadPrs).toEqual([{ url: url(9), repo: 'acme/web', number: 9 }]);
+    expect(newMerges.map((p) => p.id)).toEqual(['acme/web#6', 'acme/web#5']);
+    expect(summarizeCodeChanges(doc).layers.merged).toEqual({ files: 2, additions: 6, deletions: 2 });
+    // The next collect reuses the two (merged: they do not change) without asking GitHub or the checkouts for them.
+    deps.fetchPullDetail.mockClear();
+    readCheckout.mockClear();
+    const again = await collectCodeChanges(input, ctx);
+    expect(deps.fetchPullDetail.mock.calls.map((c) => c[2])).toEqual([9]);
+    expect(readCheckout.mock.calls.map((c) => (c[0].pulls ?? []).map((a) => a.number))).toEqual([[9], [9]]);
+    expect(again.doc.prs.map((p) => p.number)).toEqual([6, 5]);
+    expect(again.doc.unreadPrs).toEqual([{ url: url(9), repo: 'acme/web', number: 9 }]);
+  });
+
+  it('a local record whose patches the budget dropped is read there again and replaced; none unread → no list', async () => {
+    const s = store();
+    s.write({
+      version: 1,
+      conversationId: 'c-local2',
+      owner: { id: 'U', name: 'u' },
+      updatedAt: 1,
+      checkouts: [],
+      prs: [{ ...localPull(5), files: [], patchesDropped: true, fetchedAt: 1 }],
+      counted: { commits: [] },
+    });
+    const readCheckout = vi.fn(async (input: { dir: string; pulls?: Array<{ number: number }> }) => ({
+      ...clean(input.dir),
+      pulls: (input.pulls ?? []).map((a) => localPull(a.number)),
+    }));
+    const { doc } = await collectCodeChanges(
+      { conversationId: 'c-local2', owner: { id: 'U', name: 'u' }, dirs: ['/s'], startedAt: START, prUrls: [url(5)] },
+      {
+        ...prDeps({}),
+        store: s,
+        listCheckoutDirs: async () => ({ dirs: ['/s/a'] }),
+        checkoutChanges: readCheckout as never,
+      },
+    );
+    expect(doc.prs).toHaveLength(1);
+    expect(doc.prs[0].files.map((f) => f.path)).toEqual(['f5.ts']);
+    expect(doc.prs[0]).not.toHaveProperty('patchesDropped');
+    expect(doc).not.toHaveProperty('unreadPrs');
+  });
+
+  it('sessionPrChanges: unread lists only what neither GitHub nor a stored record gives', async () => {
+    const unread: Array<{ number: number }> = [];
+    const stored = { ...localPull(7), fetchedAt: 1, filesStale: undefined };
+    const apiOld = { ...localPull(8), source: undefined, closes: [], fetchedAt: 1, state: 'open' as const };
+    const out = await sessionPrChanges(
+      [url(5), url(7), url(8), url(10, 'x/y')],
+      START,
+      [stored, apiOld],
+      prDeps({}),
+      undefined,
+      unread as never,
+    );
+    expect(out.map((p) => p.number).sort()).toEqual([7, 8]);
+    expect(unread.map((a) => a.number)).toEqual([5, 10]);
+  });
+});

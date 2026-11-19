@@ -21,7 +21,8 @@ import {
   splitPatch,
 } from './git-diff-parse';
 import { checkoutSafety, type GitRun, type GitRunBytes, pinGit, runGit, runGitBytes } from './git-runner';
-import type { ChangedFile, CheckoutChanges, CommitRef, LayerFiles } from './types';
+import { MAX_PR_FILES, PR_START_SLACK_MS, type PullAsk } from './pr-changes';
+import type { ChangedFile, CheckoutChanges, CommitRef, LayerFiles, PrChanges } from './types';
 
 /** A git read whose answer the layer needs did not come (a timeout, a lock): the layer is marked, not emptied. */
 class GitReadFailed extends Error {}
@@ -79,13 +80,22 @@ export interface CheckoutInput {
   prHeads?: PrHead[];
   /** The commits made here since `since` (epoch ms), past the `skip` shas, are read too (`sessionCommits`). */
   commits?: { since: number; skip: ReadonlySet<string> };
+  /** PRs GitHub did not answer for: those of this checkout's repository are looked for on its default branch (`mergedPulls`). */
+  pulls?: PullAsk[];
   git?: GitRun;
   gitBytes?: GitRunBytes;
 }
 
-/** A checkout read: its changes (stored) and the commits the session made in it (handed to the metrics). */
+/** A PR read from a checkout's history (`mergedPulls`): the collector stamps when. */
+export type LocalPull = Omit<PrChanges, 'fetchedAt'>;
+
+/**
+ * A checkout read: its changes (stored), the commits the session made in it (handed to the metrics), and the asked PRs
+ * found merged on its default branch.
+ */
 export interface CheckoutRead extends CheckoutChanges {
   sessionCommits?: SessionCommit[];
+  pulls?: LocalPull[];
 }
 
 const trim = (s: string | undefined) => (s === undefined ? undefined : s.trim());
@@ -139,12 +149,53 @@ async function diffFiles(git: GitRun, dir: string, from: string, to: string): Pr
   const patch =
     entries.length > MAX_LAYER_FILES ? undefined : await git(dir, ['diff', ...DIFF_FLAGS, '-U3', from, to, '--']);
   const files = joinDiff(entries, splitPatch(patch ?? ''));
+  if (patch === undefined && entries.length <= MAX_LAYER_FILES) await patchEach(git, dir, from, to, files);
   for (const f of files) {
     const status = statuses.get(f.path);
     if (status) f.status = status;
     if (!f.patch && !f.binary && f.additions + f.deletions > 0) f.patchTruncated = true;
   }
   return files;
+}
+
+/** A file changing more lines than this gets no patch of its own when the range's whole patch was too big (below). */
+const MAX_EACH_LINES = 5000;
+/**
+ * The most bytes of patches read file by file for one range: a third of what one document keeps (collector.ts), so two
+ * such PRs in one session still leave room for the rest.
+ */
+const MAX_EACH_BYTES = 2 * 1024 * 1024;
+
+/** Data more often generated than written (JSON, tables, lock files, maps, minified code): its patches come last. */
+const DATA_FILE = /\.(?:json|jsonl|ndjson|tsv|csv|lock|svg|map|snap|min\.js|min\.css)$/i;
+
+/**
+ * The range's patch did not come in one answer — it outgrew git's output cap (a generated file of 200,000 lines does), or
+ * the call failed: each file's own patch is read instead, code before data (DATA_FILE) and the smallest changes first,
+ * until MAX_EACH_BYTES. A file left without one is marked `patchTruncated` by the caller. Pathspecs are literal: a file
+ * named like `:(glob)*` is that file.
+ */
+async function patchEach(git: GitRun, dir: string, from: string, to: string, files: ChangedFile[]): Promise<void> {
+  const size = (f: ChangedFile) => f.additions + f.deletions;
+  const data = (f: ChangedFile) => (DATA_FILE.test(f.path) ? 1 : 0);
+  const order = files
+    .filter((f) => !f.binary && !f.patch && size(f) > 0 && size(f) <= MAX_EACH_LINES)
+    .sort((a, b) => data(a) - data(b) || size(a) - size(b));
+  let bytes = 0;
+  for (const f of order) {
+    if (bytes >= MAX_EACH_BYTES) break;
+    const paths = f.oldPath ? [f.oldPath, f.path] : [f.path];
+    const out = await git(dir, ['--literal-pathspecs', 'diff', ...DIFF_FLAGS, '-U3', from, to, '--', ...paths]);
+    if (out === undefined) continue;
+    const [one] = joinDiff(
+      [{ path: f.path, oldPath: f.oldPath, additions: f.additions, deletions: f.deletions, binary: false }],
+      splitPatch(out),
+    );
+    if (!one?.patch) continue;
+    f.patch = one.patch;
+    if (one.patchTruncated) f.patchTruncated = true;
+    bytes += Buffer.byteLength(one.patch, 'utf8');
+  }
 }
 
 // ── The uncommitted layer, compared in this process ────────────────────────────────────────────────────────────────
@@ -687,6 +738,8 @@ export async function checkoutChanges(input: CheckoutInput): Promise<CheckoutRea
   const prHeads = (input.prHeads ?? []).filter((p) => !p.repo || p.repo === repo || p.headRepo === repo);
   const committed = await committedLayer(git, top, head, prHeads, emptyTreeOf(format), input.sessionStartedAt);
   const made = input.commits ? await sessionCommits(top, input.commits.since, input.commits.skip, git) : undefined;
+  const asks = (input.pulls ?? []).filter((p) => p.repo === repo);
+  const pulls = asks.length ? await mergedPulls(git, top, asks, input.sessionStartedAt) : undefined;
   // Everything above came from the git dirs as checked — or they changed meanwhile, and none of it is kept.
   if (!(await safety.witness.intact())) return unread(CHANGED_DURING_READ);
   const out: CheckoutRead = {
@@ -699,6 +752,91 @@ export async function checkoutChanges(input: CheckoutInput): Promise<CheckoutRea
   if (branch) out.branch = branch;
   if (head) out.head = head;
   if (made) out.sessionCommits = made;
+  if (pulls?.length) out.pulls = pulls;
+  return out;
+}
+
+// ── PRs GitHub did not answer for, from the checkout's history ─────────────────────────────────────────────────────
+// A private repository the host's token cannot read still has the session's clone, and GitHub's merge leaves a commit on
+// the default branch that names the PR: `Merge pull request #N from owner/branch` (a merge commit: the PR's head is its
+// second parent) or `title (#N)` (a squash: the commit is the PR). The files are what GitHub's PR shows: the head against
+// where it left the base. A rebase merge names no PR and is not found; an open PR has no such commit.
+
+const MERGE_SUBJECT = /^Merge pull request #(\d+) from \S+?\/(\S+)/;
+const SQUASH_SUBJECT = /\(#(\d+)\)\s*$/;
+/** First-parent commits of the default branch looked through for the asked PRs. */
+const MAX_HISTORY = 1000;
+
+/**
+ * The asked PRs merged on the checkout's default branch (its remote-tracking ref), newest commit naming each. A PR merged
+ * before the session started (less the slack) is not this session's and is left out.
+ */
+export async function mergedPulls(git: GitRun, dir: string, asks: PullAsk[], startedAt?: number): Promise<LocalPull[]> {
+  let tip: string | undefined;
+  for (const ref of ['refs/remotes/origin/HEAD', 'refs/remotes/origin/main', 'refs/remotes/origin/master']) {
+    tip = trim(await git(dir, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`])) || undefined;
+    if (tip) break;
+  }
+  if (!tip) return [];
+  const log = await git(dir, [
+    'log',
+    '--first-parent',
+    '--no-show-signature',
+    `--max-count=${MAX_HISTORY}`,
+    '--format=%H%x1f%P%x1f%ct%x1f%s',
+    tip,
+    '--',
+  ]);
+  if (log === undefined) return [];
+  const want = new Map(asks.map((a) => [a.number, a]));
+  const out: LocalPull[] = [];
+  for (const line of log.split('\n')) {
+    if (want.size === 0) break;
+    const [sha, parentList, ct, subject = ''] = line.split('\x1f');
+    if (!sha || !SHA.test(sha)) continue;
+    const parents = (parentList ?? '').split(' ').filter((p) => SHA.test(p));
+    const merge = MERGE_SUBJECT.exec(subject);
+    const squash = merge ? null : SQUASH_SUBJECT.exec(subject);
+    const number = Number(merge?.[1] ?? squash?.[1]);
+    const ask = want.get(number);
+    if (!ask) continue;
+    if (merge ? parents.length < 2 : parents.length !== 1) continue;
+    want.delete(number);
+    const mergedAt = Number(ct) * 1000 || undefined;
+    if (startedAt !== undefined && mergedAt !== undefined && mergedAt < startedAt - PR_START_SLACK_MS) continue;
+    const head = merge ? parents[1] : sha;
+    const base = merge ? trim(await git(dir, ['merge-base', parents[0], parents[1]])) : parents[0];
+    if (!base || !SHA.test(base)) continue;
+    const files = await diffFiles(git, dir, base, head);
+    if (!files) continue;
+    // A merge commit's message is `Merge pull request …` then the PR's title; a squash's subject is the title.
+    const title = merge
+      ? trim(
+          (await git(dir, ['log', '-1', '--no-show-signature', '--format=%b', sha, '--']))
+            ?.split('\n')
+            .find((l) => l.trim()),
+        )
+      : subject.replace(SQUASH_SUBJECT, '').trim();
+    const kept = files.slice(0, MAX_PR_FILES);
+    const pr: LocalPull = {
+      id: ask.id,
+      url: ask.url,
+      repo: ask.repo,
+      number,
+      state: 'merged',
+      ...totals(files),
+      changedFiles: files.length,
+      files: kept,
+      headSha: head,
+      baseSha: base,
+      source: 'local',
+    };
+    if (title) pr.title = title.slice(0, 200);
+    if (merge?.[2]) pr.headRef = merge[2];
+    if (mergedAt !== undefined) pr.mergedAt = mergedAt;
+    if (kept.length < files.length) pr.filesTruncated = true;
+    out.push(pr);
+  }
   return out;
 }
 

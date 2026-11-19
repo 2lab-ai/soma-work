@@ -40,6 +40,10 @@ var CHG_INTERNAL = '내부';
 var CHG_FOLD = '접기';
 var CHG_UNFOLD = '펼치기';
 var CHG_NO_FILES = '이 범위에 바뀐 파일이 없습니다';
+// A PR neither GitHub (a private repository the host's token cannot read) nor a session checkout could give.
+var CHG_UNREAD = '읽지 못함';
+var CHG_UNREAD_WHY = 'GitHub에서 읽을 수 없는 레포이고(호스트 토큰에 접근 권한 없음), 세션 폴더의 클론에서도 이 PR의 머지 기록을 찾지 못해 파일을 보여 줄 수 없어요';
+var CHG_LOCAL_WHY = 'GitHub에서 읽을 수 없는 레포라 세션 폴더 클론의 머지 커밋에서 읽은 변경입니다';
 var CHG_BINARY = '바이너리 파일 — 줄 단위 변경을 보여 주지 않습니다';
 var CHG_TOO_BIG = '변경이 너무 커서 여기에 다 보여 주지 않습니다';
 var CHG_OPEN_GITHUB = 'GitHub에서 보기';
@@ -385,13 +389,16 @@ function chgIssueTreeHtml(doc) {
       if (p) {
         var on = _chg.scope === 'pr:' + p.id;
         out.push('<div class="chg-inode chg-pr' + (on ? ' on' : '') + '"' + pad + ' data-chg-node="' + chgEsc(n.id) + '">' + caret +
-          '<button type="button" class="chg-pr-main" data-chg-scope="pr:' + chgEsc(p.id) + '" aria-pressed="' + (on ? 'true' : 'false') + '">' +
+          '<button type="button" class="chg-pr-main" data-chg-scope="pr:' + chgEsc(p.id) + '" aria-pressed="' + (on ? 'true' : 'false') + '"' +
+          (p.source === 'local' ? ' title="' + chgEsc(CHG_LOCAL_WHY) + '"' : '') + '>' +
           '<span class="chg-pr-num">#' + num + '</span> <span class="chg-pr-title">' + chgEsc(title) + '</span>' + chgStateChip(state, CHG_PR_STATE) +
           ' <span>' + chgDelta(p.additions, p.deletions) + '</span> <span class="chg-muted">' + chgEsc(CHG_FILES) + ' ' + chgNum(p.changedFiles) + '</span></button>' +
           chgLinkOut(p.url) + '</div>');
       } else {
+        var unread = chgUnreadOf(doc, n.url);
         out.push('<div class="chg-inode chg-pr chg-pr-bare"' + pad + ' data-chg-node="' + chgEsc(n.id) + '">' + caret +
-          '<span class="chg-pr-main">' + (num ? '<span class="chg-pr-num">#' + num + '</span> ' : '') + '<span class="chg-pr-title">' + chgEsc(title) + '</span>' + chgStateChip(state, CHG_PR_STATE) + '</span>' +
+          '<span class="chg-pr-main">' + (num ? '<span class="chg-pr-num">#' + num + '</span> ' : '') + '<span class="chg-pr-title">' + chgEsc(title) + '</span>' + chgStateChip(state, CHG_PR_STATE) +
+          (unread ? ' <span class="chg-unread" title="' + chgEsc(CHG_UNREAD_WHY) + '">' + chgEsc(CHG_UNREAD) + '</span>' : '') + '</span>' +
           chgLinkOut(n.url) + '</div>');
       }
     } else {
@@ -438,6 +445,23 @@ function chgTreeHtml(tree, current) {
   tree.forEach(function(r) { walk(r, 0); });
   return out.join('');
 }
+// The document's record of a PR it could not read at all (doc.unreadPrs), by the PR's URL.
+function chgUnreadOf(doc, url) {
+  var key = chgCanonUrl(url);
+  return ((doc && doc.unreadPrs) || []).filter(function(u) { return chgCanonUrl(u.url) === key; })[0] || null;
+}
+// The PRs the server could not read, per repository: which, and why their files are missing.
+function chgUnreadNote(doc) {
+  var byRepo = {};
+  var order = [];
+  ((doc && doc.unreadPrs) || []).forEach(function(u) {
+    if (!byRepo[u.repo]) { byRepo[u.repo] = []; order.push(u.repo); }
+    byRepo[u.repo].push('#' + chgNum(u.number));
+  });
+  return order.map(function(repo) {
+    return '<div class="chg-note chg-note-unread">' + chgEsc(repo) + ' ' + chgEsc(byRepo[repo].join(' ')) + ' — ' + chgEsc(CHG_UNREAD_WHY) + '</div>';
+  }).join('');
+}
 // A checkout the server did not read (its config runs commands, it borrows another store), or a layer it could not
 // read this time (the last read stands): say which, and why.
 function chgSkippedNote(doc) {
@@ -467,7 +491,7 @@ function chgPaint() {
     html = '<div class="chg-summary"><span>' + chgEsc(CHG_REPOS) + ' <b>' + s.repos + '</b></span><span>' + chgEsc(CHG_FILES) + ' <b>' + s.files + '</b></span><span>' + chgDelta(s.additions, s.deletions) + '</span>' +
       (s.at ? '<span class="chg-muted">' + chgEsc(CHG_AS_OF) + ' ' + chgEsc(s.at) + '</span>' : '') +
       '<button type="button" class="chg-refresh" data-chg-refresh="1">' + chgEsc(CHG_REFRESH) + '</button></div>' +
-      chgScopeChips(doc) + chgIssueTreeHtml(doc) + chgSkippedNote(doc) +
+      chgScopeChips(doc) + chgIssueTreeHtml(doc) + chgUnreadNote(doc) + chgSkippedNote(doc) +
       (files.length ? '<div class="chg-tree" role="tree">' + chgTreeHtml(chgTree(files), chgPanelKey()) + '</div>' : '<div class="chg-empty">' + chgEsc(CHG_NO_FILES) + '</div>');
   }
   _chg.treeSig = JSON.stringify(chgIssueTreeView());
@@ -865,6 +889,7 @@ span.chg-icaret { cursor: default; }
 .chg-badge-merged { color: var(--purple); border-color: var(--purple); }
 .chg-empty { color: var(--text-tertiary); padding: 16px 4px; }
 .chg-note { color: var(--text-secondary); font-size: 12px; padding: 6px 4px; }
+.chg-unread { font-size: 11px; padding: 0 5px; border-radius: 4px; border: 1px dashed var(--border); color: var(--text-secondary); white-space: nowrap; }
 dialog.chg-viewer { position: fixed; inset: 0; width: 100vw; height: 100vh; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; background: var(--bg); color: var(--text); display: none; flex-direction: column; }
 dialog.chg-viewer[open] { display: flex; }
 dialog.chg-viewer::backdrop { background: rgba(0, 0, 0, .4); }
