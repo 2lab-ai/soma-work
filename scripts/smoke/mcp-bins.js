@@ -12,6 +12,7 @@ const bins = [
   ['server-tools', '@soma/mcp-server-server-tools/bin', 'server-tools-mcp-server.js'],
   ['slack-mcp', '@soma/mcp-server-slack-mcp/bin', 'slack-mcp-server.js'],
   ['user-action', '@soma/mcp-server-user-action/bin', 'user-action-mcp-server.js'],
+  ['work-queue', '@soma/mcp-server-work-queue/bin', 'work-queue-mcp-server.js'],
 ];
 
 let failures = 0;
