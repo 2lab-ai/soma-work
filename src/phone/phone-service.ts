@@ -26,10 +26,8 @@ import type { PhoneCallRecord, PhoneCallStore } from './call-store';
 import type { AgentLike, CallSessionLike, IncomingCallLike, KoreaAiTelSdk } from './koreaaitel';
 import { buildCallSystemPrompt, formatPhoneNumber, greetedNote } from './phone-prompt';
 import { createVoiceClient, type VoiceClient } from './voice-client';
-import { CallRun, PhoneVoiceSession } from './voice-session';
+import { CallRun, OPENER, PhoneVoiceSession } from './voice-session';
 
-/** Synthesized when a line opens; see CallRunPlan.phrases. */
-const PHRASES = ['네.'];
 const REQUEST_POLL_MS = 1000;
 /** How often the configuration is read again (a line added, changed, removed, or its secret put in place). */
 export const CONFIG_SYNC_MS = 30_000;
@@ -565,12 +563,10 @@ export class PhoneService {
 
   /** The reply opener, made once per line: a reply that starts with "네," is heard ~0.8 s sooner. Best effort. */
   private async preparePhrases(line: PhoneLine): Promise<void> {
-    for (const text of PHRASES) {
-      try {
-        line.phrases.set(text, await this.synthFrames(line, text));
-      } catch (err) {
-        this.deps.log('warn', 'phone: phrase not synthesized', { env: line.env, text, error: (err as Error).message });
-      }
+    try {
+      line.phrases.set(OPENER, await this.synthFrames(line, OPENER));
+    } catch (err) {
+      this.deps.log('warn', 'phone: opener not synthesized', { env: line.env, error: (err as Error).message });
     }
   }
 

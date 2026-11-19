@@ -110,25 +110,30 @@ export function createVoiceClient(cfg: VoiceConfig, fetchImpl: FetchLike = fetch
         const form = new FormData();
         form.append('file', new Blob([new Uint8Array(wav)], { type: 'audio/wav' }), 'utterance.wav');
         form.append('language', cfg.language);
-        let res: Response | undefined;
-        // A request that hangs (seen: a connection that took 10 s to fail) loses the caller's words: each attempt is
-        // bounded, and one more is made.
-        for (let attempt = 1; !res; attempt++) {
-          const bound = AbortSignal.timeout(STT_ATTEMPT_MS);
+        let body: { text?: unknown; ms?: unknown } | undefined;
+        // A request that hangs (seen: a connection that took 10 s to fail) loses the caller's words: each attempt —
+        // the request and its answer's body — is bounded, and one more is made. An HTTP error is not retried.
+        for (let attempt = 1; !body; attempt++) {
+          const bound = new AbortController();
+          const timer = setTimeout(() => bound.abort(new Error('no answer in time')), STT_ATTEMPT_MS);
+          let res: Response;
           try {
             res = await fetchImpl(`${base}/api/stt`, {
               method: 'POST',
               body: form,
               headers: auth,
-              signal: signal ? AbortSignal.any([signal, bound]) : bound,
+              signal: signal ? AbortSignal.any([signal, bound.signal]) : bound.signal,
             });
+            if (res.ok) body = (await res.json()) as { text?: unknown; ms?: unknown };
           } catch (err) {
             if (signal?.aborted || attempt >= STT_ATTEMPTS)
               throw new VoiceServiceError('stt', `speech-to-text unreachable: ${(err as Error).message}`);
+            continue;
+          } finally {
+            clearTimeout(timer);
           }
+          if (!res.ok) throw new VoiceServiceError('stt', `speech-to-text answered ${res.status}`);
         }
-        if (!res.ok) throw new VoiceServiceError('stt', `speech-to-text answered ${res.status}`);
-        const body = (await res.json()) as { text?: unknown; ms?: unknown };
         const text = typeof body.text === 'string' ? body.text.trim() : '';
         const ms = typeof body.ms === 'number' ? body.ms : Date.now() - started;
         return { text, ms };

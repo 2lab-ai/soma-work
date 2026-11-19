@@ -67,7 +67,7 @@ export interface CallRunPlan {
 }
 
 /** The opener a reply often starts with: said from {@link CallRunPlan.phrases} while the rest is being made. */
-const OPENER = '네.';
+export const OPENER = '네.';
 const OPENER_RE = /^네[,.]\s*/;
 
 interface Buffered {
@@ -124,6 +124,7 @@ export class CallRun {
   private openerBuf = '';
 
   private hangupRequested = false;
+  private hangupTimer: unknown = null;
   private ended = false;
   private readonly timers = new Set<unknown>();
   private silenceTimer: unknown = null;
@@ -228,6 +229,18 @@ export class CallRun {
 
   private floorTaken(): boolean {
     return this.vad.speaking || this.transcribing > 0;
+  }
+
+  /**
+   * From here the goodbye is said whatever the line does. Audio held for the caller goes out first, now, so nothing
+   * said later overtakes it and the hang-up waits for it (it is in playEndAt).
+   */
+  private enterHangup(): void {
+    this.hangupRequested = true;
+    const held = this.floorHeld;
+    this.floorHeld = [];
+    this.heldLines = [];
+    for (const f of held) this.sendFrame(f);
   }
 
   /** The other side is done and said nothing that needs an answer: the held audio is played. */
@@ -516,7 +529,7 @@ export class CallRun {
               this.work({ kind: 'event', at: this.now(), text: '끊기 취소 — 상대가 말을 이어감' });
               break;
             }
-            this.hangupRequested = true;
+            this.enterHangup();
             if (!this.dropTurn && !this.dropAfterHangup) {
               for (const s of this.splitter.push(this.drainOpener())) this.enqueue(s);
               for (const s of this.splitter.flush()) this.enqueue(s);
@@ -586,11 +599,16 @@ export class CallRun {
     return head.slice(m[0].length);
   }
 
-  /** What takeOpener still holds (a reply shorter than two letters), for the end of the turn. */
+  /** What takeOpener still holds (a reply shorter than two letters), for the end of the turn; a bare "네" is the opener. */
   private drainOpener(): string {
     const rest = this.openerBuf;
+    const open = this.openerOpen;
     this.openerOpen = false;
     this.openerBuf = '';
+    if (open && /^네[,.!]?$/.test(rest.trim())) {
+      this.enqueue(OPENER); // the whole reply was "네": the ready-made one
+      return '';
+    }
     return rest;
   }
 
@@ -613,7 +631,7 @@ export class CallRun {
             });
             return HANG_UP_TOOL.cancelled;
           }
-          this.hangupRequested = true;
+          this.enterHangup();
           this.work({ kind: 'tool', at: this.now(), name: 'hang_up', input: args, result: '말을 마치면 끊음' });
           return HANG_UP_TOOL.result;
         },
@@ -643,7 +661,13 @@ export class CallRun {
     if (this.ended || !this.hangupRequested) return;
     if (this.speaking || this.queue.length) return; // speakQueue calls back when done
     const wait = Math.max(0, this.playEndAt - this.now()) + HANGUP_TAIL_MS;
-    this.later(() => {
+    // One hang-up: a later call (the tool event, then the turn's end) moves it to the newest end of playback.
+    if (this.hangupTimer !== null) {
+      this.clearTimer(this.hangupTimer);
+      this.timers.delete(this.hangupTimer);
+    }
+    this.hangupTimer = this.later(() => {
+      this.hangupTimer = null;
       if (this.ended) return;
       if (this.speaking || this.queue.length) return;
       void this.call?.hangup().catch((err) => this.fail('hangup', err));

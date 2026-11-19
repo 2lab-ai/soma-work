@@ -698,8 +698,12 @@ describe('PhoneVoiceSession', () => {
 });
 
 describe('CallRun — never over the caller, and a quick "네."', () => {
-  async function inboundTalking(stt: string[], plan: Partial<CallRunPlan> = {}) {
-    const s = setup({ direction: 'inbound', ...plan }, stt);
+  async function inboundTalking(
+    stt: string[],
+    plan: Partial<CallRunPlan> = {},
+    opts: Parameters<typeof setup>[2] = {},
+  ) {
+    const s = setup({ direction: 'inbound', ...plan }, stt, opts);
     s.run.begin();
     const call = fakeCall();
     s.run.attach(call as unknown as CallSessionLike);
@@ -758,10 +762,12 @@ describe('CallRun — never over the caller, and a quick "네."', () => {
     await settleAll();
     expect(s.spoken).not.toContain('네.');
     expect(s.spoken[s.spoken.length - 1]).toBe('세 시예요.');
-    expect(s.record.transcript.filter((l) => l.role === 'agent').map((l) => l.text).slice(-2)).toEqual([
-      '네.',
-      '세 시예요.',
-    ]);
+    expect(
+      s.record.transcript
+        .filter((l) => l.role === 'agent')
+        .map((l) => l.text)
+        .slice(-2),
+    ).toEqual(['네.', '세 시예요.']);
   });
 
   it('"네 시" is not the opener', async () => {
@@ -771,5 +777,79 @@ describe('CallRun — never over the caller, and a quick "네."', () => {
     await settleAll();
     expect(s.spoken[s.spoken.length - 1]).toBe('네 시에 만나요.');
     expect(s.call.frames).toBe(s.before + 40); // synthesized, not the ready-made 7 frames
+  });
+  /** STT for the caller's second utterance waits until the test settles it. */
+  function gatedSecondStt() {
+    let n = 0;
+    let settle!: (ok: boolean) => void;
+    return {
+      opts: {
+        sttGate: () => {
+          if (++n < 2) return Promise.resolve();
+          return new Promise<void>((resolve, reject) => {
+            settle = (ok) => (ok ? resolve() : reject(new Error('stt down')));
+          });
+        },
+      },
+      settle: (ok: boolean) => settle(ok),
+    };
+  }
+
+  it("a reply finished while the caller's words are still being transcribed is held, and dropped when they were words", async () => {
+    const g = gatedSecondStt();
+    const s = await inboundTalking(['화요일 오후 세 시로', '옮기고 싶어요'], {}, g.opts);
+    s.run.feedAudio(tone(500, 0.3));
+    s.run.feedAudio(quiet(600)); // the VAD is quiet again, the words are still being transcribed …
+    await settleAll();
+    s.dialog().reply('세 시예요.'); // … when the answer to the first half is ready
+    await settleAll();
+    expect(s.call.frames).toBe(s.before);
+    g.settle(true);
+    await settleAll();
+    expect(s.call.frames).toBe(s.before); // they were words: never heard
+    expect(s.record.transcript.find((l) => l.text === '세 시예요.')?.interrupted).toBe(true);
+    expect(s.dialog().sent[s.dialog().sent.length - 1]).toBe('옮기고 싶어요');
+  });
+
+  it('a transcription that fails releases the held reply', async () => {
+    const g = gatedSecondStt();
+    const s = await inboundTalking(['내일 회의 몇 시예요?'], {}, g.opts);
+    s.run.feedAudio(tone(500, 0.3));
+    s.run.feedAudio(quiet(600));
+    await settleAll();
+    s.dialog().reply('세 시예요.');
+    await settleAll();
+    expect(s.call.frames).toBe(s.before);
+    g.settle(false);
+    await settleAll();
+    expect(s.call.frames).toBe(s.before + 40);
+  });
+
+  it('a goodbye held while the caller talks goes out before the hang-up, and the call ends after it', async () => {
+    const s = await inboundTalking(['네 감사합니다']);
+    s.run.feedAudio(tone(100, 0.3)); // the caller makes a sound …
+    s.dialog().emit({ type: 'text_delta', text: '감사합니다. ' }); // … while the goodbye is made
+    await settleAll();
+    expect(s.call.frames).toBe(s.before);
+    await s.dialog().tool('hang_up').handler({ reason: 'done' });
+    s.dialog().emit({ type: 'tool_use', name: 'hang_up', input: {} });
+    s.dialog().emit({ type: 'turn_end', isError: false });
+    await settleAll();
+    expect(s.call.frames).toBe(s.before + 40); // the held goodbye is said, not dropped
+    expect(s.call.hungUp).toBe(0);
+    s.clock.advance(3000);
+    await settleAll();
+    expect(s.call.hungUp).toBe(1);
+  });
+
+  it('a reply that is only "네" is the ready-made "네.", said once', async () => {
+    const ne = Array.from({ length: 7 }, () => Buffer.alloc(160, 1));
+    const s = await inboundTalking(['회의 세 시 맞죠?'], { phrases: new Map([['네.', ne]]) });
+    s.dialog().emit({ type: 'text_delta', text: '네' });
+    s.dialog().emit({ type: 'turn_end', isError: false });
+    await settleAll();
+    expect(s.call.frames).toBe(s.before + 7);
+    expect(s.spoken).not.toContain('네');
+    expect(s.record.transcript.filter((l) => l.role === 'agent' && l.text.startsWith('네'))).toHaveLength(1);
   });
 });
