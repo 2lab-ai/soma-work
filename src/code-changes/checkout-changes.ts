@@ -837,13 +837,15 @@ const MAX_HISTORY = 1000;
  * deleted branch leaves behind (#1371 review round 2): the commits in HEAD's reflog, and the local branch tips. Not the
  * remote-tracking refs' reflogs — a fetch puts upstream's heads there.
  *   merge: its head is one of them, or a local branch holds the head and not the merge;
- *   squash: one of them other than the squash itself carries the squash's tree, or a subject its message names (GitHub
- *   writes the PR title, then `* <subject>` per commit) and the same changes (`sameChanges`) — the default branch may
- *   have moved on since the branch left it.
+ *   squash: one of them other than the squash itself carries the squash's tree, or one off the default branch brings
+ *   the squash's very changes (`patchKey`: the diff from where it left the base) — the default branch may have moved
+ *   on since, and the message need not name it.
  */
 interface Provenance {
   commits: Array<{ sha: string; tree: string; subject: string }>;
   shas: Set<string>;
+  /** Of `shas`, the ones the default branch does not hold (read once, for a squash). */
+  aside?: Set<string>;
 }
 
 async function provenance(git: GitRun, dir: string): Promise<Provenance> {
@@ -871,14 +873,17 @@ async function provenance(git: GitRun, dir: string): Promise<Provenance> {
   return { commits, shas: new Set(commits.map((c) => c.sha)) };
 }
 
+/** Branch commits a squash is compared with, at most (the newest the clone was at, off the default branch). */
+const MAX_SQUASH_CANDIDATES = 30;
+
 async function ownWork(
   git: GitRun,
   dir: string,
   own: Provenance,
   commit: string,
   head: string | undefined,
-  subject: string,
-  parent?: string,
+  tip: string,
+  parent: string,
 ): Promise<boolean> {
   if (head) {
     if (own.shas.has(head)) return true;
@@ -893,39 +898,38 @@ async function ownWork(
     return !!on?.trim();
   }
   const tree = trim(await git(dir, ['rev-parse', '--verify', '--quiet', `${commit}^{tree}`]));
-  const body = (await git(dir, ['log', '-1', '--no-show-signature', '--format=%b', commit, '--'])) ?? '';
-  const bullet = /^\s*\*\s+/;
-  const named = new Set(
-    [subject.replace(SQUASH_SUBJECT, ''), ...body.split('\n').map((l) => (bullet.test(l) ? l.replace(bullet, '') : ''))]
+  if (tree && own.commits.some((c) => c.sha !== commit && c.tree === tree)) return true;
+  // The commits the clone was at that the default branch does not hold — a squashed branch's own commits never reach it.
+  // A squash need not name them (a title-only message), and a subject or file counts can be shared by unrelated work
+  // (#1371 review rounds 3–4): one of them must bring the squash's very changes.
+  own.aside ??= new Set(
+    ((await git(dir, ['rev-list', `--max-count=${MAX_HISTORY}`, ...own.shas, '--not', tip, '--'])) ?? '')
+      .split('\n')
       .map((l) => l.trim())
-      .filter(Boolean),
+      .filter((l) => own.shas.has(l)),
   );
-  for (const c of own.commits) {
-    if (c.sha === commit) continue;
-    if (tree && c.tree === tree) return true;
-    // A subject alone is not the PR — an upstream squash can share one (#1371 review round 3): the changes must match too.
-    if (named.has(c.subject) && parent && (await sameChanges(git, dir, c.sha, commit, parent))) return true;
+  const theirs = patchKey(await git(dir, ['diff', ...DIFF_FLAGS, '-U0', parent, commit, '--']));
+  if (!theirs) return false;
+  for (const sha of [...own.aside].slice(0, MAX_SQUASH_CANDIDATES)) {
+    const base = trim(await git(dir, ['merge-base', sha, parent]));
+    if (!base || !SHA.test(base)) continue;
+    if (patchKey(await git(dir, ['diff', ...DIFF_FLAGS, '-U0', base, sha, '--'])) === theirs) return true;
   }
   return false;
 }
 
 /**
- * The branch commit `x` brings the same changes as the squash `commit` on `parent`: the same files with the same line
- * counts — the branch against where it left the base, the squash against its parent (the base may have moved on).
+ * A diff's changes without where they sit: no blob ids, no hunk line numbers, no context (`-U0`) — the same change on a
+ * base that has moved on gives the same key. Empty for no diff or a failed one.
  */
-async function sameChanges(git: GitRun, dir: string, x: string, commit: string, parent: string): Promise<boolean> {
-  const base = trim(await git(dir, ['merge-base', x, parent]));
-  if (!base || !SHA.test(base)) return false;
-  const ours = await git(dir, ['diff', ...DIFF_FLAGS, '--numstat', '-z', base, x, '--']);
-  const theirs = await git(dir, ['diff', ...DIFF_FLAGS, '--numstat', '-z', parent, commit, '--']);
-  if (ours === undefined || theirs === undefined) return false;
-  const key = (out: string) =>
-    parseNumstatZ(out)
-      .map((e) => `${e.oldPath ?? ''}\t${e.path}\t${e.additions}\t${e.deletions}`)
-      .sort()
-      .join('\n');
-  const a = key(ours);
-  return a !== '' && a === key(theirs);
+function patchKey(out: string | undefined): string {
+  if (!out) return '';
+  return out
+    .split('\n')
+    .filter((l) => !l.startsWith('index '))
+    .map((l) => (l.startsWith('@@') ? '@@' : l))
+    .join('\n')
+    .trim();
 }
 
 /**
@@ -976,7 +980,7 @@ export async function mergedPulls(
     }
     // Not this clone's work: an older commit naming the same number may be.
     own ??= await provenance(git, dir);
-    if (!(await ownWork(git, dir, own, sha, merge ? parents[1] : undefined, subject, parents[0]))) continue;
+    if (!(await ownWork(git, dir, own, sha, merge ? parents[1] : undefined, tip, parents[0]))) continue;
     want.delete(number);
     const head = merge ? parents[1] : sha;
     const base = merge ? trim(await git(dir, ['merge-base', parents[0], parents[1]])) : parents[0];

@@ -821,6 +821,13 @@ describe('a PR GitHub does not answer for (a private repository the host token c
     mergedAt: START + n * 1000,
     source: 'local' as const,
   });
+  const f = (path: string, patch?: string): ChangedFile => ({
+    path,
+    status: 'modified',
+    additions: 1,
+    deletions: 0,
+    ...(patch ? { patch } : { patchTruncated: true as const }),
+  });
   const clean = (dir: string): CheckoutChanges => ({
     id: dir,
     repo: 'acme/web',
@@ -989,13 +996,6 @@ describe('a PR GitHub does not answer for (a private repository the host token c
   });
 
   it('keepKnownPatches: a partial local read keeps the last read’s patches for the files it missed (same head and base)', () => {
-    const f = (path: string, patch?: string): ChangedFile => ({
-      path,
-      status: 'modified',
-      additions: 1,
-      deletions: 0,
-      ...(patch ? { patch } : { patchTruncated: true as const }),
-    });
     const last = { ...localPull(5), headSha: 'h', baseSha: 'b', files: [f('a', '+a'), f('b')], fetchedAt: 1 };
     const next = {
       ...localPull(5),
@@ -1027,13 +1027,6 @@ describe('a PR GitHub does not answer for (a private repository the host token c
 
   it('a partial local read again, through the collector: the stored patch of the file it missed stays, and the PR settles', async () => {
     const s = store();
-    const f = (path: string, patch?: string): ChangedFile => ({
-      path,
-      status: 'modified',
-      additions: 1,
-      deletions: 0,
-      ...(patch ? { patch } : { patchTruncated: true as const }),
-    });
     s.write({
       version: 1,
       conversationId: 'c-local5',
@@ -1079,6 +1072,50 @@ describe('a PR GitHub does not answer for (a private repository the host token c
     expect(doc.prs[0]).not.toHaveProperty('filesStale');
     expect(doc.prs[0]).not.toHaveProperty('failedPatches');
     expect(s.read('c-local5')?.prs[0].files.map((x) => x.patch)).toEqual(['+a', '+b']);
+  });
+
+  it('a PR one clone read only in part is asked of the next clone, which completes it', async () => {
+    const s = store();
+    const readCheckout = vi.fn(async (input: { dir: string; pulls?: Array<{ number: number }> }) => ({
+      ...clean(input.dir),
+      pulls: (input.pulls ?? []).map((a) =>
+        input.dir === '/s/a'
+          ? {
+              ...localPull(a.number),
+              headSha: 'h',
+              baseSha: 'b',
+              files: [f('a.ts', '+a'), f('b.ts')],
+              filesStale: true as const,
+              failedPatches: ['b.ts'],
+            }
+          : {
+              ...localPull(a.number),
+              headSha: 'h',
+              baseSha: 'b',
+              files: [f('a.ts'), f('b.ts', '+b')],
+              filesStale: true as const,
+              failedPatches: ['a.ts'],
+            },
+      ),
+    }));
+    const { doc } = await collectCodeChanges(
+      { conversationId: 'c-local6', owner: { id: 'U', name: 'u' }, dirs: ['/s'], startedAt: START, prUrls: [url(5)] },
+      {
+        ...prDeps({}),
+        store: s,
+        listCheckoutDirs: async () => ({ dirs: ['/s/a', '/s/b'] }),
+        checkoutChanges: readCheckout as never,
+      },
+    );
+    expect(readCheckout.mock.calls.map((c) => [c[0].dir, (c[0].pulls ?? []).map((a) => a.number)])).toEqual([
+      ['/s/a', [5]],
+      ['/s/b', [5]],
+    ]);
+    expect(doc.prs[0].files.map((x) => [x.path, x.patch])).toEqual([
+      ['a.ts', '+a'],
+      ['b.ts', '+b'],
+    ]);
+    expect(doc.prs[0]).not.toHaveProperty('filesStale');
   });
 
   it('sessionPrChanges: unread lists only what neither GitHub nor a stored record gives', async () => {

@@ -117,6 +117,9 @@ export function applyPatchBudget(doc: CodeChangesDoc, max = MAX_DOC_PATCH_BYTES)
   for (const p of doc.prs) if (trimPatches(p.files, budget)) p.patchesDropped = true;
 }
 
+const patchBytes = (files: ChangedFile[]) =>
+  files.reduce((n, f) => n + (f.patch ? Buffer.byteLength(f.patch, 'utf8') : 0), 0);
+
 /**
  * A local PR read again (its last read was partial) keeps the patches the last read had and this one did not get — the
  * same head against the same base, so the same patch (#1371 review). The document's budget pass runs after.
@@ -167,7 +170,8 @@ export async function collectCodeChanges(input: CollectInput, deps: CollectDeps)
   const newCommits: CollectResult['newCommits'] = [];
   const local = new Map<string, PrChanges & { failedPatches?: string[] }>();
   for (const dir of dirs.slice(0, MAX_CHECKOUTS)) {
-    const asks = unread.filter((a) => !local.has(a.id));
+    // A PR a checkout read only in part (a file's patch read failed) is asked of the next one too.
+    const asks = unread.filter((a) => !local.has(a.id) || local.get(a.id)?.filesStale);
     // What a read charges to the PR budget stands only if its PRs are kept: a read thrown away (its git dirs changed
     // meanwhile) gives the budget back (#1371 review).
     const charged = prBudget.used;
@@ -186,7 +190,17 @@ export async function collectCodeChanges(input: CollectInput, deps: CollectDeps)
     if (!read?.pulls) prBudget.used = charged;
     if (!read) continue;
     const { sessionCommits: made, pulls: found, ...changes } = read;
-    for (const p of found ?? []) if (!local.has(p.id)) local.set(p.id, { ...p, fetchedAt: deps.now() });
+    for (const p of found ?? []) {
+      const before = local.get(p.id);
+      const next = { ...p, fetchedAt: deps.now() };
+      if (before) {
+        // Another clone of the same repository: the same commits. Its read keeps what the first one had, and the first
+        // one's charge to the budget is given back (its patches are now this read's or dropped with it).
+        keepKnownPatches(next, before);
+        prBudget.used = Math.max(0, prBudget.used - patchBytes(before.files));
+      }
+      local.set(p.id, next);
+    }
     const c = keepLastRead(changes, lastRead.get(changes.id));
     trimPatches(c.uncommitted.files, uncommittedBudget);
     trimPatches(c.committed.files, committedBudget);

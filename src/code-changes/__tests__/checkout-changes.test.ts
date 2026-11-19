@@ -1325,7 +1325,7 @@ describe('PRs GitHub did not answer for, read from the checkout’s default bran
     expect(pr?.failedPatches).toEqual(['two.txt']);
   });
 
-  it('the PR branch deleted after the merge (gh pr merge --delete-branch): a merge by its head in HEAD’s reflog; a squash after main moved on, by a subject its message names and the same changes; a shared subject alone is not it', async () => {
+  it('the PR branch deleted after the merge (gh pr merge --delete-branch): a merge by its head in HEAD’s reflog; a title-only squash after main moved on, by its very changes; the same subject, file and counts with other changes is not it', async () => {
     const session = tmp('cc-local-pr6-');
     const dir = clone(session, 'web');
     // #7: merged with a merge commit, then the branch deleted.
@@ -1352,14 +1352,16 @@ describe('PRs GitHub did not answer for, read from the checkout’s default bran
     write(dir, 'other.txt', 'o\n');
     commitAll(dir, 'main moves on');
     git(dir, ['merge', '-q', '--squash', 'feat/eight']);
-    commitAll(dir, 'Eight (#8)\n\n* eight: add the file');
+    // A title-only squash message (GitHub's PR-title setting): nothing in it names the branch's commits.
+    commitAll(dir, 'Feature eight (#8)');
     git(dir, ['branch', '-q', '-D', 'feat/eight']);
-    // #12: a squash (an upstream's, synced in) whose subject a commit of the clone shares — with other changes.
+    // #12: a squash (an upstream's, synced in) that a commit of the clone matches in subject, file and line counts —
+    // but not in what it changes.
     git(dir, ['checkout', '-q', '-b', 'mine']);
     write(dir, 'README.md', '# mine\n');
     commitAll(dir, 'Update README.md');
     git(dir, ['checkout', '-q', 'main']);
-    write(dir, 'theirs.txt', 't\n');
+    write(dir, 'README.md', '# theirs\n');
     commitAll(dir, 'Update README.md (#12)');
     git(dir, ['update-ref', 'refs/remotes/origin/main', 'HEAD']);
     const read = await checkoutChanges({
@@ -1458,10 +1460,18 @@ describe('PRs GitHub did not answer for, read from the checkout’s default bran
     const dir = clone(session, 'web');
     const read = await checkoutChanges({ dir, sessionRoot: session, roots: [session], pulls: [ask(1, 'acme/other')] });
     expect(read?.pulls).toBeUndefined();
+    // A squash the clone's own branch would vouch for, but no remote default branch to find it on: local main and HEAD
+    // are not the remote's.
     const lone = path.join(session, 'lone');
     fs.mkdirSync(lone);
     git(lone, ['init', '-q', '-b', 'main']);
+    write(lone, 'x', '0\n');
+    commitAll(lone, 'base');
+    git(lone, ['checkout', '-q', '-b', 'feat/one']);
     write(lone, 'x', '1\n');
+    commitAll(lone, 'one');
+    git(lone, ['checkout', '-q', 'main']);
+    git(lone, ['merge', '-q', '--squash', 'feat/one']);
     commitAll(lone, 'x (#1)');
     git(lone, ['remote', 'add', 'origin', 'https://github.com/acme/lone.git']);
     const none = await checkoutChanges({
