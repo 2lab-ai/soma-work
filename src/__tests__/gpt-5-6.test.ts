@@ -4,8 +4,9 @@
  * model — the family is three real tier ids, all sharing a 372,000-token
  * context window (catalog value, probe-consistent: 369,755-token input
  * accepted, ~380k rejected on 2026-07-10):
- *   - `gpt-5.6-sol`   — flagship, the DEFAULT_MODEL (catalog default effort
- *     low; efforts low..xhigh + max/ultra);
+ *   - `gpt-5.6-sol`   — flagship, the `gpt` alias target (DEFAULT_MODEL from
+ *     2026-07-10 to 2026-11-19; catalog default effort low; efforts
+ *     low..xhigh + max/ultra);
  *   - `gpt-5.6-terra` — mid tier, half of sol's price (default effort
  *     medium; efforts low..xhigh + max/ultra);
  *   - `gpt-5.6-luna`  — budget tier (default effort medium; the
@@ -25,7 +26,6 @@ import {
   GPT_5_6_CONTEXT_WINDOW,
   GPT_5_6_SDK_BLOCKING_LIMIT,
   getModelSpec,
-  isGpt55Model,
   isGpt56Model,
   isNativeOneMModel,
   resolveAutoCompactTokens,
@@ -53,21 +53,23 @@ describe('gpt-5.6 family — release wiring', () => {
     expect(models).not.toContain('gpt-5.6');
   });
 
-  it('gpt-5.6-sol IS the DEFAULT_MODEL (2026-07-10 operator decision)', () => {
-    expect(DEFAULT_MODEL).toBe('gpt-5.6-sol');
+  it('gpt-5.6-sol is no longer the DEFAULT_MODEL — the default follows `opus` since 2026-11-19', () => {
+    // It was the default from 2026-07-10 (operator decision) to 2026-11-19.
+    expect(DEFAULT_MODEL).not.toBe('gpt-5.6-sol');
+    expect(DEFAULT_MODEL).toBe(MODEL_ALIASES.opus);
   });
 
   it('lists the sol [1m] variant as a selectable id (600k auto-compact profile)', () => {
     expect(AVAILABLE_MODELS as readonly string[]).toContain('gpt-5.6-sol[1m]');
   });
 
-  it('resolves the literal [1m] id (the `sol[1m]` shorthand moved to gpt-6.1-sol)', () => {
+  it('resolves the literal [1m] id (the `sol[1m]` shorthand follows the newest sol)', () => {
     const store = makeStore();
     // Since 2026-10-14 the `sol` / `sol[1m]` shorthands follow the newest sol
-    // generation (gpt-6.1-sol[1m], pinned in gpt-6-1-sol.test.ts). The 5.6
-    // [1m] profile stays selectable by its literal id.
-    expect(MODEL_ALIASES['sol[1m]']).toBe('gpt-6.1-sol[1m]');
-    expect(store.resolveModelInput('sol[1m]')).toBe('gpt-6.1-sol[1m]');
+    // generation (gpt-6.2-sol[1m] since 2026-11-18, pinned in gpt-6-2.test.ts).
+    // The 5.6 [1m] profile stays selectable by its literal id.
+    expect(MODEL_ALIASES['sol[1m]']).toBe('gpt-6.2-sol[1m]');
+    expect(store.resolveModelInput('sol[1m]')).toBe('gpt-6.2-sol[1m]');
     expect(store.resolveModelInput('gpt-5.6-sol[1m]')).toBe('gpt-5.6-sol[1m]');
     expect(coerceToAvailableModel('gpt-5.6-sol[1M]')).toBe('gpt-5.6-sol[1m]');
     expect(store.getModelDisplayName('gpt-5.6-sol[1m]')).toBe('GPT-5.6 Sol (1M)');
@@ -75,16 +77,17 @@ describe('gpt-5.6 family — release wiring', () => {
 
   it('resolves the gpt/tier aliases; legacy bare gpt-5.6 spelling maps to sol', () => {
     expect(MODEL_ALIASES.gpt).toBe('gpt-5.6-sol');
-    // `sol` follows the newest sol generation, not 5.6 (see gpt-6-1-sol.test.ts).
-    expect(MODEL_ALIASES.sol).toBe('gpt-6.1-sol[1m]');
+    // `sol` follows the newest sol generation, not 5.6 (see gpt-6-2.test.ts).
+    expect(MODEL_ALIASES.sol).toBe('gpt-6.2-sol[1m]');
     // `terra` follows the newest terra generation too (see gpt-6-1-terra.test.ts).
     expect(MODEL_ALIASES.terra).toBe('gpt-6.1-terra[1m]');
     // `luna` follows the newest luna (gpt-6-luna[1m]) since 2026-11-10; 5.6 luna stays literal.
     expect(MODEL_ALIASES.luna).toBe('gpt-6-luna[1m]');
     expect(MODEL_ALIASES['gpt-5.6']).toBe('gpt-5.6-sol');
     expect(MODEL_ALIASES['gpt5.6']).toBe('gpt-5.6-sol');
-    // The version-pinned gpt-5.5 alias must NOT be silently upgraded.
-    expect(MODEL_ALIASES['gpt5.5']).toBe('gpt-5.5');
+    // The version-pinned `gpt5.5` alias was removed with the gpt-5.5
+    // retirement (2026-11-19, gpt-5-5.test.ts) — it is NOT upgraded to 5.6.
+    expect(MODEL_ALIASES).not.toHaveProperty('gpt5.5');
   });
 
   it('resolveModelInput accepts canonical ids and aliases', () => {
@@ -99,15 +102,17 @@ describe('gpt-5.6 family — release wiring', () => {
     expect(store.resolveModelInput('luna')).toBe('gpt-6-luna[1m]');
   });
 
-  it('coerce passes tier ids through and falls back to sol for unknown/legacy ids', () => {
+  it('coerce passes tier ids through and falls back to DEFAULT_MODEL for unknown/legacy ids', () => {
     expect(coerceToAvailableModel('gpt-5.6-sol')).toBe('gpt-5.6-sol');
     expect(coerceToAvailableModel('gpt-5.6-terra')).toBe('gpt-5.6-terra');
     expect(coerceToAvailableModel('gpt-5.6-luna')).toBe('gpt-5.6-luna');
     // Legacy persisted `gpt-5.6` (the short-lived bare id) is not in the
-    // allow-list — coerce lands on DEFAULT_MODEL, which is the same model.
-    expect(coerceToAvailableModel('gpt-5.6')).toBe('gpt-5.6-sol');
-    expect(coerceToAvailableModel('some-nonsense-model')).toBe('gpt-5.6-sol');
-    expect(coerceToAvailableModel(undefined)).toBe('gpt-5.6-sol');
+    // allow-list — coerce lands on DEFAULT_MODEL (coerce does not consult
+    // aliases). Boots between 2026-07-10 and 2026-11-19 already rewrote any
+    // stored copy to gpt-5.6-sol, the default then.
+    expect(coerceToAvailableModel('gpt-5.6')).toBe(DEFAULT_MODEL);
+    expect(coerceToAvailableModel('some-nonsense-model')).toBe(DEFAULT_MODEL);
+    expect(coerceToAvailableModel(undefined)).toBe(DEFAULT_MODEL);
   });
 
   it('renders curated display labels per tier', () => {
@@ -131,8 +136,7 @@ describe('gpt-5.6 family — 372k window / 340k auto-compact (the key contract)'
     for (const m of ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']) {
       expect(resolveAutoCompactTokens(m)).toBe(340_000);
     }
-    // gpt-5.5 keeps its own trigger; claude models stay percent-based.
-    expect(resolveAutoCompactTokens('gpt-5.5')).toBe(250_000);
+    // Claude models stay percent-based.
     expect(resolveAutoCompactTokens('claude-fable-5')).toBeUndefined();
     expect(resolveAutoCompactTokens(undefined)).toBeUndefined();
   });
@@ -152,10 +156,9 @@ describe('gpt-5.6 family — 372k window / 340k auto-compact (the key contract)'
     expect(resolveModelProfile('gpt-5.6-sol[1m]').sdkBlockingLimit).toBe(977_000);
   });
 
-  it('every tier matches isGpt56Model and NOT isGpt55Model / native-1M', () => {
+  it('every tier matches isGpt56Model and NOT native-1M', () => {
     for (const m of ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']) {
       expect(isGpt56Model(m)).toBe(true);
-      expect(isGpt55Model(m)).toBe(false);
       expect(isNativeOneMModel(m)).toBe(false);
     }
     expect(isGpt56Model('gpt-5.5')).toBe(false);

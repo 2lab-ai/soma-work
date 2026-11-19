@@ -66,7 +66,8 @@ export interface SpendTotals {
 // 5 (2026-11-10): price rows for Fable 5.2, gpt-6.1-terra, gpt-6-sol / gpt-6-luna and grok-4.5–4.7
 // (before, they were priced at Fable 5's or the Sonnet fallback rates) — sealed spends are re-read.
 // 6 (2026-11-10): price rows for Sonnet 5.5 and Haiku 5.5 (before, the Sonnet fallback) — re-read.
-export const SPEND_CALC_VERSION = 6;
+// 7 (2026-11-18): price rows for gpt-6.2-sol and gpt-6.2-astra (before, the Sonnet fallback) — re-read.
+export const SPEND_CALC_VERSION = 7;
 
 /**
  * What one subagent spent: its own API calls, read from its transcript

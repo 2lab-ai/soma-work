@@ -56,7 +56,7 @@ describe('resolveContextWindow — catalog overlay', () => {
       { id: 'gpt-5.6', aliases: [], name: 'GPT-5.6', efforts: [], max_context: 400_000, group: 'codex' },
     ]);
     expect(resolveContextWindow('gpt-5.6-sol')).toBe(372_000);
-    expect(resolveContextWindow('gpt-5.5')).toBe(275_000);
+    expect(resolveContextWindow('gpt-5.6-terra')).toBe(372_000);
   });
 
   it('keeps gpt-6-astra on its hardcoded 272k window despite a bigger catalog entry', () => {
@@ -67,13 +67,33 @@ describe('resolveContextWindow — catalog overlay', () => {
     expect(resolveContextWindow('gpt-6-astra')).toBe(272_000);
   });
 
-  it('keeps gpt-6.1-sol on its declared 272k window when llmux advertises it with the `sol` alias', () => {
+  it('keeps gpt-6.1-sol on its declared 500k window when llmux advertises it with the `sol` alias', () => {
+    // 272k until the codex catalog raised it to 500k on 2026-11-17.
     modelCatalog.__testSeed([
       GROK,
       { id: 'gpt-6.1-sol', aliases: ['sol'], name: 'GPT-6.1 Sol', efforts: [], max_context: 400_000, group: 'codex' },
     ]);
-    expect(resolveContextWindow('gpt-6.1-sol')).toBe(272_000);
+    expect(resolveContextWindow('gpt-6.1-sol')).toBe(500_000);
     expect(resolveContextWindow('gpt-6.1-sol[1m]')).toBe(1_000_000);
+  });
+
+  it('keeps gpt-6.2-sol (500k) and gpt-6.2-astra (272k) on their declared windows under the llmux `sol` / `astra` rows', () => {
+    modelCatalog.__testSeed([
+      GROK,
+      { id: 'gpt-6.2-sol', aliases: ['sol'], name: 'GPT-6.2 Sol', efforts: [], max_context: 872_000, group: 'codex' },
+      {
+        id: 'gpt-6.2-astra',
+        aliases: ['astra'],
+        name: 'GPT-6.2 Astra',
+        efforts: [],
+        max_context: 872_000,
+        group: 'codex',
+      },
+    ]);
+    expect(resolveContextWindow('gpt-6.2-sol')).toBe(500_000);
+    expect(resolveContextWindow('gpt-6.2-astra')).toBe(272_000);
+    expect(resolveContextWindow('gpt-6.2-sol[1m]')).toBe(1_000_000);
+    expect(resolveContextWindow('gpt-6.2-astra[1m]')).toBe(1_000_000);
   });
 
   it('keeps gpt-6.1-terra on its declared 500k window when llmux advertises it with the `terra` alias', () => {

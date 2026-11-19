@@ -3,16 +3,17 @@
  *
  * `gpt-6.1-terra` (display "GPT-6.1 Terra") is generation 6.1's mid tier,
  * released 2026-10-26. Per the openai/codex model catalog (models.json @
- * caae161d) its context_window is 500000 — NOT the 272k of gpt-6.1-sol /
- * gpt-6-astra — and the published 1,050,000 maximum is reached through the
- * `[1m]` opt-in. It is served through llmux's codex backend group: llmux
- * forwards the slug verbatim and strips one trailing `[1m]` before forwarding.
+ * caae161d) its context_window is 500000 — NOT the 272k of gpt-6-astra (and,
+ * until 2026-11-17, gpt-6.1-sol) — and the published 1,050,000 maximum is
+ * reached through the `[1m]` opt-in. It is served through llmux's codex
+ * backend group: llmux forwards the slug verbatim and strips one trailing
+ * `[1m]` before forwarding.
  * llmux moved its own `terra` alias to it on 2026-11-10.
  *
  * Load-bearing contracts:
  *   1. The `terra` / `terra[1m]` shorthands select `gpt-6.1-terra[1m]` — a
  *      family shorthand lands on the newest `[1m]` row (same rule as `sol` →
- *      `gpt-6.1-sol[1m]`, `astra` → `gpt-6-astra[1m]`).
+ *      `gpt-6.2-sol[1m]`, `astra` → `gpt-6.2-astra[1m]`).
  *   2. gpt-5.6-terra stays selectable by its literal id; the DEFAULT stays
  *      gpt-5.6-sol and the `gpt` alias do not move (`luna` follows gpt-6-luna).
  *   3. Bare `gpt-6.1-terra` is a DECLARED policy row (500k / 477k / 450k — the
@@ -32,7 +33,6 @@ import {
   getModelSpec,
   hasModelPricing,
   isGpt6Model,
-  isGpt55Model,
   isGpt56Model,
   isNativeOneMModel,
   resolveAutoCompactTokens,
@@ -76,8 +76,8 @@ describe('gpt-6.1-terra — release wiring', () => {
     expect(models).toContain('gpt-5.6-terra');
   });
 
-  it('is SELECTABLE but NOT the default — gpt-5.6-sol stays DEFAULT_MODEL', () => {
-    expect(DEFAULT_MODEL).toBe('gpt-5.6-sol');
+  it('is SELECTABLE but NOT the default — DEFAULT_MODEL follows `opus`', () => {
+    expect(DEFAULT_MODEL).toBe(MODEL_ALIASES.opus);
     expect(MODEL_ALIASES.gpt).toBe('gpt-5.6-sol');
   });
 
@@ -86,9 +86,10 @@ describe('gpt-6.1-terra — release wiring', () => {
     expect(MODEL_ALIASES['terra[1m]']).toBe('gpt-6.1-terra[1m]');
     // `gpt-6.1` stays on sol — sol is generation 6.1's flagship.
     expect(MODEL_ALIASES['gpt-6.1']).toBe('gpt-6.1-sol[1m]');
-    expect(MODEL_ALIASES.sol).toBe('gpt-6.1-sol[1m]');
+    // `sol` / `astra` follow generation 6.2 (gpt-6-2.test.ts); 6.2 has no terra.
+    expect(MODEL_ALIASES.sol).toBe('gpt-6.2-sol[1m]');
     expect(MODEL_ALIASES.luna).toBe('gpt-6-luna[1m]');
-    expect(MODEL_ALIASES.astra).toBe('gpt-6-astra[1m]');
+    expect(MODEL_ALIASES.astra).toBe('gpt-6.2-astra[1m]');
   });
 
   it('resolveModelInput resolves the shorthands to gpt-6.1-terra[1m]', () => {
@@ -122,7 +123,7 @@ describe('gpt-6.1-terra — release wiring', () => {
     expect(coerceToAvailableModel('gpt-6.1-terra[1m]')).toBe('gpt-6.1-terra[1m]');
     expect(coerceToAvailableModel('GPT-6.1-TERRA[1M]')).toBe('gpt-6.1-terra[1m]');
     // coerce does NOT consult MODEL_ALIASES.
-    expect(coerceToAvailableModel('terra')).toBe('gpt-5.6-sol');
+    expect(coerceToAvailableModel('terra')).toBe(DEFAULT_MODEL);
     expect(coerceToAvailableModel('gpt-5.6-terra')).toBe('gpt-5.6-terra');
   });
 
@@ -185,7 +186,6 @@ describe('gpt-6.1-terra — canonical profile', () => {
     // the declared row above is what sizes the bare id.
     expect(isGpt6Model('gpt-6.1-terra')).toBe(false);
     expect(isGpt56Model('gpt-6.1-terra')).toBe(false);
-    expect(isGpt55Model('gpt-6.1-terra')).toBe(false);
     expect(isNativeOneMModel('gpt-6.1-terra')).toBe(false);
   });
 

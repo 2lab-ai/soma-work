@@ -1,6 +1,6 @@
 import { isAdminUser } from '../../admin-utils';
 import { modelCatalog } from '../../model-catalog';
-import { AVAILABLE_MODELS, MODEL_ALIASES, userSettingsStore } from '../../user-settings-store';
+import { AVAILABLE_MODELS, userSettingsStore } from '../../user-settings-store';
 import { CommandParser } from '../command-parser';
 import { applyModel, renderModelCard } from '../z/topics/model-topic';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
@@ -80,11 +80,12 @@ export class ModelHandler implements CommandHandler {
           thread_ts: threadTs,
         });
       } else {
-        const aliasesText = Object.keys(MODEL_ALIASES)
-          .map((a) => `\`${a}\``)
-          .join(', ');
+        // applyModel already says which failure it is: a REFUSED id (the
+        // retired gpt-5.5, a fake grok `[1m]`) carries the reason and the id to
+        // use instead; a typo carries the alias list. Print it as-is — a
+        // second alias dump would bury the refusal reason.
         await say({
-          text: `❌ *Unknown Model*\n\n${result.summary}\n\n*Available aliases:* ${aliasesText}\n\n_Use \`model list\` to see all available models._`,
+          text: `${result.summary}${result.description ? `\n\n${result.description}` : ''}\n\n_Use \`model list\` to see all available models._`,
           thread_ts: threadTs,
         });
       }

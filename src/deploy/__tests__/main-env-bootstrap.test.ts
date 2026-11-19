@@ -217,7 +217,7 @@ describe('main-env-bootstrap', () => {
     const sessions = JSON.parse(fs.readFileSync(path.join(targetDir, 'data', 'sessions.json'), 'utf8'));
 
     expect(settings.U1.accepted).toBe(true);
-    expect(settings.U1.defaultModel).toBe('gpt-5.6-sol'); // bootstrap DEFAULT_MODEL
+    expect(settings.U1.defaultModel).toBe(STORE_DEFAULT_MODEL); // bootstrap DEFAULT_MODEL
     expect(sessions[0].ownerId).toBe('U1');
     expect(sessions[0].state).toBe('MAIN');
     expect(sessions[0].workflow).toBe('default');
@@ -408,15 +408,17 @@ describe('main-env-bootstrap', () => {
     });
 
     it('falls back to DEFAULT_MODEL for unknown / empty / non-string', () => {
-      // Fallback target mirrors user-settings-store DEFAULT_MODEL — keep both
-      // in sync when bumping the default-model generation (gpt-5.6 since
-      // 2026-07-10).
-      expect(__TEST_ONLY_coerceModel('gpt-99-turbo')).toBe('gpt-5.6-sol');
-      expect(__TEST_ONLY_coerceModel('')).toBe('gpt-5.6-sol');
-      expect(__TEST_ONLY_coerceModel('   ')).toBe('gpt-5.6-sol');
-      expect(__TEST_ONLY_coerceModel(undefined)).toBe('gpt-5.6-sol');
-      expect(__TEST_ONLY_coerceModel(null)).toBe('gpt-5.6-sol');
-      expect(__TEST_ONLY_coerceModel(42)).toBe('gpt-5.6-sol');
+      // Fallback target mirrors user-settings-store DEFAULT_MODEL (the `opus`
+      // alias since 2026-11-19; gpt-5.6-sol from 2026-07-10). Asserting
+      // against the STORE's constant is the literal-parity guard: bumping one
+      // side without the other fails here.
+      expect(STORE_DEFAULT_MODEL).toBe('claude-opus-5-5[1m]');
+      expect(__TEST_ONLY_coerceModel('gpt-99-turbo')).toBe(STORE_DEFAULT_MODEL);
+      expect(__TEST_ONLY_coerceModel('')).toBe(STORE_DEFAULT_MODEL);
+      expect(__TEST_ONLY_coerceModel('   ')).toBe(STORE_DEFAULT_MODEL);
+      expect(__TEST_ONLY_coerceModel(undefined)).toBe(STORE_DEFAULT_MODEL);
+      expect(__TEST_ONLY_coerceModel(null)).toBe(STORE_DEFAULT_MODEL);
+      expect(__TEST_ONLY_coerceModel(42)).toBe(STORE_DEFAULT_MODEL);
     });
   });
 
@@ -443,15 +445,15 @@ describe('main-env-bootstrap', () => {
 
     it('falls back to DEFAULT_MODEL without a snapshot file', () => {
       const dataDir = makeTempDir('bootstrap-catalog-');
-      expect(__TEST_ONLY_coerceModel('grok-4.5', dataDir)).toBe('gpt-5.6-sol');
-      expect(__TEST_ONLY_coerceModel('grok-4.5')).toBe('gpt-5.6-sol');
+      expect(__TEST_ONLY_coerceModel('grok-4.5', dataDir)).toBe(STORE_DEFAULT_MODEL);
+      expect(__TEST_ONLY_coerceModel('grok-4.5')).toBe(STORE_DEFAULT_MODEL);
     });
 
     it('fails soft on a corrupt snapshot file (static behavior)', () => {
       const dataDir = makeTempDir('bootstrap-catalog-');
       fs.mkdirSync(dataDir, { recursive: true });
       fs.writeFileSync(path.join(dataDir, 'model-catalog.json'), '{ nope', 'utf8');
-      expect(__TEST_ONLY_coerceModel('grok-4.5', dataDir)).toBe('gpt-5.6-sol');
+      expect(__TEST_ONLY_coerceModel('grok-4.5', dataDir)).toBe(STORE_DEFAULT_MODEL);
       expect(__TEST_ONLY_coerceModel('claude-opus-4-7', dataDir)).toBe('claude-opus-4-7');
     });
 
@@ -469,8 +471,22 @@ describe('main-env-bootstrap', () => {
         fetchedAt: 1,
         models: [{ id: 'grok-4.6[1m]' }, { id: 'claude-fable-5[1m]' }],
       });
-      expect(__TEST_ONLY_coerceModel('grok-4.6[1m]', dataDir)).toBe('gpt-5.6-sol');
+      expect(__TEST_ONLY_coerceModel('grok-4.6[1m]', dataDir)).toBe(STORE_DEFAULT_MODEL);
       expect(__TEST_ONLY_coerceModel('claude-fable-5[1m]', dataDir)).toBe('claude-fable-5[1m]');
+    });
+
+    it('drops the retired gpt-5.5 even when the catalog snapshot advertises it (2026-11-19)', () => {
+      // Mirrors the runtime store's refusal (model-profile RETIRED_MODEL_INPUTS):
+      // deploy-time normalize must not keep a retired id alive via the catalog.
+      const dataDir = makeTempDir('bootstrap-catalog-');
+      writeJson(path.join(dataDir, 'model-catalog.json'), {
+        fetchedAt: 1,
+        models: [{ id: 'gpt-5.5' }, { id: 'GPT5.5' }, ...GROK_SNAPSHOT.models],
+      });
+      expect(__TEST_ONLY_coerceModel('gpt-5.5', dataDir)).toBe(STORE_DEFAULT_MODEL);
+      expect(__TEST_ONLY_coerceModel('gpt5.5', dataDir)).toBe(STORE_DEFAULT_MODEL);
+      expect(__TEST_ONLY_coerceModel('gpt-5.5')).toBe(STORE_DEFAULT_MODEL);
+      expect(__TEST_ONLY_coerceModel('grok-4.5', dataDir)).toBe('grok-4.5');
     });
 
     it('preserves the literal fable [1m] id (the 2026-08-26 filter removal)', () => {
@@ -525,7 +541,7 @@ describe('main-env-bootstrap', () => {
 
       const settings = JSON.parse(fs.readFileSync(path.join(dataDir, 'user-settings.json'), 'utf8'));
       expect(settings.U1.defaultModel).toBe('grok-4.5');
-      expect(settings.U2.defaultModel).toBe('gpt-5.6-sol');
+      expect(settings.U2.defaultModel).toBe(STORE_DEFAULT_MODEL);
     });
   });
 

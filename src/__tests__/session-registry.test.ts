@@ -6,6 +6,7 @@ vi.mock('../env-paths', () => ({
 }));
 
 import { SessionRegistry } from '../session-registry';
+import { DEFAULT_MODEL } from '../user-settings-store';
 
 const TEST_DATA_DIR = '/tmp/soma-work-session-registry-test';
 
@@ -1201,7 +1202,31 @@ describe('SessionRegistry deserialize — model coerce', () => {
     const reader = new SessionRegistry();
     reader.loadSessions();
     const restored = reader.getSession('C1', 't4');
-    expect(restored?.model).toBe('gpt-5.6-sol'); // DEFAULT_MODEL
+    expect(restored?.model).toBe(DEFAULT_MODEL);
+    expect(restored?.model).toBe('claude-opus-5-5[1m]'); // opus since 2026-11-19
+  });
+
+  it('coerces a session on the retired gpt-5.5 to DEFAULT_MODEL (opus, 2026-11-19)', () => {
+    const now = new Date().toISOString();
+    writeSessionsFile([
+      {
+        key: 'C1-t6',
+        ownerId: 'U1',
+        userId: 'U1',
+        channelId: 'C1',
+        threadTs: 't6',
+        sessionId: 's6',
+        isActive: true,
+        lastActivity: now,
+        model: 'gpt-5.5',
+        state: 'MAIN',
+        workflow: 'default',
+      },
+    ]);
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    expect(reader.getSession('C1', 't6')?.model).toBe(DEFAULT_MODEL);
   });
 
   it('preserves undefined when session was saved without a model', () => {

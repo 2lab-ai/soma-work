@@ -244,17 +244,17 @@ describe('CronStorage.updateJob', () => {
   it('patches modelConfig and leaves other fields untouched', () => {
     const created = seed();
     const updated = storage.updateJob('U_OWNER', 'job-a', {
-      modelConfig: { type: 'custom', model: 'gpt-5.5' },
+      modelConfig: { type: 'custom', model: 'gpt-6.2-sol' },
     });
     expect(updated).not.toBeNull();
-    expect(updated!.modelConfig).toEqual({ type: 'custom', model: 'gpt-5.5' });
+    expect(updated!.modelConfig).toEqual({ type: 'custom', model: 'gpt-6.2-sol' });
     expect(updated!.expression).toBe('0 9 * * *');
     expect(updated!.prompt).toBe('hello');
     expect(updated!.id).toBe(created.id);
     expect(updated!.createdAt).toBe(created.createdAt);
     // persisted
     const reloaded = storage.getJobsByOwner('U_OWNER')[0];
-    expect(reloaded.modelConfig).toEqual({ type: 'custom', model: 'gpt-5.5' });
+    expect(reloaded.modelConfig).toEqual({ type: 'custom', model: 'gpt-6.2-sol' });
   });
 
   it('stamps scheduleChangedAt only when the expression actually changes', () => {

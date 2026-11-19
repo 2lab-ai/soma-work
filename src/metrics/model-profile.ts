@@ -18,8 +18,8 @@
  *   2. the `[1m]` opt-in suffix — 1M window; `gpt-` bases use the shared 600k
  *      auto-compact default, while other bases inherit their family trigger;
  *   3. native-1M ids (fable-5) → 1M;
- *   4. the gpt-6 / gpt-5.6 / gpt-5.5 families (llmux codex backend),
- *      newest generation first;
+ *   4. the gpt-6 / gpt-5.6 families (llmux codex backend), newest
+ *      generation first;
  *   5. the llmux model-catalog overlay, NON-claude groups only;
  *   6. the 200k fallback.
  *
@@ -151,43 +151,15 @@ export function isNativeOneMModel(model: string): boolean {
 }
 
 /* ------------------------------------------------------------------ *
- * gpt-5.5 / gpt-5.6 (llmux codex backend)
+ * gpt-5.6 (llmux codex backend)
  * ------------------------------------------------------------------ */
 
 /**
- * gpt-5.5 — an OpenAI model served through llmux's codex backend group
- * (llmux routes `gpt-` prefixed ids to codex accounts; the SDK subprocess
- * talks to llmux exactly as it does for claude ids). The pinned Agent SDK
- * does not know this id, so — like native-1M models — the harness owns the
- * context-window math.
- */
-const GPT_5_5_RE = /gpt-5\.5/i;
-
-/** Returns true when `model` is a gpt-5.5 id (case-insensitive). */
-export function isGpt55Model(model: string): boolean {
-  return GPT_5_5_RE.test(model);
-}
-
-/** gpt-5.5 true context window: 275k. */
-export const GPT_5_5_CONTEXT_WINDOW = 275_000;
-
-/**
- * Harness-side auto-compact trigger for gpt-5.5: when a session's used
- * context tokens reach 250k, the turn-end checker schedules `/compact` for
- * the next turn — a fixed token count (not the per-user percent threshold),
- * per the model's spec.
- */
-export const GPT_5_5_AUTO_COMPACT_TOKENS = 250_000;
-
-/**
- * `CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE` value injected for gpt-5.5. Without it
- * the pinned SDK resolves the unknown id to 200k and refuses input at ~177k.
- */
-export const GPT_5_5_SDK_BLOCKING_LIMIT = sdkBlockingLimitFor(GPT_5_5_CONTEXT_WINDOW);
-
-/**
  * gpt-5.6 — OpenAI's 2026-07-09 release, served through llmux's codex
- * backend group like gpt-5.5. llmux ≥ 0.2.16 pins the upstream slug to
+ * backend group (llmux routes `gpt-` prefixed ids to codex accounts; the SDK
+ * subprocess talks to llmux exactly as it does for claude ids). The pinned
+ * Agent SDK does not know these ids, so — like native-1M models — the harness
+ * owns the context-window math. llmux ≥ 0.2.16 pins the upstream slug to
  * `gpt-5.6-sol` (the bare `gpt-5.6` id is rejected by the ChatGPT-account
  * codex backend). The regex matches the soma-work id AND the upstream-reported
  * slugs (`gpt-5.6-sol`, `gpt-5.6-terra`) so usage events that carry the
@@ -212,9 +184,9 @@ export const GPT_5_6_CONTEXT_WINDOW = 372_000;
 
 /**
  * Harness-side auto-compact trigger for gpt-5.6: fixed 340k tokens (~91% of
- * the 372k window, mirroring gpt-5.5's 250k/275k ratio). The 32k headroom
- * matters: the compact turn itself resends the full history plus the summary
- * prompt, so the trigger must sit safely below the hard window.
+ * the 372k window, mirroring the retired gpt-5.5's 250k/275k ratio). The 32k
+ * headroom matters: the compact turn itself resends the full history plus the
+ * summary prompt, so the trigger must sit safely below the hard window.
  */
 export const GPT_5_6_AUTO_COMPACT_TOKENS = 340_000;
 
@@ -230,9 +202,9 @@ export const GPT_5_6_SDK_BLOCKING_LIMIT = sdkBlockingLimitFor(GPT_5_6_CONTEXT_WI
  * resolves the `astra` / `gpt-6` aliases to it (backend probe 2026-09-07).
  * Upstream, generation 6 also grew sol and luna tiers (llmux catalog,
  * 2026-09-22). soma-work declares only `gpt-6-astra` statically; the other
- * gen-6 tiers reach users through the llmux catalog overlay. Generation 6.1
- * (`gpt-6.1-sol`, `gpt-6.1-terra`) is NOT matched here — each 6.1 id is a
- * declared POLICY_PROFILES row.
+ * gen-6 tiers reach users through the llmux catalog overlay. Generations 6.1
+ * (`gpt-6.1-sol`, `gpt-6.1-terra`) and 6.2 (`gpt-6.2-sol`, `gpt-6.2-astra`)
+ * are NOT matched here — each of their ids is a declared POLICY_PROFILES row.
  *
  * The lookahead pins the pattern to the generation boundary: it matches
  * `gpt-6`, `gpt-6-astra` and `gpt-6-astra[1m]`, but NOT `gpt-60` or
@@ -248,9 +220,10 @@ export function isGpt6Model(model: string): boolean {
 
 /**
  * gpt-6 context window: 272k — the openai/codex model catalog value
- * (context_window 272000 for both gpt-6-astra and gpt-6.1-sol), the same class
+ * (context_window 272000 for gpt-6-astra and gpt-6.2-astra), the same class
  * as gpt-5.5's 272k input cap and NOT gpt-5.6's 372k. Do NOT raise this
- * without re-checking the catalog.
+ * without re-checking the catalog. (gpt-6.1-sol also sat at 272000 until the
+ * catalog raised it to 500000 on 2026-11-17; it now has its own 500k row.)
  */
 export const GPT_6_CONTEXT_WINDOW = 272_000;
 
@@ -402,19 +375,23 @@ const POLICY_PROFILES: readonly ModelProfile[] = [
     compactHeadroom: DEFAULT_COMPACT_HEADROOM,
   },
   {
-    // Bare gpt-6.1-sol: same 272k catalog window as Astra, same numbers.
-    // This row is what sizes it — GPT_6_RE does not match `gpt-6.1-*`. The
-    // `[1m]` variant (the `sol` shorthand target) uses the shared GPT 1M
-    // policy in the suffix branch.
+    // Bare gpt-6.1-sol: 500k since 2026-11-17, when the openai/codex
+    // models.json raised its context_window from 272000 to 500000 (commit
+    // 6c0cee5; the Codex models page: "GPT-6.1 Sol uses a default context
+    // window of 500,000 tokens"). Until then it carried Astra's 272k / 249k /
+    // 240k. Same numbers as the gpt-6.1-terra row below (477k block, 450k
+    // auto-compact — see there for why 450k). This row is what sizes it —
+    // GPT_6_RE does not match `gpt-6.1-*`. The `[1m]` variant (the `gpt-6.1`
+    // shorthand target) uses the shared GPT 1M policy in the suffix branch.
     modelId: 'gpt-6.1-sol',
-    contextWindow: GPT_6_CONTEXT_WINDOW,
-    sdkBlockingLimit: GPT_6_SDK_BLOCKING_LIMIT,
-    autoCompactTokens: GPT_6_AUTO_COMPACT_TOKENS,
+    contextWindow: 500_000,
+    sdkBlockingLimit: sdkBlockingLimitFor(500_000),
+    autoCompactTokens: 450_000,
     compactHeadroom: DEFAULT_COMPACT_HEADROOM,
   },
   {
     // Bare gpt-6.1-terra: 500k — the openai/codex models.json context_window
-    // (NOT the 272k of gpt-6.1-sol / gpt-6-astra). GPT_6_RE does not match
+    // (NOT the 272k of gpt-6-astra / gpt-6.2-astra). GPT_6_RE does not match
     // `gpt-6.1-*`, so without this row the bare id would fall to the catalog
     // window or the 200k fallback. Numbers follow the one other declared
     // 500k row, grok-4.6: the SDK formula gives a 477k blocking limit, and
@@ -430,6 +407,31 @@ const POLICY_PROFILES: readonly ModelProfile[] = [
     contextWindow: 500_000,
     sdkBlockingLimit: sdkBlockingLimitFor(500_000),
     autoCompactTokens: 450_000,
+    compactHeadroom: DEFAULT_COMPACT_HEADROOM,
+  },
+  {
+    // Bare gpt-6.2-sol (2026-11-17): 500k — the openai/codex models.json
+    // context_window. Same numbers as gpt-6.1-terra (477k block, 450k
+    // auto-compact). GPT_6_RE does not match `gpt-6.2-*`, so without this row
+    // the bare id would fall to the catalog window or the 200k fallback. The
+    // `[1m]` variant (the `sol` / `gpt-6.2` shorthand target) uses the shared
+    // GPT 1M policy in the suffix branch.
+    modelId: 'gpt-6.2-sol',
+    contextWindow: 500_000,
+    sdkBlockingLimit: sdkBlockingLimitFor(500_000),
+    autoCompactTokens: 450_000,
+    compactHeadroom: DEFAULT_COMPACT_HEADROOM,
+  },
+  {
+    // Bare gpt-6.2-astra (2026-11-17): 272k — the openai/codex models.json
+    // context_window, the same as gpt-6-astra, so the same gen-6 numbers
+    // (249k block, 240k auto-compact). Declared because GPT_6_RE does not
+    // match `gpt-6.2-*`. The `[1m]` variant (the `astra` shorthand target)
+    // uses the shared GPT 1M policy in the suffix branch.
+    modelId: 'gpt-6.2-astra',
+    contextWindow: GPT_6_CONTEXT_WINDOW,
+    sdkBlockingLimit: GPT_6_SDK_BLOCKING_LIMIT,
+    autoCompactTokens: GPT_6_AUTO_COMPACT_TOKENS,
     compactHeadroom: DEFAULT_COMPACT_HEADROOM,
   },
   {
@@ -463,10 +465,11 @@ export const CANONICAL_MODEL_IDS: readonly string[] = Object.freeze(POLICY_PROFI
 /**
  * An input this module recognizes as a canonical model id.
  *
- * There is no `normalizedFrom` / rewrite channel: the only compatibility case
- * this module has is grok `[1m]`, and that is REFUSED rather than rewritten
- * (see {@link GROK_ID_RE}). A field that is always `undefined` would just
- * invite callers to build a "we quietly changed your model" path.
+ * There is no `normalizedFrom` / rewrite channel: the only compatibility cases
+ * this module has — grok `[1m]` and retired ids — are REFUSED rather than
+ * rewritten (see {@link GROK_ID_RE} and `RETIRED_MODEL_INPUTS`). A field that
+ * is always `undefined` would just invite callers to build a "we quietly
+ * changed your model" path.
  */
 export interface ModelInputAccepted {
   /** The canonical model id to store in session/user state. */
@@ -501,6 +504,43 @@ export function isRejectedModelInput(result: ModelInputCompatibility): result is
  */
 const GROK_ID_RE = /^grok-/i;
 
+/** Why and when a model id left the selectable set, and what to use instead. */
+interface RetiredModel {
+  /** Date the id was retired from selection (YYYY-MM-DD). */
+  readonly retiredOn: string;
+  /** User-facing reason, without a trailing "use X" (callers append the suggestion). */
+  readonly why: string;
+  /** Selectable id offered instead. */
+  readonly suggestedModel: string;
+}
+
+/**
+ * gpt-5.5 — retired from selection on 2026-11-19 (owner instruction). The
+ * ChatGPT-account Codex backend has rejected it since 2026-10-14: a llmux
+ * probe on 2026-11-18 got 400 "The 'gpt-5.5' model is not supported when
+ * using Codex with a ChatGPT account." (2lab-ai/llmux#309). The suggestion is
+ * gpt-5.6-sol — the next generation and the `gpt` alias target (a literal,
+ * because this module must not import the settings store). The price row
+ * stays in model-registry.ts so past gpt-5.5 usage keeps its cost.
+ */
+const GPT_5_5_RETIREMENT: RetiredModel = Object.freeze({
+  retiredOn: '2026-11-19',
+  why: 'the Codex backend no longer serves it to ChatGPT accounts',
+  suggestedModel: 'gpt-5.6-sol',
+});
+
+/**
+ * Retired model inputs, keyed by every spelling a user may still type — the
+ * canonical id and any removed alias — compared after trimming, lowercasing
+ * and stripping `[1m]`. They are REFUSED, never rewritten: typed input gets
+ * the reason and a suggestion, and `coerceToAvailableModel` sends a stored
+ * value to DEFAULT_MODEL before the llmux catalog overlay could keep it.
+ */
+const RETIRED_MODEL_INPUTS: ReadonlyMap<string, RetiredModel> = new Map([
+  ['gpt-5.5', GPT_5_5_RETIREMENT],
+  ['gpt5.5', GPT_5_5_RETIREMENT],
+]);
+
 /**
  * Resolve a raw model input against the canonical set.
  *
@@ -517,6 +557,14 @@ export function resolveModelInputCompatibility(input: string): ModelInputCompati
   const trimmed = input.trim();
   if (trimmed.length === 0) return null;
   const key = trimmed.toLowerCase();
+
+  const retired = RETIRED_MODEL_INPUTS.get(stripOneMSuffix(key));
+  if (retired) {
+    return {
+      rejectedReason: `\`${trimmed}\` was retired on ${retired.retiredOn} — ${retired.why}.`,
+      suggestedModel: retired.suggestedModel,
+    };
+  }
 
   if (hasOneMSuffix(key)) {
     const base = stripOneMSuffix(key);
@@ -546,7 +594,6 @@ function catalogWindowFor(modelId: string): number | undefined {
 function familyAutoCompactTokens(modelId: string): number | undefined {
   if (isGpt6Model(modelId)) return GPT_6_AUTO_COMPACT_TOKENS;
   if (isGpt56Model(modelId)) return GPT_5_6_AUTO_COMPACT_TOKENS;
-  if (isGpt55Model(modelId)) return GPT_5_5_AUTO_COMPACT_TOKENS;
   return undefined;
 }
 
@@ -585,7 +632,6 @@ export function resolveModelProfile(modelId?: string): ModelProfile {
   if (isNativeOneMModel(id)) return derived(1_000_000);
   if (isGpt6Model(id)) return derived(GPT_6_CONTEXT_WINDOW, GPT_6_AUTO_COMPACT_TOKENS);
   if (isGpt56Model(id)) return derived(GPT_5_6_CONTEXT_WINDOW, GPT_5_6_AUTO_COMPACT_TOKENS);
-  if (isGpt55Model(id)) return derived(GPT_5_5_CONTEXT_WINDOW, GPT_5_5_AUTO_COMPACT_TOKENS);
 
   const catalogWindow = catalogWindowFor(id);
   if (catalogWindow !== undefined) return derived(catalogWindow);

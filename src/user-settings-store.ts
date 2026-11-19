@@ -29,20 +29,27 @@ const fireSettingsInvalidate = invalidator.fire;
 //   - The 9 bare claude entries are the historical lineup and MUST NOT be
 //     removed. (Opus 5 added 2026-08-26; Fable 5 added 2026-06-09; 4.8 added
 //     2026-05-28; 4.7/4.6 retained as user-selectable.)
-//   - `gpt-5.5` (added 2026-07-06) is served through llmux's codex backend
-//     group — llmux routes `gpt-` prefixed ids to codex accounts, so the SDK
-//     subprocess dispatches it exactly like a claude id (requires llmux auth
-//     mode with a codex account in the pool). 275k context window; harness
-//     auto-compacts at 250k tokens (see metrics/model-registry.ts GPT_5_5_*).
-//   - The gpt-5.6 family (added 2026-07-10) rides the same llmux codex
-//     path as REAL tier ids — there is no bare `gpt-5.6` model (per the
-//     openai/codex catalog and the codex backend, which rejects the bare
-//     id): `gpt-5.6-sol` (flagship, the DEFAULT; catalog default effort
-//     low), `gpt-5.6-terra` (mid tier, half of sol's price; default effort
-//     medium), `gpt-5.6-luna` (budget tier; default effort medium — the
-//     ChatGPT-account backend returned "Model not found" on 2026-07-10
-//     probes, likely rollout-gated; it is catalog-listed and llmux passes
-//     it through, so it activates upstream-side). All three: 372k context
+//   - `gpt-5.5` (added 2026-07-06) was RETIRED from selection on 2026-11-19
+//     (owner instruction): the ChatGPT-account Codex backend has rejected it
+//     since 2026-10-14 ("The 'gpt-5.5' model is not supported when using
+//     Codex with a ChatGPT account.", llmux probe 2026-11-18;
+//     2lab-ai/llmux#309). It is the one deliberate exception to the #656
+//     rule below. A stored `gpt-5.5` default or session model coerces to
+//     DEFAULT_MODEL, and typed input is refused with a suggestion
+//     (metrics/model-profile.ts RETIRED_MODEL_INPUTS). Its price row stays in
+//     metrics/model-registry.ts so past usage keeps its cost.
+//   - The gpt-5.6 family (added 2026-07-10) rides the llmux codex backend
+//     group (llmux routes `gpt-` prefixed ids to codex accounts, so the SDK
+//     subprocess dispatches it exactly like a claude id) as REAL tier ids —
+//     there is no bare `gpt-5.6` model (per the openai/codex catalog and the
+//     codex backend, which rejects the bare id): `gpt-5.6-sol` (flagship, the
+//     `gpt` alias target — it was DEFAULT_MODEL from 2026-07-10 to 2026-11-19;
+//     catalog default effort low), `gpt-5.6-terra` (mid tier, half of sol's
+//     price; default effort medium), `gpt-5.6-luna` (budget tier; default
+//     effort medium — the ChatGPT-account backend returned "Model not
+//     found" on 2026-07-10 probes, likely rollout-gated; it is
+//     catalog-listed and llmux passes it through, so it activates
+//     upstream-side). All three: 372k context
 //     window (official catalog value, probe-consistent — 369,755-token
 //     input accepted, ~380k rejected; up from gpt-5.5's 272k input cap);
 //     harness auto-compacts at 340k (metrics/model-registry.ts GPT_5_6_*);
@@ -67,20 +74,22 @@ const fireSettingsInvalidate = invalidator.fire;
 //     llmux src/provider/codex.rs CLIENT_CONTEXT_SUFFIX; SDK-side window
 //     becomes 1M / blocking limit 977k, with the shared GPT `[1m]` 600k
 //     auto-compact default — no separate POLICY_PROFILES row). Both spellings are
-//     user-SELECTABLE; the default stays `gpt-5.6-sol` (the `gpt` alias
-//     is intentionally NOT bumped), and the `astra`/`gpt-6`/`gpt6`
-//     shorthand aliases point at the `[1m]` variant so a user typing the
-//     shorthand does not silently get a fifth of the window they meant.
-//   - `gpt-6.1-sol` (added 2026-10-14) is the newest sol generation and rides
-//     the same llmux codex passthrough (llmux forwards the slug verbatim and
-//     moved its own `sol` alias to it on 2026-10-06). 272k context window
-//     (openai/codex catalog value — same class as gpt-6-astra); it is a
-//     declared row in metrics/model-profile.ts with the gen-6 numbers (249k
-//     blocking limit, 240k auto-compact). The `[1m]` opt-in variant ships
-//     alongside it under the shared GPT `[1m]` policy (1M window, 977k
-//     blocking limit, 600k auto-compact). The `sol` / `sol[1m]` / `gpt-6.1`
-//     shorthands point at the `[1m]` variant; the default stays
-//     `gpt-5.6-sol`, whose literal ids remain selectable.
+//     user-SELECTABLE but neither is the default (the `gpt` alias is
+//     intentionally NOT bumped and stays on `gpt-5.6-sol`), and the
+//     `gpt-6`/`gpt6` shorthand aliases point at the `[1m]` variant so a user
+//     typing the shorthand does not silently get a fifth of the window they
+//     meant. (`astra`
+//     followed the newest astra to gpt-6.2-astra on 2026-11-18.)
+//   - `gpt-6.1-sol` (added 2026-10-14) rides the same llmux codex passthrough
+//     (llmux forwards the slug verbatim). It was the `sol` shorthand target
+//     from 2026-10-14 until gpt-6.2-sol replaced it on 2026-11-18. Its
+//     openai/codex catalog context_window was 272k until 2026-11-17, when
+//     the catalog raised it to 500,000 (openai/codex models.json 6c0cee5);
+//     it is a declared row in metrics/model-profile.ts with the same 500k
+//     numbers as gpt-6.1-terra (477k blocking limit, 450k auto-compact). The
+//     `[1m]` opt-in variant ships alongside it under the shared GPT `[1m]`
+//     policy (1M window, 977k blocking limit, 600k auto-compact). The
+//     `gpt-6.1` generation shorthand still points at the `[1m]` variant.
 //   - `gpt-6.1-terra` (added 2026-11-10) is generation 6.1's mid tier (OpenAI
 //     release 2026-10-26) and rides the same llmux codex passthrough (llmux
 //     moved its own `terra` alias to it on 2026-11-10). Unlike sol and astra
@@ -90,6 +99,18 @@ const fireSettingsInvalidate = invalidator.fire;
 //     variant ships alongside it under the shared GPT `[1m]` policy. The
 //     `terra` / `terra[1m]` shorthands point at the `[1m]` variant;
 //     `gpt-5.6-terra` stays selectable by its literal id.
+//   - `gpt-6.2-sol` and `gpt-6.2-astra` (added 2026-11-18; OpenAI release
+//     2026-11-17) are generation 6.2's two tiers and ride the same llmux
+//     codex passthrough (llmux moved its own `sol` alias to gpt-6.2-sol and
+//     its `astra` alias to gpt-6.2-astra[1m] on 2026-11-18). Their
+//     openai/codex catalog context_windows are 500,000 (sol) and 272,000
+//     (astra), so each is a declared row in metrics/model-profile.ts: sol
+//     with the gpt-6.1-terra numbers (477k blocking limit, 450k
+//     auto-compact), astra with the gpt-6-astra numbers (249k / 240k). Both
+//     `[1m]` opt-in variants ship alongside under the shared GPT `[1m]`
+//     policy. The `sol` / `sol[1m]` / `gpt-6.2` shorthands point at
+//     `gpt-6.2-sol[1m]` and `astra` / `astra[1m]` at `gpt-6.2-astra[1m]`.
+//     There is no 6.2 terra or luna tier, so `terra` and `luna` stay put.
 //   - `claude-fable-5-2` (added 2026-11-10; Anthropic release 2026-11-09) is
 //     the newest fable and leads both claude blocks. Native 1M like 5.1 (no
 //     200K mode); the `[1m]` spelling carries the declared 750k policy row and
@@ -128,6 +149,8 @@ const fireSettingsInvalidate = invalidator.fire;
 // Issue #656 regression guard: any shrinking of this list (as attempted in
 // abandoned PR #652) silently deletes user-selectable models. Tests assert
 // exact array equality — NOT just length — to catch that class of mistake.
+// The only sanctioned removal is an owner-ordered retirement, recorded by id
+// and date in that test (`gpt-5.5`, 2026-11-19).
 export const AVAILABLE_MODELS = [
   'claude-fable-5-2',
   'claude-fable-5-1',
@@ -158,7 +181,6 @@ export const AVAILABLE_MODELS = [
   // `sonnet` / `haiku` shorthands, the same owners as the llmux catalog.
   'claude-sonnet-5-5[1m]',
   'claude-haiku-5-5[1m]',
-  'gpt-5.5',
   'gpt-5.6-sol',
   'gpt-5.6-sol[1m]',
   'gpt-5.6-terra',
@@ -171,6 +193,10 @@ export const AVAILABLE_MODELS = [
   'gpt-6.1-sol[1m]',
   'gpt-6.1-terra',
   'gpt-6.1-terra[1m]',
+  'gpt-6.2-sol',
+  'gpt-6.2-sol[1m]',
+  'gpt-6.2-astra',
+  'gpt-6.2-astra[1m]',
   'grok-4.7',
   'grok-4.6',
 ] as const;
@@ -193,8 +219,9 @@ export type ModelInputResolution =
 // "Latest opus" contract:
 //   - The bare `opus` and `opus[1m]` aliases follow the current latest opus
 //     and are the single update point when a new opus release ships. To roll
-//     forward to 4.9, only these two rows + AVAILABLE_MODELS need to change —
-//     DEFAULT_MODEL inherits the new pointer (see below).
+//     forward, only these two rows + AVAILABLE_MODELS need to change —
+//     DEFAULT_MODEL follows `opus` (since 2026-11-19), so it inherits the new
+//     pointer (see below).
 //   - Version-pinned aliases (`opus-4.8`, `opus-4.7`, ...) remain stable so
 //     users who explicitly chose a generation don't get silently upgraded.
 export const MODEL_ALIASES: Record<string, ModelId> = {
@@ -243,36 +270,42 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
   'haiku-5-5': 'claude-haiku-5-5[1m]',
   'haiku-5-5[1m]': 'claude-haiku-5-5[1m]',
   'haiku-4.5': 'claude-haiku-4-5-20251001',
-  // `gpt` follows the current latest gpt generation (llmux codex backend) —
-  // bump this row (plus AVAILABLE_MODELS) when a new generation lands;
-  // DEFAULT_MODEL inherits the new pointer (see below). Version-pinned
-  // `gpt5.5` / `gpt5.6` stay stable so users who explicitly chose a
-  // generation don't get silently upgraded. The canonical ids are already in
-  // AVAILABLE_MODELS, so resolveModelInput accepts them directly — these
-  // aliases only cover the shorthand spellings.
+  // `gpt` points at gpt-5.6-sol (llmux codex backend). It is NOT the default
+  // pointer any more — DEFAULT_MODEL follows `opus` since 2026-11-19 (it
+  // followed this row from 2026-07-10). Version-pinned `gpt5.6` stays stable
+  // so users who explicitly chose a generation don't get silently upgraded.
+  // The `gpt5.5` alias was removed with the gpt-5.5 retirement (2026-11-19);
+  // typing it is refused with a suggestion (model-profile.ts
+  // RETIRED_MODEL_INPUTS). The canonical ids are already in AVAILABLE_MODELS,
+  // so resolveModelInput accepts them directly — these aliases only cover the
+  // shorthand spellings.
   gpt: 'gpt-5.6-sol',
-  'gpt5.5': 'gpt-5.5',
   // There is no bare `gpt-5.6` model — the spelling is kept as an alias to
   // the sol flagship so legacy persisted settings and muscle-memory input
   // keep resolving (llmux also maps the bare id to sol on the wire).
   'gpt-5.6': 'gpt-5.6-sol',
   'gpt5.6': 'gpt-5.6-sol',
   // Tier shorthands. `sol` / `sol[1m]` follow the NEWEST sol generation
-  // (gpt-6.1-sol since 2026-10-14, matching llmux's own `sol` alias) and land
-  // on its `[1m]` row — same rule as `astra` / `fable` / `opus`: a family
-  // shorthand selects the spelling whose SDK-side window is actually 1M
-  // (1M window / 977k blocking limit / 600k trigger). `gpt-6.1` is the bare
-  // generation spelling. gpt-5.6-sol stays reachable by its literal ids and
-  // the pinned `gpt-5.6` / `gpt5.6` aliases above; bump these rows (plus
-  // AVAILABLE_MODELS) when a newer sol generation lands.
-  sol: 'gpt-6.1-sol[1m]',
-  'sol[1m]': 'gpt-6.1-sol[1m]',
+  // (gpt-6.2-sol since 2026-11-18, matching llmux's own `sol` alias; it was
+  // gpt-6.1-sol from 2026-10-14) and land on its `[1m]` row — same rule as
+  // `astra` / `fable` / `opus`: a family shorthand selects the spelling whose
+  // SDK-side window is actually 1M (1M window / 977k blocking limit / 600k
+  // trigger). `gpt-6.2` and `gpt-6.1` are the generation spellings, each on
+  // its own generation's flagship (sol); a generation alias is pinned, so
+  // `gpt-6.1` does not move. gpt-6.1-sol and gpt-5.6-sol stay reachable by
+  // their literal ids (and gpt-5.6-sol by the pinned `gpt-5.6` / `gpt5.6`
+  // aliases above); bump `sol` / `sol[1m]` (plus AVAILABLE_MODELS) when a
+  // newer sol generation lands.
+  sol: 'gpt-6.2-sol[1m]',
+  'sol[1m]': 'gpt-6.2-sol[1m]',
+  'gpt-6.2': 'gpt-6.2-sol[1m]',
   'gpt-6.1': 'gpt-6.1-sol[1m]',
   // `terra` / `terra[1m]` follow the NEWEST terra generation (gpt-6.1-terra
   // since 2026-11-10, matching llmux's own `terra` alias) and land on its
   // `[1m]` row — the same newest-[1m] family-shorthand rule as `sol`. The
   // bare gpt-6.1-terra (500k) and gpt-5.6-terra stay reachable by their
   // literal ids. `gpt-6.1` stays on sol, generation 6.1's flagship.
+  // Generation 6.2 has no terra tier, so `terra` stays on 6.1.
   terra: 'gpt-6.1-terra[1m]',
   'terra[1m]': 'gpt-6.1-terra[1m]',
   // `luna` / `luna[1m]` follow the newest luna (gpt-6-luna, released
@@ -281,19 +314,25 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
   // selectable by its literal id.
   luna: 'gpt-6-luna[1m]',
   'luna[1m]': 'gpt-6-luna[1m]',
+  // `astra` / `astra[1m]` follow the NEWEST astra generation (gpt-6.2-astra
+  // since 2026-11-18, matching llmux's own `astra` alias; it was gpt-6-astra
+  // from 2026-09-07) and land on its `[1m]` opt-in id — the shorthand a user
+  // types must land on the spelling whose SDK-side window is actually 1M
+  // (same rule as `sol` / `opus` / `fable`). `astra[1m]` is included for the
+  // same reason `sol[1m]` is: the tier-shorthand + explicit `[1m]` spelling
+  // is real muscle-memory input and the llmux catalog only advertises the
+  // bare `astra` alias, so without this row `astra[1m]` would resolve to
+  // `null` at the store even though its resolved id is a valid allow-list
+  // member. The bare gpt-6.2-astra (272k) stays selectable by its literal
+  // spelling; bump these rows (plus AVAILABLE_MODELS) when a newer astra
+  // lands.
+  astra: 'gpt-6.2-astra[1m]',
+  'astra[1m]': 'gpt-6.2-astra[1m]',
   // gpt-6 (2026-09-03 release, wired 2026-09-07). Selectable, NOT the
-  // default — `gpt` above still points at gpt-5.6-sol. `gpt-6` is the bare
-  // generation spelling and `astra` the tier shorthand; both point at the
-  // `[1m]` opt-in id — the shorthand a user types must land on the spelling
-  // whose SDK-side window is actually 1M (same rule as `opus` / `fable`).
-  // The bare `gpt-6-astra` (272k) stays selectable by its literal spelling.
-  // `astra[1m]` is included for the same reason `sol[1m]` is: the tier-
-  // shorthand + explicit `[1m]` spelling is real muscle-memory input and the
-  // llmux catalog only advertises the bare `astra` alias, so without this
-  // row `astra[1m]` would resolve to `null` at the store even though its
-  // resolved id is a valid allow-list member.
-  astra: 'gpt-6-astra[1m]',
-  'astra[1m]': 'gpt-6-astra[1m]',
+  // default, and `gpt` above still points at gpt-5.6-sol. `gpt-6` / `gpt6` are
+  // the pinned generation spellings and stay on generation 6's astra `[1m]`
+  // id; the bare `gpt-6-astra` (272k) stays selectable by its literal
+  // spelling.
   'gpt-6': 'gpt-6-astra[1m]',
   gpt6: 'gpt-6-astra[1m]',
   // 1M-context opt-in variants.
@@ -335,14 +374,21 @@ export function migrateOpusDefaultModel(model: string): string {
   return OPUS_FAMILY_RE.test(model.trim().toLowerCase()) ? OPUS_DEFAULT_MIGRATION_TARGET : model;
 }
 
-// DEFAULT_MODEL is a logical pointer to the current latest gpt flagship
-// (llmux codex backend) — gpt-5.6-sol since 2026-07-10 (operator decision;
-// was opus[1m] before). Flipping MODEL_ALIASES['gpt'] propagates here
-// automatically — single-line edit per new gpt release. The `??` literal is a
-// defence-in-depth fallback for the (test-asserted) case where the alias is
-// ever dropped; the Issue #656 exact-set test fails loud at CI time before
-// that branch matters.
-export const DEFAULT_MODEL: ModelId = MODEL_ALIASES['gpt'] ?? 'gpt-5.6-sol';
+// DEFAULT_MODEL is a logical pointer to the current latest opus — the `opus`
+// alias, `claude-opus-5-5[1m]` today — since 2026-11-19 (owner instruction;
+// it followed the `gpt` alias, gpt-5.6-sol, from 2026-07-10, and was
+// opus[1m] before that). Bumping MODEL_ALIASES.opus propagates here
+// automatically. It reaches brand-new users, users with no stored default, and
+// stored or session values that no longer resolve (coerceToAvailableModel).
+// Users whose SAVED default was the old one (gpt-5.6-sol — the store writes
+// DEFAULT_MODEL into every record it creates) or the retired gpt-5.5 were
+// moved to opus once on 2026-11-19 (deploy/migrate-default-gpt-to-opus-once.ts);
+// every other saved choice is kept, and a user may switch back.
+// The `??` literal is a defence-in-depth fallback for the (test-asserted)
+// case where the alias is ever dropped; the Issue #656 exact-set test fails
+// loud at CI time before that branch matters. deploy/main-env-bootstrap.ts
+// mirrors the literal (parity-tested).
+export const DEFAULT_MODEL: ModelId = MODEL_ALIASES.opus ?? 'claude-opus-5-5[1m]';
 
 /**
  * Coerce arbitrary stored input to a known ModelId, falling back to DEFAULT_MODEL.
@@ -1661,9 +1707,6 @@ export class UserSettingsStore {
         return 'Opus 4.5';
       case 'claude-haiku-4-5-20251001':
         return 'Haiku 4.5';
-      case 'gpt-5.5':
-        // Served via llmux codex backend; 275k context window.
-        return 'GPT-5.5 (275k)';
       case 'gpt-5.6-sol':
         // Flagship tier (llmux codex backend); 372k context window per the
         // openai/codex model catalog.
@@ -1700,9 +1743,9 @@ export class UserSettingsStore {
         // Shared GPT [1m] policy: 1M window, 977k SDK block, 600k auto-compact.
         return 'GPT-6 Astra (1M)';
       case 'gpt-6.1-sol':
-        // Newest sol generation (llmux codex backend); 272k catalog window,
-        // 240k auto-compact (model-profile.ts).
-        return 'GPT-6.1 Sol (272k)';
+        // Generation 6.1 sol (llmux codex backend); 500k catalog window since
+        // 2026-11-17 (was 272k), 450k auto-compact (model-profile.ts).
+        return 'GPT-6.1 Sol (500k)';
       case 'gpt-6.1-sol[1m]':
         // Shared GPT [1m] policy: 1M window, 977k SDK block, 600k auto-compact.
         return 'GPT-6.1 Sol (1M)';
@@ -1713,6 +1756,20 @@ export class UserSettingsStore {
       case 'gpt-6.1-terra[1m]':
         // Shared GPT [1m] policy: 1M window, 977k SDK block, 600k auto-compact.
         return 'GPT-6.1 Terra (1M)';
+      case 'gpt-6.2-sol':
+        // Newest sol generation (llmux codex backend); 500k catalog window,
+        // 450k auto-compact (model-profile.ts).
+        return 'GPT-6.2 Sol (500k)';
+      case 'gpt-6.2-sol[1m]':
+        // Shared GPT [1m] policy: 1M window, 977k SDK block, 600k auto-compact.
+        return 'GPT-6.2 Sol (1M)';
+      case 'gpt-6.2-astra':
+        // Newest astra generation (llmux codex backend); 272k catalog window,
+        // 240k auto-compact (model-profile.ts).
+        return 'GPT-6.2 Astra (272k)';
+      case 'gpt-6.2-astra[1m]':
+        // Shared GPT [1m] policy: 1M window, 977k SDK block, 600k auto-compact.
+        return 'GPT-6.2 Astra (1M)';
       default:
         // llmux model-catalog overlay — catalog models carry their llmux
         // display name (e.g. `grok-4.5` → "Grok 4.5"); anything else echoes

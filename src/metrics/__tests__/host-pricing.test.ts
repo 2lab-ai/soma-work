@@ -42,20 +42,28 @@ describe('host pricing — llmux models priced by the host table, Claude by the 
   });
 
   it('every llmux model soma-work routes is host-priced at its own row, never the Sonnet fallback', () => {
-    // The live llmux catalog (2026-11-10) places these outside the claude
-    // group, so the host table is their ONLY price. Before the rows existed
-    // each one was booked at FALLBACK_SPEC ($3 in / $15 out / $0.30 cached).
+    // The live llmux catalog (2026-11-10; the 6.2 rows 2026-11-18) places
+    // these outside the claude group, so the host table is their ONLY price.
+    // Before the rows existed each one was booked at FALLBACK_SPEC ($3 in /
+    // $15 out / $0.30 cached).
     const ids: Record<string, [group: string, inPerM: number, outPerM: number, cachedPerM: number]> = {
       'gpt-6-sol': ['codex', 2, 10, 0.2],
       'gpt-6-luna': ['codex', 0.1, 0.5, 0.01],
       'gpt-6.1-terra[1m]': ['codex', 1, 5, 0.05],
+      // llmux lists `sol` on the bare 6.2 sol id and `astra` on the 6.2 astra [1m] id.
+      'gpt-6.2-sol': ['codex', 2, 10, 0.1],
+      'gpt-6.2-astra[1m]': ['codex', 8, 40, 0.4],
       'grok-4.7': ['grok', 2, 6, 0.5],
       'grok-4.6': ['grok', 2, 6, 0.5],
       'grok-4.5': ['grok', 2, 6, 0.3],
     };
+    const aliases: Record<string, string> = {
+      terra: 'gpt-6.1-terra[1m]',
+      sol: 'gpt-6.2-sol',
+      astra: 'gpt-6.2-astra[1m]',
+    };
     const p = createHostPricing({
-      resolveInput: (id: string) =>
-        id.toLowerCase() === 'terra' ? 'gpt-6.1-terra[1m]' : id.toLowerCase() in ids ? id.toLowerCase() : null,
+      resolveInput: (id: string) => aliases[id.toLowerCase()] ?? (id.toLowerCase() in ids ? id.toLowerCase() : null),
       getGroupFor: (id: string) => ids[id.toLowerCase()]?.[0] ?? null,
     });
     for (const [id, [, inPerM, outPerM, cachedPerM]] of Object.entries(ids)) {
@@ -69,6 +77,8 @@ describe('host pricing — llmux models priced by the host table, Claude by the 
     // The SDK reports the alias; the host resolves it to the canonical row.
     expect(p.hostPriced('terra')).toBe(true);
     expect(p.calculateTokenCost('terra', 1e6, 1e6, 0, 0)).toBeCloseTo(6, 6);
+    expect(p.calculateTokenCost('sol', 1e6, 1e6, 0, 0)).toBeCloseTo(12, 6);
+    expect(p.calculateTokenCost('astra', 1e6, 1e6, 0, 0)).toBeCloseTo(48, 6);
   });
 
   it('Claude models and models the catalog does not know keep the SDK cost', () => {

@@ -12,21 +12,34 @@ import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../../user-settings-store', () => {
+vi.mock('../../../user-settings-store', async () => {
+  // The REAL refusal table (retired gpt-5.5, fake grok [1m]) so the refusal
+  // text under test is production text, not a hand-written string.
+  const { resolveModelInputCompatibility } = await vi.importActual<typeof import('../../../metrics/model-profile')>(
+    '../../../metrics/model-profile',
+  );
   const resolve = (input: string) => {
     const map: Record<string, string> = {
-      'gpt-5.5': 'gpt-5.5',
-      gpt: 'gpt-5.5',
+      'gpt-6.2-sol': 'gpt-6.2-sol',
+      gpt: 'gpt-6.2-sol',
       opus: 'claude-opus-4-8',
       'claude-fable-5': 'claude-fable-5',
     };
     return map[input] ?? null;
   };
   return {
-    AVAILABLE_MODELS: ['claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-4-6', 'gpt-5.5'],
+    AVAILABLE_MODELS: ['claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-4-6', 'gpt-6.2-sol'],
     userSettingsStore: {
       resolveModelInput: vi.fn(resolve),
       resolveModelInputWithRefresh: vi.fn(async (input: string) => resolve(input)),
+      resolveModelInputDetailedWithRefresh: vi.fn(async (input: string) => {
+        const compat = resolveModelInputCompatibility(input);
+        if (compat && 'rejectedReason' in compat) {
+          return { status: 'rejected', rejectedReason: compat.rejectedReason, suggestedModel: compat.suggestedModel };
+        }
+        const id = resolve(input);
+        return id ? { status: 'accepted', modelId: id } : { status: 'unknown' };
+      }),
     },
   };
 });
@@ -105,7 +118,7 @@ describe('canHandle', () => {
     '스케줄러',
     '스케쥴러',
     'cron list',
-    'cron model daily gpt-5.5',
+    'cron model daily gpt-6.2-sol',
     'cron target daily dm',
     'cron delete daily',
     'cron help',
@@ -118,7 +131,7 @@ describe('canHandle', () => {
     '크론 잡 하나 만들어줘',
     'schedule a meeting tomorrow',
     'cronjob이 뭐야',
-    'model gpt-5.5',
+    'model gpt-6.2-sol',
     'goal list',
   ])('does NOT handle %s (falls through to the model)', (text) => {
     expect(handler.canHandle(text)).toBe(false);
@@ -159,7 +172,7 @@ describe('list', () => {
 
   it('admin sees all jobs with owner shown', async () => {
     seed();
-    seed({ name: 'other-job', owner: 'U_BOB', target: 'dm', modelConfig: { type: 'custom', model: 'gpt-5.5' } });
+    seed({ name: 'other-job', owner: 'U_BOB', target: 'dm', modelConfig: { type: 'custom', model: 'gpt-6.2-sol' } });
     const ctx = makeCtx({ user: 'U_ADMIN', text: 'cron' });
     await handler.execute(ctx);
     const out = saidText(ctx);
@@ -167,7 +180,7 @@ describe('list', () => {
     expect(out).toContain('other-job');
     expect(out).toContain('<@U_ALICE>');
     expect(out).toContain('<@U_BOB>');
-    expect(out).toContain('gpt-5.5');
+    expect(out).toContain('gpt-6.2-sol');
     expect(out).toContain('dm');
   });
 
@@ -186,11 +199,11 @@ describe('model change', () => {
     const ctx = makeCtx({ text: 'cron model daily-report gpt' });
     const r = await handler.execute(ctx);
     expect(r.handled).toBe(true);
-    expect(storage.getJobsByOwner('U_ALICE')[0].modelConfig).toEqual({ type: 'custom', model: 'gpt-5.5' });
+    expect(storage.getJobsByOwner('U_ALICE')[0].modelConfig).toEqual({ type: 'custom', model: 'gpt-6.2-sol' });
   });
 
   it('default clears the override (creator current model at fire time)', async () => {
-    seed({ modelConfig: { type: 'custom', model: 'gpt-5.5' } });
+    seed({ modelConfig: { type: 'custom', model: 'gpt-6.2-sol' } });
     const ctx = makeCtx({ text: 'cron model daily-report default' });
     await handler.execute(ctx);
     expect(storage.getJobsByOwner('U_ALICE')[0].modelConfig).toBeUndefined();
@@ -204,7 +217,7 @@ describe('model change', () => {
   });
 
   it('bare opus / fable store the floating alias type, not a pinned id', async () => {
-    seed({ modelConfig: { type: 'custom', model: 'gpt-5.5' } });
+    seed({ modelConfig: { type: 'custom', model: 'gpt-6.2-sol' } });
     for (const type of ['opus', 'fable'] as const) {
       const ctx = makeCtx({ text: `cron model daily-report ${type.toUpperCase()}` });
       await handler.execute(ctx);
@@ -218,6 +231,20 @@ describe('model change', () => {
     const ctx = makeCtx({ text: 'cron model daily-report not-a-model' });
     await handler.execute(ctx);
     expect(saidText(ctx)).toContain('알 수 없는 모델');
+    expect(storage.getJobsByOwner('U_ALICE')[0].modelConfig).toBeUndefined();
+  });
+
+  it.each([
+    'gpt-5.5',
+    'gpt5.5',
+  ])('the retired %s is refused WITH its reason and a suggestion, not "unknown"', async (value) => {
+    seed();
+    const ctx = makeCtx({ text: `cron model daily-report ${value}` });
+    await handler.execute(ctx);
+    const out = saidText(ctx);
+    expect(out).toContain('retired on 2026-11-19');
+    expect(out).toContain('`gpt-5.6-sol`');
+    expect(out).not.toContain('알 수 없는 모델');
     expect(storage.getJobsByOwner('U_ALICE')[0].modelConfig).toBeUndefined();
   });
 });

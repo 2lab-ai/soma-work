@@ -910,7 +910,7 @@ describe('CronScheduler — Model Override', () => {
       owner: 'U123',
       channel: 'C456',
       threadTs: 'thread-1',
-      modelConfig: { type: 'custom', model: 'claude-opus-4-6-20250414' },
+      modelConfig: { type: 'custom', model: 'claude-opus-4-6' },
     });
 
     const { deps, injectedMessages } = createMockDeps(storage);
@@ -923,7 +923,41 @@ describe('CronScheduler — Model Override', () => {
     await scheduler.tick();
 
     expect(injectedMessages).toHaveLength(1);
-    expect(injectedMessages[0].modelOverride).toBe('claude-opus-4-6-20250414');
+    expect(injectedMessages[0].modelOverride).toBe('claude-opus-4-6');
+  });
+
+  it('a custom model the store refuses or cannot resolve falls back to the default (no override)', async () => {
+    // The cron MCP server stores `model_name` verbatim, so a job can hold the
+    // retired gpt-5.5 (2026-11-19) or a fake grok [1m]. Resolved at fire time:
+    // those reach llmux as nothing — the fire runs on the creator's default.
+    expect(resolveModelOverride({ type: 'custom', model: 'gpt-5.5' }, 'U1')).toBeUndefined();
+    expect(resolveModelOverride({ type: 'custom', model: 'gpt5.5' }, 'U1')).toBeUndefined();
+    expect(resolveModelOverride({ type: 'custom', model: 'grok-4.6[1m]' }, 'U1')).toBeUndefined();
+    expect(resolveModelOverride({ type: 'custom', model: 'claude-opus-4-6-20250414' }, 'U1')).toBeUndefined();
+    // Valid ids pass (canonicalised); aliases resolve at fire time.
+    expect(resolveModelOverride({ type: 'custom', model: 'gpt-6.2-sol' }, 'U1')).toBe('gpt-6.2-sol');
+    expect(resolveModelOverride({ type: 'custom', model: ' GPT-5.6-SOL ' }, 'U1')).toBe('gpt-5.6-sol');
+    expect(resolveModelOverride({ type: 'custom', model: 'sonnet' }, 'U1')).toBe(MODEL_ALIASES.sonnet);
+
+    const storage = new CronStorage(tmpFile);
+    storage.addJob({
+      name: 'retired-model',
+      expression: '* * * * *',
+      prompt: 'Retired model task',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: 'thread-1',
+      modelConfig: { type: 'custom', model: 'gpt-5.5' },
+    });
+    const { deps, injectedMessages } = createMockDeps(storage);
+    deps.sessionRegistry.createSession('U123', 'TestUser', 'C456', 'thread-1');
+    deps.sessionRegistry.transitionToMain('C456', 'thread-1', 'default');
+    deps.sessionRegistry.setActivityState('C456', 'thread-1', 'idle');
+
+    await new CronScheduler(deps).tick();
+
+    expect(injectedMessages).toHaveLength(1);
+    expect(injectedMessages[0].modelOverride).toBeUndefined();
   });
 
   it('default model type has no modelOverride', async () => {

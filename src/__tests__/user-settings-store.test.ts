@@ -165,6 +165,21 @@ describe('syncSlackAccountEmail (email follows the Slack account)', () => {
 // `claude-sonnet-4-5-*`, `claude-opus-4-5-*`, and `claude-haiku-4-5-*`. These
 // tests assert the **exact** expected arrays/records, not just the length,
 // so any future silent removal is caught immediately.
+//
+// The one sanctioned way out of the list is an OWNER-ORDERED retirement,
+// recorded here by id, date and reason — never by quietly editing the array.
+const DELIBERATELY_RETIRED_MODELS = [
+  {
+    id: 'gpt-5.5',
+    retiredOn: '2026-11-19',
+    // Owner instruction ("gpt-5.5 지워"). The ChatGPT-account Codex backend
+    // has rejected it since 2026-10-14 — llmux probe 2026-11-18 returned 400
+    // "The 'gpt-5.5' model is not supported when using Codex with a ChatGPT
+    // account." (https://github.com/2lab-ai/llmux/issues/309).
+    removedAliases: ['gpt5.5'],
+  },
+] as const;
+
 describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', () => {
   it('AVAILABLE_MODELS preserves every historical entry in the expected order', () => {
     // Fable 5 (2026-06-09) leads as the flagship; Opus 5 (2026-08-26) heads the
@@ -181,7 +196,11 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
     // `[1m]` variant (2026-11-10, the `terra` shorthand target) follow sol.
     // Sonnet 5.5 / Haiku 5.5 (bare + `[1m]`) and gpt-6-luna (+ `[1m]`) join
     // on 2026-11-10 as the `sonnet` / `haiku` / `luna` targets (#1120).
-    // Historical entries MUST survive every bump.
+    // gpt-6.2-sol and gpt-6.2-astra (+ `[1m]`, 2026-11-18, the new `sol` /
+    // `astra` shorthand targets) follow terra.
+    // Historical entries MUST survive every bump — except the owner-ordered
+    // retirements in DELIBERATELY_RETIRED_MODELS (gpt-5.5, which sat between
+    // `claude-haiku-5-5[1m]` and `gpt-5.6-sol`, left on 2026-11-19).
     expect([...AVAILABLE_MODELS]).toEqual([
       'claude-fable-5-2',
       'claude-fable-5-1',
@@ -208,7 +227,6 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       'claude-sonnet-4-6[1m]',
       'claude-sonnet-5-5[1m]',
       'claude-haiku-5-5[1m]',
-      'gpt-5.5',
       'gpt-5.6-sol',
       'gpt-5.6-sol[1m]',
       'gpt-5.6-terra',
@@ -221,6 +239,10 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       'gpt-6.1-sol[1m]',
       'gpt-6.1-terra',
       'gpt-6.1-terra[1m]',
+      'gpt-6.2-sol',
+      'gpt-6.2-sol[1m]',
+      'gpt-6.2-astra',
+      'gpt-6.2-astra[1m]',
       'grok-4.7',
       'grok-4.6',
     ]);
@@ -235,6 +257,18 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
     // spellings stay selectable; the aliases point at the literal one.
     expect(AVAILABLE_MODELS as readonly string[]).toContain('claude-fable-5[1m]');
     expect(AVAILABLE_MODELS as readonly string[]).toContain('claude-fable-5');
+  });
+
+  it('records every removal as a deliberate, dated retirement (gpt-5.5, 2026-11-19)', () => {
+    for (const retired of DELIBERATELY_RETIRED_MODELS) {
+      expect(retired.retiredOn).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      // Gone from selection, from the alias table, and as an alias target…
+      expect(AVAILABLE_MODELS as readonly string[]).not.toContain(retired.id);
+      expect(Object.values(MODEL_ALIASES)).not.toContain(retired.id);
+      for (const alias of retired.removedAliases) expect(MODEL_ALIASES).not.toHaveProperty(alias);
+      // …and a stored value of it lands on the default instead of surviving.
+      expect(coerceToAvailableModel(retired.id)).toBe(DEFAULT_MODEL);
+    }
   });
 
   it('MODEL_ALIASES has exactly the 48 expected key→value mappings', () => {
@@ -272,15 +306,20 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       'haiku-5-5': 'claude-haiku-5-5[1m]',
       'haiku-5-5[1m]': 'claude-haiku-5-5[1m]',
       'haiku-4.5': 'claude-haiku-4-5-20251001',
+      // `gpt` stays on gpt-5.6-sol; it is no longer the DEFAULT_MODEL pointer
+      // (DEFAULT_MODEL follows `opus` since 2026-11-19). `gpt5.5` was removed
+      // with the gpt-5.5 retirement.
       gpt: 'gpt-5.6-sol',
-      'gpt5.5': 'gpt-5.5',
       'gpt-5.6': 'gpt-5.6-sol',
       'gpt5.6': 'gpt-5.6-sol',
-      // `sol` / `sol[1m]` / `gpt-6.1` follow the newest sol generation and
-      // land on its `[1m]` row (2026-10-14) — gpt-5.6-sol stays reachable by
-      // literal id and the pinned `gpt-5.6` / `gpt5.6` aliases above.
-      sol: 'gpt-6.1-sol[1m]',
-      'sol[1m]': 'gpt-6.1-sol[1m]',
+      // `sol` / `sol[1m]` follow the newest sol generation and land on its
+      // `[1m]` row (gpt-6.2-sol since 2026-11-18; gpt-6.1-sol from
+      // 2026-10-14). The generation spellings `gpt-6.2` / `gpt-6.1` stay on
+      // their own generation's sol — gpt-5.6-sol stays reachable by literal
+      // id and the pinned `gpt-5.6` / `gpt5.6` aliases above.
+      sol: 'gpt-6.2-sol[1m]',
+      'sol[1m]': 'gpt-6.2-sol[1m]',
+      'gpt-6.2': 'gpt-6.2-sol[1m]',
       'gpt-6.1': 'gpt-6.1-sol[1m]',
       // `terra` / `terra[1m]` follow the newest terra generation and land
       // on its `[1m]` row (2026-11-10) — gpt-5.6-terra stays reachable by
@@ -289,16 +328,18 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       'terra[1m]': 'gpt-6.1-terra[1m]',
       luna: 'gpt-6-luna[1m]',
       'luna[1m]': 'gpt-6-luna[1m]',
-      // gpt-6 (2026-09-07): selectable aliases only — `gpt` above still
-      // points at gpt-5.6-sol, so the default is unchanged. Shorthand
-      // aliases resolve to the `[1m]` opt-in id (same rule as `opus` /
-      // `fable`) so a user typing `astra` doesn't silently get a fifth of
-      // the window they meant; the bare 272k id stays selectable via its
-      // literal spelling. `astra[1m]` mirrors the `sol[1m]` precedent — the
-      // tier shorthand + explicit `[1m]` spelling is real muscle-memory
-      // input and the llmux catalog only advertises the bare `astra`.
-      astra: 'gpt-6-astra[1m]',
-      'astra[1m]': 'gpt-6-astra[1m]',
+      // `astra` / `astra[1m]` follow the newest astra generation
+      // (gpt-6.2-astra since 2026-11-18; gpt-6-astra from 2026-09-07) and
+      // resolve to the `[1m]` opt-in id (same rule as `opus` / `fable`) so a
+      // user typing `astra` doesn't silently get a fifth of the window they
+      // meant; the bare 272k ids stay selectable via their literal
+      // spellings. `astra[1m]` mirrors the `sol[1m]` precedent — the tier
+      // shorthand + explicit `[1m]` spelling is real muscle-memory input and
+      // the llmux catalog only advertises the bare `astra`. The gpt-6
+      // generation spellings stay pinned to gpt-6-astra[1m]; `gpt` above
+      // still points at gpt-5.6-sol.
+      astra: 'gpt-6.2-astra[1m]',
+      'astra[1m]': 'gpt-6.2-astra[1m]',
       'gpt-6': 'gpt-6-astra[1m]',
       gpt6: 'gpt-6-astra[1m]',
       'opus[1m]': 'claude-opus-5-5[1m]',
@@ -312,6 +353,13 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
 
   it('DEFAULT_MODEL is a member of AVAILABLE_MODELS', () => {
     expect(AVAILABLE_MODELS as readonly string[]).toContain(DEFAULT_MODEL);
+  });
+
+  it('DEFAULT_MODEL follows the `opus` alias (owner instruction 2026-11-19)', () => {
+    // The default moved off the `gpt` pointer; `gpt` itself did not move.
+    expect(DEFAULT_MODEL).toBe(MODEL_ALIASES.opus);
+    expect(DEFAULT_MODEL).toBe('claude-opus-5-5[1m]');
+    expect(MODEL_ALIASES.gpt).toBe('gpt-5.6-sol');
   });
 });
 
@@ -796,7 +844,8 @@ describe('model input resolution — accepted / rejected / unknown', () => {
     expect(store.resolveModelInput('opus')).toBe('claude-opus-5-5[1m]');
     expect(store.resolveModelInput('opus[1m]')).toBe('claude-opus-5-5[1m]');
     expect(store.resolveModelInput('opus-5')).toBe('claude-opus-5');
-    expect(store.resolveModelInput('sol[1m]')).toBe('gpt-6.1-sol[1m]');
+    expect(store.resolveModelInput('sol[1m]')).toBe('gpt-6.2-sol[1m]');
+    expect(store.resolveModelInput('astra')).toBe('gpt-6.2-astra[1m]');
     expect(store.resolveModelInput('terra')).toBe('gpt-6.1-terra[1m]');
     expect(store.resolveModelInput('grok-4.6')).toBe('grok-4.6');
   });

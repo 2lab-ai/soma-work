@@ -137,20 +137,35 @@ describe('model-topic.applyModel', () => {
     expect(userSettingsStore.getUserDefaultModel('U_TERRA61')).toBe('gpt-6.1-terra[1m]');
   });
 
-  it('resolves and persists `sol` as the newest sol [1m] id gpt-6.1-sol[1m]', async () => {
-    const r = await applyModel({ userId: 'U_SOL61', value: 'sol' });
+  it('resolves and persists `sol` as the newest sol [1m] id gpt-6.2-sol[1m]', async () => {
+    const r = await applyModel({ userId: 'U_SOL62', value: 'sol' });
     expect(r.ok).toBe(true);
-    expect(r.description).toContain('gpt-6.1-sol[1m]');
+    expect(r.description).toContain('gpt-6.2-sol[1m]');
     const { userSettingsStore } = await import('../../../../user-settings-store');
-    expect(userSettingsStore.getUserDefaultModel('U_SOL61')).toBe('gpt-6.1-sol[1m]');
+    expect(userSettingsStore.getUserDefaultModel('U_SOL62')).toBe('gpt-6.2-sol[1m]');
   });
 
-  it('resolves and persists `sol[1m]` as gpt-6.1-sol[1m]', async () => {
-    const r = await applyModel({ userId: 'U_SOL61_1M', value: 'sol[1m]' });
+  it('resolves and persists `sol[1m]` as gpt-6.2-sol[1m]', async () => {
+    const r = await applyModel({ userId: 'U_SOL62_1M', value: 'sol[1m]' });
     expect(r.ok).toBe(true);
-    expect(r.description).toContain('gpt-6.1-sol[1m]');
+    expect(r.description).toContain('gpt-6.2-sol[1m]');
     const { userSettingsStore } = await import('../../../../user-settings-store');
-    expect(userSettingsStore.getUserDefaultModel('U_SOL61_1M')).toBe('gpt-6.1-sol[1m]');
+    expect(userSettingsStore.getUserDefaultModel('U_SOL62_1M')).toBe('gpt-6.2-sol[1m]');
+  });
+
+  it('resolves and persists `astra` as the newest astra [1m] id gpt-6.2-astra[1m]', async () => {
+    const r = await applyModel({ userId: 'U_ASTRA62', value: 'astra' });
+    expect(r.ok).toBe(true);
+    expect(r.description).toContain('gpt-6.2-astra[1m]');
+    const { userSettingsStore } = await import('../../../../user-settings-store');
+    expect(userSettingsStore.getUserDefaultModel('U_ASTRA62')).toBe('gpt-6.2-astra[1m]');
+  });
+
+  it('the version-pinned `gpt-6.1` still persists gpt-6.1-sol[1m]', async () => {
+    const r = await applyModel({ userId: 'U_SOL61', value: 'gpt-6.1' });
+    expect(r.ok).toBe(true);
+    const { userSettingsStore } = await import('../../../../user-settings-store');
+    expect(userSettingsStore.getUserDefaultModel('U_SOL61')).toBe('gpt-6.1-sol[1m]');
   });
 
   // --- Fake `grok-*[1m]`: rejected, never normalized ---
@@ -167,9 +182,26 @@ describe('model-topic.applyModel', () => {
   });
 
   it('does NOT persist a rejected grok [1m] id as the user default', async () => {
-    const { userSettingsStore } = await import('../../../../user-settings-store');
+    const { DEFAULT_MODEL, userSettingsStore } = await import('../../../../user-settings-store');
     await applyModel({ userId: 'U_REJECT', value: 'grok-4.6[1m]' });
-    expect(userSettingsStore.getUserDefaultModel('U_REJECT')).not.toContain('[1m]');
+    // Nothing was stored — the user still reads the in-code default (which
+    // itself carries `[1m]` since it became opus on 2026-11-19).
+    expect(userSettingsStore.getUserDefaultModel('U_REJECT')).not.toBe('grok-4.6[1m]');
+    expect(userSettingsStore.getUserDefaultModel('U_REJECT')).toBe(DEFAULT_MODEL);
+  });
+
+  // --- Retired `gpt-5.5` (2026-11-19): rejected with a suggestion ---
+
+  it.each(['gpt-5.5', 'gpt5.5'])('rejects the retired %s VISIBLY and suggests gpt-5.6-sol', async (value) => {
+    const r = await applyModel({ userId: 'U_RETIRED', value });
+    expect(r.ok).toBe(false);
+    expect(r.summary).toContain(value);
+    expect(r.summary).not.toContain('not a real model');
+    expect(r.description ?? '').toContain('retired on 2026-11-19');
+    expect(r.description ?? '').toMatch(/use `gpt-5\.6-sol`/i);
+    expect(r.description ?? '').not.toContain('Available aliases');
+    const { DEFAULT_MODEL, userSettingsStore } = await import('../../../../user-settings-store');
+    expect(userSettingsStore.getUserDefaultModel('U_RETIRED')).toBe(DEFAULT_MODEL);
   });
 
   it('still reports an ordinary typo as an unknown model with the alias list', async () => {

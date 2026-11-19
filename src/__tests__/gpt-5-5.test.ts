@@ -1,30 +1,23 @@
 /**
- * Locks the gpt-5.5 (2026-07-06) release wiring. gpt-5.5's defining traits vs.
- * the claude lineup:
- *   - served via llmux's codex backend group (llmux routes `gpt-` prefixed
- *     ids to codex accounts — soma-work dispatches it like any other id);
- *   - a 275k context window the pinned Agent SDK does not know (workaround
- *     env is injected in build-stream-options.ts);
- *   - a FIXED 250k-token auto-compact trigger instead of the per-user
- *     percent threshold.
- * These tests pin the allow-list/alias/display surfaces plus the 275k/250k
- * contract so a future refactor can't silently drop the model or re-route it
- * through the percent-threshold or [1m]-suffix paths.
+ * Locks the gpt-5.5 RETIREMENT (2026-11-19, owner instruction).
+ *
+ * gpt-5.5 was selectable from 2026-07-06. The ChatGPT-account Codex backend
+ * has rejected it since 2026-10-14 (llmux probe 2026-11-18: 400 "The
+ * 'gpt-5.5' model is not supported when using Codex with a ChatGPT
+ * account."; 2lab-ai/llmux#309), so the owner removed it from selection:
+ *   - not in AVAILABLE_MODELS, no `gpt5.5` alias, no curated display label;
+ *   - typed input is REFUSED with a suggestion, not silently rewritten;
+ *   - a stored default / session model of `gpt-5.5` coerces to DEFAULT_MODEL
+ *     (opus), even if the llmux catalog still advertises the id;
+ *   - the PRICE row stays, so past gpt-5.5 usage keeps its cost when spend
+ *     is recalculated.
  */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
-import {
-  GPT_5_5_AUTO_COMPACT_TOKENS,
-  GPT_5_5_CONTEXT_WINDOW,
-  GPT_5_5_SDK_BLOCKING_LIMIT,
-  getModelSpec,
-  isGpt55Model,
-  isNativeOneMModel,
-  resolveAutoCompactTokens,
-  resolveContextWindow,
-} from '../metrics/model-registry';
+import { afterEach, describe, expect, it } from 'vitest';
+import { getModelSpec, isRejectedModelInput, resolveModelInputCompatibility } from '../metrics/model-registry';
+import { modelCatalog } from '../model-catalog';
 import {
   AVAILABLE_MODELS,
   coerceToAvailableModel,
@@ -33,79 +26,92 @@ import {
   UserSettingsStore,
 } from '../user-settings-store';
 
-function makeStore(): UserSettingsStore {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gpt55-test-'));
-  return new UserSettingsStore(dir);
+function makeDir(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'gpt55-retired-test-'));
 }
 
-describe('gpt-5.5 — release wiring', () => {
-  it('lists gpt-5.5 in AVAILABLE_MODELS (user-selectable)', () => {
-    expect(AVAILABLE_MODELS as readonly string[]).toContain('gpt-5.5');
+afterEach(() => {
+  modelCatalog.__testReset();
+});
+
+describe('gpt-5.5 — retired from selection (2026-11-19)', () => {
+  it('is not in AVAILABLE_MODELS', () => {
+    expect(AVAILABLE_MODELS as readonly string[]).not.toContain('gpt-5.5');
   });
 
-  it('keeps the version-pinned `gpt5.5` alias (the bare `gpt` moved to gpt-5.6)', () => {
-    expect(MODEL_ALIASES['gpt5.5']).toBe('gpt-5.5');
+  it('has no alias row, and no alias points at it', () => {
+    expect(MODEL_ALIASES).not.toHaveProperty('gpt5.5');
+    expect(MODEL_ALIASES).not.toHaveProperty('gpt-5.5');
+    expect(Object.values(MODEL_ALIASES)).not.toContain('gpt-5.5');
   });
 
-  it('resolveModelInput accepts the canonical id and the pinned alias', () => {
-    const store = makeStore();
-    expect(store.resolveModelInput('gpt-5.5')).toBe('gpt-5.5');
-    expect(store.resolveModelInput('  GPT5.5 ')).toBe('gpt-5.5');
+  it('a stored gpt-5.5 coerces to DEFAULT_MODEL (opus)', () => {
+    expect(coerceToAvailableModel('gpt-5.5')).toBe(DEFAULT_MODEL);
+    expect(coerceToAvailableModel('  GPT-5.5  ')).toBe(DEFAULT_MODEL);
+    expect(coerceToAvailableModel('gpt-5.5[1m]')).toBe(DEFAULT_MODEL);
+    expect(DEFAULT_MODEL).toBe(MODEL_ALIASES.opus);
   });
 
-  it('is NOT the DEFAULT_MODEL (superseded by gpt-5.6-sol on 2026-07-10)', () => {
-    expect(DEFAULT_MODEL).toBe('gpt-5.6-sol');
+  it('still coerces to DEFAULT_MODEL when the llmux catalog advertises gpt-5.5', () => {
+    // The catalog overlay normally keeps a catalog id alive; a retired id must
+    // not be laundered back into persisted state through it.
+    modelCatalog.__testSeed([{ id: 'gpt-5.5', aliases: [], name: 'GPT 5.5', efforts: [], group: 'codex' }]);
+    expect(coerceToAvailableModel('gpt-5.5')).toBe(DEFAULT_MODEL);
   });
 
-  it('coerce passes the id through (persisted settings survive restarts)', () => {
-    expect(coerceToAvailableModel('gpt-5.5')).toBe('gpt-5.5');
-    expect(coerceToAvailableModel('  GPT-5.5  ')).toBe('gpt-5.5');
+  it('typed `gpt-5.5` / `gpt5.5` is refused with a gpt-5.6-sol suggestion', () => {
+    const store = new UserSettingsStore(makeDir());
+    for (const input of ['gpt-5.5', ' GPT5.5 ', 'gpt-5.5[1m]']) {
+      const resolution = store.resolveModelInputDetailed(input);
+      expect(resolution.status).toBe('rejected');
+      if (resolution.status !== 'rejected') continue;
+      expect(resolution.rejectedReason).toContain('retired on 2026-11-19');
+      expect(resolution.suggestedModel).toBe('gpt-5.6-sol');
+      expect(store.resolveModelInput(input)).toBeNull();
+    }
   });
 
-  it('renders a curated display label (not the raw id)', () => {
-    const label = makeStore().getModelDisplayName('gpt-5.5');
-    expect(label).toBe('GPT-5.5 (275k)');
-    expect(label).not.toBe('gpt-5.5');
+  it('the suggested replacement is itself selectable', () => {
+    const compatibility = resolveModelInputCompatibility('gpt-5.5');
+    expect(compatibility && isRejectedModelInput(compatibility)).toBe(true);
+    if (!compatibility || !isRejectedModelInput(compatibility)) return;
+    expect(AVAILABLE_MODELS as readonly string[]).toContain(compatibility.suggestedModel);
+  });
+
+  it('the refusal beats the llmux catalog (no forced re-fetch can revive it)', async () => {
+    modelCatalog.__testSeed([{ id: 'gpt-5.5', aliases: ['gpt5.5'], name: 'GPT 5.5', efforts: [], group: 'codex' }]);
+    const store = new UserSettingsStore(makeDir());
+    expect((await store.resolveModelInputDetailedWithRefresh('gpt-5.5')).status).toBe('rejected');
+    expect((await store.resolveModelInputDetailedWithRefresh('gpt5.5')).status).toBe('rejected');
+  });
+
+  it('loadSettings rewrites a stored gpt-5.5 default to DEFAULT_MODEL; other choices stay', () => {
+    const dir = makeDir();
+    fs.writeFileSync(
+      path.join(dir, 'user-settings.json'),
+      JSON.stringify({
+        U_OLD: { userId: 'U_OLD', defaultModel: 'gpt-5.5', accepted: true },
+        U_SOL: { userId: 'U_SOL', defaultModel: 'gpt-5.6-sol', accepted: true },
+      }),
+    );
+    const store = new UserSettingsStore(dir);
+    expect(store.getUserDefaultModel('U_OLD')).toBe(DEFAULT_MODEL);
+    expect(store.getUserDefaultModel('U_SOL')).toBe('gpt-5.6-sol');
   });
 });
 
-describe('gpt-5.5 — 275k context / 250k auto-compact (the key contract)', () => {
-  it('resolveContextWindow returns 275k for gpt-5.5', () => {
-    expect(GPT_5_5_CONTEXT_WINDOW).toBe(275_000);
-    expect(resolveContextWindow('gpt-5.5')).toBe(275_000);
-  });
-
-  it('resolveAutoCompactTokens returns the fixed 250k trigger for gpt-5.5', () => {
-    expect(GPT_5_5_AUTO_COMPACT_TOKENS).toBe(250_000);
-    expect(resolveAutoCompactTokens('gpt-5.5')).toBe(250_000);
-    expect(resolveAutoCompactTokens('claude-fable-5')).toBeUndefined();
-    expect(resolveAutoCompactTokens('claude-opus-4-8[1m]')).toBeUndefined();
-    expect(resolveAutoCompactTokens(undefined)).toBeUndefined();
-  });
-
-  it('SDK blocking-limit override is the SDK formula on the true window (275k − 20k − 3k)', () => {
-    expect(GPT_5_5_SDK_BLOCKING_LIMIT).toBe(252_000);
-    // Must sit ABOVE the 250k compact trigger — otherwise the SDK would
-    // hard-block input before the harness ever schedules /compact.
-    expect(GPT_5_5_SDK_BLOCKING_LIMIT).toBeGreaterThan(GPT_5_5_AUTO_COMPACT_TOKENS);
-  });
-
-  it('is matched by isGpt55Model and NOT by the native-1M matcher', () => {
-    expect(isGpt55Model('gpt-5.5')).toBe(true);
-    expect(isGpt55Model('claude-fable-5')).toBe(false);
-    expect(isNativeOneMModel('gpt-5.5')).toBe(false);
-  });
-});
-
-describe('gpt-5.5 — model-registry pricing + spec', () => {
-  it('mirrors llmux built-in codex rates: $5 in / $30 out / $0.5 cache-read, no cache-write charge', () => {
+describe('gpt-5.5 — price row kept for history', () => {
+  it('still resolves the llmux codex rates: $5 in / $30 out / $0.5 cache-read, no cache-write charge', () => {
     const spec = getModelSpec('gpt-5.5');
     expect(spec.pricing.inputPerMTok).toBe(5);
     expect(spec.pricing.outputPerMTok).toBe(30);
     expect(spec.pricing.cacheReadPerMTok).toBe(0.5);
     expect(spec.pricing.cache5minWritePerMTok).toBe(0);
     expect(spec.pricing.cache1hrWritePerMTok).toBe(0);
-    expect(spec.contextWindow).toBe(275_000);
-    expect(spec.maxOutput).toBe(128_000);
+  });
+
+  it('is its own row, not the fallback (Sonnet) rates', () => {
+    const fallback = getModelSpec('definitely-not-a-model');
+    expect(getModelSpec('gpt-5.5').pricing).not.toEqual(fallback.pricing);
   });
 });

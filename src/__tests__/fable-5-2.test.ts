@@ -64,8 +64,9 @@ describe('fable-5.2 — release wiring', () => {
     }
   });
 
-  it('is SELECTABLE but NOT the default', () => {
-    expect(DEFAULT_MODEL).toBe('gpt-5.6-sol');
+  it('is SELECTABLE but NOT the default (DEFAULT_MODEL follows `opus`)', () => {
+    expect(DEFAULT_MODEL).toBe(MODEL_ALIASES.opus);
+    expect(DEFAULT_MODEL).not.toBe(MODEL_ALIASES.fable);
   });
 
   it('fable / fable[1m] / fable-5-2 / fable-5-2[1m] point at the newest [1m] row', () => {

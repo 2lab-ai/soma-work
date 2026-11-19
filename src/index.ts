@@ -134,6 +134,7 @@ import { GPT_5_6_UPSTREAM_SLUG, syncLlmuxCodexModel } from './deploy/llmux-codex
 import { migrateAllUsersMinimalOnce } from './deploy/migrate-all-users-minimal-once';
 import { migrateAllUsersOpusOnce } from './deploy/migrate-all-users-opus-once';
 import { migrateCronOpusOnce } from './deploy/migrate-cron-opus-once';
+import { migrateDefaultGptToOpusOnce } from './deploy/migrate-default-gpt-to-opus-once';
 import { migrateThreadHeaderDashboardLinkOnce } from './deploy/migrate-threadheader-dashboard-link-once';
 import { initializeDispatchService } from './dispatch-service';
 import { CONFIG_FILE, DATA_DIR, PLUGINS_DIR } from './env-paths';
@@ -370,6 +371,35 @@ async function start() {
       }
     }
     timing('all-users opus migration evaluated');
+
+    // 2026-11-19 one-time rewrite of users on the OLD default: a saved default
+    // of `gpt-5.6-sol` (the default until today) or the retired `gpt-5.5` →
+    // the latest opus (`MODEL_ALIASES.opus`, the new DEFAULT_MODEL). Every
+    // other saved choice is kept; sessions.json is not touched. Same
+    // presence-only, marker-first contract as the all-users opus rewrite
+    // above, so a user who switches back keeps that choice. Own try/catch;
+    // never blocks boot, and the settings singleton is reloaded unless it was
+    // a clean skip (including after a throw).
+    let defaultGptToOpusStatus: 'skipped' | 'applied' | 'failed' = 'failed';
+    try {
+      const defaultGptToOpus = migrateDefaultGptToOpusOnce({ dataDir: DATA_DIR });
+      defaultGptToOpusStatus = defaultGptToOpus.status;
+      logger.info(
+        `default gpt→opus one-time migration: ${defaultGptToOpus.status} (target=${defaultGptToOpus.target}, migrated=${defaultGptToOpus.migrated}/${defaultGptToOpus.total}, marker=${defaultGptToOpus.markerFile})`,
+      );
+    } catch (error) {
+      logger.error('default gpt→opus one-time migration FAILED — check the marker before assuming a retry', error);
+    } finally {
+      if (defaultGptToOpusStatus !== 'skipped') {
+        try {
+          userSettingsStore.reloadSettings();
+          logger.info(`reloaded user settings after default gpt→opus migration (status=${defaultGptToOpusStatus})`);
+        } catch (error) {
+          logger.error('reloadSettings after default gpt→opus migration failed', error);
+        }
+      }
+    }
+    timing('default gpt→opus migration evaluated');
 
     // 2026-10-16 one-time ALL-USER Slack verbosity rewrite (spec 10 §3.2-1):
     // every user default → `minimal` and every persisted session mask in
@@ -695,9 +725,10 @@ async function start() {
     // above (NOT the static config.auth.mode, which is `ccp` on hosts that
     // rely on the boot probe to default to llmux). Both are fail-soft.
     if (authState.mode === 'llmux') {
-      // Align the local llmux codex pin with the gpt-5.6 default. gpt-* ids
-      // only ROUTE via llmux; the upstream slug is pinned in llmux's own
-      // config, which deploys never touch. A stale gpt-5.5 pin would serve a
+      // Align the local llmux codex pin with gpt-5.6-sol (the `gpt` alias
+      // target; it was the default model until 2026-11-19). gpt-* ids only
+      // ROUTE via llmux; the upstream slug is pinned in llmux's own config,
+      // which deploys never touch. A stale gpt-5.5 pin would serve a
       // 272k-input model under soma-work's 372k window math.
       const llmuxSync = await syncLlmuxCodexModel({ baseUrl: authState.llmux.baseUrl });
       if (llmuxSync.status === 'failed') {
