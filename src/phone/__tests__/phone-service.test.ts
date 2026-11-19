@@ -1026,6 +1026,22 @@ describe('PhoneService', () => {
       await svc.stop();
     });
 
+    it('an outbound setup that throws after the dial still gives the host back', async () => {
+      const host = voiceHost(() => 'held');
+      const { svc, store, timers } = make(serverTools(), undefined, { voiceClientFor: () => host.voice });
+      await svc.start();
+      await settleAll();
+      store.create = () => {
+        throw new Error('disk full');
+      };
+      await expect(svc.dial(request() as never)).rejects.toThrow('disk full');
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1);
+      timers.advance(60_000);
+      await settleAll();
+      expect(host.log.filter((l) => l === 'renew')).toHaveLength(0);
+      await svc.stop();
+    });
+
     it('a dial that fails gives the host back at once', async () => {
       const host = voiceHost(() => 'held');
       const { svc, agents } = make(serverTools(), undefined, { voiceClientFor: () => host.voice });

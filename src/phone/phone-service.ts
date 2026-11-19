@@ -396,12 +396,15 @@ export class PhoneService {
     if (host.kind === 'busy' && !notice)
       return { ok: false, error: `the voice host cannot take a call now (${host.reason}) and no notice is ready` };
     const deadline = lease ? this.setTimer(() => void this.dropLease(line, setupKey), OUTBOUND_SETUP_MS) : null;
-    /** The setup lost its lease meanwhile (the deadline, or the line closed): what it got is given back. */
-    const abandoned = () => !!lease && line.voiceLeases.get(setupKey) !== lease;
+    /** The line closed, or the setup lost its lease (the deadline): what it got meanwhile is given back. */
+    const abandoned = () =>
+      this.stopped || this.lines.get(line.env) !== line || (!!lease && line.voiceLeases.get(setupKey) !== lease);
     try {
       return await this.setUpOutbound(line, req, host, notice, setupKey, abandoned);
     } finally {
       if (deadline !== null) this.clearTimer(deadline);
+      // Still under the setup key: the setup did not hand it to a call (it failed or threw) — give the host back.
+      await this.dropLease(line, setupKey);
     }
   }
 
