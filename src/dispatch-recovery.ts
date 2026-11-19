@@ -153,8 +153,10 @@ export function decideDispatchRetry(
     // Resolve aliases (the config default is the ALIAS `opus[1m]`, not a
     // canonical id) before coercing — same as the stream-executor seam's
     // getAutoFallbackCompactModel. Without this, coerce would fall back to
-    // DEFAULT_MODEL, which is no longer a 1M-window model (gpt-5.6 since
-    // 2026-07-10) and would silently disable the overflow recovery.
+    // DEFAULT_MODEL instead of the configured model. DEFAULT_MODEL is the 1M
+    // opus id today (since 2026-11-19), but it was the 372k gpt-5.6-sol from
+    // 2026-07-10, and a non-1M default silently disables the overflow
+    // recovery.
     const rawFallback = opts?.configuredFallbackModel ?? config.claude.autoFallbackCompactModel;
     const fallbackModel = coerceToAvailableModel(MODEL_ALIASES[rawFallback.trim().toLowerCase()] ?? rawFallback);
     if (!fallbackModel || fallbackModel === current || resolveContextWindow(fallbackModel) < 1_000_000) {

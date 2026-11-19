@@ -63,7 +63,7 @@ description: "Use when the user wants to see or change scheduled jobs, including
 
 `mcp__cron__cron_update`로 적용한다 (부분 업데이트 — 바꿀 필드만 전달):
 
-- 모델: `{name, model_type: 'default'}` (해제) / `{name, model_type: 'opus'}` · `{name, model_type: 'fable'}` (최신 추종) / `{name, model_type: 'fast'}` / `{name, model_type: 'custom', model_name: 'gpt-5.5'}`
+- 모델: `{name, model_type: 'default'}` (해제) / `{name, model_type: 'opus'}` · `{name, model_type: 'fable'}` (최신 추종) / `{name, model_type: 'fast'}` / `{name, model_type: 'custom', model_name: 'gpt-6.2-sol'}`
 - 출력: `{name, target: 'dm'}` / `{name, target: 'thread', threadTs: '...'}` / `{name, target: 'channel'}`
 - admin이 타인 잡 수정: `{name, owner: 'U...', ...}`
 - 삭제 선택 시엔 `mcp__cron__cron_delete` (`admin`은 owner 명시)

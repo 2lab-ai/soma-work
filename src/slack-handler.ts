@@ -2475,21 +2475,27 @@ export class SlackHandler {
         }
         if (directives.model) {
           // Cache miss → forced llmux catalog re-fetch + one retry before
-          // dropping the instruction.
-          const resolved = await userSettingsStore.resolveModelInputWithRefresh(directives.model);
-          if (!resolved) {
+          // dropping the instruction. A REFUSED id (the retired gpt-5.5, a
+          // fake grok `[1m]`) skips the refresh and keeps its reason.
+          const resolution = await userSettingsStore.resolveModelInputDetailedWithRefresh(directives.model);
+          if (resolution.status !== 'accepted') {
             // Fail loudly and DROP the instruction — dispatching it on the old
-            // model would silently ignore the user's model choice.
+            // model would silently ignore the user's model choice. A refusal
+            // says why and what to use instead (session-command-handler's
+            // `%model` text), a typo points at `model list`.
+            const text =
+              resolution.status === 'rejected'
+                ? `❌ ${resolution.rejectedReason} *Use* \`${resolution.suggestedModel}\` instead.\n지시는 실행되지 않았습니다.`
+                : `❌ Unknown model \`${directives.model}\` — 지시는 실행되지 않았습니다. \`model list\`로 확인 후 다시 보내세요.`;
             await this.slackApi.removeReaction(channel, ts, 'eyes');
             await this.slackApi.addReaction(channel, ts, 'warning');
-            await this.slackApi.postSystemMessage(
-              channel,
-              `❌ Unknown model \`${directives.model}\` — 지시는 실행되지 않았습니다. \`model list\`로 확인 후 다시 보내세요.`,
-              { threadTs: originalThreadTs },
-            );
-            return { result: 'blocked', reason: `unknown model ${directives.model}` };
+            await this.slackApi.postSystemMessage(channel, text, { threadTs: originalThreadTs });
+            return {
+              result: 'blocked',
+              reason: `${resolution.status === 'rejected' ? 'refused' : 'unknown'} model ${directives.model}`,
+            };
           }
-          inlineModel = resolved;
+          inlineModel = resolution.modelId;
         }
         inlineNoGoal = directives.noGoal;
         // Preserve the directive-bearing original for replay stashes

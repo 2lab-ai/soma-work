@@ -1,5 +1,7 @@
 /**
- * Boot-time sync of the local llmux codex model pin with soma-work's default.
+ * Boot-time sync of the local llmux codex model pin with soma-work's `gpt`
+ * model, gpt-5.6-sol (the default model from 2026-07-10 to 2026-11-19; the
+ * default is opus since then, but gpt-* sessions still need the right pin).
  *
  * Why this exists. gpt-* model ids are served through llmux's codex backend,
  * and llmux PINS the upstream slug from its own config

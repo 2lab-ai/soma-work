@@ -50,15 +50,27 @@ describe('renderModelCard — catalog models', () => {
     modelCatalog.__testSeed([
       GROK,
       // Static id also advertised by the catalog — must not appear twice.
-      { id: 'gpt-5.5', aliases: [], name: 'GPT 5.5', efforts: [], max_context: 275_000, group: 'codex' },
+      { id: 'gpt-5.6-sol', aliases: [], name: 'GPT 5.6 Sol', efforts: [], max_context: 372_000, group: 'codex' },
     ]);
     const { blocks } = await renderModelCard({ userId: 'UCAT1', issuedAt: 1 });
     const ids = collectButtons(blocks).map((b) => b.action_id);
     // Verify that the catalog models added in this test don't create duplicates.
     const grok45Count = ids.filter((id) => id === 'z_setting_model_set_grok-4.5').length;
-    const gpt55Count = ids.filter((id) => id === 'z_setting_model_set_gpt-5.5').length;
+    const solCount = ids.filter((id) => id === 'z_setting_model_set_gpt-5.6-sol').length;
     expect(grok45Count).toBeLessThanOrEqual(1);
-    expect(gpt55Count).toBeLessThanOrEqual(1);
+    expect(solCount).toBeLessThanOrEqual(1);
+  });
+
+  it('renders no button for a retired id the catalog still advertises (gpt-5.5, 2026-11-19)', async () => {
+    // The store refuses gpt-5.5, so a button for it could only fail.
+    modelCatalog.__testSeed([
+      GROK,
+      { id: 'gpt-5.5', aliases: [], name: 'GPT 5.5', efforts: [], max_context: 275_000, group: 'codex' },
+    ]);
+    const { blocks } = await renderModelCard({ userId: 'UCAT1', issuedAt: 1 });
+    const ids = collectButtons(blocks).map((b) => b.action_id);
+    expect(ids).toContain('z_setting_model_set_grok-4.5');
+    expect(ids).not.toContain('z_setting_model_set_gpt-5.5');
   });
 
   it('renders the fable `[1m]` id exactly once — static entry, no catalog duplicate', async () => {

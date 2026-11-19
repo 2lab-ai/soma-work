@@ -188,14 +188,25 @@ export class CronCommandHandler implements CommandHandler {
       desc = 'fast — 실행 시점에 만든 사람 모델의 sonnet급 (sonnet·terra·grok)';
     } else {
       // Cache miss → forced llmux catalog re-fetch + one retry before erroring.
-      const modelId = await userSettingsStore.resolveModelInputWithRefresh(value);
-      if (!modelId) {
+      // A REFUSED id (the retired gpt-5.5, a fake grok `[1m]`) skips the
+      // refresh and keeps its reason — it is not a typo, so it gets the reason
+      // and the id to use instead, not the "unknown model" hint.
+      const resolution = await userSettingsStore.resolveModelInputDetailedWithRefresh(value);
+      if (resolution.status === 'rejected') {
+        await ctx.say({
+          text: `❌ ${resolution.rejectedReason}\n*Use* \`${resolution.suggestedModel}\` instead.`,
+          thread_ts: ctx.threadTs,
+        });
+        return;
+      }
+      if (resolution.status === 'unknown') {
         await ctx.say({
           text: `❌ 알 수 없는 모델: \`${value}\`\n\`default\` / \`opus\` / \`fable\` / \`fast\` / 모델 별칭(예: sonnet, haiku, gpt) 또는 canonical id를 쓰세요.`,
           thread_ts: ctx.threadTs,
         });
         return;
       }
+      const modelId = resolution.modelId;
       patch = { modelConfig: { type: 'custom', model: modelId } };
       desc = `custom(${modelId})`;
     }

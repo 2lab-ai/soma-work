@@ -165,6 +165,21 @@ describe('syncSlackAccountEmail (email follows the Slack account)', () => {
 // `claude-sonnet-4-5-*`, `claude-opus-4-5-*`, and `claude-haiku-4-5-*`. These
 // tests assert the **exact** expected arrays/records, not just the length,
 // so any future silent removal is caught immediately.
+//
+// The one sanctioned way out of the list is an OWNER-ORDERED retirement,
+// recorded here by id, date and reason — never by quietly editing the array.
+const DELIBERATELY_RETIRED_MODELS = [
+  {
+    id: 'gpt-5.5',
+    retiredOn: '2026-11-19',
+    // Owner instruction ("gpt-5.5 지워"). The ChatGPT-account Codex backend
+    // has rejected it since 2026-10-14 — llmux probe 2026-11-18 returned 400
+    // "The 'gpt-5.5' model is not supported when using Codex with a ChatGPT
+    // account." (https://github.com/2lab-ai/llmux/issues/309).
+    removedAliases: ['gpt5.5'],
+  },
+] as const;
+
 describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', () => {
   it('AVAILABLE_MODELS preserves every historical entry in the expected order', () => {
     // Fable 5 (2026-06-09) leads as the flagship; Opus 5 (2026-08-26) heads the
@@ -183,7 +198,9 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
     // on 2026-11-10 as the `sonnet` / `haiku` / `luna` targets (#1120).
     // gpt-6.2-sol and gpt-6.2-astra (+ `[1m]`, 2026-11-18, the new `sol` /
     // `astra` shorthand targets) follow terra.
-    // Historical entries MUST survive every bump.
+    // Historical entries MUST survive every bump — except the owner-ordered
+    // retirements in DELIBERATELY_RETIRED_MODELS (gpt-5.5, which sat between
+    // `claude-haiku-5-5[1m]` and `gpt-5.6-sol`, left on 2026-11-19).
     expect([...AVAILABLE_MODELS]).toEqual([
       'claude-fable-5-2',
       'claude-fable-5-1',
@@ -210,7 +227,6 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       'claude-sonnet-4-6[1m]',
       'claude-sonnet-5-5[1m]',
       'claude-haiku-5-5[1m]',
-      'gpt-5.5',
       'gpt-5.6-sol',
       'gpt-5.6-sol[1m]',
       'gpt-5.6-terra',
@@ -243,7 +259,19 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
     expect(AVAILABLE_MODELS as readonly string[]).toContain('claude-fable-5');
   });
 
-  it('MODEL_ALIASES has exactly the 49 expected key→value mappings', () => {
+  it('records every removal as a deliberate, dated retirement (gpt-5.5, 2026-11-19)', () => {
+    for (const retired of DELIBERATELY_RETIRED_MODELS) {
+      expect(retired.retiredOn).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      // Gone from selection, from the alias table, and as an alias target…
+      expect(AVAILABLE_MODELS as readonly string[]).not.toContain(retired.id);
+      expect(Object.values(MODEL_ALIASES)).not.toContain(retired.id);
+      for (const alias of retired.removedAliases) expect(MODEL_ALIASES).not.toHaveProperty(alias);
+      // …and a stored value of it lands on the default instead of surviving.
+      expect(coerceToAvailableModel(retired.id)).toBe(DEFAULT_MODEL);
+    }
+  });
+
+  it('MODEL_ALIASES has exactly the 48 expected key→value mappings', () => {
     // `fable` / `fable[1m]` → the newest fable's literal 1M id (Fable 5.2
     // since 2026-11-10). `opus` / `opus[1m]` follow "latest opus" semantics →
     // Opus 5.5, and both land on the `[1m]` variant because that is the id
@@ -278,8 +306,10 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       'haiku-5-5': 'claude-haiku-5-5[1m]',
       'haiku-5-5[1m]': 'claude-haiku-5-5[1m]',
       'haiku-4.5': 'claude-haiku-4-5-20251001',
+      // `gpt` stays on gpt-5.6-sol; it is no longer the DEFAULT_MODEL pointer
+      // (DEFAULT_MODEL follows `opus` since 2026-11-19). `gpt5.5` was removed
+      // with the gpt-5.5 retirement.
       gpt: 'gpt-5.6-sol',
-      'gpt5.5': 'gpt-5.5',
       'gpt-5.6': 'gpt-5.6-sol',
       'gpt5.6': 'gpt-5.6-sol',
       // `sol` / `sol[1m]` follow the newest sol generation and land on its
@@ -307,7 +337,7 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       // shorthand + explicit `[1m]` spelling is real muscle-memory input and
       // the llmux catalog only advertises the bare `astra`. The gpt-6
       // generation spellings stay pinned to gpt-6-astra[1m]; `gpt` above
-      // still points at gpt-5.6-sol, so the default is unchanged.
+      // still points at gpt-5.6-sol.
       astra: 'gpt-6.2-astra[1m]',
       'astra[1m]': 'gpt-6.2-astra[1m]',
       'gpt-6': 'gpt-6-astra[1m]',
@@ -323,6 +353,13 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
 
   it('DEFAULT_MODEL is a member of AVAILABLE_MODELS', () => {
     expect(AVAILABLE_MODELS as readonly string[]).toContain(DEFAULT_MODEL);
+  });
+
+  it('DEFAULT_MODEL follows the `opus` alias (owner instruction 2026-11-19)', () => {
+    // The default moved off the `gpt` pointer; `gpt` itself did not move.
+    expect(DEFAULT_MODEL).toBe(MODEL_ALIASES.opus);
+    expect(DEFAULT_MODEL).toBe('claude-opus-5-5[1m]');
+    expect(MODEL_ALIASES.gpt).toBe('gpt-5.6-sol');
   });
 });
 

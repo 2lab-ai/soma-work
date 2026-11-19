@@ -2,6 +2,7 @@
  * `/z model` Block Kit topic — Phase 2 (#507).
  */
 
+import { isRejectedModelInput, resolveModelInputCompatibility } from '../../../metrics/model-registry';
 import { modelCatalog } from '../../../model-catalog';
 import { AVAILABLE_MODELS, MODEL_ALIASES, userSettingsStore } from '../../../user-settings-store';
 import type { ApplyResult, RenderResult, ZTopicBinding } from '../../actions/z-settings-actions';
@@ -51,11 +52,13 @@ export async function renderModelCard(args: { userId: string; issuedAt: number }
     });
   }
   // llmux model-catalog overlay — catalog models not already in the static
-  // allow-list (e.g. grok-4.5), deduped by id. There is no longer a
-  // selectability filter here: the one exclusion it carried
-  // (`claude-fable-5[1m]`) is now a static allow-list member.
+  // allow-list (e.g. grok-4.5), deduped by id. An id the store REFUSES (a
+  // retired id such as gpt-5.5, or a fake grok `[1m]`) is skipped even when
+  // the catalog still advertises it — its button could only fail.
   for (const model of modelCatalog.getModels()) {
     if (seen.has(model.id)) continue;
+    const compatibility = resolveModelInputCompatibility(model.id);
+    if (compatibility && isRejectedModelInput(compatibility)) continue;
     seen.add(model.id);
     options.push({
       id: model.id,
@@ -97,11 +100,12 @@ export async function resolveModelChoice(
 
   if (resolution.status === 'rejected') {
     // Deliberately NOT the "unknown model + alias dump" text: this id is not a
-    // typo, and offering the alias list would suggest the user just spelled it
-    // wrong instead of naming the id that actually works.
+    // typo (a fake grok `[1m]` or a retired id such as gpt-5.5), and offering
+    // the alias list would suggest the user just spelled it wrong instead of
+    // naming the id that actually works. The reason says which case it is.
     return {
       ok: false,
-      summary: `❌ \`${value}\` is not a real model id`,
+      summary: `❌ \`${value}\` can't be selected`,
       description: `${resolution.rejectedReason} Use \`${resolution.suggestedModel}\`.`,
     };
   }

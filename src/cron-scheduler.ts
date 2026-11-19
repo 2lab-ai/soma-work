@@ -19,7 +19,7 @@ import { Logger } from './logger';
 import { buildWorkSessionKey } from './session-identity';
 import type { SessionRegistry } from './session-registry';
 import type { ConversationSession } from './types';
-import { MODEL_ALIASES } from './user-settings-store';
+import { MODEL_ALIASES, userSettingsStore } from './user-settings-store';
 
 const logger = new Logger('CronScheduler');
 const POLL_INTERVAL_MS = 60_000; // 1 minute
@@ -108,13 +108,29 @@ function minuteKey(epochMinute: number): string {
  * Claude → `sonnet`, Codex → `terra`, Grok → `grok` (agent-runtime/aux-model.ts).
  * Grok has one model line, so its tier lowers effort instead — see
  * `resolveEffortOverride`, which every fire sends beside this override.
+ *
+ * A `custom` id is resolved through the store on every fire, like typed input
+ * (static allow-list, aliases, llmux catalog overlay; refusals win). A stored
+ * id that is refused (the retired gpt-5.5, a fake grok `[1m]`) or no longer
+ * resolves yields `undefined`, so the fire runs on the creator's default
+ * instead of sending llmux a model it cannot serve. The cron MCP server and
+ * older jobs store `model_name` verbatim, so this is the one place that can
+ * guarantee it.
  */
 export function resolveModelOverride(config?: CronModelConfig, owner?: string): string | undefined {
   if (!config || config.type === 'default') return undefined;
   if (config.type === 'opus') return MODEL_ALIASES.opus;
   if (config.type === 'fable') return MODEL_ALIASES.fable;
   if (config.type === 'fast') return auxModelFor('sonnet', { userId: owner }).model;
-  if (config.type === 'custom' && config.model) return config.model;
+  if (config.type === 'custom' && config.model) {
+    const resolved = userSettingsStore.resolveModelInput(config.model);
+    if (!resolved) {
+      logger.warn(`cron custom model "${config.model}" does not resolve — the fire uses the default model instead`, {
+        owner,
+      });
+    }
+    return resolved ?? undefined;
+  }
   return undefined;
 }
 

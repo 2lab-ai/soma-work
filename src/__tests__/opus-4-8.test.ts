@@ -1,7 +1,8 @@
 /**
- * Locks the `opus[1m] → DEFAULT_MODEL` contract so a new opus generation
- * (4.9 …) ships by flipping AVAILABLE_MODELS + the two "latest opus" alias
- * rows — DEFAULT_MODEL inherits the pointer. Also pins the model-registry
+ * Locks the version-pinned 4.8 rows next to the floating "latest opus"
+ * aliases: a new opus generation ships by flipping AVAILABLE_MODELS + the two
+ * "latest opus" alias rows, and DEFAULT_MODEL (which follows `opus` since
+ * 2026-11-19) inherits the pointer. Also pins the model-registry
  * spec for the 4.8 row and confirms the effort surface didn't shift at the
  * API boundary.
  */
@@ -37,7 +38,8 @@ describe('opus-4.8 — release wiring', () => {
     expect(MODEL_ALIASES['opus-4.8']).toBe('claude-opus-4-8');
     expect(MODEL_ALIASES['opus-4.8[1m]']).toBe('claude-opus-4-8[1m]');
     expect(MODEL_ALIASES['opus[1m]']).toBe('claude-opus-5-5[1m]');
-    expect(DEFAULT_MODEL).toBe('gpt-5.6-sol');
+    // DEFAULT_MODEL rides the floating `opus` alias, never a pinned row.
+    expect(DEFAULT_MODEL).toBe(MODEL_ALIASES.opus);
   });
 
   it('coerce normalises uppercase [1M] typo on the 4.8 variant', () => {

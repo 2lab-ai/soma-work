@@ -33,7 +33,6 @@ import {
   getModelSpec,
   hasModelPricing,
   isGpt6Model,
-  isGpt55Model,
   isGpt56Model,
   isNativeOneMModel,
   resolveAutoCompactTokens,
@@ -77,8 +76,8 @@ describe('gpt-6.1-terra — release wiring', () => {
     expect(models).toContain('gpt-5.6-terra');
   });
 
-  it('is SELECTABLE but NOT the default — gpt-5.6-sol stays DEFAULT_MODEL', () => {
-    expect(DEFAULT_MODEL).toBe('gpt-5.6-sol');
+  it('is SELECTABLE but NOT the default — DEFAULT_MODEL follows `opus`', () => {
+    expect(DEFAULT_MODEL).toBe(MODEL_ALIASES.opus);
     expect(MODEL_ALIASES.gpt).toBe('gpt-5.6-sol');
   });
 
@@ -124,7 +123,7 @@ describe('gpt-6.1-terra — release wiring', () => {
     expect(coerceToAvailableModel('gpt-6.1-terra[1m]')).toBe('gpt-6.1-terra[1m]');
     expect(coerceToAvailableModel('GPT-6.1-TERRA[1M]')).toBe('gpt-6.1-terra[1m]');
     // coerce does NOT consult MODEL_ALIASES.
-    expect(coerceToAvailableModel('terra')).toBe('gpt-5.6-sol');
+    expect(coerceToAvailableModel('terra')).toBe(DEFAULT_MODEL);
     expect(coerceToAvailableModel('gpt-5.6-terra')).toBe('gpt-5.6-terra');
   });
 
@@ -187,7 +186,6 @@ describe('gpt-6.1-terra — canonical profile', () => {
     // the declared row above is what sizes the bare id.
     expect(isGpt6Model('gpt-6.1-terra')).toBe(false);
     expect(isGpt56Model('gpt-6.1-terra')).toBe(false);
-    expect(isGpt55Model('gpt-6.1-terra')).toBe(false);
     expect(isNativeOneMModel('gpt-6.1-terra')).toBe(false);
   });
 
