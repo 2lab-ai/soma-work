@@ -93,29 +93,43 @@ function cardFinishRules(rules, keys) {
   var sel = 'li.ib-card:is(' + keys.map(function(k) { return '[data-card="' + cardFinishKeyCss(k) + '"]'; }).join(', ') + ')';
   return rules.map(function(r) { return r.split('&').join(sel); }).join('\n');
 }
-// The finishes these cards need ({ key, model } each, keys unique — the page's card map): each finish's keys in key
-// order, and a signature that changes only when a card's finish does.
+// SSOT 2026-11-19 — a RUNNING card whose environment work waits in the host's queue (큐 대기): its status tag and edge
+// take the queue colour (--card-queue, on :root), over any model finish — it is not running a turn yet. After the
+// finishes at the same (0,2,1), so its edge wins; the NEEDS YOU and epic cues still win over it.
+var CARD_QUEUE_RULES = [
+  '& { --st-color: var(--card-queue); border-color: color-mix(in srgb, var(--card-queue) 60%, var(--ib-card-border)); }',
+];
+// The finishes these cards need ({ key, model, queued } each, keys unique — the page's card map): each finish's keys
+// in key order, the queued cards' keys, and a signature that changes only when a card's finish or queue tint does.
 function cardFinishPlan(cards) {
-  var plan = { bright: [], foil: [], sig: '' };
+  var plan = { bright: [], foil: [], queue: [], sig: '' };
   for (var i = 0; i < (cards || []).length; i++) {
     var c = cards[i];
     if (!c || c.key === undefined || c.key === null || c.key === '') continue;
     var f = cardFinishOf(c.model);
     if (f) plan[f].push(String(c.key));
+    if (c.queued === true) plan.queue.push(String(c.key));
   }
   plan.bright.sort();
   plan.foil.sort();
-  plan.sig = plan.bright.join('\n') + '\n\n' + plan.foil.join('\n');
+  plan.queue.sort();
+  plan.sig = plan.bright.join('\n') + '\n\n' + plan.foil.join('\n') + '\n\n' + plan.queue.join('\n');
   return plan;
 }
-// A plan's sheet: what a card reads, then the rules of each finish over its cards' keys. '' when no card has one.
+// A plan's sheet: what a card reads, then the rules of each finish over its cards' keys, then the queue tint. '' when
+// no card has either.
 function cardFinishCss(plan) {
   var all = plan.bright.concat(plan.foil);
-  if (!all.length) return '';
-  var out = [CARD_FINISH_CARD_CSS];
-  if (plan.bright.length) out.push(cardFinishRules(CARD_FINISH_RULES.bright, plan.bright));
-  if (plan.foil.length) out.push(cardFinishRules(CARD_FINISH_RULES.foil, plan.foil));
-  out.push(cardFinishRules(CARD_FINISH_EDGE_2PX, all));
+  var queue = plan.queue || [];
+  if (!all.length && !queue.length) return '';
+  var out = [];
+  if (all.length) {
+    out.push(CARD_FINISH_CARD_CSS);
+    if (plan.bright.length) out.push(cardFinishRules(CARD_FINISH_RULES.bright, plan.bright));
+    if (plan.foil.length) out.push(cardFinishRules(CARD_FINISH_RULES.foil, plan.foil));
+    out.push(cardFinishRules(CARD_FINISH_EDGE_2PX, all));
+  }
+  if (queue.length) out.push(cardFinishRules(CARD_QUEUE_RULES, queue));
   return out.join('\n');
 }
 function cardFinishSheet(cards) {
@@ -130,7 +144,7 @@ function cardFinishPaint(host, cards) {
   if (!root) return;
   var plan = cardFinishPlan(cards);
   var el = root.querySelector('style[data-card-finish]');
-  if (host._finishSig === plan.sig && (el || plan.sig === '\n\n')) return;
+  if (host._finishSig === plan.sig && (el || plan.sig === '\n\n\n\n')) return;
   var css = cardFinishCss(plan);
   host._finishSig = plan.sig;
   if (!el) {
@@ -151,6 +165,7 @@ function cardFinishPaint(host, cards) {
  */
 export const CARD_FINISH_CSS = `
 :root {
+  --card-queue: var(--purple);
   --finish-bright-mix: 50%;
   --finish-bright-hover-mix: 70%;
   --finish-bright-idle-mix: 30%;

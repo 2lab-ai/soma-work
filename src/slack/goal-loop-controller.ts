@@ -210,6 +210,12 @@ export interface GoalLoopControllerDeps {
    * host refuses. The restart's goal resume re-judges the goal.
    */
   isShuttingDown?: () => boolean;
+  /**
+   * SSOT 2026-11-19 — true while environment work this session asked for waits in the host's queue or is in flight
+   * (`EnvRunQueue.isPending`). The session waits on the host, not on its owner: no eval runs (it would read the wait as
+   * no progress and stop the goal with a question), nothing is injected. The run's result turn drives the loop again.
+   */
+  awaitingHostWork?: (sessionKey: string) => boolean;
 }
 
 /**
@@ -387,6 +393,17 @@ export class GoalLoopController {
     // admin's retry turn settles and drives the loop again.
     if (session.safeguardHalt) {
       logger.info('Goal loop run skipped — session halted by a safeguards flag', { sessionKey });
+      return;
+    }
+
+    // Environment work it asked for waits in the host's queue or runs (SSOT 2026-11-19): a wait, not a stall.
+    if (this.deps.awaitingHostWork?.(sessionKey)) {
+      logger.info(
+        'Goal loop run skipped — the session waits on environment work the host runs; its result turn drives the loop',
+        {
+          sessionKey,
+        },
+      );
       return;
     }
 

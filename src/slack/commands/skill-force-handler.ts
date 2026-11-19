@@ -23,6 +23,7 @@ import {
   hasOneTimeGrant,
   isSkillUseAllowed,
 } from '../../user-skill-grants-store';
+import { type EnvRunQueue, envRunQueue } from '../env-run-queue';
 import { describeEnvSkillDelivery, requestEnvSkillPermission } from '../env-skill-permission-request';
 import { announceSessionNotice } from '../session-notice';
 import { buildEnvironmentPermissionRequestMessage, buildPermissionRequestMessage } from '../skill-permission-blocks';
@@ -294,6 +295,8 @@ export class SkillForceHandler implements CommandHandler {
     > & {
       /** Runs a message as another user in a new thread — the cron owner path. Defaults to the live scheduler. */
       runAsUser?: RunAsUser;
+      /** One environment run at a time per environment user (SSOT 2026-11-19). Defaults to the host's queue. */
+      envRunQueue?: EnvRunQueue;
     } = {},
   ) {}
 
@@ -651,18 +654,31 @@ export class SkillForceHandler implements CommandHandler {
     };
     // The run is not awaited (it lasts the environment user's whole turn); `finished` settles once it ended and the
     // outcome line went to the requester's thread. It never rejects.
-    const finished: Promise<EnvironmentRunEnd> = run({
-      owner,
-      channel,
-      rootText: `[${owner}] <@${user}> 요청 — ${skills}`,
-      text: environmentSessionText(owner, refs, user, text),
-      onOpened: (rootTs) => {
-        opened = true;
-        void link(rootTs).then((where) =>
-          post(`▶ 환경 유저 \`${owner}\` 권한으로 실행합니다 (어드민 · 샌드박스 없음): ${where}`),
-        );
-      },
-    })
+    // One run at a time per environment user (SSOT 2026-11-19): while another run of `owner` is in flight this one
+    // waits in line and starts by itself — the requester is told it is queued, never asked; it hears the outcome when
+    // its own run ended, as before. No model has to poll the lane or arm a cron for it.
+    const queue = this.deps.envRunQueue ?? envRunQueue;
+    const { ahead, result: started } = queue.run({ owner, channel, threadTs, skills }, () =>
+      run({
+        owner,
+        channel,
+        rootText: `[${owner}] <@${user}> 요청 — ${skills}`,
+        text: environmentSessionText(owner, refs, user, text),
+        onOpened: (rootTs) => {
+          opened = true;
+          void link(rootTs).then((where) =>
+            post(`▶ 환경 유저 \`${owner}\` 권한으로 실행합니다 (어드민 · 샌드박스 없음): ${where}`),
+          );
+        },
+      }),
+    );
+    if (ahead > 0) {
+      void post(
+        `⏳ 환경 유저 \`${owner}\`의 다른 작업이 진행 중이라 대기열에 넣었습니다 (앞에 ${ahead}건). ` +
+          '앞 작업이 끝나면 자동으로 실행하고, 끝나면 결과를 이 스레드에 알립니다. 따로 할 일은 없습니다.',
+      );
+    }
+    const finished: Promise<EnvironmentRunEnd> = started
       .then(async (rootTs): Promise<EnvironmentRunEnd> => {
         if (!rootTs) {
           giveBack();

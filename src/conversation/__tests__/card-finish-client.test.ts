@@ -10,13 +10,13 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CARD_FINISH_CLIENT_JS, CARD_FINISH_CSS } from '../card-finish-client';
 
-type Card = { key: unknown; model?: unknown };
+type Card = { key: unknown; model?: unknown; queued?: unknown };
 const client = new Function(
   `${CARD_FINISH_CLIENT_JS}\nreturn { cardFinishOf, cardFinishSheet, cardFinishPlan };`,
 )() as {
   cardFinishOf(model: unknown): '' | 'bright' | 'foil';
   cardFinishSheet(cards: Card[]): string;
-  cardFinishPlan(cards: Card[]): { bright: string[]; foil: string[]; sig: string };
+  cardFinishPlan(cards: Card[]): { bright: string[]; foil: string[]; queue: string[]; sig: string };
 };
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
@@ -292,5 +292,30 @@ describe('the dashboard draws it', () => {
     expect(hold).toBeGreaterThan(0);
     expect(hold).toBeLessThan(firstPaint);
     expect(release).toBeGreaterThan(lanes);
+  });
+});
+
+/**
+ * SSOT 2026-11-19 — a card whose environment work waits in the host's queue reads as RUNNING, tinted apart: its status
+ * tag and edge take the queue colour (--card-queue, on :root), whatever model finish it has.
+ */
+describe('queue tint — a RUNNING card waiting in the environment run queue', () => {
+  it('lists queued cards in the plan and changes the signature with them', () => {
+    const plain = client.cardFinishPlan([{ key: 'k1', model: 'claude-sonnet-5-5' }]);
+    const queued = client.cardFinishPlan([{ key: 'k1', model: 'claude-sonnet-5-5', queued: true }]);
+    expect(plain.queue).toEqual([]);
+    expect(queued.queue).toEqual(['k1']);
+    expect(queued.sig).not.toBe(plain.sig);
+  });
+
+  it('a queued card gets the queue colour on its status tag and edge, even with no model finish', () => {
+    const css = client.cardFinishSheet([{ key: 'k1', model: 'claude-sonnet-5-5', queued: true }]);
+    expect(css).toContain('[data-card="k1"]');
+    expect(css).toContain('--st-color: var(--card-queue)');
+    expect(client.cardFinishSheet([{ key: 'k1', model: 'claude-sonnet-5-5' }])).toBe('');
+  });
+
+  it('the queue colour is defined on :root for every theme', () => {
+    expect(CARD_FINISH_CSS).toMatch(/--card-queue:/);
   });
 });

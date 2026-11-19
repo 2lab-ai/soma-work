@@ -207,6 +207,7 @@ import { getUserMediaStore } from './user-media';
 import { restoreUserActions, type UserActionRecord } from 'somalib/user-action/user-action';
 import { VIEW_LAYOUT_CLIENT_JS } from './view-layout-client';
 import { CARD_FINISH_CLIENT_JS, CARD_FINISH_CSS } from './card-finish-client';
+import { type EnvRunStatus, envRunQueue } from '../slack/env-run-queue';
 import type { WorkLogEntry } from './work-log';
 
 const logger = new Logger('Dashboard');
@@ -511,6 +512,12 @@ export interface KanbanSession {
    * the board puts it in `working`, not `idle`. Absent otherwise.
    */
   autoResume?: KanbanAutoResume;
+  /**
+   * SSOT 2026-11-19 — environment work this session asked for waits in the host's queue (`queued`) or is in flight
+   * (`running`): the session waits on the host, not on a person. The board puts it in `working`; a queued card is
+   * tinted apart (큐 대기). Absent otherwise.
+   */
+  envWait?: EnvRunStatus;
   /**
    * Anthropic safeguards halted the session: nothing runs in it until an admin
    * lifts the lock from the Slack notice. The card says so instead of "대기".
@@ -2857,6 +2864,8 @@ const CUSTOM_CHOICE_ID = '직접입력';
 
 function sessionToKanban(key: string, s: any): KanbanSession {
   const autoResume = deriveAutoResume(s, Date.now());
+  // SSOT 2026-11-19 — environment work this session asked for, waiting in the host's queue or running.
+  const envWait = envRunQueue.statusFor(s?.channelId, s?.threadTs);
   const taskView = _getTasksFn ? _getTasksFn(key) : undefined;
   const aggregate = computeThreadAggregate(s.channelId, s.threadTs, getAllSessions(), Date.now());
   const headline = displayTitle(s);
@@ -2928,7 +2937,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     finishedAt: liveFinishedAt(s),
     ...modelFields(s),
     ...contextFields(s),
-    tasks: normalizeTaskProgress(taskView?.current, sessionHasCurrentTask(s, autoResume)),
+    tasks: normalizeTaskProgress(taskView?.current, sessionHasCurrentTask(s, autoResume) || envWait !== undefined),
     earlierTasks: taskView?.earlier.length ? taskView.earlier : undefined,
     tasksOutside: taskView?.outside,
     botName: _botDisplayName || undefined,
@@ -2982,6 +2991,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
         }
       : {}),
     ...(autoResume ? { autoResume } : {}),
+    ...(envWait ? { envWait } : {}),
     ...(s.safeguardHalt && Number.isFinite(Number(s.safeguardHalt.atMs))
       ? {
           safeguardHalt: {
@@ -3245,7 +3255,8 @@ function placeOnBoard(board: KanbanBoard, kanban: KanbanSession, session: { stat
     default:
       // Idle but with an armed automatic resume (turn retry, goal
       // re-check) is unfinished work — RUNNING, not DONE.
-      if (kanban.autoResume) board.working.push(kanban);
+      // So is one whose environment work waits in the host's queue or runs (SSOT 2026-11-19): not a question.
+      if (kanban.autoResume || kanban.envWait) board.working.push(kanban);
       else board.idle.push(kanban);
       break;
   }
@@ -3274,7 +3285,7 @@ function bundledChildrenOf(epic: { taskId?: string; ownerId?: string }): Array<[
 
 /** What the board shows a card doing: an idle card with an armed automatic resume is at work. */
 function shownActivity(card: KanbanSession): ConversationSession['activityState'] {
-  return card.activityState === 'idle' && card.autoResume ? 'working' : card.activityState;
+  return card.activityState === 'idle' && (card.autoResume || card.envWait) ? 'working' : card.activityState;
 }
 
 /** E4 ⑧ (D11) — an epic's bundle: its view and its children's cards (every card of an epic carries it). */
@@ -12663,9 +12674,10 @@ function syncCardFinish() {
   var seen = Object.create(null);
   for (var k in _cardData) {
     if (!_cardDrawn[k] || !_sessionCache[k]) continue;
-    seen[k] = cardFinishOf(_sessionCache[k].model);
+    var queued = cardQueued(k);
+    seen[k] = cardFinishOf(_sessionCache[k].model) + (queued ? '|queue' : '');
     var list = lists.get(_cardHost[k]);
-    if (list) list.push({ key: k, model: _sessionCache[k].model });
+    if (list) list.push({ key: k, model: _sessionCache[k].model, queued: queued });
   }
   _cardFinishSeen = seen;
   lists.forEach(function(cards, host) { cardFinishPaint(host, cards); });
@@ -12674,7 +12686,12 @@ function syncCardFinish() {
 // path — a push that changed nothing the finish reads costs no board-wide pass).
 function cardFinishStale(key) {
   var s = _sessionCache[key];
-  return !!s && cardFinishOf(s.model) !== (_cardFinishSeen[key] || '');
+  return !!s && cardFinishOf(s.model) + (cardQueued(key) ? '|queue' : '') !== (_cardFinishSeen[key] || '');
+}
+// SSOT 2026-11-19 — a drawn RUNNING card whose environment work waits in the host's queue (the queue tint).
+function cardQueued(key) {
+  var s = _sessionCache[key];
+  return !!s && _cardCol[key] === 'working' && !!pendingEnvWait(s, 'working') && s.envWait.state === 'queued';
 }
 if (window.customElements && typeof customElements.whenDefined === 'function') {
   customElements.whenDefined('ui-agent-inbox').then(function() { syncCardFinish(); });
@@ -12977,6 +12994,19 @@ function pendingAutoResume(s, col) {
   return s.autoResume;
 }
 
+// SSOT 2026-11-19 — environment work this session asked for (server envWait): waiting in the host's queue or in
+// flight. A RUNNING card only, and only while no turn of its own runs (its own turn reads as running).
+function pendingEnvWait(s, col) {
+  if (col !== 'working' || s.activityState === 'working' || !s.envWait) return null;
+  return s.envWait;
+}
+// One line for it: 큐 대기 and its place in line, or 환경 작업 중 while the run is in flight.
+function envWaitLabel(w) {
+  if (!w) return '';
+  if (w.state === 'queued') return Number(w.position) > 0 ? '큐 대기' + ' · #' + Number(w.position) : '큐 대기';
+  return '환경 작업 중';
+}
+
 // One line for an armed resume: what starts the session again, when, which
 // attempt. Absolute clock time (no countdown), so equal data renders equal HTML.
 function autoResumeLabel(r) {
@@ -13151,6 +13181,7 @@ function cardOf(s, col) {
   if (summary) card.summary = summary;
   // Status (the tinted tag, re-agent-inbox D1): an armed automatic resume waits.
   var resume = pendingAutoResume(s, col);
+  var envWait = pendingEnvWait(s, col);
   var acc = Number(s.activeAccumulatedMs) || 0;
   if (s.safeguardHalt && col !== 'working') {
     // Anthropic safeguards halted it: nothing runs until an admin lifts the lock.
@@ -13159,6 +13190,11 @@ function cardOf(s, col) {
   } else if (resume) {
     card.status = 'waiting';
     card.statusText = autoResumeLabel(resume);
+  } else if (envWait) {
+    // Its environment work waits in the host's queue or runs: running, not a question (the queue tint marks 큐 대기).
+    card.status = 'running';
+    card.statusText = envWaitLabel(envWait);
+    if (toNum(envWait.since) > 0) card.since = toNum(envWait.since);
   } else if (col === 'waiting') {
     card.status = 'waiting';
     if (toNum(s.waitingSince) > 0) card.since = toNum(s.waitingSince);

@@ -104,6 +104,9 @@ describe('RUN_ENV_SKILL — catalog descriptor', () => {
     // Only an admin's turn hands off: a model in a non-admin (sandboxed) session must not reach an unsandboxed run.
     expect(description).toMatch(/only for an admin/i);
     expect(description).toMatch(/host turn/i);
+    // SSOT 2026-11-19 — one environment run at a time: a busy environment queues the request, no polling, no cron.
+    expect(description).toMatch(/queue/i);
+    expect(description).toMatch(/cron/i);
     const schema = descriptor?.paramsSchema as { required?: string[]; properties?: Record<string, unknown> };
     expect(schema.required).toEqual(['skill']);
     expect(Object.keys(schema.properties ?? {})).toEqual(['skill', 'text']);
@@ -143,6 +146,9 @@ describe('RUN_ENV_SKILL — runModelCommand (MCP-side echo)', () => {
       request: '$acme-dev2:qa-dev2 QA 1.4.0..1.4.2',
     });
     expect(result.payload.next).toMatch(/host turn/i);
+    // SSOT 2026-11-19 — the host queues environment work: the model neither polls the lane nor arms a cron for it.
+    expect(result.payload.next).toMatch(/queue/i);
+    expect(result.payload.next).toMatch(/cron/i);
   });
 
   it('a request without text is the skill ref alone', () => {

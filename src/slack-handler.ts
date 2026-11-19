@@ -120,6 +120,7 @@ import type { GoalOpeningAdmission } from './slack/commands/types';
 import { CompletionMessageTracker } from './slack/completion-message-tracker';
 import { createForkExecutor } from './slack/create-fork-executor';
 import { DispatchAbortError, formatDispatchAbortMessage } from './slack/dispatch-abort';
+import { envRunQueue } from './slack/env-run-queue';
 import { requestEnvSkillPermission } from './slack/env-skill-permission-request';
 import { mintEventTs } from './slack/event-ts';
 import { askFollowUpQuestion, consumeFollowUpVerdict, takeFollowUpQuestion } from './slack/follow-up-question';
@@ -9040,8 +9041,13 @@ export class SlackHandler {
       if (opts.notWithActiveGoal && this.claudeHandler.getSessionByKey(sessionKey)?.goal?.status === 'active') return;
       await askFollowUpQuestion(sessionKey, {
         getSession: (key) => this.claudeHandler.getSessionByKey(key),
-        // A running turn, or the goal loop about to act (a queued run, a continuation not yet holding the slot).
-        isRequestActive: (key) => this.requestCoordinator.isRequestActive(key) || this.goalLoopActing?.(key) === true,
+        // A running turn, or the goal loop about to act (a queued run, a continuation not yet holding the slot), or
+        // environment work this session asked for still waiting in the host's queue or running (SSOT 2026-11-19): the
+        // next actor is the host, not the user — no follow-up question.
+        isRequestActive: (key) =>
+          this.requestCoordinator.isRequestActive(key) ||
+          this.goalLoopActing?.(key) === true ||
+          this.awaitsEnvironmentWork(key),
         ask: (key, question, opts) => this.streamExecutor.askUserQuestionFromHost(key, question, opts),
         retract: (key, turnId) => this.streamExecutor.retractHostQuestion(key, turnId),
         save: () => this.claudeHandler.saveSessions(),
@@ -9053,6 +9059,12 @@ export class SlackHandler {
         error: (error as Error)?.message ?? String(error),
       });
     }
+  }
+
+  /** SSOT 2026-11-19 — environment work this session asked for waits in the host's queue or is in flight. */
+  awaitsEnvironmentWork(sessionKey: string): boolean {
+    const s = this.claudeHandler.getSessionByKey(sessionKey);
+    return envRunQueue.isPending(s?.channelId, s?.threadTs);
   }
 
   /** #917 — the goal loop's "about to act" probe (wired in index.ts: `GoalLoopController.isActing`). */

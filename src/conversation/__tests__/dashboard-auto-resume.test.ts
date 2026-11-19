@@ -238,6 +238,52 @@ describe('Dashboard — sessions waiting out an automatic resume, and the one cu
     });
   });
 
+  /**
+   * SSOT 2026-11-19 — a session whose environment work waits in the host's queue or runs waits on the host, not on a
+   * person: RUNNING with its envWait (queued · place in line, or running), never DONE and never NEEDS YOU.
+   */
+  describe('environment work in the host queue keeps the requester in RUNNING', () => {
+    it('an idle requester whose run is in flight, and one waiting behind it, are RUNNING with their envWait', async () => {
+      const { envRunQueue } = await import('../../slack/env-run-queue');
+      envRunQueue.run(
+        { owner: 'env:acme-dev2', channel: 'C1', threadTs: 't1', skills: 'qa' },
+        () => new Promise(() => {}),
+      );
+      envRunQueue.run(
+        { owner: 'env:acme-dev2', channel: 'C1', threadTs: 't2', skills: 'qa' },
+        () => new Promise(() => {}),
+      );
+      const b = await board(
+        new Map([
+          ['C1:t1', session()],
+          ['C1:t2', session({ sessionId: 'sid2', threadTs: 't2' })],
+        ]),
+      );
+      expect(b.idle).toHaveLength(0);
+      expect(b.waiting).toHaveLength(0);
+      expect(b.working).toHaveLength(2);
+      const byThread = Object.fromEntries(b.working.map((c: any) => [c.threadTs, c]));
+      expect(byThread.t1.envWait).toMatchObject({ state: 'running', owner: 'env:acme-dev2' });
+      expect(byThread.t2.envWait).toMatchObject({ state: 'queued', owner: 'env:acme-dev2', position: 1 });
+    });
+
+    it('a session with no environment work stays DONE, and a real question stays in NEEDS YOU', async () => {
+      const { envRunQueue } = await import('../../slack/env-run-queue');
+      envRunQueue.run(
+        { owner: 'env:acme-dev2', channel: 'C1', threadTs: 't3', skills: 'qa' },
+        () => new Promise(() => {}),
+      );
+      const b = await board(
+        new Map([
+          ['C1:t1', session()],
+          ['C1:t3', session({ sessionId: 'sid3', threadTs: 't3', activityState: 'waiting' })],
+        ]),
+      );
+      expect(b.idle.map((c: any) => c.threadTs)).toEqual(['t1']);
+      expect(b.waiting.map((c: any) => c.threadTs)).toEqual(['t3']);
+    });
+  });
+
   describe('bug 1 — at most one task in progress, and none when the session is not running', () => {
     const snapshot = () => [
       { content: 'T1 리뷰', status: 'completed', startedAt: 1, completedAt: 2 },

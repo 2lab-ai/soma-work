@@ -788,7 +788,10 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
         "approves. Only an environment user's existing skill; one per call; no other `$skill` refs in text. " +
         'The call answers `submitted`; the host decides after it and tells you in a host turn (`[env-skill]`, ' +
         "not the user's words): rejected with the reason, waiting for an admin, or — when the environment " +
-        "user's turn ends — the link to its thread. Do not wait for it inside this turn.",
+        "user's turn ends — the link to its thread. Do not wait for it inside this turn. The host runs one task per " +
+        'environment at a time: while another is in flight (a deploy, a QA lane) yours waits in its queue and starts ' +
+        'by itself, and your session reads as queued, not as waiting for the user. Never poll the lane or its lock, ' +
+        'sleep, or create a cron to retry it — send it once and end your turn; never ask the user whether to wait.',
       paramsSchema: RUN_ENV_SKILL_SCHEMA,
     });
   }
@@ -1474,7 +1477,9 @@ export function runModelCommand(
           'The host now hands this to the environment user exactly as a typed message — nothing has run yet. ' +
           'You will get a host turn ([env-skill]) with the outcome: rejected (with the reason), waiting for an ' +
           "admin's approval, or the link to the environment user's thread once its turn ends. Do not call this " +
-          'again for the same task; end this turn or continue with work that does not depend on it.',
+          'again for the same task; end this turn or continue with work that does not depend on it. If another ' +
+          'task of that environment is in flight, the host keeps this one in its queue and starts it by itself — ' +
+          'do not poll the lane or its lock, sleep, or create a cron for it, and do not ask the user whether to wait.',
       },
     };
   }

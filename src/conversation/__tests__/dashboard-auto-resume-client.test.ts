@@ -58,6 +58,8 @@ const CARD_OF_FNS = [
   'cardSummary',
   'pendingAutoResume',
   'autoResumeLabel',
+  'pendingEnvWait',
+  'envWaitLabel',
   'cardCurrentTask',
   'cardTaskRow',
   'agentStatusOf',
@@ -340,5 +342,42 @@ describe('the card summary never names a task other than the running one (SSOT 2
     const between = { key: 'k', activityState: 'working', tasks: [tasks[0], tasks[2]] };
     expect(card.cardSummary(between, 'working', 'Headline')).toBe('');
     expect(card.cardOf(between, 'working').summary).toBeUndefined();
+  });
+});
+
+/**
+ * SSOT 2026-11-19 — a session whose environment work waits in the host's queue (or runs) is in RUNNING, not NEEDS YOU:
+ * its card says so — 큐 대기 with its place in line, or 환경 작업 중 — with the clock from when that began.
+ */
+describe('cardOf — environment work in the host queue (envWait)', () => {
+  const cardApi = () => card;
+  const base = { key: 'k1', title: 't', activityState: 'idle', model: 'claude-opus-5-5' };
+  it('a queued card in RUNNING reads 큐 대기 with its place in line', () => {
+    const card = cardApi().cardOf(
+      { ...base, envWait: { state: 'queued', owner: 'env:acme-dev2', skills: 'x', since: 5_000, position: 2 } },
+      'working',
+    );
+    expect(card.status).toBe('running');
+    expect(card.statusText).toBe('큐 대기 · #2');
+    expect(card.since).toBe(5_000);
+  });
+  it('a card whose environment run is in flight reads 환경 작업 중', () => {
+    const card = cardApi().cardOf(
+      { ...base, envWait: { state: 'running', owner: 'env:acme-dev2', skills: 'x', since: 7_000 } },
+      'working',
+    );
+    expect(card.status).toBe('running');
+    expect(card.statusText).toBe('환경 작업 중');
+  });
+  it('its own running turn wins: no queue words while the session itself works', () => {
+    const card = cardApi().cardOf(
+      {
+        ...base,
+        activityState: 'working',
+        envWait: { state: 'queued', owner: 'e', skills: 'x', since: 1, position: 1 },
+      },
+      'working',
+    );
+    expect(card.statusText).toBeUndefined();
   });
 });

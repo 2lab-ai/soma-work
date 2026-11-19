@@ -208,6 +208,7 @@ import {
   installRespondTranslation,
   installSlackDisplayTranslation,
 } from './slack/display-translate';
+import { environmentBusy, envRunQueue } from './slack/env-run-queue';
 import { captureSessionIdentity, createEnvSkillHandoffHost, envSkillWakeState } from './slack/env-skill-handoff-host';
 import {
   answerGoalCapDecision,
@@ -2271,6 +2272,9 @@ async function start() {
       },
       logger,
     });
+    // SSOT 2026-11-19 — one environment run at a time per environment user: a hand-off waits while a turn of that
+    // user that the queue did not start (its own cron, a restart resume) is still working.
+    envRunQueue.setBusyProbe((owner) => environmentBusy(owner, envWakeRegistry.getAllSessions().values(), Date.now()));
     setStreamExecutorProviders({
       handOffEnvironmentSkill: createEnvSkillHandoffHost({
         handler: new SkillForceHandler(undefined, {
@@ -2370,6 +2374,12 @@ async function start() {
         // Deferred: this runs inside the loop's queue entry, which `isActing` still sees until it drains.
         onRunSettled: (sessionKey, { continued, queued }) => {
           if (!continued && !queued) setImmediate(() => void slackHandler.askFollowUpQuestion(sessionKey));
+        },
+        // SSOT 2026-11-19 — environment work the session asked for waits in the host's queue or runs: a wait, not a
+        // stall; the run's result turn drives the loop again.
+        awaitingHostWork: (key) => {
+          const s = registry.getSessionByKey(key);
+          return envRunQueue.isPending(s?.channelId, s?.threadTs);
         },
         // #788: while the host stops, no loop run starts and a landing verdict is dropped.
         isShuttingDown: () => slackHandler.isShuttingDown(),

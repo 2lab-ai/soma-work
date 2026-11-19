@@ -71,6 +71,7 @@ function makeHarness(opts: {
   requestActive?: boolean;
   fallbackModel?: GoalLoopControllerDeps['fallbackModel'];
   evalModelOverride?: string;
+  awaitingHostWork?: GoalLoopControllerDeps['awaitingHostWork'];
 }): Harness {
   const goal = makeGoal(opts.goal);
   const session = makeSession(goal);
@@ -110,6 +111,7 @@ function makeHarness(opts: {
     scheduleEvalRetry: (fn, delayMs) => {
       scheduledRetries.push({ fn, delayMs });
     },
+    awaitingHostWork: opts.awaitingHostWork,
   });
 
   return {
@@ -1116,5 +1118,37 @@ describe('GoalLoopController — a pause that lands while the continuation notic
     await h.controller.settled(SESSION_KEY);
     expect(h.session.goal?.goalId).toBe('goal-next');
     expect(h.injected).toHaveLength(0);
+  });
+});
+
+/**
+ * SSOT 2026-11-19 — a session whose environment work waits in the host's queue or is in flight is waiting on the
+ * host, not stuck: no eval runs (it would read the wait as no progress and stop the goal with a question to the
+ * owner), nothing is injected. The run's result turn settles the session and drives the loop again.
+ */
+describe('GoalLoopController — environment work the host runs (env run queue)', () => {
+  it('skips the eval and injects nothing while the session waits on queued or running environment work', async () => {
+    let dispatched = 0;
+    let waiting = true;
+    const h = makeHarness({
+      dispatcher: async () => {
+        dispatched += 1;
+        return JSON.stringify({ completed: false, reason: 'not yet', remaining: ['do X'] });
+      },
+      awaitingHostWork: () => waiting,
+    });
+
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(dispatched).toBe(0);
+    expect(h.injected).toHaveLength(0);
+    expect(h.notices).toHaveLength(0);
+    expect(h.goal.status).toBe('active');
+
+    // The run ended: its result turn settles the session and the loop judges again.
+    waiting = false;
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(dispatched).toBe(1);
   });
 });

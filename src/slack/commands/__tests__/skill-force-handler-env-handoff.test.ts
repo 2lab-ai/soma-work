@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { EnvRunQueue } from '../../env-run-queue';
 import { ENVIRONMENT_REQUEST_MAX_CHARS, SkillForceHandler } from '../skill-force-handler';
 
 vi.mock('node:fs');
@@ -147,6 +148,76 @@ describe('SkillForceHandler — environment hand-off for a model command (#1304)
       const result = await handler.execute(ctx('$acme-dev2:deploy QA'));
       expect(result).toMatchObject({ handled: true, awaitingPermission: true });
       expect(result.environmentRun).toBeUndefined();
+    });
+  });
+
+  /**
+   * SSOT 2026-11-19 — environment work runs one at a time per environment user: a second hand-off waits in line (the
+   * requester's thread is told it is queued, not asked anything) and starts by itself once the first run ended.
+   */
+  describe('environment run queue', () => {
+    it('a second hand-off to the same environment waits for the first run, then starts by itself', async () => {
+      h.isAllowed.mockReturnValue(true);
+      const releases: Array<() => void> = [];
+      const queuedRun = vi.fn(
+        (input: { onOpened?: (ts: string) => void }) =>
+          new Promise<string>((resolve) => {
+            input.onOpened?.('900.1');
+            releases.push(() => resolve('900.1'));
+          }),
+      );
+      const queue = new EnvRunQueue({ schedule: () => {} });
+      const queued = new SkillForceHandler(resolveUser, {
+        slackApi: slackApi as any,
+        runAsUser: queuedRun,
+        envRunQueue: queue,
+      });
+      const sayA = vi.fn().mockResolvedValue({ ts: '1' });
+      const sayB = vi.fn().mockResolvedValue({ ts: '1' });
+
+      const a = await queued.execute({
+        user: 'U1',
+        channel: 'C1',
+        threadTs: '171.1',
+        text: '$acme-dev2:deploy QA',
+        say: sayA,
+      });
+      const b = await queued.execute({
+        user: 'U1',
+        channel: 'C1',
+        threadTs: '272.2',
+        text: '$acme-dev2:deploy QA',
+        say: sayB,
+      });
+      expect(queuedRun).toHaveBeenCalledTimes(1);
+      expect(queue.statusFor('C1', '272.2')).toMatchObject({ state: 'queued', owner: 'env:acme-dev2', position: 1 });
+      // The waiting requester is told it is in line — a notice, never a question.
+      const notices = sayB.mock.calls.map((c) => String(c[0]?.text ?? ''));
+      expect(notices.some((t) => t.includes('대기열') && t.includes('env:acme-dev2'))).toBe(true);
+
+      releases[0]();
+      await expect(a.environmentRun?.finished).resolves.toMatchObject({ ok: true });
+      await vi.waitFor(() => expect(queuedRun).toHaveBeenCalledTimes(2));
+      expect(queue.statusFor('C1', '272.2')).toMatchObject({ state: 'running' });
+      releases[1]();
+      await expect(b.environmentRun?.finished).resolves.toMatchObject({ ok: true });
+      expect(queue.isPending('C1', '272.2')).toBe(false);
+    });
+
+    it('the first hand-off starts at once and posts no queue notice', async () => {
+      h.isAllowed.mockReturnValue(true);
+      const queue = new EnvRunQueue({ schedule: () => {} });
+      const free = new SkillForceHandler(resolveUser, { slackApi: slackApi as any, runAsUser, envRunQueue: queue });
+      const sayA = vi.fn().mockResolvedValue({ ts: '1' });
+      const a = await free.execute({
+        user: 'U1',
+        channel: 'C1',
+        threadTs: '171.1',
+        text: '$acme-dev2:deploy QA',
+        say: sayA,
+      });
+      await a.environmentRun?.finished;
+      expect(sayA.mock.calls.map((c) => String(c[0]?.text ?? '')).some((t) => t.includes('대기열'))).toBe(false);
     });
   });
 });

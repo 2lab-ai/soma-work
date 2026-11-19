@@ -1813,5 +1813,7 @@
   "<p class=\"rb-lead\">이 작업에는 진행 중인 goal이 있어요. 지금 중지만 하면 goal이 다음 턴을 다시 시작해서 작업이 멈추지 않습니다.</p>": "<p class=\"rb-lead\">This task has a running goal. A stop alone does not hold: the goal starts its next turn again.</p>",
   "<p class=\"rb-note\">goal을 먼저 일시정지하고 작업을 중지할까요? ": "<p class=\"rb-note\">Pause the goal first, then stop the work? ",
   "개는 시작하지 않고 그대로 기다립니다. ": " — they do not start; they keep waiting. ",
-  "목표 탭에서 재개하면 다시 시작해요.</p>": "Resume it in the Goal tab to start it again.</p>"
+  "목표 탭에서 재개하면 다시 시작해요.</p>": "Resume it in the Goal tab to start it again.</p>",
+  "큐 대기": "Queued",
+  "환경 작업 중": "Environment task running"
 }
