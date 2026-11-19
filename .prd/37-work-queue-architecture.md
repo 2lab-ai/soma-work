@@ -2,9 +2,9 @@
 
 Status: in-progress
 
-> 한 줄 결론: 원장(순수 전이 + 파일 잠금 저장)은 `@soma/process-shared/work-queue`에 하나만 있다. MCP 프로세스
-> (`packages/mcp-servers/work-queue`)는 그 원장으로 줄 서기 · 끝내기를 그 자리에서 처리하고, 호스트
-> (`packages/slack/src/work-queue/host.ts`)는 같은 원장을 3초마다 읽어 차례가 온 세션을 깨우고, 일 안 하는 차례를
+> 한 줄 결론: 원장(순수 전이 + 파일 잠금 저장)은 `somalib/work-queue`에 하나만 있다(MCP 서버는
+> `@soma/process-shared/work-queue` 재export로 닿는다). MCP 프로세스(`packages/mcp-servers/work-queue`)는 그 원장으로 줄
+> 서기 · 끝내기를 그 자리에서 처리하고, 호스트(`src/work-queue/host.ts`)는 같은 원장을 3초마다 읽어 차례가 온 세션을 깨우고, 일 안 하는 차례를
 > 돌려놓고, 보드 · 목표 루프 · 후속 질문 · hand-off에 "이 세션은 호스트를 기다린다"를 알려 준다.
 
 ## 0. 미니맵
@@ -26,16 +26,16 @@ Status: in-progress
 ## 1. 모듈 배치
 
 ```
-packages/process-shared/src/work-queue/      ← 원장의 유일한 본문 (MCP · 호스트 공용)
+somalib/work-queue/                          ← 원장의 유일한 본문 (호스트가 import, MCP는 process-shared 재export로)
   keys.ts        parseWorkKeys(raw[]) → {keys, invalid}          D10
   config.ts      parseWorkQueuesConfig(raw) → {queues, warnings}  §4.4 (예전 배열 모양 포함)
   ledger.ts      순수 전이: enter · end · sweep 결과 적용 · 보기       D3 D5
   store.ts       WorkQueueStore: read() · mutate(fn) (파일 잠금 + tmp→rename)  D4
 packages/mcp-servers/work-queue/
   work-queue-mcp-server.ts   queue_list · queue_enter · queue_done · queue_cancel
-packages/slack/src/work-queue/                ← 통째로 새로 (예전 게이트 지움)
-  host.ts        WorkQueueHost: tick · wake · release · statusFor · awaitsHost · whenFree
-  index.ts
+src/work-queue/                               ← 호스트 쪽 (예전 packages/slack/src/work-queue 게이트는 지움)
+  host.ts        WorkQueueHost: tick · wake · sweep · statusFor · awaitsHost · whenFree
+  host-wait.ts   hostWaitFor · waitsOnHost — 보드 · 목표 루프 · 후속 질문의 한 술어
 src/
   mcp-config-builder.ts      work-queue 서버 + SOMA_WORK_QUEUE_CONTEXT · allowedTools
   internal-mcp-server-resolver.ts  'work-queue'
@@ -47,7 +47,7 @@ src/
   conversation/dashboard.ts  queueWait → 카드 상태 · 보라 태그
 ```
 
-지움: `packages/slack/src/work-queue/{manager,service,blocks,trigger,registry,config}.ts`와 그 테스트,
+지움: `packages/slack/src/work-queue/{manager,service,blocks,trigger,registry,config,index}.ts`와 그 테스트(+ `@soma/slack/work-queue` export),
 `SessionInitializer`의 `workQueue` 게이트, 액션 `work_queue_wait` · `work_queue_cancel`, `ConversationSession.workQueueId`,
 `src/slack/env-run-queue.ts`(+ 테스트). `config-loader`의 `workQueues` 통과는 그대로(모양은 `parseWorkQueuesConfig`가 정한다).
 
@@ -95,7 +95,7 @@ interface WorkQueueEnded extends WorkQueueEntry { endedAt: number; end: 'done' |
   내용을 쓰기 전에 복사)로, 그것도 없으면 오류 — 빈 원장으로 떨어뜨리지 않는다(rules/config.md 4).
 - `mtimeMs()`: 호스트 틱이 바뀐 것만 다시 읽게.
 
-`@soma/common/atomic-json`을 쓰지 않는 이유: `@soma/process-shared`는 `@soma/common`에 기대지 않는다(MCP 서버 번들 경계).
+`@soma/common/atomic-json`을 쓰지 않는 이유: 원장 본문은 `somalib`에 있고 `somalib`은 `@soma/common`에 기대지 않는다(MCP 서버 번들 경계).
 같은 tmp → fsync → rename 규칙을 그대로 따른다.
 
 ## 3. MCP 서버 `work-queue`
@@ -111,8 +111,8 @@ interface WorkQueueEnded extends WorkQueueEntry { endedAt: number; end: 'done' |
 
 ## 4. 호스트 `WorkQueueHost`
 
-의존(주입): `store`, `getQueues()`(설정), `probe(holder) → {exists, activity, activityChangedAt, awake}`,
-`handoffActive(sessionKey)`, `deliver(holder, text, onOutcome)`(settled delivery), `post(channel, threadTs, text)`, `now`.
+의존(주입): `store`, `probe(holder) → {exists, activity, activityChangedAt, handoffActive}`,
+`deliver(holder, text, done)`(settled delivery), `post(holder, text)`, `now`. 큐 설정은 필요 없다(원장 항목만 본다).
 
 - **틱(3 s)**: `store.mtimeMs()`가 바뀌었거나 정리 주기(15 s)가 됐으면 읽는다.
   1. 깨우기: `running`이고 `notifiedAt`이 없고 아직 보내는 중이 아닌 항목 → `deliver`. 결과 `injected` → `mutate`로
@@ -161,9 +161,9 @@ interface WorkQueueEnded extends WorkQueueEntry { endedAt: number; end: 'done' |
 
 | 층 | 파일 | 무엇 |
 |---|---|---|
-| 원장 | `packages/process-shared/src/work-queue/__tests__/{keys,config,ledger,store}.test.ts` | A1–A4 · A9의 전이, 잠금 경합(자식 프로세스 둘) · 오래된 잠금 · `.bak` |
+| 원장 | `somalib/work-queue/{keys,config,ledger,store}.test.ts` | A1–A4 · A9의 전이, 잠금 경합(자식 프로세스 둘) · 오래된 잠금 · `.bak` |
 | MCP | `packages/mcp-servers/work-queue/work-queue-mcp-server.test.ts` | 도구 입출력 · 주인 검사 · `NO_QUEUES` · 설정 다시 읽기 |
-| 호스트 | `packages/slack/src/work-queue/__tests__/host.test.ts` | A5–A8: 깨우기 한 번 · `gone` 반납 · 반납 규칙 · 재시작 뒤 깨우기 · `whenFree` |
+| 호스트 | `src/work-queue/__tests__/{host,host-wait}.test.ts` · `src/slack/__tests__/env-handoff-runs.test.ts` | A5–A8: 깨우기 한 번 · `gone` 반납 · 반납 규칙 · 재시작 뒤 깨우기 · `whenFree` |
 | hand-off | `src/slack/commands/__tests__/skill-force-handler-env-handoff.test.ts` | A10 · A11(동시 시작) |
 | 보드 | `src/conversation/__tests__/dashboard-auto-resume*.test.ts` · `card-finish-client*.test.ts` | 칸 · 라벨 · 보라 |
 | 목표 · 후속 | `goal-loop-controller.test.ts` · `slack-handler.followup.test.ts` | 보류 |

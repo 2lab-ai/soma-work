@@ -206,6 +206,24 @@ describe('PromptBuilder', () => {
       expect(confirm).toContain('`no risk signals found`');
     });
 
+    // .prd/36 G9 — a deploy lines up in `deploy:<target>` by the PRs it ships: PRs another deploy already ships are not
+    // shipped twice, and a deploy that has to wait ends its turn (no polling, no cron, no question) until the host wakes it.
+    it('deploy workflow lines up in the work queue by its PR keys before the confirmation', () => {
+      const prompt = builder.loadWorkflowPrompt('deploy')!;
+      const section = prompt.slice(prompt.indexOf('## Work Queue'), prompt.indexOf('## Pre-Execution Confirmation'));
+      expect(prompt.indexOf('## Work Queue')).toBeGreaterThan(prompt.indexOf('## Delta and Risk Check'));
+      expect(section).toContain('queue_enter');
+      expect(section).toContain('deploy:<target>');
+      expect(section).toMatch(/owner\/repo#N/);
+      expect(section).toContain('CONFLICT');
+      expect(section).toMatch(/already ships? in another deploy/);
+      expect(section).toMatch(/end the turn/);
+      expect(section).toMatch(/no polling, no cron, no question/);
+      expect(section).toMatch(/host wakes this thread/);
+      expect(section).toContain('queue_done');
+      expect(section).toContain('NO_QUEUES');
+    });
+
     // #1232 — a deploy that restarts this host must not be merged a second time by the resumed session.
     it('deploy workflow re-attaches to the same deploy after a restart instead of merging again', () => {
       const prompt = builder.loadWorkflowPrompt('deploy')!;
