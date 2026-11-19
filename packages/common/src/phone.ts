@@ -167,6 +167,8 @@ export interface PhoneCallRequestResult {
   ok: boolean;
   callId?: string;
   error?: string;
+  /** Placed, but the call cannot be served (the voice host is busy): it only says a notice and hangs up. */
+  notice?: string;
 }
 
 const RID_RE = /^[a-z0-9]{8,40}$/;

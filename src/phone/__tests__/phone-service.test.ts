@@ -10,7 +10,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { VoiceDialog, VoiceDialogEvent } from '../../agent-runtime/voice-dialog';
 import { PhoneCallStore } from '../call-store';
 import type { AgentLike, AgentOptions, CallSessionLike, IncomingCallLike, KoreaAiTelSdk } from '../koreaaitel';
+import { BUSY_NOTICE } from '../phone-prompt';
 import { PhoneService, type PhoneServiceDeps } from '../phone-service';
+import type { VoiceClient, VoiceHostClaim } from '../voice-client';
 
 let dir: string;
 beforeEach(() => {
@@ -398,6 +400,7 @@ describe('PhoneService', () => {
     await svc.start();
     await agents[0].incoming?.(incoming('IN1', []));
     const starting = agents[0].start(fakeCall('IN1', 'inbound'));
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0)); // the run is waiting for credentials now
     await agents[0].handlers.call_failed(fakeCall('IN1', 'inbound', 'canceled'), 'canceled');
     letAuthGo();
     await starting;
@@ -497,5 +500,614 @@ describe('PhoneService', () => {
     });
     expect(reasons).toEqual(['rejected']);
     await svc.stop();
+  });
+
+  describe('one job at a time on the voice host', () => {
+    const settleAll = async () => {
+      for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0));
+    };
+    /** 0.3 s of a 300 Hz tone at 8 kHz (the test codec is identity: PCM16 goes in as if it were μ-law). */
+    const tone = (ms: number, amp: number) => {
+      const n = (8000 * ms) / 1000;
+      const b = Buffer.alloc(n * 2);
+      for (let i = 0; i < n; i++)
+        b.writeInt16LE(Math.round(Math.sin((2 * Math.PI * 300 * i) / 8000) * amp * 32767), i * 2);
+      return b;
+    };
+    /** A voice host that answers claims with `answer()`; `log` says which client did what. */
+    function voiceHost(
+      answer: () => VoiceHostClaim['kind'],
+      opts: { speakFails?: () => boolean; claimGate?: () => Promise<void>; renewOk?: () => boolean } = {},
+    ) {
+      const log: string[] = [];
+      const client = (tag: string): VoiceClient => ({
+        transcribe: async () => {
+          log.push(`${tag} transcribe`);
+          return { text: '네', ms: 1 };
+        },
+        speak: async (text, signal) => {
+          if (opts.speakFails?.()) throw new Error('text-to-speech answered 409');
+          log.push(`${tag} speak ${text}${signal ? ' (bounded)' : ''}`);
+          return {
+            sampleRate: 8000,
+            headersMs: 0,
+            chunks: (async function* () {
+              yield Buffer.alloc(3200); // identity codec: 20 frames of 160 B
+            })(),
+          };
+        },
+      });
+      const voice: VoiceClient = {
+        ...client('line'),
+        claim: async (owner) => {
+          log.push(`claim ${owner}`);
+          await opts.claimGate?.();
+          const kind = answer();
+          if (kind === 'busy') return { kind, reason: 'busy with voicechat' };
+          if (kind === 'shared') return { kind };
+          return {
+            kind,
+            voice: client('leased'),
+            renew: async () => {
+              log.push('renew');
+              return opts.renewOk?.() ?? true;
+            },
+            release: async () => {
+              log.push('release');
+            },
+          };
+        },
+      };
+      return { voice, log };
+    }
+    function liveCall(callId: string, direction: string) {
+      const call = { ...fakeCall(callId, direction), frames: 0, hungUp: 0 };
+      call.sendAudio = () => {
+        call.frames++;
+      };
+      call.hangup = async () => {
+        call.hungUp++;
+      };
+      return call;
+    }
+
+    it('the line makes the notices while it is idle, with the line client (no lease)', async () => {
+      const host = voiceHost(() => 'held');
+      const { svc } = make(serverTools(), undefined, { voiceClientFor: () => host.voice });
+      await svc.start();
+      await settleAll();
+      expect(host.log).toEqual(
+        expect.arrayContaining([
+          `line speak ${BUSY_NOTICE.outbound} (bounded)`,
+          `line speak ${BUSY_NOTICE.inbound} (bounded)`,
+        ]),
+      );
+      expect(host.log.some((l) => l.startsWith('claim'))).toBe(false);
+      await svc.stop();
+    });
+
+    it('a call takes the host: its words go through the lease, renewed every 10 s, given back when it ends', async () => {
+      const host = voiceHost(() => 'held');
+      const { svc, agents, timers } = make(serverTools(), undefined, { voiceClientFor: () => host.voice });
+      await svc.start();
+      await settleAll();
+      host.log.length = 0;
+      await agents[0].incoming?.(incoming('IN1', []));
+      await agents[0].start(liveCall('IN1', 'inbound'));
+      expect(host.log).toEqual(['claim phone:2lab-ai-dev:inbound']);
+      const session = agents[0].options.session as unknown as { feedAudio(b: Buffer): void };
+      session.feedAudio(tone(600, 0.3));
+      session.feedAudio(tone(700, 0.0005));
+      await settleAll();
+      expect(host.log).toContain('leased transcribe');
+      expect(host.log).not.toContain('line transcribe');
+      timers.advance(10_000);
+      await settleAll();
+      timers.advance(10_000);
+      await settleAll();
+      expect(host.log.filter((l) => l === 'renew')).toHaveLength(2);
+      await agents[0].handlers.call_end(fakeCall('IN1', 'inbound', 'completed'));
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1);
+      timers.advance(30_000);
+      await settleAll();
+      expect(host.log.filter((l) => l === 'renew')).toHaveLength(2); // no renewal after the end
+      await svc.stop();
+    });
+
+    it('busy on an inbound call: the caller hears the notice, no model is used, the owner is told', async () => {
+      let kind: VoiceHostClaim['kind'] = 'held';
+      const host = voiceHost(() => kind);
+      const auths: string[] = [];
+      let summaries = 0;
+      const { svc, agents, store, dialogs, notices } = make(serverTools(), undefined, {
+        voiceClientFor: () => host.voice,
+        dialogAuth: async () => {
+          auths.push('taken');
+          return { env: {}, model: 'm', release: async () => undefined };
+        },
+        summarize: async () => {
+          summaries++;
+          return 'summary';
+        },
+      });
+      await svc.start();
+      await settleAll();
+      kind = 'busy';
+      await agents[0].incoming?.(incoming('IN1', []));
+      const call = liveCall('IN1', 'inbound');
+      await agents[0].start(call);
+      expect(call.frames).toBe(20); // the notice, at once
+      const r = store.get('IN1');
+      expect(r?.transcript).toMatchObject([{ role: 'agent', text: BUSY_NOTICE.inbound }]);
+      expect(r?.work[0]).toMatchObject({ kind: 'event', text: expect.stringContaining('busy with voicechat') });
+      expect(auths).toEqual([]);
+      expect(dialogs).toHaveLength(0);
+      await agents[0].handlers.call_end(fakeCall('IN1', 'inbound', 'completed'));
+      expect(notices[0][1]).toContain(BUSY_NOTICE.inbound);
+      expect(summaries).toBe(0); // the other side said nothing: nothing to sum up
+      expect(host.log).not.toContain('release'); // nothing was held
+      await svc.stop();
+    });
+
+    it('busy on an outbound call: it is still placed, says only the notice, and the requester is told', async () => {
+      let kind: VoiceHostClaim['kind'] = 'held';
+      const host = voiceHost(() => kind);
+      let authCalls = 0;
+      const { svc, agents, store, dialogs } = make(serverTools(), undefined, {
+        voiceClientFor: () => host.voice,
+        dialogAuth: async () => {
+          authCalls++;
+          return { env: {}, model: 'm', release: async () => undefined };
+        },
+      });
+      await svc.start();
+      await settleAll();
+      kind = 'busy';
+      const result = await svc.dial(request() as never);
+      expect(result).toMatchObject({ ok: true, callId: 'CA1', notice: expect.stringContaining('busy with voicechat') });
+      expect(agents[0].dialed).toHaveLength(1);
+      expect(dialogs).toHaveLength(0);
+      const r = store.get('CA1');
+      expect(r?.model).toBeUndefined();
+      expect(r?.work[0]).toMatchObject({ kind: 'event', text: expect.stringContaining('안내 음성만') });
+      await agents[0].handlers.call_end(fakeCall('CA1', 'outbound', 'completed'));
+      expect(authCalls).toBe(0); // no model credentials were asked for
+      kind = 'held';
+      expect(await svc.dial(request({ rid: 'zzz999yyy888' }) as never)).toMatchObject({ ok: true, callId: 'CA2' });
+      expect(store.get('CA2')?.work[0].kind).toBe('instruction');
+      await svc.stop();
+    });
+
+    it('a phrase stream that stalls after its headers is given up, and a later idle pass makes the notice', async () => {
+      let stall = true;
+      const voice: VoiceClient = {
+        transcribe: async () => ({ text: '', ms: 0 }),
+        speak: async (_text, signal) => ({
+          sampleRate: 8000,
+          headersMs: 0,
+          chunks: (async function* () {
+            yield Buffer.alloc(320);
+            if (stall)
+              await new Promise<void>((_, reject) =>
+                signal?.addEventListener('abort', () => reject(new Error('aborted'))),
+              );
+            yield Buffer.alloc(3200);
+          })(),
+        }),
+        claim: async () => ({ kind: 'busy', reason: 'busy with voicechat' }),
+      };
+      const { svc, agents } = make(serverTools(), undefined, { voiceClientFor: () => voice, phraseSynthMs: 50 });
+      await svc.start();
+      await new Promise((r) => setTimeout(r, 400)); // every phrase hits the deadline in turn
+      expect(await svc.dial(request() as never)).toMatchObject({
+        ok: false,
+        error: expect.stringContaining('no notice'),
+      });
+      stall = false; // the host recovers
+      await svc.sync();
+      await settleAll();
+      expect(await svc.dial(request({ rid: 'zzz999yyy888' }) as never)).toMatchObject({
+        ok: true,
+        notice: expect.any(String),
+      });
+      expect(agents[0].dialed).toHaveLength(1);
+      await svc.stop();
+    });
+
+    it('a line closed while its inbound claim is pending gives the late grant back', async () => {
+      let letClaimGo!: () => void;
+      const claimGate = new Promise<void>((r) => {
+        letClaimGo = r;
+      });
+      const host = voiceHost(() => 'held', { claimGate: () => claimGate });
+      const { svc, agents, timers } = make(serverTools(), undefined, { voiceClientFor: () => host.voice });
+      await svc.start();
+      await settleAll();
+      await agents[0].incoming?.(incoming('IN1', []));
+      const starting = agents[0].start(fakeCall('IN1', 'inbound'));
+      await settleAll();
+      await svc.stop(); // the line goes; its disconnect sends no call_end
+      letClaimGo();
+      await starting;
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1);
+      timers.advance(60_000);
+      await settleAll();
+      expect(host.log.filter((l) => l === 'renew')).toHaveLength(0);
+    });
+
+    it('busy and the notice could not be made: nothing is dialed; the notice is made on a later idle pass', async () => {
+      let fails = true;
+      const host = voiceHost(() => 'busy', { speakFails: () => fails });
+      const { svc, agents } = make(serverTools(), undefined, { voiceClientFor: () => host.voice });
+      await svc.start();
+      await settleAll();
+      expect(await svc.dial(request() as never)).toMatchObject({
+        ok: false,
+        error: expect.stringContaining('no notice is ready'),
+      });
+      expect(agents[0].dialed).toHaveLength(0);
+      fails = false;
+      await svc.sync();
+      await settleAll();
+      expect(await svc.dial(request({ rid: 'zzz999yyy888' }) as never)).toMatchObject({
+        ok: true,
+        notice: expect.any(String),
+      });
+      await svc.stop();
+    });
+
+    it('the host is kept from the claim on: renewed while the dialog credentials and the dial are still pending', async () => {
+      const host = voiceHost(() => 'held');
+      let letAuthGo!: () => void;
+      const authGate = new Promise<void>((r) => {
+        letAuthGo = r;
+      });
+      const { svc, timers } = make(serverTools(), undefined, {
+        voiceClientFor: () => host.voice,
+        dialogAuth: async () => {
+          await authGate;
+          return { env: {}, model: 'm', release: async () => undefined };
+        },
+      });
+      await svc.start();
+      await settleAll();
+      const dialing = svc.dial(request() as never);
+      await settleAll();
+      for (let i = 0; i < 4; i++) {
+        timers.advance(10_000); // 40 s of slow setup: past the host's 30 s
+        await settleAll();
+      }
+      expect(host.log.filter((l) => l === 'renew')).toHaveLength(4);
+      letAuthGo();
+      expect(await dialing).toMatchObject({ ok: true });
+      await svc.stop();
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1);
+    });
+
+    it('…and while the platform dial is still pending', async () => {
+      const host = voiceHost(() => 'held');
+      const { svc, agents, timers } = make(serverTools(), undefined, { voiceClientFor: () => host.voice });
+      await svc.start();
+      await settleAll();
+      let answer!: (c: CallSessionLike) => void;
+      agents[0].call = () =>
+        new Promise<CallSessionLike>((r) => {
+          answer = r;
+        });
+      const dialing = svc.dial(request() as never);
+      await settleAll();
+      for (let i = 0; i < 4; i++) {
+        timers.advance(10_000);
+        await settleAll();
+      }
+      expect(host.log.filter((l) => l === 'renew')).toHaveLength(4);
+      answer(fakeCall('CA9', 'outbound'));
+      expect(await dialing).toMatchObject({ ok: true, callId: 'CA9' });
+      await agents[0].handlers.call_end(fakeCall('CA9', 'outbound', 'completed'));
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1); // moved to the call id, given back at its end
+      await svc.stop();
+    });
+
+    it('a caller who hangs up while the host is still answering the claim: the late grant goes straight back', async () => {
+      let letClaimGo!: () => void;
+      const claimGate = new Promise<void>((r) => {
+        letClaimGo = r;
+      });
+      const host = voiceHost(() => 'held', { claimGate: () => claimGate });
+      let authCalls = 0;
+      const { svc, agents, timers } = make(serverTools(), undefined, {
+        voiceClientFor: () => host.voice,
+        dialogAuth: async () => {
+          authCalls++;
+          return new Promise<never>(() => undefined);
+        },
+      });
+      await svc.start();
+      await settleAll();
+      await agents[0].incoming?.(incoming('IN1', []));
+      const starting = agents[0].start(fakeCall('IN1', 'inbound'));
+      await settleAll();
+      await agents[0].handlers.call_end(fakeCall('IN1', 'inbound', 'canceled')); // gone before the grant
+      letClaimGo();
+      await starting;
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1);
+      expect(authCalls).toBe(0);
+      timers.advance(60_000);
+      await settleAll();
+      expect(host.log.filter((l) => l === 'renew')).toHaveLength(0);
+      await svc.stop();
+    });
+
+    it('teardown during a pending setup gives the host back and stops renewing', async () => {
+      const host = voiceHost(() => 'held');
+      const { svc, agents, timers } = make(serverTools(), undefined, {
+        voiceClientFor: () => host.voice,
+        dialogAuth: () => new Promise<never>(() => undefined), // stuck for good
+      });
+      await svc.start();
+      await settleAll();
+      void svc.dial(request() as never);
+      await agents[0].incoming?.(incoming('IN1', [])); // refused: the line is busy with the dial
+      await settleAll();
+      await svc.stop();
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1);
+      timers.advance(60_000);
+      await settleAll();
+      expect(host.log.filter((l) => l === 'renew')).toHaveLength(0);
+    });
+
+    it('an inbound caller who hangs up while the credentials are stuck gives the host back at once', async () => {
+      const host = voiceHost(() => 'held');
+      const { svc, agents, timers } = make(serverTools(), undefined, {
+        voiceClientFor: () => host.voice,
+        dialogAuth: () => new Promise<never>(() => undefined),
+      });
+      await svc.start();
+      await settleAll();
+      await agents[0].incoming?.(incoming('IN1', []));
+      void agents[0].start(fakeCall('IN1', 'inbound'));
+      await settleAll();
+      expect(host.log).toContain('claim phone:2lab-ai-dev:inbound');
+      await agents[0].handlers.call_end(fakeCall('IN1', 'inbound', 'canceled'));
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1);
+      timers.advance(60_000);
+      await settleAll();
+      expect(host.log.filter((l) => l === 'renew')).toHaveLength(0);
+      await svc.stop();
+    });
+
+    it('stop() with a call up gives its host back once, and no renewal follows', async () => {
+      const host = voiceHost(() => 'held');
+      const { svc, timers } = make(serverTools(), undefined, { voiceClientFor: () => host.voice });
+      await svc.start();
+      await settleAll();
+      expect(await svc.dial(request() as never)).toMatchObject({ ok: true });
+      await svc.stop(); // no call_end comes: the process is going
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1);
+      const renewed = host.log.filter((l) => l === 'renew').length;
+      timers.advance(60_000);
+      await settleAll();
+      expect(host.log.filter((l) => l === 'renew')).toHaveLength(renewed);
+    });
+
+    it('a setup stuck past 60 s gives the host back; credentials that come later dial nothing', async () => {
+      const host = voiceHost(() => 'held');
+      let letAuthGo!: () => void;
+      const authGate = new Promise<void>((r) => {
+        letAuthGo = r;
+      });
+      const authReleased: string[] = [];
+      const { svc, agents, timers } = make(serverTools(), undefined, {
+        voiceClientFor: () => host.voice,
+        dialogAuth: async () => {
+          await authGate;
+          return { env: {}, model: 'm', release: async () => void authReleased.push('auth') };
+        },
+      });
+      await svc.start();
+      await settleAll();
+      const dialing = svc.dial(request() as never);
+      await settleAll();
+      for (let i = 0; i < 6; i++) {
+        timers.advance(10_000);
+        await settleAll();
+      }
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1); // the deadline
+      const renewed = host.log.filter((l) => l === 'renew').length;
+      letAuthGo();
+      expect(await dialing).toMatchObject({ ok: false, error: expect.stringContaining('too long') });
+      expect(agents[0].dialed).toHaveLength(0);
+      expect(authReleased).toEqual(['auth']);
+      timers.advance(30_000);
+      await settleAll();
+      expect(host.log.filter((l) => l === 'renew')).toHaveLength(renewed);
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1);
+      await svc.stop();
+    });
+
+    it('a dial request that answers after the setup deadline is put down, not set up', async () => {
+      const host = voiceHost(() => 'held');
+      const { svc, agents, timers, store } = make(serverTools(), undefined, { voiceClientFor: () => host.voice });
+      await svc.start();
+      await settleAll();
+      let answer!: (c: CallSessionLike) => void;
+      agents[0].call = () =>
+        new Promise<CallSessionLike>((r) => {
+          answer = r;
+        });
+      const dialing = svc.dial(request() as never);
+      await settleAll();
+      timers.advance(60_000);
+      await settleAll();
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1);
+      let hungUp = 0;
+      answer({
+        ...fakeCall('CA7', 'outbound'),
+        hangup: async () => {
+          hungUp++;
+        },
+      });
+      expect(await dialing).toMatchObject({ ok: false, error: expect.stringContaining('CA7') });
+      await settleAll();
+      expect(hungUp).toBe(1);
+      expect(store.get('CA7')).toBeUndefined();
+      await svc.stop();
+    });
+
+    it('a call the platform ended before its dial request answered is not set up, and its host goes back', async () => {
+      const host = voiceHost(() => 'held');
+      const { svc, agents, store } = make(serverTools(), undefined, { voiceClientFor: () => host.voice });
+      await svc.start();
+      await settleAll();
+      let answer!: (c: CallSessionLike) => void;
+      agents[0].call = () =>
+        new Promise<CallSessionLike>((r) => {
+          answer = r;
+        });
+      const dialing = svc.dial(request() as never);
+      await settleAll();
+      await agents[0].handlers.call_failed(fakeCall('CA8', 'outbound', 'failed'), 'failed'); // before the answer
+      answer(fakeCall('CA8', 'outbound'));
+      expect(await dialing).toMatchObject({ ok: false });
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1);
+      expect(store.get('CA8')).toBeUndefined();
+      await svc.stop();
+    });
+
+    it('credentials that fail give the host back at once — outbound and inbound', async () => {
+      const host = voiceHost(() => 'held');
+      const { svc, agents, timers, dialogs } = make(serverTools(), undefined, {
+        voiceClientFor: () => host.voice,
+        dialogAuth: async () => {
+          throw new Error('no slot');
+        },
+      });
+      await svc.start();
+      await settleAll();
+      expect(await svc.dial(request() as never)).toMatchObject({
+        ok: false,
+        error: expect.stringContaining('no slot'),
+      });
+      expect(agents[0].dialed).toHaveLength(0);
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1);
+      await agents[0].incoming?.(incoming('IN1', []));
+      await agents[0].start(fakeCall('IN1', 'inbound'));
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(2);
+      expect(dialogs).toHaveLength(0);
+      timers.advance(60_000);
+      await settleAll();
+      expect(host.log.filter((l) => l === 'renew')).toHaveLength(0);
+      await svc.stop();
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(2);
+    });
+
+    it('busy on an inbound call with no notice made: the call is put down, nothing opened, the line free again', async () => {
+      const host = voiceHost(() => 'busy', { speakFails: () => true });
+      let authCalls = 0;
+      const { svc, agents, dialogs, store } = make(serverTools(), undefined, {
+        voiceClientFor: () => host.voice,
+        dialogAuth: async () => {
+          authCalls++;
+          return { env: {}, model: 'm', release: async () => undefined };
+        },
+      });
+      await svc.start();
+      await settleAll();
+      await agents[0].incoming?.(incoming('IN1', []));
+      const call = liveCall('IN1', 'inbound');
+      await agents[0].start(call);
+      expect(call.hungUp).toBe(1);
+      expect(authCalls).toBe(0);
+      expect(dialogs).toHaveLength(0);
+      expect(store.get('IN1')).toBeUndefined();
+      const rejected: string[] = [];
+      await agents[0].incoming?.(incoming('IN2', rejected));
+      expect(rejected).toEqual([]); // the line takes the next call
+      await svc.stop();
+    });
+
+    it('an outbound setup that throws after the dial still gives the host back', async () => {
+      const host = voiceHost(() => 'held');
+      const { svc, store, timers } = make(serverTools(), undefined, { voiceClientFor: () => host.voice });
+      await svc.start();
+      await settleAll();
+      store.create = () => {
+        throw new Error('disk full');
+      };
+      await expect(svc.dial(request() as never)).rejects.toThrow('disk full');
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1);
+      timers.advance(60_000);
+      await settleAll();
+      expect(host.log.filter((l) => l === 'renew')).toHaveLength(0);
+      await svc.stop();
+    });
+
+    it('a renewal that fails is tried again on the next tick, and the call still gives the host back once', async () => {
+      const answers = [false, true, true];
+      const host = voiceHost(() => 'held', { renewOk: () => answers.shift() ?? true });
+      const { svc, agents, timers } = make(serverTools(), undefined, { voiceClientFor: () => host.voice });
+      await svc.start();
+      await settleAll();
+      expect(await svc.dial(request() as never)).toMatchObject({ ok: true });
+      for (let i = 0; i < 3; i++) {
+        timers.advance(10_000);
+        await settleAll();
+      }
+      expect(host.log.filter((l) => l === 'renew')).toHaveLength(3); // false, then on
+      await agents[0].handlers.call_end(fakeCall('CA1', 'outbound', 'completed'));
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1);
+      timers.advance(30_000);
+      await settleAll();
+      expect(host.log.filter((l) => l === 'renew')).toHaveLength(3);
+      await svc.stop();
+    });
+
+    it('a run that cannot be made (the dialog throws) leaves no lease behind', async () => {
+      const host = voiceHost(() => 'held');
+      const { svc, timers } = make(serverTools(), undefined, {
+        voiceClientFor: () => host.voice,
+        openDialog: () => {
+          throw new Error('no dialog');
+        },
+      });
+      await svc.start();
+      await settleAll();
+      await expect(svc.dial(request() as never)).rejects.toThrow('no dialog');
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1);
+      timers.advance(30_000);
+      await settleAll();
+      expect(host.log.filter((l) => l === 'renew')).toHaveLength(0);
+      await svc.stop();
+    });
+
+    it('a synthesis that answers without audio is not a made notice', async () => {
+      const voice: VoiceClient = {
+        transcribe: async () => ({ text: '', ms: 0 }),
+        speak: async () => ({ sampleRate: 8000, headersMs: 0, chunks: (async function* () {})() }),
+        claim: async () => ({ kind: 'busy', reason: 'busy with voicechat' }),
+      };
+      const { svc, agents } = make(serverTools(), undefined, { voiceClientFor: () => voice });
+      await svc.start();
+      await settleAll();
+      expect(await svc.dial(request() as never)).toMatchObject({
+        ok: false,
+        error: expect.stringContaining('no notice'),
+      });
+      expect(agents[0].dialed).toHaveLength(0);
+      await svc.stop();
+    });
+
+    it('a dial that fails gives the host back at once', async () => {
+      const host = voiceHost(() => 'held');
+      const { svc, agents } = make(serverTools(), undefined, { voiceClientFor: () => host.voice });
+      await svc.start();
+      await settleAll();
+      agents[0].call = async () => {
+        throw new Error('422 quota');
+      };
+      expect(await svc.dial(request() as never)).toMatchObject({ ok: false, error: expect.stringContaining('422') });
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1);
+      await svc.stop();
+    });
   });
 });

@@ -530,3 +530,207 @@ describe('createVoiceClient().speak — speed', () => {
 afterEach(() => {
   vi.useRealTimers();
 });
+
+describe('createVoiceClient().claim — one job at a time on the voice host', () => {
+  const cfg = { url: 'http://lease-host:9999', voice: 'v', model: 'drama-3', language: 'ko', token: 't0k' };
+  type Seen = { url: string; method: string; headers: Record<string, string>; body?: string };
+  function host(answer: (s: Seen) => Response) {
+    const seen: Seen[] = [];
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      const s: Seen = {
+        url,
+        method: init.method ?? 'GET',
+        headers: { ...(init.headers as Record<string, string>) },
+        body: typeof init.body === 'string' ? init.body : undefined,
+      };
+      seen.push(s);
+      return answer(s);
+    }) as unknown as typeof fetch;
+    return { seen, fetchImpl };
+  }
+
+  it('held: every request of the call carries the lease; renew and release send it too', async () => {
+    const { seen, fetchImpl } = host((s) => {
+      if (s.url.endsWith('/api/lease') && s.method === 'POST') return Response.json({ token: 'L1', owner: 'phone' });
+      if (s.url.endsWith('/api/stt')) return Response.json({ text: '네', ms: 5 });
+      if (s.url.endsWith('/api/tts/stream')) return new Response(new Uint8Array([0, 0]), { status: 200 });
+      return new Response(null, { status: s.method === 'DELETE' ? 204 : 200 });
+    });
+    const claim = await createVoiceClient(cfg, fetchImpl).claim?.('phone:dev:outbound');
+    expect(claim?.kind).toBe('held');
+    if (claim?.kind !== 'held') return;
+    expect(JSON.parse(String(seen[0].body))).toEqual({ owner: 'phone:dev:outbound', ttl_ms: 30_000 });
+    expect(seen[0].headers.authorization).toBe('Bearer t0k');
+    await claim.voice.transcribe(Buffer.alloc(10));
+    const s = await claim.voice.speak('안녕');
+    for await (const _ of s.chunks) {
+      // drained
+    }
+    expect(await claim.renew()).toBe(true);
+    await claim.release();
+    expect(seen.slice(1).map((r) => `${r.method} ${r.url.replace('http://lease-host:9999', '')}`)).toEqual([
+      'POST /api/stt',
+      'POST /api/tts/stream',
+      'POST /api/lease/renew',
+      'DELETE /api/lease',
+    ]);
+    for (const r of seen.slice(1)) {
+      expect(r.headers['x-soma-voice-lease']).toBe('L1');
+      expect(r.headers.authorization).toBe('Bearer t0k');
+    }
+  });
+
+  it('busy when the host answers 409 (with who holds it), cannot be reached, or errors', async () => {
+    const busy = host(() => Response.json({ error: 'busy', holder: 'voicechat', in_flight: 0 }, { status: 409 }));
+    expect(await createVoiceClient(cfg, busy.fetchImpl).claim?.('phone')).toEqual({
+      kind: 'busy',
+      reason: 'busy with voicechat',
+    });
+    const queued = host(() => Response.json({ error: 'busy', holder: null, in_flight: 2 }, { status: 409 }));
+    expect(await createVoiceClient(cfg, queued.fetchImpl).claim?.('phone')).toEqual({ kind: 'busy', reason: 'busy' });
+    const down = createVoiceClient(cfg, (async () => {
+      throw new Error('connect ECONNREFUSED');
+    }) as unknown as typeof fetch);
+    expect(await down.claim?.('phone')).toMatchObject({ kind: 'busy', reason: expect.stringContaining('unreachable') });
+    const broken = host(() => new Response('boom', { status: 500 }));
+    expect(await createVoiceClient(cfg, broken.fetchImpl).claim?.('phone')).toMatchObject({ kind: 'busy' });
+  });
+
+  it('shared when the host has no leases (an older service answers 404): the call goes on as before', async () => {
+    const old = host(() => new Response('not found', { status: 404 }));
+    expect(await createVoiceClient(cfg, old.fetchImpl).claim?.('phone')).toEqual({ kind: 'shared' });
+  });
+
+  it('a lease lost while someone else took the host: renew is false; renew and release never throw', async () => {
+    let up = true;
+    let claims = 0;
+    const { fetchImpl } = host((s) => {
+      if (!up) throw new Error('down');
+      if (s.url.endsWith('/api/lease') && s.method === 'POST')
+        return ++claims === 1
+          ? Response.json({ token: 'L2', owner: 'p' })
+          : Response.json({ error: 'busy', holder: 'voicechat' }, { status: 409 });
+      return Response.json({ error: 'lease is not held' }, { status: 404 });
+    });
+    const claim = await createVoiceClient(cfg, fetchImpl).claim?.('phone');
+    if (claim?.kind !== 'held') throw new Error('not held');
+    expect(await claim.renew()).toBe(false); // 404, and the host is busy again: not taken back
+    expect(claims).toBe(2);
+    up = false;
+    expect(await claim.renew()).toBe(false);
+    await expect(claim.release()).resolves.toBeUndefined();
+  });
+
+  it('a lease the host lost (it restarted) is taken again, and the call carries the new token from then on', async () => {
+    let n = 0;
+    let known = 'L1';
+    const { seen, fetchImpl } = host((s) => {
+      if (s.url.endsWith('/api/lease') && s.method === 'POST') {
+        known = `L${++n}`;
+        return Response.json({ token: known, owner: 'p' });
+      }
+      if (s.url.endsWith('/api/lease/renew'))
+        return s.headers['x-soma-voice-lease'] === known
+          ? Response.json({ token: known })
+          : Response.json({ error: 'lease is not held' }, { status: 404 });
+      return Response.json({ text: '네', ms: 1 });
+    });
+    const claim = await createVoiceClient(cfg, fetchImpl).claim?.('phone:dev:inbound');
+    if (claim?.kind !== 'held') throw new Error('not held');
+    known = 'gone'; // the host restarted: it knows no lease
+    expect(await claim.renew()).toBe(true);
+    await claim.voice.transcribe(Buffer.alloc(10));
+    const last = seen[seen.length - 1];
+    expect(last.url).toContain('/api/stt');
+    expect(last.headers['x-soma-voice-lease']).toBe('L2');
+    expect(JSON.parse(String(seen.find((r, i) => i > 0 && r.url.endsWith('/api/lease'))?.body))).toMatchObject({
+      owner: 'phone:dev:inbound',
+    });
+  });
+
+  it('a renewal in flight when the call ends does not take the host again behind the release', async () => {
+    let claims = 0;
+    let letRenewAnswer!: () => void;
+    const renewGate = new Promise<void>((r) => {
+      letRenewAnswer = r;
+    });
+    const { seen, fetchImpl } = host((s) => {
+      if (s.url.endsWith('/api/lease') && s.method === 'POST') return Response.json({ token: `L${++claims}` });
+      return Response.json({}, { status: s.method === 'DELETE' ? 204 : 200 });
+    });
+    const slow = (async (url: string, init: RequestInit) => {
+      if (url.endsWith('/api/lease/renew')) {
+        await renewGate; // the release overtakes it: the host no longer knows the lease
+        return Response.json({ error: 'lease is not held' }, { status: 404 });
+      }
+      return fetchImpl(url, init);
+    }) as unknown as typeof fetch;
+    const claim = await createVoiceClient(cfg, slow).claim?.('phone');
+    if (claim?.kind !== 'held') throw new Error('not held');
+    const renewing = claim.renew();
+    await claim.release();
+    letRenewAnswer();
+    expect(await renewing).toBe(false);
+    expect(claims).toBe(1); // never taken again
+    expect(seen.filter((r) => r.method === 'DELETE')).toHaveLength(1);
+  });
+
+  it('a grant that comes back to a renewal after the call ended is deleted at once', async () => {
+    let claims = 0;
+    let letGrant!: () => void;
+    const grantGate = new Promise<void>((r) => {
+      letGrant = r;
+    });
+    const deleted: string[] = [];
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      const token = (init.headers as Record<string, string>)['x-soma-voice-lease'];
+      if (url.endsWith('/api/lease') && init.method === 'POST') {
+        if (++claims === 2) await grantGate; // the re-take is still on its way when the call ends
+        return Response.json({ token: `L${claims}` });
+      }
+      if (url.endsWith('/api/lease/renew')) return Response.json({ error: 'lease is not held' }, { status: 404 });
+      if (init.method === 'DELETE') deleted.push(token);
+      return new Response(null, { status: 204 });
+    }) as unknown as typeof fetch;
+    const claim = await createVoiceClient(cfg, fetchImpl).claim?.('phone');
+    if (claim?.kind !== 'held') throw new Error('not held');
+    const renewing = claim.renew();
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0)); // 404, then the re-take is pending
+    expect(claims).toBe(2);
+    await claim.release();
+    letGrant();
+    expect(await renewing).toBe(false);
+    expect(deleted).toEqual(['L1', 'L2']); // the late L2 went straight back
+  });
+
+  it('a lease answer that is JSON null is busy, not a crash', async () => {
+    const nul = host(() => new Response('null', { status: 200, headers: { 'content-type': 'application/json' } }));
+    expect(await createVoiceClient(cfg, nul.fetchImpl).claim?.('phone')).toMatchObject({ kind: 'busy' });
+    const nul409 = host(() => new Response('null', { status: 409 }));
+    expect(await createVoiceClient(cfg, nul409.fetchImpl).claim?.('phone')).toEqual({ kind: 'busy', reason: 'busy' });
+  });
+
+  it('a host that never answers: claim is busy, renew false and release settled by the 3 s bound', async () => {
+    let held = false;
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      if (!held && url.endsWith('/api/lease') && init.method === 'POST') {
+        held = true;
+        return Response.json({ token: 'L1' });
+      }
+      return new Promise<Response>((_, reject) => {
+        init.signal?.addEventListener('abort', () => reject(init.signal?.reason));
+      });
+    }) as unknown as typeof fetch;
+    const client = createVoiceClient(cfg, fetchImpl);
+    const claim = await client.claim?.('phone');
+    if (claim?.kind !== 'held') throw new Error('not held');
+    const t0 = Date.now();
+    const [again, renewed, released] = await Promise.all([client.claim?.('phone'), claim.renew(), claim.release()]);
+    const ms = Date.now() - t0;
+    expect(again).toMatchObject({ kind: 'busy', reason: expect.stringContaining('unreachable') });
+    expect(renewed).toBe(false);
+    expect(released).toBeUndefined();
+    expect(ms).toBeGreaterThanOrEqual(2_900);
+    expect(ms).toBeLessThan(5_000);
+  }, 10_000);
+});

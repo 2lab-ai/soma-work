@@ -154,6 +154,7 @@ function setup(
   };
   let dialog: FakeDialog | undefined;
   const spoken: string[] = [];
+  const heard = { count: 0 };
   const warmed: number[] = [];
   const voice: VoiceClient = {
     warm(signal) {
@@ -161,6 +162,7 @@ function setup(
       return opts.warm?.(signal);
     },
     async transcribe() {
+      heard.count++;
       await opts.sttGate?.();
       return { text: stt.shift() ?? '', ms: 5 };
     },
@@ -194,7 +196,7 @@ function setup(
       clearTimer: clock.clear,
     },
   );
-  return { run, clock, record, spoken, warmed, dialog: () => dialog as FakeDialog };
+  return { run, clock, record, spoken, warmed, heard, dialog: () => dialog as FakeDialog };
 }
 
 const settle = () => new Promise((r) => setTimeout(r, 0));
@@ -648,6 +650,99 @@ describe('CallRun — inbound', () => {
     run.begin();
     run.attach(fakeCall() as unknown as CallSessionLike);
     expect(dialog().sent[0]).toContain('걸려 온 전화');
+  });
+});
+
+describe('CallRun — the voice host is busy: a notice, then the phone goes down', () => {
+  const notice = {
+    text: '지금은 전화를 받을 수 없습니다. 잠시 후 다시 걸어 주세요.',
+    frames: Array.from({ length: 50 }, () => Buffer.alloc(160)),
+  };
+
+  it('inbound: the notice plays the moment the line opens, then the call is put down once it is heard', async () => {
+    const { run, clock, record, spoken, heard, dialog } = setup({ direction: 'inbound', notice });
+    run.begin();
+    expect(dialog()).toBeUndefined(); // no dialog: nobody to talk to
+    const call = fakeCall();
+    run.attach(call as unknown as CallSessionLike);
+    expect(call.frames).toBe(50);
+    expect(record.transcript).toMatchObject([{ role: 'agent', text: notice.text }]);
+    // Words over the notice — still going when the hang-up is due — are not heard and do not hold the line open.
+    for (let t = 0; t < 1600; t += 200) {
+      run.feedAudio(tone(200, 0.3));
+      clock.advance(200);
+      if (t < 1400) expect(call.hungUp).toBe(0);
+    }
+    await settleAll();
+    expect(call.hungUp).toBe(1); // 1 s of notice + 0.6 s, while the caller is still talking
+    expect(spoken).toEqual([]); // nothing synthesized: the notice was made before
+    expect(heard.count).toBe(0); // and nothing transcribed
+    expect(record.work.map((w) => (w.kind === 'event' ? w.text : w.kind))).toContain('안내 음성을 하고 끊음');
+  });
+
+  it('outbound: waits for the "여보세요" (or a quiet spell), then says the notice and hangs up', async () => {
+    const { run, clock, record, heard, dialog } = setup({ direction: 'outbound', notice });
+    run.begin();
+    expect(dialog()).toBeUndefined();
+    const call = fakeCall();
+    run.attach(call as unknown as CallSessionLike);
+    expect(call.frames).toBe(0);
+    run.feedAudio(tone(500, 0.3)); // 여보세요
+    run.feedAudio(quiet(700));
+    expect(call.frames).toBe(50);
+    expect(record.transcript).toHaveLength(1);
+    clock.advance(1700);
+    expect(call.hungUp).toBe(1);
+    await settleAll();
+    expect(heard.count).toBe(0); // the hello only triggered the notice
+
+    const quietLine = setup({ direction: 'outbound', notice });
+    quietLine.run.begin();
+    const c2 = fakeCall();
+    quietLine.run.attach(c2 as unknown as CallSessionLike);
+    quietLine.clock.advance(1199);
+    expect(c2.frames).toBe(0);
+    quietLine.clock.advance(1);
+    expect(c2.frames).toBe(50);
+    quietLine.clock.advance(1700);
+    expect(c2.hungUp).toBe(1);
+  });
+
+  it('a notice call whose hang-up did not go through is still ended by the time limit (no dialog needed)', async () => {
+    const { run, clock, heard, dialog } = setup({ direction: 'inbound', notice, maxMinutes: 1 });
+    run.begin();
+    const call = fakeCall();
+    let attempts = 0;
+    call.hangup = async () => {
+      attempts++;
+      if (attempts === 1) throw new Error('platform did not answer');
+      call.hungUp++;
+    };
+    run.attach(call as unknown as CallSessionLike);
+    clock.advance(2_000);
+    await settleAll();
+    expect(attempts).toBe(1);
+    expect(call.hungUp).toBe(0); // the first hang-up failed: the call is still up
+    clock.advance(60_000 + 25_000); // the time limit, then its grace
+    await settleAll();
+    expect(attempts).toBe(2);
+    expect(call.hungUp).toBe(1);
+    expect(dialog()).toBeUndefined();
+    expect(heard.count).toBe(0);
+  });
+
+  it('outbound: a hello still going at 1.2 s is not talked over — the notice waits for its end', async () => {
+    const { run, clock } = setup({ direction: 'outbound', notice });
+    run.begin();
+    const call = fakeCall();
+    run.attach(call as unknown as CallSessionLike);
+    run.feedAudio(tone(1000, 0.3)); // a long greeting, still going…
+    clock.advance(1200); // …past the quiet-start deadline
+    expect(call.frames).toBe(0);
+    run.feedAudio(tone(1000, 0.3)); // 2 s of it
+    expect(call.frames).toBe(0);
+    run.feedAudio(quiet(700)); // it ends
+    expect(call.frames).toBe(50);
   });
 });
 

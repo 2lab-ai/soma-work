@@ -5,6 +5,11 @@
  *   POST {url}/api/stt          multipart: file (WAV), language → { text, ms }
  *   POST {url}/api/tts/stream   JSON { voice, text, model, format: 'pcm' } → chunked PCM16 LE mono
  *                               (`x-soma-voice-sample-rate`, 44 100 Hz for Drama 3)
+ *   POST {url}/api/lease        JSON { owner, ttl_ms } → { token } — the host for a whole call, or 409 busy
+ *   POST {url}/api/lease/renew  DELETE {url}/api/lease — the token in `x-soma-voice-lease`
+ *
+ * The host does one job at a time. A call takes it whole ({@link VoiceClient.claim}): its transcriptions and
+ * syntheses carry the lease token and run side by side, and nobody else's run until the lease is given back.
  */
 
 import { MAX_STRETCH_RATE, MIN_STRETCH_RATE, TimeStretcher } from './audio';
@@ -45,7 +50,24 @@ export interface VoiceClient {
    * after a few seconds or when `signal` aborts. Best effort — never throws.
    */
   warm?(signal?: AbortSignal): Promise<void> | void;
+  /**
+   * Take the voice host for one call. `held`: use its `voice` for everything the call does, renew it while the call
+   * lasts, release it at the end. `busy`: the host is doing someone else's job, or cannot be reached — the call
+   * cannot be served. `shared`: the host has no leases (an older service): the call goes on as before. Never throws.
+   */
+  claim?(owner: string): Promise<VoiceHostClaim>;
 }
+
+export type VoiceHostClaim =
+  | { kind: 'held'; voice: VoiceClient; renew(): Promise<boolean>; release(): Promise<void> }
+  | { kind: 'busy'; reason: string }
+  | { kind: 'shared' };
+
+/** A lease not renewed for this long lapses on the host (the client died mid-call). */
+export const LEASE_TTL_MS = 30_000;
+/** Lease requests are bounded: a call does not wait on a host that does not answer. */
+const LEASE_REQUEST_MS = 3_000;
+const LEASE_HEADER = 'x-soma-voice-lease';
 
 type FetchLike = typeof fetch;
 
@@ -89,9 +111,18 @@ export class VoiceServiceError extends Error {
   }
 }
 
-export function createVoiceClient(cfg: VoiceConfig, fetchImpl: FetchLike = fetch): VoiceClient {
+/**
+ * `lease`: the claimed host's token — every request of this client runs under it. Read per request: a lease the host
+ * lost and the call took again carries a new token.
+ */
+export function createVoiceClient(
+  cfg: VoiceConfig,
+  fetchImpl: FetchLike = fetch,
+  lease?: { token: string },
+): VoiceClient {
   const base = cfg.url.replace(/\/+$/, '');
-  const auth: Record<string, string> = cfg.token ? { authorization: `Bearer ${cfg.token}` } : {};
+  const bearer: Record<string, string> = cfg.token ? { authorization: `Bearer ${cfg.token}` } : {};
+  const auth = (): Record<string, string> => (lease ? { ...bearer, [LEASE_HEADER]: lease.token } : bearer);
   const host: VoiceHost = hosts.get(base) ?? {
     transcribing: new Set(),
     synthesizing: new Set(),
@@ -121,7 +152,7 @@ export function createVoiceClient(cfg: VoiceConfig, fetchImpl: FetchLike = fetch
             res = await fetchImpl(`${base}/api/stt`, {
               method: 'POST',
               body: form,
-              headers: auth,
+              headers: auth(),
               signal: signal ? AbortSignal.any([signal, bound.signal]) : bound.signal,
             });
             if (res.ok) body = (await res.json()) as { text?: unknown; ms?: unknown };
@@ -143,6 +174,51 @@ export function createVoiceClient(cfg: VoiceConfig, fetchImpl: FetchLike = fetch
     },
 
     speak: (text, signal) => synthesize(text, signal, false),
+
+    async claim(owner) {
+      const first = await takeLease(owner);
+      if (first.kind !== 'token') return first;
+      const lease = { token: first.token };
+      /** Released: a renewal still in flight must not take the host again behind it. */
+      let closed = false;
+      return {
+        kind: 'held',
+        voice: createVoiceClient(cfg, fetchImpl, lease),
+        async renew() {
+          if (closed) return false;
+          let status: number;
+          try {
+            const r = await fetchImpl(`${base}/api/lease/renew`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', ...bearer, [LEASE_HEADER]: lease.token },
+              body: JSON.stringify({ ttl_ms: LEASE_TTL_MS }),
+              signal: AbortSignal.timeout(LEASE_REQUEST_MS),
+            });
+            if (r.ok) return true;
+            status = r.status;
+          } catch {
+            return false; // not reached: tried again on the next renewal
+          }
+          if (status !== 404) return false;
+          // The host does not know the lease any more (it restarted, or the lease lapsed): the call takes the host
+          // again if it is free, and its requests carry the new token from here on.
+          if (closed) return false;
+          const again = await takeLease(owner);
+          if (again.kind !== 'token') return false;
+          if (closed) {
+            await dropLease(again.token); // the call ended meanwhile: the late grant goes straight back
+            return false;
+          }
+          lease.token = again.token;
+          return true;
+        },
+        async release() {
+          closed = true;
+          await dropLease(lease.token);
+        },
+      };
+    },
+
     warm(signal) {
       if (host.wakeUp) return host.wakeUp.done; // one per host: a stalled service never piles up wake-ups
       const now = Date.now();
@@ -170,6 +246,44 @@ export function createVoiceClient(cfg: VoiceConfig, fetchImpl: FetchLike = fetch
     },
   };
 
+  /** DELETE /api/lease, bounded. Never throws: a lease not given back lapses on the host within LEASE_TTL_MS. */
+  async function dropLease(token: string): Promise<void> {
+    try {
+      await fetchImpl(`${base}/api/lease`, {
+        method: 'DELETE',
+        headers: { ...bearer, [LEASE_HEADER]: token },
+        signal: AbortSignal.timeout(LEASE_REQUEST_MS),
+      });
+    } catch {
+      // lapses on the host
+    }
+  }
+
+  /** POST /api/lease, bounded. Never throws. */
+  async function takeLease(
+    owner: string,
+  ): Promise<{ kind: 'token'; token: string } | Extract<VoiceHostClaim, { kind: 'busy' | 'shared' }>> {
+    let res: Response;
+    try {
+      res = await fetchImpl(`${base}/api/lease`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...bearer },
+        body: JSON.stringify({ owner, ttl_ms: LEASE_TTL_MS }),
+        signal: AbortSignal.timeout(LEASE_REQUEST_MS),
+      });
+    } catch (err) {
+      return { kind: 'busy', reason: `voice host unreachable: ${(err as Error).message}` };
+    }
+    if (res.status === 404) return { kind: 'shared' };
+    const parsed: unknown = await res.json().catch(() => null);
+    const body = parsed && typeof parsed === 'object' ? (parsed as { token?: unknown; holder?: unknown }) : {};
+    if (res.status === 409)
+      return { kind: 'busy', reason: typeof body.holder === 'string' ? `busy with ${body.holder}` : 'busy' };
+    if (!res.ok) return { kind: 'busy', reason: `voice host answered ${res.status}` };
+    if (typeof body.token !== 'string' || !body.token) return { kind: 'busy', reason: 'lease without a token' };
+    return { kind: 'token', token: body.token };
+  }
+
   async function synthesize(text: string, signal: AbortSignal | undefined, wakeUp: boolean): Promise<SpeechStream> {
     if (!wakeUp) host.wakeUp?.abort.abort('speech first'); // a reply never waits behind a wake-up
     const started = Date.now();
@@ -185,7 +299,7 @@ export function createVoiceClient(cfg: VoiceConfig, fetchImpl: FetchLike = fetch
     try {
       res = await fetchImpl(`${base}/api/tts/stream`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', ...auth },
+        headers: { 'content-type': 'application/json', ...auth() },
         body: JSON.stringify({ voice: cfg.voice, text, model: cfg.model, format: 'pcm' }),
         signal,
       });

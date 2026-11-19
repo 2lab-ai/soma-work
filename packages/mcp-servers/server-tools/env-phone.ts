@@ -96,7 +96,7 @@ export async function requestCall(
   phoneDir: string,
   request: Omit<PhoneCallRequest, 'rid' | 'createdAt'>,
   waitMs = RESULT_WAIT_MS,
-): Promise<{ rid: string; callId: string }> {
+): Promise<{ rid: string; callId: string; notice?: string }> {
   const rid = newRequestId();
   const dir = phoneRequestsDir(phoneDir);
   const file = path.join(dir, `${rid}.json`);
@@ -119,7 +119,7 @@ export async function requestCall(
       }
       if (!result.ok || !result.callId)
         throw new PhoneToolError(`not dialed: ${result.error ?? 'the phone service refused'}`);
-      return { rid, callId: result.callId };
+      return { rid, callId: result.callId, ...(result.notice ? { notice: result.notice } : {}) };
     }
     await sleep(POLL_MS);
   }

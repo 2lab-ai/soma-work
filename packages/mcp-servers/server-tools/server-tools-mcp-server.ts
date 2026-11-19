@@ -1291,6 +1291,7 @@ export async function handlePhoneCall(args: Record<string, unknown>, phoneDir = 
       title: call.title,
       maxMinutes: call.maxMinutes,
       next: 'The call runs on its own. Follow it with phone_calls {server, call_id, wait_seconds}; it ends with a transcript.',
+      ...(placed.notice ? { notice: placed.notice } : {}),
       ...(warning ? { warning } : {}),
     };
     return { content: [{ type: 'text' as const, text: JSON.stringify(answer) }] };

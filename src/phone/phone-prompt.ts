@@ -36,6 +36,15 @@ export const HANGUP_CANCELLED_CUE =
 /** Sent when the call reaches its time limit. */
 export const TIME_UP_CUE = '[시스템: 통화 시간 한도에 닿았다. 한 문장으로 마무리 인사를 하고 hang_up.]';
 
+/**
+ * Said when the voice host is doing another job and the call cannot be served: synthesized when the line opens (the
+ * host is idle then), played, and the phone put down — no dialog, nothing transcribed.
+ */
+export const BUSY_NOTICE = {
+  inbound: '지금은 전화를 받을 수 없습니다. 잠시 후 다시 걸어 주세요.',
+  outbound: '지금은 통화를 이어갈 수 없어 나중에 다시 연락드리겠습니다.',
+} as const;
+
 const PHONE_RULES = [
   '너는 지금 전화 통화 중인 음성 에이전트다. 네 말은 음성 합성으로 상대에게 그대로 들린다.',
   '- 상대가 묻거나 부탁하면 그것부터 짧게 답한다. 통화 목적은 그다음에 이어 간다.',
