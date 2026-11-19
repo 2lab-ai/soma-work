@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  MAX_TURNS_PER_CONVERSATION,
   MailboxPoller,
   type MailboxPollerDeps,
   type MailMessage,
@@ -175,6 +176,16 @@ describe('MailboxPoller', () => {
     expect(t.acked).toEqual(['m6']);
   });
 
+  it('a conversation that keeps going stops starting turns at the limit (agent ping-pong breaker)', async () => {
+    const t = setup();
+    for (let i = 0; i < MAX_TURNS_PER_CONVERSATION + 2; i++) {
+      t.setUnread([mail(`p${i}`, { thread: 'loop' })]);
+      await t.poller.tick();
+    }
+    expect(t.injected).toHaveLength(MAX_TURNS_PER_CONVERSATION);
+    expect(t.acked).toHaveLength(MAX_TURNS_PER_CONVERSATION + 2);
+  });
+
   it('a turn that fails is logged, not thrown into the loop', async () => {
     const t = setup({ inject: vi.fn().mockRejectedValue(new Error('turn failed')) });
     t.setUnread([mail('m7')]);
@@ -204,6 +215,7 @@ describe('mailTurnText', () => {
     expect(text).toContain('from: soma-work:host-b:dev');
     expect(text).toContain('in reply to: id0');
     expect(text).toContain('mailbox reply id1');
+    expect(text).toContain('do not reply');
     expect(text).toContain('mailbox thread th1');
   });
 
