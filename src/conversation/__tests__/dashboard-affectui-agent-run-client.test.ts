@@ -1721,7 +1721,16 @@ const CARD = (over: Record<string, unknown> = {}) => ({
 describe('panel head (D18) — <ui-status-bar>', () => {
   const head = (s: Record<string, unknown>, col: string) =>
     load<{ panelHeadData(s: unknown, col: string): Record<string, unknown> }>(
-      ['toNum', 'pendingAutoResume', 'rootStatusOf', 'isBusy', 'sessionActionsOf', 'panelHeadData', 'planHeadActions'],
+      [
+        'toNum',
+        'pendingAutoResume',
+        'pendingQueueWait',
+        'rootStatusOf',
+        'isBusy',
+        'sessionActionsOf',
+        'panelHeadData',
+        'planHeadActions',
+      ],
       ['AGENT_STATUS_LABEL', 'PS_BAR_STATUS', 'SESSION_ACTION_ARIA', '_busy'],
       { currentUserId: 'U1', SELF_INSTANCE_NAME: '', READ_ONLY_MSG: 'read only' },
     ).panelHeadData(s, col);
@@ -1772,6 +1781,7 @@ describe('세부 — Details inside 세션 정보 (D19)', () => {
         'elapsedHtml',
         'activeTimeHtml',
         'pendingAutoResume',
+        'pendingQueueWait',
         'rootStatusOf',
         'panelDetailsHtml',
       ],
@@ -1817,6 +1827,7 @@ describe('세부 — Details inside 세션 정보 (D19)', () => {
         'ctxLevel',
         'ctxPercent',
         'pendingAutoResume',
+        'pendingQueueWait',
         'rootStatusOf',
         'elapsedHtml',
         'activeTimeHtml',

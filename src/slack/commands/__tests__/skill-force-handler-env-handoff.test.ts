@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { EnvRunQueue } from '../../env-run-queue';
+import { EnvHandoffRuns } from '../../env-handoff-runs';
 import { ENVIRONMENT_REQUEST_MAX_CHARS, SkillForceHandler } from '../skill-force-handler';
 
 vi.mock('node:fs');
@@ -152,72 +152,93 @@ describe('SkillForceHandler — environment hand-off for a model command (#1304)
   });
 
   /**
-   * SSOT 2026-11-19 — environment work runs one at a time per environment user: a second hand-off waits in line (the
-   * requester's thread is told it is queued, not asked anything) and starts by itself once the first run ended.
+   * .prd/36 A10 · A11 — hand-offs are not serialized per environment user any more (lanes line up in the work queue,
+   * by keys). The requester waits on the host while its hand-off runs, and the hand-off ends only when the
+   * environment user's thread holds no work-queue entry — a run that queued and ended its first turn is not over.
    */
-  describe('environment run queue', () => {
-    it('a second hand-off to the same environment waits for the first run, then starts by itself', async () => {
+  describe('hand-off and the work queue', () => {
+    it('A11 — two hand-offs to the same environment start at once', async () => {
       h.isAllowed.mockReturnValue(true);
-      const releases: Array<() => void> = [];
-      const queuedRun = vi.fn(
-        (input: { onOpened?: (ts: string) => void }) =>
-          new Promise<string>((resolve) => {
-            input.onOpened?.('900.1');
-            releases.push(() => resolve('900.1'));
-          }),
-      );
-      const queue = new EnvRunQueue({ schedule: () => {} });
-      const queued = new SkillForceHandler(resolveUser, {
-        slackApi: slackApi as any,
-        runAsUser: queuedRun,
-        envRunQueue: queue,
-      });
-      const sayA = vi.fn().mockResolvedValue({ ts: '1' });
-      const sayB = vi.fn().mockResolvedValue({ ts: '1' });
-
-      const a = await queued.execute({
+      const never = vi.fn(() => new Promise<string>(() => {}));
+      const both = new SkillForceHandler(resolveUser, { slackApi: slackApi as any, runAsUser: never });
+      await both.execute({
         user: 'U1',
         channel: 'C1',
         threadTs: '171.1',
         text: '$acme-dev2:deploy QA',
-        say: sayA,
+        say: vi.fn().mockResolvedValue({}),
       });
-      const b = await queued.execute({
+      await both.execute({
         user: 'U1',
         channel: 'C1',
         threadTs: '272.2',
         text: '$acme-dev2:deploy QA',
-        say: sayB,
+        say: vi.fn().mockResolvedValue({}),
       });
-      expect(queuedRun).toHaveBeenCalledTimes(1);
-      expect(queue.statusFor('C1', '272.2')).toMatchObject({ state: 'queued', owner: 'env:acme-dev2', position: 1 });
-      // The waiting requester is told it is in line — a notice, never a question.
-      const notices = sayB.mock.calls.map((c) => String(c[0]?.text ?? ''));
-      expect(notices.some((t) => t.includes('대기열') && t.includes('env:acme-dev2'))).toBe(true);
-
-      releases[0]();
-      await expect(a.environmentRun?.finished).resolves.toMatchObject({ ok: true });
-      await vi.waitFor(() => expect(queuedRun).toHaveBeenCalledTimes(2));
-      expect(queue.statusFor('C1', '272.2')).toMatchObject({ state: 'running' });
-      releases[1]();
-      await expect(b.environmentRun?.finished).resolves.toMatchObject({ ok: true });
-      expect(queue.isPending('C1', '272.2')).toBe(false);
+      expect(never).toHaveBeenCalledTimes(2);
     });
 
-    it('the first hand-off starts at once and posts no queue notice', async () => {
+    it('A10 — the requester waits on the host until the environment thread holds no entry', async () => {
       h.isAllowed.mockReturnValue(true);
-      const queue = new EnvRunQueue({ schedule: () => {} });
-      const free = new SkillForceHandler(resolveUser, { slackApi: slackApi as any, runAsUser, envRunQueue: queue });
-      const sayA = vi.fn().mockResolvedValue({ ts: '1' });
-      const a = await free.execute({
+      const runs = new EnvHandoffRuns();
+      let freeEnvThread!: () => void;
+      const whenFree = vi.fn(
+        (_c: string, _t: string) =>
+          new Promise<void>((resolve) => {
+            freeEnvThread = resolve;
+          }),
+      );
+      const run = vi.fn(async (input: { onOpened?: (ts: string) => void }) => {
+        input.onOpened?.('900.1');
+        return '900.1';
+      });
+      const handler2 = new SkillForceHandler(resolveUser, {
+        slackApi: slackApi as any,
+        runAsUser: run,
+        handoffRuns: runs,
+        whenFree,
+      });
+      const say = vi.fn().mockResolvedValue({ ts: '1' });
+      const result = await handler2.execute({
         user: 'U1',
         channel: 'C1',
         threadTs: '171.1',
         text: '$acme-dev2:deploy QA',
-        say: sayA,
+        say,
       });
-      await a.environmentRun?.finished;
-      expect(sayA.mock.calls.map((c) => String(c[0]?.text ?? '')).some((t) => t.includes('대기열'))).toBe(false);
+      expect(runs.statusFor('C1', '171.1')).toMatchObject({ owner: 'env:acme-dev2' });
+      await vi.waitFor(() => expect(whenFree).toHaveBeenCalledWith('C1', '900.1'));
+      expect(runs.statusFor('C1', '171.1')?.envThread).toEqual({ channel: 'C1', threadTs: '900.1' });
+      let ended = false;
+      void result.environmentRun?.finished.then(() => {
+        ended = true;
+      });
+      await new Promise((r) => setImmediate(r));
+      expect(ended).toBe(false);
+      expect(say.mock.calls.map((c) => String(c[0]?.text ?? '')).some((t) => t.includes('⏹'))).toBe(false);
+      freeEnvThread();
+      await expect(result.environmentRun?.finished).resolves.toMatchObject({ ok: true, rootTs: '900.1' });
+      expect(runs.isRunning('C1', '171.1')).toBe(false);
+      expect(say.mock.calls.map((c) => String(c[0]?.text ?? '')).some((t) => t.includes('⏹'))).toBe(true);
+    });
+
+    it('a run that failed ends the hand-off too', async () => {
+      h.isAllowed.mockReturnValue(true);
+      const runs = new EnvHandoffRuns();
+      const failing = new SkillForceHandler(resolveUser, {
+        slackApi: slackApi as any,
+        runAsUser: vi.fn().mockRejectedValue(new Error('scheduler off')),
+        handoffRuns: runs,
+      });
+      const result = await failing.execute({
+        user: 'U1',
+        channel: 'C1',
+        threadTs: '171.1',
+        text: '$acme-dev2:deploy QA',
+        say: vi.fn().mockResolvedValue({}),
+      });
+      await expect(result.environmentRun?.finished).resolves.toMatchObject({ ok: false });
+      expect(runs.isRunning('C1', '171.1')).toBe(false);
     });
   });
 });

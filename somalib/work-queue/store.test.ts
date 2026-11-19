@@ -6,8 +6,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { emptyLedger, enterQueue } from '../ledger';
-import { WorkQueueStore } from '../store';
+import { emptyLedger, enterQueue } from './ledger';
+import { WorkQueueStore } from './store';
 
 const QUEUES = [{ id: 'qa:dev2', lane: 'qa', env: 'dev2' }];
 const A = { user: 'U1', channel: 'C1', threadTs: '1.1' };

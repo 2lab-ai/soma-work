@@ -2,7 +2,7 @@
  * `config.json#workQueues` (.prd/36 §4.4): lane → environments; queue id `<lane>:<env>`.
  */
 import { describe, expect, it } from 'vitest';
-import { parseWorkQueuesConfig } from '../config';
+import { parseWorkQueuesConfig } from './config';
 
 describe('parseWorkQueuesConfig', () => {
   it('reads lane → environments into `<lane>:<env>` queues, in order', () => {

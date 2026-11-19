@@ -23,7 +23,8 @@ import {
   hasOneTimeGrant,
   isSkillUseAllowed,
 } from '../../user-skill-grants-store';
-import { type EnvRunQueue, envRunQueue } from '../env-run-queue';
+import { getActiveWorkQueueHost } from '../../work-queue/host';
+import { type EnvHandoffRuns, envHandoffRuns } from '../env-handoff-runs';
 import { describeEnvSkillDelivery, requestEnvSkillPermission } from '../env-skill-permission-request';
 import { announceSessionNotice } from '../session-notice';
 import { buildEnvironmentPermissionRequestMessage, buildPermissionRequestMessage } from '../skill-permission-blocks';
@@ -295,8 +296,13 @@ export class SkillForceHandler implements CommandHandler {
     > & {
       /** Runs a message as another user in a new thread — the cron owner path. Defaults to the live scheduler. */
       runAsUser?: RunAsUser;
-      /** One environment run at a time per environment user (SSOT 2026-11-19). Defaults to the host's queue. */
-      envRunQueue?: EnvRunQueue;
+      /** Hand-offs in flight per requester thread (.prd/37 §5). Defaults to the process's. */
+      handoffRuns?: EnvHandoffRuns;
+      /**
+       * Settles once a thread holds no work-queue entry (.prd/36 D9). Defaults to the process's work-queue host; with
+       * none, at once.
+       */
+      whenFree?: (channel: string, threadTs: string) => Promise<void>;
     } = {},
   ) {}
 
@@ -652,32 +658,31 @@ export class SkillForceHandler implements CommandHandler {
         return `스레드 ${rootTs}`;
       }
     };
-    // The run is not awaited (it lasts the environment user's whole turn); `finished` settles once it ended and the
-    // outcome line went to the requester's thread. It never rejects.
-    // One run at a time per environment user (SSOT 2026-11-19): while another run of `owner` is in flight this one
-    // waits in line and starts by itself — the requester is told it is queued, never asked; it hears the outcome when
-    // its own run ended, as before. No model has to poll the lane or arm a cron for it.
-    const queue = this.deps.envRunQueue ?? envRunQueue;
-    const { ahead, result: started } = queue.run({ owner, channel, threadTs, skills }, () =>
-      run({
+    // The run is not awaited (it lasts the environment user's whole turn); `finished` settles once its work ended and
+    // the outcome line went to the requester's thread. It never rejects. Its work ends when the environment user's
+    // first turn ended AND its thread holds no work-queue entry (.prd/36 D9): a run that lined up for a lane and ended
+    // its turn waiting is not over — the host wakes it when its turn comes, and only then does the requester hear
+    // the end. Meanwhile the requester waits on the host (`envHandoffRuns`): no goal judgement, no follow-up question.
+    const handoff = (this.deps.handoffRuns ?? envHandoffRuns).start({ channel, threadTs }, owner);
+    const whenFree =
+      this.deps.whenFree ?? ((c: string, t: string) => getActiveWorkQueueHost()?.whenFree(c, t) ?? Promise.resolve());
+    const started: Promise<string | undefined> = (async () => {
+      const rootTs = await run({
         owner,
         channel,
         rootText: `[${owner}] <@${user}> 요청 — ${skills}`,
         text: environmentSessionText(owner, refs, user, text),
         onOpened: (rootTs) => {
           opened = true;
+          handoff.opened(channel, rootTs);
           void link(rootTs).then((where) =>
             post(`▶ 환경 유저 \`${owner}\` 권한으로 실행합니다 (어드민 · 샌드박스 없음): ${where}`),
           );
         },
-      }),
-    );
-    if (ahead > 0) {
-      void post(
-        `⏳ 환경 유저 \`${owner}\`의 다른 작업이 진행 중이라 대기열에 넣었습니다 (앞에 ${ahead}건). ` +
-          '앞 작업이 끝나면 자동으로 실행하고, 끝나면 결과를 이 스레드에 알립니다. 따로 할 일은 없습니다.',
-      );
-    }
+      });
+      if (rootTs) await whenFree(channel, rootTs);
+      return rootTs;
+    })();
     const finished: Promise<EnvironmentRunEnd> = started
       .then(async (rootTs): Promise<EnvironmentRunEnd> => {
         if (!rootTs) {
@@ -696,7 +701,8 @@ export class SkillForceHandler implements CommandHandler {
         await post(`❌ 환경 유저 \`${owner}\` 실행 실패: ${reason}`);
         return { ok: false, reason };
       })
-      .catch((): EnvironmentRunEnd => ({ ok: false, reason: 'the run failed' }));
+      .catch((): EnvironmentRunEnd => ({ ok: false, reason: 'the run failed' }))
+      .finally(() => handoff.end());
     return { handled: true, environmentRun: { owner, finished } };
   }
 

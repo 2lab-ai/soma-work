@@ -2,7 +2,7 @@
  * The work-queue ledger's transitions (.prd/36 §6 A1–A5, .prd/37 §2.2): pure — every rule is a unit test here.
  */
 import { describe, expect, it } from 'vitest';
-import type { WorkQueueDef } from '../config';
+import type { WorkQueueDef } from './config';
 import {
   ENDED_KEEP,
   emptyLedger,
@@ -15,7 +15,7 @@ import {
   releaseByHost,
   type WorkQueueHolder,
   type WorkQueueLedger,
-} from '../ledger';
+} from './ledger';
 
 const QUEUES: WorkQueueDef[] = [
   { id: 'qa:dev2', lane: 'qa', env: 'dev2' },

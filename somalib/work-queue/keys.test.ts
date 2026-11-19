@@ -2,7 +2,7 @@
  * Work-queue keys (.prd/36 D10): a Jira key or a GitHub `owner/repo#n` — nothing else enters a queue.
  */
 import { describe, expect, it } from 'vitest';
-import { normalizeWorkKey, parseWorkKeys, WORK_KEYS_MAX } from '../keys';
+import { normalizeWorkKey, parseWorkKeys, WORK_KEYS_MAX } from './keys';
 
 describe('normalizeWorkKey', () => {
   it('takes a Jira key and upper-cases it', () => {

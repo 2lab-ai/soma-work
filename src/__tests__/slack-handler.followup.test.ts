@@ -5962,38 +5962,25 @@ describe('SlackHandler — follow-up queue host', () => {
     });
 
     /**
-     * #726 — the work queue is wired at the composition root: the session
-     * initializer gets the same service the handler owns, and the registry's
-     * one before-delete seam frees the deleted session's queue slot.
+     * .prd/36 D8 — a session whose work-queue entry waits is waiting on the host, not on a person: the follow-up
+     * question's "request active" probe reads it as busy.
      */
-    it("wires the work queue into the session gate and frees a deleted session's slot", async () => {
-      let beforeDelete: ((key: string, session: any, reason: string) => void) | undefined;
-      claudeHandler.getSessionRegistry = () => ({
-        setBeforeSessionDelete: (cb: any) => {
-          beforeDelete = cb;
-        },
-      });
+    it('reads a session whose work-queue entry waits as waiting on the host', async () => {
       const { spawnedAny } = spawnHandler({ client: {}, assistant: vi.fn() } as any);
-      const workQueue = spawnedAny.workQueue;
-      expect(workQueue, 'SlackHandler owns a work queue').toBeDefined();
-      // The busy card's buttons reach this same instance.
-      expect(spawnedAny.actionHandlers.ctx.workQueue).toBe(workQueue);
-      workQueue.stop();
-
-      const deploy = (key: string) => ({
-        session: { workflow: 'deploy' },
-        sessionKey: key,
-        channel: 'C1',
-        threadTs: key.split(':')[1] ?? '1',
-        user: 'U1',
-        text: 'Projalpha: develop -> deploy/dev2',
-      });
-      expect(workQueue.decide(deploy(SESSION_KEY)).kind).toBe('pass');
-      expect(workQueue.decide(deploy('C1:other')).kind).toBe('blocked');
-
-      beforeDelete?.(SESSION_KEY, registrySession, 'expired');
-      await tick();
-      expect(workQueue.decide(deploy('C1:third')).kind, 'the deleted session released its slot').toBe('pass');
+      claudeHandler.getSessionByKey = vi.fn(() => ({ channelId: 'C1', threadTs: '1.1' }));
+      const { setActiveWorkQueueHost } = await import('../work-queue/host');
+      setActiveWorkQueueHost({
+        statusFor: (c?: string, t?: string) =>
+          c === 'C1' && t === '1.1'
+            ? { queue: 'qa:dev2', entry: 'wq-2', state: 'queued', position: 1, keys: ['ABC-2'], since: 1 }
+            : undefined,
+      } as any);
+      try {
+        expect(spawnedAny.sessionWaitsOnHost('C1:1.1')).toBe(true);
+      } finally {
+        setActiveWorkQueueHost(undefined);
+      }
+      expect(spawnedAny.sessionWaitsOnHost('C1:1.1')).toBe(false);
     });
 
     /**

@@ -227,7 +227,7 @@ describe('T3 — minimal: a card shows what matters', () => {
     viewSpec(): any;
     __get(n: string): any;
   }>(
-    ['toNum', 'pendingAutoResume', 'cardAsks', 'viewModeFrom', 'viewPlanFrom', 'viewSpec'],
+    ['toNum', 'pendingAutoResume', 'pendingQueueWait', 'cardAsks', 'viewModeFrom', 'viewPlanFrom', 'viewSpec'],
     ['_viewMode', '_viewPlan', '_viewLayout'],
     { REPRESENTATIVE_MODELS: [] },
   );
@@ -279,7 +279,16 @@ describe('T3 — minimal: a card shows what matters', () => {
       viewCardOf(s: unknown, col: string): Record<string, unknown>;
       __set(n: string, v: unknown): void;
     }>(
-      ['viewModeFrom', 'viewPlanFrom', 'viewSpec', 'toNum', 'pendingAutoResume', 'cardAsks', 'viewCardOf'],
+      [
+        'viewModeFrom',
+        'viewPlanFrom',
+        'viewSpec',
+        'toNum',
+        'pendingAutoResume',
+        'pendingQueueWait',
+        'cardAsks',
+        'viewCardOf',
+      ],
       ['_viewMode', '_viewPlan', '_viewLayout'],
       {
         cardOf,
@@ -330,7 +339,9 @@ describe('T3 — minimal: a card shows what matters', () => {
         'toNum',
         'formatTaskTime',
         'pendingAutoResume',
+        'pendingQueueWait',
         'autoResumeLabel',
+        'queueWaitLabel',
         'permissionSummary',
         'cardSummary',
         'cardCurrentTask',
@@ -647,7 +658,7 @@ describe('T7–T10 — minimal card: cost · model · artifacts, the star toggle
     viewSpec(): any;
     __get(n: string): any;
   }>(
-    ['toNum', 'pendingAutoResume', 'cardAsks', 'viewModeFrom', 'viewPlanFrom', 'viewSpec'],
+    ['toNum', 'pendingAutoResume', 'pendingQueueWait', 'cardAsks', 'viewModeFrom', 'viewPlanFrom', 'viewSpec'],
     ['_viewMode', '_viewPlan', '_viewLayout'],
     { REPRESENTATIVE_MODELS: [{ nickname: 'opus[1m]', model: 'claude-opus-5-5[1m]', label: 'Opus 5.5' }] },
   );

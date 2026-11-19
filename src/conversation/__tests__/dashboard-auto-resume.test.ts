@@ -239,47 +239,62 @@ describe('Dashboard — sessions waiting out an automatic resume, and the one cu
   });
 
   /**
-   * SSOT 2026-11-19 — a session whose environment work waits in the host's queue or runs waits on the host, not on a
-   * person: RUNNING with its envWait (queued · place in line, or running), never DONE and never NEEDS YOU.
+   * .prd/36 D8 — a session that waits on the host (its work-queue entry waits, or a hand-off it asked for runs) is
+   * RUNNING with its queueWait, never DONE and never NEEDS YOU.
    */
-  describe('environment work in the host queue keeps the requester in RUNNING', () => {
-    it('an idle requester whose run is in flight, and one waiting behind it, are RUNNING with their envWait', async () => {
-      const { envRunQueue } = await import('../../slack/env-run-queue');
-      envRunQueue.run(
-        { owner: 'env:acme-dev2', channel: 'C1', threadTs: 't1', skills: 'qa' },
-        () => new Promise(() => {}),
-      );
-      envRunQueue.run(
-        { owner: 'env:acme-dev2', channel: 'C1', threadTs: 't2', skills: 'qa' },
-        () => new Promise(() => {}),
-      );
-      const b = await board(
-        new Map([
-          ['C1:t1', session()],
-          ['C1:t2', session({ sessionId: 'sid2', threadTs: 't2' })],
-        ]),
+  describe('a session that waits on the host is RUNNING', () => {
+    const statuses: Record<string, any> = {
+      t1: { queue: 'qa:dev2', entry: 'wq-1', state: 'running', position: 0, keys: ['ABC-1'], since: 10 },
+      t2: { queue: 'qa:dev2', entry: 'wq-2', state: 'queued', position: 1, keys: ['ABC-2'], since: 20 },
+    };
+    async function withHost<T>(fn: () => Promise<T>): Promise<T> {
+      const { setActiveWorkQueueHost } = await import('../../work-queue/host');
+      setActiveWorkQueueHost({ statusFor: (_c: string, t: string) => statuses[t] } as any);
+      try {
+        return await fn();
+      } finally {
+        setActiveWorkQueueHost(undefined);
+      }
+    }
+
+    it('an idle holder of the running entry, and one waiting behind it, are RUNNING with their queueWait', async () => {
+      const b = await withHost(() =>
+        board(
+          new Map([
+            ['C1:t1', session()],
+            ['C1:t2', session({ sessionId: 'sid2', threadTs: 't2' })],
+          ]),
+        ),
       );
       expect(b.idle).toHaveLength(0);
       expect(b.waiting).toHaveLength(0);
       expect(b.working).toHaveLength(2);
       const byThread = Object.fromEntries(b.working.map((c: any) => [c.threadTs, c]));
-      expect(byThread.t1.envWait).toMatchObject({ state: 'running', owner: 'env:acme-dev2' });
-      expect(byThread.t2.envWait).toMatchObject({ state: 'queued', owner: 'env:acme-dev2', position: 1 });
+      expect(byThread.t1.queueWait).toEqual({ kind: 'running', queue: 'qa:dev2', since: 10 });
+      expect(byThread.t2.queueWait).toEqual({ kind: 'queued', queue: 'qa:dev2', position: 1, since: 20 });
     });
 
-    it('a session with no environment work stays DONE, and a real question stays in NEEDS YOU', async () => {
-      const { envRunQueue } = await import('../../slack/env-run-queue');
-      envRunQueue.run(
-        { owner: 'env:acme-dev2', channel: 'C1', threadTs: 't3', skills: 'qa' },
-        () => new Promise(() => {}),
+    it('a requester whose environment hand-off runs is RUNNING (환경 작업)', async () => {
+      const { envHandoffRuns } = await import('../../slack/env-handoff-runs');
+      const run = envHandoffRuns.start({ channel: 'C1', threadTs: 't5' }, 'env:acme-dev2');
+      try {
+        const b = await board(new Map([['C1:t5', session({ sessionId: 'sid5', threadTs: 't5' })]]));
+        expect(b.working.map((c: any) => [c.threadTs, c.queueWait?.kind])).toEqual([['t5', 'env']]);
+      } finally {
+        run.end();
+      }
+    });
+
+    it('a session with no entry stays DONE, and a real question stays in NEEDS YOU', async () => {
+      const b = await withHost(() =>
+        board(
+          new Map([
+            ['C1:t9', session({ sessionId: 'sid9', threadTs: 't9' })],
+            ['C1:t3', session({ sessionId: 'sid3', threadTs: 't3', activityState: 'waiting' })],
+          ]),
+        ),
       );
-      const b = await board(
-        new Map([
-          ['C1:t1', session()],
-          ['C1:t3', session({ sessionId: 'sid3', threadTs: 't3', activityState: 'waiting' })],
-        ]),
-      );
-      expect(b.idle.map((c: any) => c.threadTs)).toEqual(['t1']);
+      expect(b.idle.map((c: any) => c.threadTs)).toEqual(['t9']);
       expect(b.waiting.map((c: any) => c.threadTs)).toEqual(['t3']);
     });
   });

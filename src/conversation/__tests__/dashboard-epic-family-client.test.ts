@@ -68,6 +68,7 @@ const CARD_OF_FNS = [
   'dhShow',
   'cardSummary',
   'pendingAutoResume',
+  'pendingQueueWait',
   'cardCurrentTask',
   'cardTaskRow',
   'agentStatusOf',

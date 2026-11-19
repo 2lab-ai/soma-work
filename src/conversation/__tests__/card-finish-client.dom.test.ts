@@ -137,7 +137,7 @@ var _cardFinishSeen = Object.create(null);
 ${clientFn('cardFinishHold')}
 ${clientFn('syncCardFinish').replace('function syncCardFinish() {', 'function syncCardFinish() {\n  _syncs++;')}
 ${clientFn('cardFinishStale')}
-${clientFn('pendingEnvWait')}
+${clientFn('pendingQueueWait')}
 ${clientFn('cardQueued')}
 ${clientFn('refreshCard')}
 return {

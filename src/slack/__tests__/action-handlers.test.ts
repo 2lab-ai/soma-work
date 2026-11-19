@@ -147,35 +147,24 @@ describe('ActionHandlers', () => {
     });
   });
 
-  // #726 — the work queue busy card's two buttons reach the queue service.
-  describe('work queue buttons', () => {
-    it('routes work_queue_wait / work_queue_cancel to ctx.workQueue.handleClick', async () => {
-      const handleClick = vi.fn().mockResolvedValue(undefined);
-      const wq = new ActionHandlers({ ...ctx, workQueue: { handleClick } });
+  // .prd/36 D1 — the #726 busy card is gone (nobody is asked about a queue any more); a card still in a thread from
+  // before answers "expired" instead of a Slack error.
+  describe('old work queue buttons', () => {
+    it('answer "expired" and nothing else', async () => {
       const mockApp = { action: vi.fn(), view: vi.fn() };
-      wq.registerHandlers(mockApp as any);
-
+      handlers.registerHandlers(mockApp as any);
       const call = mockApp.action.mock.calls.find(
         (c) => c[0] instanceof RegExp && c[0].test('work_queue_wait') && c[0].test('work_queue_cancel'),
       );
       expect(call).toBeDefined();
       expect((call![0] as RegExp).test('work_queue_waitx')).toBe(false);
-
       const ack = vi.fn();
       const respond = vi.fn();
-      const body = { actions: [{ action_id: 'work_queue_wait', value: 'w1' }], user: { id: 'UB' } };
-      await call![1]({ ack, body, respond });
+      await call![1]({ ack, body: { actions: [{ value: 'w1' }] }, respond });
       expect(ack).toHaveBeenCalled();
-      expect(handleClick).toHaveBeenCalledWith(body, respond);
-    });
-
-    it('answers "expired" when no work queue is wired', async () => {
-      const mockApp = { action: vi.fn(), view: vi.fn() };
-      handlers.registerHandlers(mockApp as any);
-      const call = mockApp.action.mock.calls.find((c) => c[0] instanceof RegExp && c[0].test('work_queue_cancel'));
-      const respond = vi.fn();
-      await call![1]({ ack: vi.fn(), body: { actions: [{ value: 'w1' }] }, respond });
-      expect(respond).toHaveBeenCalledWith(expect.objectContaining({ replace_original: true }));
+      expect(respond).toHaveBeenCalledWith(
+        expect.objectContaining({ replace_original: true, text: expect.stringMatching(/만료/) }),
+      );
     });
   });
 

@@ -51,6 +51,7 @@ const FNS = [
   ...VIEWER_FNS,
   'toNum',
   'pendingAutoResume',
+  'pendingQueueWait',
   'isBusy',
   'isSiblingSession',
   'sessionActionsOf',
