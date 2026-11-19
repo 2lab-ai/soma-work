@@ -171,6 +171,12 @@ describe('starting up', () => {
     vi.stubEnv('SLACK_MCP_CONTEXT', JSON.stringify({ channel: 'C1' }));
     vi.resetModules();
     await expect(import('./slack-mcp-server')).rejects.toThrow('SLACK_MCP_CONTEXT must contain channel and threadTs');
+
+    // The name it had before the slack-thread → slack-mcp rename is not read: a context given only there is no context.
+    vi.stubEnv('SLACK_MCP_CONTEXT', '');
+    vi.stubEnv('SLACK_THREAD_CONTEXT', JSON.stringify(WORK));
+    vi.resetModules();
+    await expect(import('./slack-mcp-server')).rejects.toThrow('SLACK_MCP_CONTEXT environment variable is required');
   });
 });
 
@@ -306,10 +312,16 @@ describe('get_thread_messages — legacy mode (anchor_ts / before / after)', () 
     expect(after.has_more).toBe(true);
   });
 
-  it('any legacy argument wins over offset/limit', async () => {
-    const out = body(await server.call('get_thread_messages', { offset: 0, limit: 10, before: 2 }));
-    expect(out.messages.at(-1).ts).toBe(WORK.mentionTs);
-    expect(out.returned).toBe(3);
+  // Offset/limit alone would return the first 10 (the last one 1700000009); each legacy argument on its own reads
+  // around the mention instead (before defaults to 10, after to 0).
+  it.each([
+    ['anchor_ts', { anchor_ts: WORK.mentionTs }, WORK.mentionTs, 4],
+    ['before', { before: 2 }, WORK.mentionTs, 3],
+    ['after', { after: 2 }, '1700000005.000000', 6],
+  ])('any legacy argument wins over offset/limit: %s', async (_name, legacy, lastTs, returned) => {
+    const out = body(await server.call('get_thread_messages', { offset: 0, limit: 10, ...legacy }));
+    expect(out.messages.at(-1).ts).toBe(lastTs);
+    expect(out.returned).toBe(returned);
   });
 });
 
@@ -351,14 +363,24 @@ describe('send_thread_message', () => {
 
   it('posts markdown into the work thread as blocks, with a Slack mrkdwn fallback text', async () => {
     const out = body(
-      await server.call('send_thread_message', { text: '**Done** — see [the PR](https://github.com/o/r/pull/1)' }),
+      await server.call('send_thread_message', {
+        text: '**Done** — see [the PR](https://github.com/o/r/pull/1)\n\n- one\n- two',
+      }),
     );
-    expect(sent()).toMatchObject({
+    // The list is what tells the converter's blocks from the plain mrkdwn section the fallback would send.
+    const item = (text: string) => ({ type: 'rich_text_section', elements: [{ type: 'text', text }] });
+    expect(sent()).toEqual({
       channel: 'C_WORK',
       thread_ts: WORK.threadTs,
-      text: '*Done* — see <https://github.com/o/r/pull/1|the PR>',
+      text: '*Done* — see <https://github.com/o/r/pull/1|the PR>\n\n- one\n- two',
+      blocks: [
+        { type: 'section', text: { type: 'mrkdwn', text: '*Done* — see <https://github.com/o/r/pull/1|the PR>' } },
+        {
+          type: 'rich_text',
+          elements: [{ type: 'rich_text_list', style: 'bullet', indent: 0, elements: [item('one'), item('two')] }],
+        },
+      ],
     });
-    expect(sent().blocks.length).toBeGreaterThan(0);
     expect(out).toEqual({ sent: true, channel: 'C_WORK', thread_ts: WORK.threadTs, message_ts: '1700000009.000100' });
   });
 
@@ -437,9 +459,7 @@ describe('send_thread_message', () => {
 
 describe('a failed Slack call comes back as a classified error', () => {
   const failWith = (err: unknown) => {
-    h.slack.postMessage = vi.fn(async () => {
-      throw err;
-    });
+    h.slack.postMessage = vi.fn().mockRejectedValue(err);
     return server.call('send_thread_message', { text: 'x' });
   };
 
@@ -580,7 +600,21 @@ describe('send_file / send_media', () => {
     expect(doc.isError).toBe(true);
     expect(body(doc).error).toBe('File upload succeeded but Slack returned no file metadata. Response keys: ok');
     const media = await server.call('send_media', { file_path: await file('a.png', 'a') });
+    expect(media.isError).toBe(true);
     expect(body(media).error).toBe('Media upload succeeded but Slack returned no file metadata. Response keys: ok');
+
+    // A file object without an id is no upload either: there is no file to name in the reply.
+    h.slack.filesUploadV2 = vi.fn(async () => ({ ok: true, files: [{ files: [{ name: 'b' }] }] }));
+    const docNoId = await server.call('send_file', { file_path: await file('b.txt', 'b') });
+    expect(docNoId.isError).toBe(true);
+    expect(body(docNoId).error).toBe(
+      'File upload succeeded but Slack returned no file metadata. Response keys: ok, files',
+    );
+    const mediaNoId = await server.call('send_media', { file_path: await file('b.png', 'b') });
+    expect(mediaNoId.isError).toBe(true);
+    expect(body(mediaNoId).error).toBe(
+      'Media upload succeeded but Slack returned no file metadata. Response keys: ok, files',
+    );
   });
 
   it('send_media refuses a file that is not an image, audio or video', async () => {
@@ -601,6 +635,11 @@ describe('send_file / send_media', () => {
       );
       vi.stubEnv('SOMA_ARTIFACT_INDEX', index);
       vi.stubEnv('SOMA_DISPLAY_LANG', 'ko');
+    });
+    // The index is read on every upload: unstub it so it stays out of tests that run after this block (shuffled
+    // order). The server read SLACK_* once, when it started.
+    afterAll(() => {
+      vi.unstubAllEnvs();
     });
 
     it('send_file: a changed report under a known name is version 2, and the note leads the comment', async () => {
@@ -627,6 +666,30 @@ describe('send_file / send_media', () => {
       );
       expect(upload()).toMatchObject({ filename: 'chart.png', alt_text: 'weekly chart' });
       expect(out).toMatchObject({ media_type: 'image', version_key: 'key:weekly-chart', version: 1, changed: null });
+    });
+
+    it('two uploads of one report at once are versions 1 and 2: the second plans after the first is sent', async () => {
+      let n = 0;
+      h.slack.filesUploadV2 = vi.fn(async () => {
+        const id = `F_DIGEST_${++n}`;
+        await new Promise((resolve) => setTimeout(resolve, 20)); // both calls are in flight together
+        return { files: [{ files: [{ id, permalink: `https://x/${id}` }] }] };
+      });
+      const one = await file('digest-a.html', 'week one');
+      const two = await file('digest-b.html', 'week two');
+      const [first, second] = await Promise.all([
+        server.call('send_file', { file_path: one, artifact_key: 'weekly-digest' }),
+        server.call('send_file', { file_path: two, artifact_key: 'weekly-digest' }),
+      ]);
+      expect(body(first)).toMatchObject({
+        file_id: 'F_DIGEST_1',
+        version_key: 'key:weekly-digest',
+        version: 1,
+        changed: null,
+      });
+      expect(body(second)).toMatchObject({ file_id: 'F_DIGEST_2', version: 2, changed: true, previous_version: 1 });
+      const calls = (h.slack.filesUploadV2 as ReturnType<typeof vi.fn>).mock.calls;
+      expect(calls[1][0].initial_comment).toBe('판 2 · 이전 판 이후 바뀜');
     });
   });
 });

@@ -84,6 +84,17 @@ describe('isNonVisualMedia helper', () => {
   });
 });
 
+describe('download_thread_file allows images, blocks non-visual media', () => {
+  it('allows non-media file downloads', () => {
+    const nonMediaFiles = ['document.pdf', 'script.ts', 'data.json', 'readme.md', 'archive.zip'];
+
+    for (const fileName of nonMediaFiles) {
+      expect(isImageFile(undefined, fileName)).toBe(false);
+      expect(isNonVisualMedia(undefined, fileName)).toBe(false);
+    }
+  });
+});
+
 // ── Scenario 2 — download_thread_file media blocking (Trace: docs/media-file-support/trace.md) ──
 
 describe('download_thread_file media blocking (video/audio)', () => {
@@ -130,5 +141,11 @@ describe('download_thread_file media blocking (video/audio)', () => {
     expect(isMediaFile('video/webm', 'no-extension')).toBe(true);
     // Non-media mimetype + non-media extension → false
     expect(isMediaFile('application/pdf', 'doc.pdf')).toBe(false);
+  });
+
+  // Trace: Scenario 2, Section 5 — text files still allowed
+  it('download_thread_file still allows text files', () => {
+    expect(isMediaFile(undefined, 'code.ts')).toBe(false);
+    expect(isMediaFile(undefined, 'data.csv')).toBe(false);
   });
 });

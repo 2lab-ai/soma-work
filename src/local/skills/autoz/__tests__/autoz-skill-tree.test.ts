@@ -16,7 +16,7 @@ import { describe, expect, it } from 'vitest';
  *        two HTML artifacts (problem analysis / final ES report + QA list).
  *  - T1/T3: logical holes fixed across the referenced skill tree —
  *        decision-gate small..medium gap, zwork dispatch-before-RED
- *        ordering.
+ *        ordering, z self-flagellation string, typos.
  */
 
 const SKILLS = resolve(__dirname, '..', '..');
@@ -72,6 +72,11 @@ describe('T1/T3 — logical holes removed across the z-family tree', () => {
     expect(md).not.toMatch(/if\s+switching_cost\s*<\s*small/);
   });
 
+  it('z controller contains no self-flagellation string', () => {
+    const md = read('z');
+    expect(md).not.toMatch(/worthless piece of shit/i);
+  });
+
   it('zwork writes RED tests before dispatching implementers', () => {
     const md = read('zwork');
     const process = md.slice(md.indexOf('## Process'));
@@ -80,6 +85,11 @@ describe('T1/T3 — logical holes removed across the z-family tree', () => {
     expect(red, 'RED step exists').toBeGreaterThan(-1);
     expect(dispatch, 'implementer dispatch exists').toBeGreaterThan(-1);
     expect(red, 'RED tests must be written before implementer dispatch').toBeLessThan(dispatch);
+  });
+
+  it('typos fixed: zcheck "bracnh", using-ssot "psuedo"', () => {
+    expect(read('zcheck')).not.toMatch(/bracnh/);
+    expect(read('using-ssot')).not.toMatch(/psuedo/);
   });
 
   it('P2/P3 review findings go to one follow-up issue and never hold the merge', () => {
@@ -118,6 +128,12 @@ describe('T5 — gpt-5.6-sol review findings folded in', () => {
 
   it('final ES artifact is exempt from es HA discipline (finding 5)', () => {
     expect(read('autoz').toLowerCase()).toMatch(/exempt from .*ha .*discipline|ha exemption/);
+  });
+
+  it('decision-gate carries no stale "< small" autonomous band (finding 6)', () => {
+    const md = read('decision-gate');
+    expect(md).not.toMatch(/switching cost < small/);
+    expect(md).not.toMatch(/switching_cost\s*<\s*small/);
   });
 
   it('skill tree includes the transitive dependencies (r1 finding 4 + r2 finding 4)', () => {

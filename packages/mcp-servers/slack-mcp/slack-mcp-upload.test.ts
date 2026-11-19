@@ -52,7 +52,8 @@ describe('validateFilePath — real filesystem', () => {
   });
 
   it('rejects path with .. segments', async () => {
-    const traversal = path.join(tmpDir, '..', '..', 'etc', 'passwd');
+    // The raw string, not path.join: join would normalise the `..` away before the validator sees it.
+    const traversal = `${tmpDir}/../../etc/passwd`;
     await expect(validateFilePath(traversal)).rejects.toThrow(/traversal|restricted/i);
   });
 
