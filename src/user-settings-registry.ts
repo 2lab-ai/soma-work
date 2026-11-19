@@ -33,6 +33,7 @@ import {
   LAYOUT_CATALOG,
   LayoutError,
   normalizeLayoutDoc,
+  type PanelPlace,
   type PresetLayouts,
 } from './view-layout';
 
@@ -981,7 +982,12 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
       }
       assertAccepted(userId);
       const kept = store.getUserDashboardLayout(userId).panel;
-      if (!doc.panel && kept) doc.panel = kept;
+      if (!doc.panel) {
+        if (kept) doc.panel = kept;
+      } else {
+        // A document that names a place (an older editor) is a place write: the next revision, never the client's.
+        doc.panel = { side: doc.panel.side, locked: doc.panel.locked, rev: (kept?.rev ?? 0) + 1 };
+      }
       store.setUserDashboardLayout(userId, doc);
       return this.readLayout(userId);
     },
@@ -995,9 +1001,12 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
       }
       assertAccepted(userId);
       // What the write names over what is stored: a dashboard move names the side only, so a lock set meanwhile on
-      // the settings page stays.
+      // the settings page stays. The revision is the server's: the stored one plus one (a client's is ignored).
       const doc = store.getUserDashboardLayout(userId);
-      const panel = normalizeLayoutDoc({ v: 1, panel: { ...doc.panel, ...(place as object) } }).panel;
+      const { rev: _clientRev, ...named } = place as Record<string, unknown>;
+      const merged = normalizeLayoutDoc({ v: 1, panel: { side: doc.panel?.side, locked: doc.panel?.locked, ...named } })
+        .panel as PanelPlace;
+      const panel: PanelPlace = { side: merged.side, locked: merged.locked, rev: (doc.panel?.rev ?? 0) + 1 };
       store.setUserDashboardLayout(userId, { ...doc, panel });
       return this.readLayout(userId);
     },

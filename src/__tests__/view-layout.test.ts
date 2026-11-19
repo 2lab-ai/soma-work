@@ -518,6 +518,14 @@ describe('L10 — 디테일 카드 위치: the side it docks on and its lock (SS
     expect(doc.panel).toEqual({ side: 'left', locked: true });
   });
 
+  it('a stored place keeps its revision (the server’s write count, so every reader can order places)', () => {
+    expect(normalizeLayoutDoc({ v: 1, panel: { side: 'left', locked: true, rev: 7 } }).panel).toEqual({
+      side: 'left',
+      locked: true,
+      rev: 7,
+    });
+  });
+
   it('a partial place keeps the other half at its default', () => {
     expect(normalizeLayoutDoc({ v: 1, panel: { side: 'left' } }).panel).toEqual({ side: 'left', locked: false });
     expect(normalizeLayoutDoc({ v: 1, panel: { locked: true } }).panel).toEqual({ side: 'right', locked: true });
@@ -531,6 +539,10 @@ describe('L10 — 디테일 카드 위치: the side it docks on and its lock (SS
       { panel: { side: 'LEFT' } },
       { panel: { locked: 'yes' } },
       { panel: { locked: 1 } },
+      { panel: { side: null } },
+      { panel: { locked: null } },
+      { panel: { side: 'left', rev: -1 } },
+      { panel: { side: 'left', rev: 1.5 } },
     ])
       expect(() => normalizeLayoutDoc(bad), JSON.stringify(bad)).toThrow(LayoutError);
   });

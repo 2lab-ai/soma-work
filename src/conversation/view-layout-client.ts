@@ -52,6 +52,33 @@ function layoutSansPlace(doc) {
   for (var k in doc || {}) if (k !== 'panel' && Object.prototype.hasOwnProperty.call(doc, k)) out[k] = doc[k];
   return out;
 }
+// A place's revision (the server's count of place writes, view-layout.ts PanelPlace.rev); 0 for none. Every page
+// keeps the place with the highest revision, so a late answer, a late read or another tab's older copy never wins.
+function panelRevOf(place) {
+  var r = place && place.rev;
+  return typeof r === 'number' && r >= 0 ? r : 0;
+}
+// The shared copy (soma-view-layout: a page's first paint) — each writer puts in only what it has: the layouts from a
+// layouts answer (the copy's place stays unless this one is newer), a place from a place answer (only when newer).
+function layoutCacheGet() {
+  try {
+    var c = JSON.parse(localStorage.getItem('soma-view-layout') || 'null');
+    return c && typeof c === 'object' && !Array.isArray(c) ? c : { v: 1 };
+  } catch (_e) { return { v: 1 }; }
+}
+function layoutCachePutLayouts(doc) {
+  var out = layoutSansPlace(doc);
+  var cached = layoutCacheGet().panel;
+  var place = doc && doc.panel && panelRevOf(doc.panel) > panelRevOf(cached) ? doc.panel : cached;
+  if (place) out.panel = place;
+  try { localStorage.setItem('soma-view-layout', JSON.stringify(out)); } catch (_e) {}
+}
+function layoutCachePutPlace(place) {
+  var out = layoutCacheGet();
+  if (!place || (out.panel && panelRevOf(place) <= panelRevOf(out.panel))) return;
+  out.panel = place;
+  try { localStorage.setItem('soma-view-layout', JSON.stringify(out)); } catch (_e) {}
+}
 // What a mode draws: the task card (face + open card) from its preset, the detail card from its own.
 function layoutsFor(doc, builtins, mode, plan) {
   var c = layoutPreset(doc, 'card', plan);

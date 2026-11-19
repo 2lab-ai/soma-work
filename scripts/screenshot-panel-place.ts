@@ -126,7 +126,7 @@ async function installMocks(page: Page) {
     placePuts.push(body);
     // The server keeps what the write does not name (a dashboard move names the side only).
     const prev = (DOC.panel as Record<string, unknown> | undefined) ?? { side: 'right', locked: false };
-    DOC = { ...DOC, panel: { ...prev, ...body.panel } };
+    DOC = { ...DOC, panel: { ...prev, ...body.panel, rev: (Number(prev.rev) || 0) + 1 } };
     await r.fulfill({ json: { ok: true, layout: { doc: DOC } } });
   });
   await page.route('**/api/settings/dashboard-layout', async (r) => {
@@ -539,7 +539,7 @@ async function tabletRun(browser: import('playwright').Browser) {
 }
 
 async function lockedRun(browser: import('playwright').Browser) {
-  DOC = { v: 1, panel: { side: 'left', locked: true } };
+  DOC = { v: 1, panel: { side: 'left', locked: true, rev: 1 } };
   placePuts = [];
   const ctx = await browser.newContext({
     viewport: { width: 1440, height: 900 },
@@ -573,7 +573,7 @@ async function lockedRun(browser: import('playwright').Browser) {
 }
 
 async function phoneRun(browser: import('playwright').Browser) {
-  DOC = { v: 1, panel: { side: 'left', locked: false } };
+  DOC = { v: 1, panel: { side: 'left', locked: false, rev: 1 } };
   const ctx = await browser.newContext({
     viewport: { width: 390, height: 844 },
     colorScheme: 'light',

@@ -17,6 +17,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { VIEW_LAYOUT_CLIENT_JS } from '../view-layout-client';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
@@ -168,7 +169,7 @@ describe('P3 — in hand the card follows the pointer and stays on screen', () =
   });
 });
 
-describe('P4 — a moved card saves the place alone', () => {
+describe('P4 — a moved card saves the side alone', () => {
   type Saver = { savePanelPlace(p: { side: string; locked: boolean }): Promise<void> };
   function saver(responses: Array<{ status: number; body?: unknown }>) {
     const calls: Array<{ url: string; init: { method: string; headers: Record<string, string>; body: string } }> = [];
@@ -183,22 +184,22 @@ describe('P4 — a moved card saves the place alone', () => {
       getItem: (k: string) => items[k] ?? null,
     };
     const toasts: unknown[] = [];
-    const c = load<Saver & { layout(): unknown; saving(): number }>(
-      ['savePanelPlace', 'putPanelPlace', 'cachePanelPlace'],
-      ['_panelPlaceSaving', '_panelPlaceRev', '_panelPlaceQueued', 'VIEW_LAYOUT_KEY'],
-      { fetch, localStorage, dashToast: (t: unknown) => toasts.push(t), applyPanelPlace() {} },
+    const placed: unknown[] = [];
+    const c = load<Saver & { layout(): any; saving(): number }>(
+      ['savePanelPlace', 'putPanelPlace', 'panelPlaceFetch', 'panelPlaceAccept', 'panelPlaceShown'],
+      ['_panelPlaceSaving', '_panelPlaceQueued', '_panelPlaceIntent', 'PANEL_PLACE_TIMEOUT_MS'],
+      { fetch, localStorage, dashToast: (t: unknown) => toasts.push(t), placePanel: (p: unknown) => placed.push(p) },
       ', layout: function() { return _viewLayout; }, saving: function() { return _panelPlaceSaving; }',
-      "var _viewLayout = { v: 1, active: { card: '2' } }; var _csrfToken = 'T1'; async function refreshCsrfToken() { _csrfToken = 'T2'; }",
+      `${VIEW_LAYOUT_CLIENT_JS}\nvar _viewLayout = { v: 1, active: { card: '2' } }; var _csrfToken = 'T1'; async function refreshCsrfToken() { _csrfToken = 'T2'; }`,
     );
-    return { c, calls, items, toasts };
+    return { c, calls, items, toasts, placed };
   }
 
-  it('PUT …/dashboard-layout/panel with only the place; the page’s copy carries it before the answer', async () => {
-    const { c, calls, items, toasts } = saver([{ status: 200, body: { ok: true } }]);
+  it('PUT …/dashboard-layout/panel with the side only; the server’s answer is the place held and shown', async () => {
+    const answer = { ok: true, layout: { doc: { v: 1, panel: { side: 'left', locked: false, rev: 1 } } } };
+    const { c, calls, items, toasts, placed } = saver([{ status: 200, body: answer }]);
     const done = c.savePanelPlace({ side: 'left', locked: false });
     expect(c.saving()).toBe(1);
-    // The shared copy gets the place only (its layouts are whatever the copy had).
-    expect(JSON.parse(items['soma-view-layout'])).toEqual({ v: 1, panel: { side: 'left', locked: false } });
     await done;
     expect(c.saving()).toBe(0);
     expect(calls).toHaveLength(1);
@@ -207,10 +208,14 @@ describe('P4 — a moved card saves the place alone', () => {
     expect(calls[0].init.headers['X-CSRF-Token']).toBe('T1');
     // A move names the side only: the lock is the settings page's, and the server keeps it.
     expect(JSON.parse(calls[0].init.body)).toEqual({ panel: { side: 'left' } });
+    expect(c.layout().panel).toEqual({ side: 'left', locked: false, rev: 1 });
+    expect(placed).toEqual([{ side: 'left', locked: false }]);
+    // The shared copy gets the place only (its layouts are whatever the copy had).
+    expect(JSON.parse(items['soma-view-layout'])).toEqual({ v: 1, panel: { side: 'left', locked: false, rev: 1 } });
     expect(toasts).toEqual([]);
   });
 
-  it('a 403 refreshes the CSRF token once and sends again; a refusal says why', async () => {
+  it('a 403 refreshes the CSRF token once and sends again; a refusal says why and keeps the card where it was put', async () => {
     const ok = saver([{ status: 403 }, { status: 200, body: { ok: true } }]);
     await ok.c.savePanelPlace({ side: 'left', locked: false });
     expect(ok.calls.map((x) => x.init.headers['X-CSRF-Token'])).toEqual(['T1', 'T2']);
@@ -225,6 +230,7 @@ describe('P4 — a moved card saves the place alone', () => {
       },
     ]);
     expect(bad.c.saving()).toBe(0);
+    expect(bad.placed).toEqual([]); // not moved back: the card stays where the reader put it on this page
   });
 });
 
@@ -265,7 +271,7 @@ describe('P5 — the markup and the CSS', () => {
     expect(TEMPLATE).toMatch(
       /_viewLayout = readViewLayout\(\);\napplyViewMode\(\);\nsyncBoardScope\(\);\n[^\n]*\napplyPanelPlace\(panelPlaceOf\(_viewLayout\)\);/,
     );
-    expect(clientFn('setViewLayout')).toContain('placePanel(panelPlaceOf(_viewLayout));');
+    expect(clientFn('setViewLayout')).toContain('placePanel(panelPlaceShown());');
   });
 });
 
@@ -276,16 +282,15 @@ describe('P6 — the board glides when the card changes side', () => {
     expect(fn).toContain("if (m.panel === 'docked' && _panelPlace.side === 'left') m.panel = 'docked-left';");
   });
   it('a place alone redraws no card: the place moves the card, only a layouts change rerenders', async () => {
-    const { VIEW_LAYOUT_CLIENT_JS } = await import('../view-layout-client');
     const calls: string[] = [];
     const c = new Function(
       'localStorage',
       'placePanel',
       'applyViewMode',
       'rerenderForViewMode',
-      `${VIEW_LAYOUT_CLIENT_JS}\nvar VIEW_LAYOUT_KEY = 'soma-view-layout';\nvar _viewLayout = { v: 1, active: { card: '2' } };\n${clientFn('setViewLayout')}\nreturn { setViewLayout };`,
+      `${VIEW_LAYOUT_CLIENT_JS}\nvar VIEW_LAYOUT_KEY = 'soma-view-layout';\nvar _viewLayout = { v: 1, active: { card: '2' } };\nvar _panelPlaceIntent = null;\n${clientFn('panelPlaceShown')}\n${clientFn('setViewLayout')}\nreturn { setViewLayout };`,
     )(
-      { setItem() {} },
+      { setItem() {}, getItem: () => null },
       (p: unknown) => calls.push(`place ${JSON.stringify(p)}`),
       () => calls.push('applyViewMode'),
       () => calls.push('rerender'),
@@ -395,17 +400,17 @@ describe('P8 — PR review (review-of-legends): ordered saves, stale reads, the 
   function dash(n: ReturnType<typeof net>) {
     const placed: unknown[] = [];
     const c = load<Page>(
-      ['savePanelPlace', 'putPanelPlace', 'cachePanelPlace', 'loadViewLayout'],
-      ['_panelPlaceSaving', '_panelPlaceRev', '_panelPlaceQueued', 'VIEW_LAYOUT_KEY', '_layoutLoads'],
+      ['savePanelPlace', 'putPanelPlace', 'panelPlaceFetch', 'panelPlaceAccept', 'panelPlaceShown', 'loadViewLayout'],
+      ['_panelPlaceSaving', '_panelPlaceQueued', '_panelPlaceIntent', 'PANEL_PLACE_TIMEOUT_MS', '_layoutLoads'],
       {
         fetch: n.fetch,
         localStorage: { setItem() {}, getItem: () => null },
         dashToast() {},
         setViewLayout: (d: unknown) => placed.push(JSON.parse(JSON.stringify(d))),
-        applyPanelPlace() {},
+        placePanel() {},
       },
       ', layout: function() { return _viewLayout; }',
-      "var _viewLayout = { v: 1 }; var _csrfToken = 'T'; async function refreshCsrfToken() {}",
+      `${VIEW_LAYOUT_CLIENT_JS}\nvar _viewLayout = { v: 1, panel: { side: 'right', locked: false, rev: 4 } }; var _csrfToken = 'T'; async function refreshCsrfToken() {}`,
     );
     return { c, placed };
   }
@@ -425,45 +430,26 @@ describe('P8 — PR review (review-of-legends): ordered saves, stale reads, the 
     n.puts[1].done();
     await Promise.all([a, b, d]);
     expect(n.puts).toHaveLength(2);
-    expect(c.layout().panel).toEqual({ side: 'right', locked: false });
   });
 
-  it('a layouts read that left before a move does not move the card back, even after the move saved', async () => {
-    const n = net(() => ({ v: 1 })); // the server's copy as it was when the read left: no place
-    const { c, placed } = dash(n);
-    const reading = c.loadViewLayout();
-    await tick();
-    const saving = c.savePanelPlace({ side: 'left', locked: false });
-    await tick();
-    n.puts[0].done();
-    await saving;
-    n.gets[0](undefined);
-    await reading;
-    expect((placed[placed.length - 1] as any).panel).toEqual({ side: 'left', locked: false });
-  });
-
-  it('a layouts read that left while a save was on its way does not move the card back after the save answered', async () => {
-    const n = net(() => ({ v: 1 })); // the server's copy when the read left: the place not yet saved
-    const { c, placed } = dash(n);
-    const saving = c.savePanelPlace({ side: 'left', locked: false });
-    await tick();
-    const reading = c.loadViewLayout(); // leaves while the PUT is on its way
-    await tick();
-    n.puts[0].done();
-    await saving;
-    n.gets[0](undefined);
-    await reading;
-    expect((placed[placed.length - 1] as any).panel).toEqual({ side: 'left', locked: false });
-  });
-
-  it('with nothing chosen here, the server’s place is the truth (another tab moved the card)', async () => {
-    const n = net(() => ({ v: 1, panel: { side: 'left', locked: true } }));
+  it('a read whose place is older than the one held (a late read, a late answer) never moves the card back', async () => {
+    const n = net(() => ({ v: 1, panel: { side: 'right', locked: false, rev: 3 } }));
     const { c, placed } = dash(n);
     const reading = c.loadViewLayout();
     await tick();
     n.gets[0](undefined);
     await reading;
-    expect((placed[placed.length - 1] as any).panel).toEqual({ side: 'left', locked: true });
+    expect((placed[placed.length - 1] as any).panel).toEqual({ side: 'right', locked: false, rev: 4 });
+  });
+
+  it('a read with a newer place (another tab moved the card, or a lock set elsewhere) is the truth', async () => {
+    const n = net(() => ({ v: 1, panel: { side: 'left', locked: true, rev: 6 } }));
+    const { c, placed } = dash(n);
+    const reading = c.loadViewLayout();
+    await tick();
+    n.gets[0](undefined);
+    await reading;
+    expect((placed[placed.length - 1] as any).panel).toEqual({ side: 'left', locked: true, rev: 6 });
   });
 
   it('a quick throw lands where it heads; the same place let go after a pause settles back (release handler)', () => {
@@ -583,37 +569,49 @@ describe('P9 — PR review round 4 (2026-11-19)', () => {
       setItem: (k: string, v: string) => (items[k] = v),
       getItem: (k: string) => items[k] ?? null,
     };
-    const applied: unknown[] = [];
+    const placed: unknown[] = [];
     const fetch = vi.fn(async () => ({ ok: true, status: 200, json: async () => answer }));
     const c = load<{ savePanelPlace(p: unknown): Promise<void>; layout(): any }>(
-      ['savePanelPlace', 'putPanelPlace', 'cachePanelPlace'],
-      ['_panelPlaceSaving', '_panelPlaceRev', '_panelPlaceQueued', 'VIEW_LAYOUT_KEY'],
-      { fetch, localStorage, dashToast() {}, applyPanelPlace: (p: unknown) => applied.push(p) },
+      ['savePanelPlace', 'putPanelPlace', 'panelPlaceFetch', 'panelPlaceAccept', 'panelPlaceShown'],
+      ['_panelPlaceSaving', '_panelPlaceQueued', '_panelPlaceIntent', 'PANEL_PLACE_TIMEOUT_MS'],
+      { fetch, localStorage, dashToast() {}, placePanel: (p: unknown) => placed.push(p) },
       ', layout: function() { return _viewLayout; }',
-      "var _viewLayout = { v: 1, active: { card: '2' } }; var _csrfToken = 'T'; async function refreshCsrfToken() {}",
+      `${VIEW_LAYOUT_CLIENT_JS}\nvar _viewLayout = { v: 1, active: { card: '2' } }; var _csrfToken = 'T'; async function refreshCsrfToken() {}`,
     );
-    return { c, items, applied };
+    return { c, items, placed };
   }
 
   it('a move publishes only the place: presets another tab saved to the shared copy stay', async () => {
     const { c, items } = page(
-      { ok: true, layout: { doc: { v: 1, panel: { side: 'left', locked: false } } } },
+      { ok: true, layout: { doc: { v: 1, panel: { side: 'left', locked: false, rev: 1 } } } },
       { 'soma-view-layout': JSON.stringify({ v: 1, active: { card: '3' } }) },
     );
     await c.savePanelPlace({ side: 'left', locked: false });
     expect(JSON.parse(items['soma-view-layout'])).toEqual({
       v: 1,
       active: { card: '3' },
-      panel: { side: 'left', locked: false },
+      panel: { side: 'left', locked: false, rev: 1 },
     });
   });
 
   it('the lock the server answers with (set elsewhere meanwhile) is the page’s: the grip goes', async () => {
-    const { c, items, applied } = page({ ok: true, layout: { doc: { v: 1, panel: { side: 'left', locked: true } } } });
+    const { c, items, placed } = page({
+      ok: true,
+      layout: { doc: { v: 1, panel: { side: 'left', locked: true, rev: 2 } } },
+    });
     await c.savePanelPlace({ side: 'left', locked: false });
-    expect(c.layout().panel).toEqual({ side: 'left', locked: true });
-    expect(applied).toEqual([{ side: 'left', locked: true }]);
-    expect(JSON.parse(items['soma-view-layout']).panel).toEqual({ side: 'left', locked: true });
+    expect(c.layout().panel).toEqual({ side: 'left', locked: true, rev: 2 });
+    expect(placed).toEqual([{ side: 'left', locked: true }]);
+    expect(JSON.parse(items['soma-view-layout']).panel).toEqual({ side: 'left', locked: true, rev: 2 });
+  });
+
+  it('a newer copy in the shared copy is never replaced by an older answer', async () => {
+    const { c, items } = page(
+      { ok: true, layout: { doc: { v: 1, panel: { side: 'left', locked: false, rev: 2 } } } },
+      { 'soma-view-layout': JSON.stringify({ v: 1, panel: { side: 'right', locked: true, rev: 5 } }) },
+    );
+    await c.savePanelPlace({ side: 'left', locked: false });
+    expect(JSON.parse(items['soma-view-layout']).panel).toEqual({ side: 'right', locked: true, rev: 5 });
   });
 
   it('a press on a title-bar control never starts a drag, however far it moves within it (the real predicate)', () => {
@@ -695,6 +693,38 @@ describe('P9 — PR review round 4 (2026-11-19)', () => {
     });
     c.pdragMove({ pointerId: 2, clientX: 1090, clientY: 20, timeStamp: 16, preventDefault() {} });
     expect(panel.getAttribute('data-pdrag')).toBe('drag');
+  });
+
+  it('a place on the same side (a save’s answer) leaves a glide still running alone (no snap to the dock)', () => {
+    const cleared: unknown[] = [];
+    const panel = el('slide-panel');
+    const c = load<{ placePanel(p: unknown): unknown }>(['placePanel'], ['_panelPlace'], {
+      _pdrag: null,
+      document: { getElementById: () => panel },
+      panelDocked: () => true,
+      panelBoxNow: () => ({ left: 0, w: 440 }),
+      layoutBeforeChange() {},
+      applyPanelPlace: () => false, // same side
+      savePanelPlace() {},
+      pdragClear: (p: unknown) => cleared.push(p),
+      pdragSettle() {},
+      syncPanelWidth() {},
+    });
+    panel.setAttribute('data-pdrag', 'settle');
+    expect(c.placePanel({ side: 'right', locked: true })).toBe(false);
+    expect(cleared).toEqual([]);
+    expect(panel.getAttribute('data-pdrag')).toBe('settle');
+  });
+
+  it('a place that arrives while the card is in hand waits: nothing moves under the pointer (review round 5)', () => {
+    const applied: unknown[] = [];
+    const c = load<{ placePanel(p: unknown): unknown }>(['placePanel'], [], {
+      _pdrag: { live: true },
+      applyPanelPlace: (p: unknown) => applied.push(p),
+      document: { getElementById: () => null },
+    });
+    expect(c.placePanel({ side: 'left', locked: false })).toBe(false);
+    expect(applied).toEqual([]);
   });
 
   it('a re-grab before the settle’s first frame keeps the card where it is held (the frame is cancelled)', () => {

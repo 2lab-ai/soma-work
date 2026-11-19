@@ -144,6 +144,11 @@ export type PanelSide = 'left' | 'right';
 export interface PanelPlace {
   side: PanelSide;
   locked: boolean;
+  /**
+   * The server's count of place writes (set by writePanelPlace, never by a client): every reader keeps the place with
+   * the highest revision, so a late answer, a late read or another tab's older copy never wins over a newer place.
+   */
+  rev?: number;
 }
 /** Nothing saved: the right side, unlocked (the grip shows, so the move can be found). */
 export const DEFAULT_PANEL_PLACE: Readonly<PanelPlace> = Object.freeze({ side: 'right', locked: false });
@@ -745,11 +750,15 @@ export function normalizeLayoutDoc(input: unknown): DashboardLayoutDoc {
 // missing half takes its default.
 function normalizePanelPlace(input: unknown): PanelPlace {
   if (!isObj(input)) throw new LayoutError('panel은 객체여야 합니다');
-  const side = input.side ?? DEFAULT_PANEL_PLACE.side;
+  // Omitted takes the default; an explicit null is a wrong value like any other (it never clears a stored lock).
+  const side = input.side === undefined ? DEFAULT_PANEL_PLACE.side : input.side;
   if (side !== 'left' && side !== 'right') throw new LayoutError('디테일 카드 위치는 left 또는 right여야 합니다');
-  const locked = input.locked ?? DEFAULT_PANEL_PLACE.locked;
+  const locked = input.locked === undefined ? DEFAULT_PANEL_PLACE.locked : input.locked;
   if (typeof locked !== 'boolean') throw new LayoutError('디테일 카드 잠금은 true 또는 false여야 합니다');
-  return { side, locked };
+  if (input.rev === undefined) return { side, locked };
+  if (typeof input.rev !== 'number' || !Number.isInteger(input.rev) || input.rev < 0)
+    throw new LayoutError('디테일 카드 위치의 rev는 0 이상의 정수여야 합니다');
+  return { side, locked, rev: input.rev };
 }
 
 /** The preset a surface uses: the user's default for it, else the quick switch, else 1. */

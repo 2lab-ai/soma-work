@@ -8823,7 +8823,8 @@ var _panelPlaceSaving = 0; // 1 while a place save is on its way: an older answe
 var _panelPlaceQueued = null; // the newest place chosen while a save was on its way (sent after it)
 var _panelPlaceWritable = true; // false once the settings say the server refuses this user's writes: no grip
 var PANEL_DOCK_MQ = '(min-width: 840px)'; // the drawer's dock-at: below it the card is a full-screen sheet
-var _panelPlaceRev = 0;
+var _panelPlaceIntent = null; // a side chosen here that the server has not confirmed yet (shown over the held place)
+var PANEL_PLACE_TIMEOUT_MS = 15000;
 var PDRAG_SLOP = 4; // px a press moves before it is a drag (less is a click, which stays one)
 var PDRAG_FLICK = 0.5; // px/ms: a throw this fast lands on the side it heads for, wherever it is let go
 var PDRAG_SETTLE_MS = 380;
@@ -8915,6 +8916,8 @@ function pdragSettle(panel, from) {
 // how.save: keep it as the user's place; how.say: tell the reader (a toast with 실행 취소).
 function placePanel(place, how) {
   how = how || {};
+  // A card in hand is the reader's: a place arriving meanwhile shows once it is let go (pdragEnd places it).
+  if (_pdrag && _pdrag.live) return false;
   var panel = document.getElementById('slide-panel');
   var docked = panelDocked();
   var before = docked ? panelBoxNow() : null;
@@ -8923,8 +8926,9 @@ function placePanel(place, how) {
   var from = _panelPlace;
   var moved = applyPanelPlace(place);
   if (how.save) savePanelPlace(_panelPlace);
-  if (!panel) return moved;
-  if (!moved || !before || keyedNow() || reduceMotion() || !canAnimate()) {
+  // The same side (a save's answer, a lock): nothing to move — a glide still running is left to finish.
+  if (!panel || !moved) return moved;
+  if (!before || keyedNow() || reduceMotion() || !canAnimate()) {
     pdragClear(panel);
   } else {
     if (typeof panel.renderNow === 'function') panel.renderNow(); // the new dock is measured, not a frame later
@@ -8933,7 +8937,7 @@ function placePanel(place, how) {
     var after = panelBoxNow();
     pdragSettle(panel, after ? before.left - after.left : 0);
   }
-  if (moved && how.say) {
+  if (how.say) {
     dashToast({
       title: PANEL_MOVED[_panelPlace.side],
       description: '설정 › 대시보드 화면에서 위치를 잠글 수 있어요',
@@ -8941,46 +8945,61 @@ function placePanel(place, how) {
       action: { id: 'undo' },
     }, function() { placePanel({ side: from.side, locked: _panelPlace.locked }, { save: true }); });
   }
-  if (moved) syncPanelWidth();
+  syncPanelWidth();
   return moved;
 }
-// The user's place, saved alone; the page's copy of the layouts carries it at once (a reload keeps it before the
-// answer). One save at a time, in order: moves made while one is on its way send only the newest after it — so a
-// move and its 실행 취소, or a move waiting on a CSRF refresh, can never land in the wrong order. A failed save says
-// so — the card stays where the reader put it on this page.
+// The place this page shows: the one the server confirmed (the highest revision seen), with a side the reader chose
+// here that is not saved yet over it.
+function panelPlaceShown() {
+  var held = panelPlaceOf(_viewLayout);
+  return _panelPlaceIntent ? { side: _panelPlaceIntent, locked: held.locked } : held;
+}
+// A place from the server (an answer, a read) is taken only when it is newer than the one held — the server's
+// revision orders every place, so a late answer or a late read never wins over a newer one. True when taken.
+function panelPlaceAccept(place) {
+  if (!place || panelRevOf(place) <= panelRevOf(_viewLayout && _viewLayout.panel)) return false;
+  _viewLayout = JSON.parse(JSON.stringify(_viewLayout || { v: 1 }));
+  _viewLayout.panel = place;
+  layoutCachePutPlace(place);
+  return true;
+}
+// The user's move, saved alone (the side only — the lock is the settings page's). One save at a time, in order: moves
+// made while one is on its way send only the newest after it, so a move and its 실행 취소, or a move waiting on a CSRF
+// refresh, never land in the wrong order. The card shows the move at once; the server's answer is taken when newer
+// (a lock set elsewhere meanwhile shows). A failed save says so — the card stays where the reader put it here.
 async function savePanelPlace(place) {
-  _panelPlaceRev++; // a read that left before this choice must not paint over it
-  var doc = JSON.parse(JSON.stringify(_viewLayout || { v: 1 }));
-  doc.panel = { side: place.side, locked: place.locked };
-  _viewLayout = doc;
-  cachePanelPlace(doc.panel);
-  _panelPlaceQueued = doc.panel;
+  _panelPlaceIntent = place.side;
+  _panelPlaceQueued = { side: place.side };
   if (_panelPlaceSaving) return; // the save on its way sends the newest after it
   _panelPlaceSaving = 1;
+  var failed = '';
   try {
     while (_panelPlaceQueued) {
       var next = _panelPlaceQueued;
       _panelPlaceQueued = null;
       try {
-        var ack = await putPanelPlace(next);
-        if (ack && (ack.side === 'left' || ack.side === 'right')) {
-          // The server's place is the truth: its lock may have been set elsewhere meanwhile (the move names the side
-          // only). A side still queued here stays the one shown.
-          var shown = { side: _panelPlaceQueued ? _panelPlaceQueued.side : ack.side, locked: !!ack.locked };
-          _viewLayout = JSON.parse(JSON.stringify(_viewLayout || { v: 1 }));
-          _viewLayout.panel = shown;
-          applyPanelPlace(shown);
-          cachePanelPlace({ side: ack.side, locked: !!ack.locked });
-        }
+        panelPlaceAccept(await putPanelPlace(next));
+        failed = '';
       } catch (e) {
-        if (!_panelPlaceQueued)
-          dashToast({ title: '디테일 카드 위치를 저장하지 못했어요', description: String((e && e.message) || e), tone: 'error' });
+        failed = String((e && e.message) || e);
       }
-      _panelPlaceRev++; // settled: a read that left while it was on its way may hold the place before it
     }
   } finally {
     _panelPlaceSaving = 0;
   }
+  if (failed) {
+    dashToast({ title: '디테일 카드 위치를 저장하지 못했어요', description: failed, tone: 'error' });
+    return;
+  }
+  _panelPlaceIntent = null;
+  placePanel(panelPlaceShown());
+}
+// One request, bounded: a connection that never answers fails after PANEL_PLACE_TIMEOUT_MS and frees the queue.
+function panelPlaceFetch(body, headers) {
+  var ctl = typeof AbortController === 'function' ? new AbortController() : null;
+  var timer = ctl ? setTimeout(function() { ctl.abort(); }, PANEL_PLACE_TIMEOUT_MS) : 0;
+  return fetch('/api/settings/dashboard-layout/panel', { method: 'PUT', headers: headers, body: body, signal: ctl ? ctl.signal : undefined })
+    .finally(function() { clearTimeout(timer); });
 }
 // One PUT of a place, with the CSRF retry (a 403 after the JWT rotated refreshes the token once).
 async function putPanelPlace(panel) {
@@ -8988,12 +9007,12 @@ async function putPanelPlace(panel) {
   var body = JSON.stringify({ panel: { side: panel.side } });
   var headers = { 'Content-Type': 'application/json' };
   if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
-  var res = await fetch('/api/settings/dashboard-layout/panel', { method: 'PUT', headers: headers, body: body });
+  var res = await panelPlaceFetch(body, headers);
   if (res.status === 403) {
     await refreshCsrfToken();
     var again = { 'Content-Type': 'application/json' };
     if (_csrfToken) again['X-CSRF-Token'] = _csrfToken;
-    res = await fetch('/api/settings/dashboard-layout/panel', { method: 'PUT', headers: again, body: body });
+    res = await panelPlaceFetch(body, again);
   }
   if (!res.ok) {
     var why = '';
@@ -9004,16 +9023,6 @@ async function putPanelPlace(panel) {
   var data = null;
   try { data = await res.json(); } catch (_e) {}
   return data && data.layout && data.layout.doc ? data.layout.doc.panel || null : null;
-}
-// The shared copy (another tab's first paint) gets the place only: its layouts may be newer than this page's.
-function cachePanelPlace(place) {
-  var out = { v: 1 };
-  try {
-    var c = JSON.parse(localStorage.getItem(VIEW_LAYOUT_KEY) || 'null');
-    if (c && typeof c === 'object' && !Array.isArray(c)) out = c;
-  } catch (_e) {}
-  out.panel = place;
-  try { localStorage.setItem(VIEW_LAYOUT_KEY, JSON.stringify(out)); } catch (_e) {}
 }
 // The slots while a card is in hand: shown, the one it would land in lit.
 function paintDropZones(target) {
@@ -14419,9 +14428,9 @@ function setViewLayout(doc) {
   // A place alone redraws no card (SSOT 2026-11-19): only the layouts key a rerender.
   var surfaces = JSON.stringify(layoutSansPlace(d)) !== JSON.stringify(layoutSansPlace(_viewLayout));
   _viewLayout = d;
-  try { localStorage.setItem(VIEW_LAYOUT_KEY, next); } catch (_e) {}
+  layoutCachePutLayouts(d);
   // The place (settings page, another tab): the card moves to it, gliding when it is docked.
-  placePanel(panelPlaceOf(_viewLayout));
+  placePanel(panelPlaceShown());
   if (!surfaces) return;
   applyViewMode();
   rerenderForViewMode();
@@ -14429,19 +14438,15 @@ function setViewLayout(doc) {
 
 async function loadViewLayout() {
   var load = ++_layoutLoads;
-  // The place in this read's answer is the truth only if no place was chosen or saved here from the moment it left
-  // until it answers (the revision moves on both).
-  var placeRev = _panelPlaceRev;
-  var placePending = _panelPlaceSaving;
   try {
     var res = await fetch('/api/settings/dashboard-layout');
     if (!res.ok) return;
     var data = await res.json();
     // An answer to an earlier load that lands after a later one is not drawn.
     if (load !== _layoutLoads || !data || !data.doc) return;
-    var doc = data.doc;
-    if (placePending || _panelPlaceSaving || placeRev !== _panelPlaceRev) {
-      doc = JSON.parse(JSON.stringify(doc));
+    // Its layouts are the truth; its place only when newer than the one held (the server's revision orders them).
+    var doc = JSON.parse(JSON.stringify(data.doc));
+    if (panelRevOf(doc.panel) <= panelRevOf(_viewLayout && _viewLayout.panel)) {
       if (_viewLayout && _viewLayout.panel) doc.panel = _viewLayout.panel; else delete doc.panel;
     }
     setViewLayout(doc);
