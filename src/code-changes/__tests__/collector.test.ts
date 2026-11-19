@@ -1005,15 +1005,80 @@ describe('a PR GitHub does not answer for (a private repository the host token c
       filesStale: true as const,
       fetchedAt: 2,
     };
-    keepKnownPatches(next, last);
-    expect(next.files.map((x) => [x.path, x.patch, x.patchTruncated])).toEqual([
+    keepKnownPatches({ ...next, files: next.files.map((x) => ({ ...x })) }, last);
+    const settled = { ...next, files: next.files.map((x) => ({ ...x })), failedPatches: ['a'] };
+    keepKnownPatches(settled, last);
+    expect(settled.files.map((x) => [x.path, x.patch, x.patchTruncated])).toEqual([
       ['a', '+a', undefined],
       ['b', '+b', undefined],
     ]);
+    // The only file whose read failed got its patch from the last read: nothing to read again.
+    expect(settled).not.toHaveProperty('filesStale');
+    // One the last read did not have either: still to read again.
+    const still = { ...next, files: [f('a'), f('b', '+b'), f('c')], failedPatches: ['a', 'c'] };
+    keepKnownPatches(still, last);
+    expect(still.filesStale).toBe(true);
     // Another head: nothing carried over.
-    const moved = { ...next, headSha: 'h2', files: [f('a')] };
+    const moved = { ...next, headSha: 'h2', files: [f('a')], failedPatches: ['a'] };
     keepKnownPatches(moved, last);
     expect(moved.files[0].patch).toBeUndefined();
+    expect(moved.filesStale).toBe(true);
+  });
+
+  it('a partial local read again, through the collector: the stored patch of the file it missed stays, and the PR settles', async () => {
+    const s = store();
+    const f = (path: string, patch?: string): ChangedFile => ({
+      path,
+      status: 'modified',
+      additions: 1,
+      deletions: 0,
+      ...(patch ? { patch } : { patchTruncated: true as const }),
+    });
+    s.write({
+      version: 1,
+      conversationId: 'c-local5',
+      owner: { id: 'U', name: 'u' },
+      updatedAt: 1,
+      checkouts: [],
+      prs: [
+        {
+          ...localPull(5),
+          headSha: 'h',
+          baseSha: 'b',
+          files: [f('a.ts', '+a'), f('b.ts')],
+          filesStale: true,
+          fetchedAt: 1,
+        },
+      ],
+      counted: { commits: [] },
+    });
+    const readCheckout = vi.fn(async (input: { dir: string; pulls?: Array<{ number: number }> }) => ({
+      ...clean(input.dir),
+      pulls: (input.pulls ?? []).map((a) => ({
+        ...localPull(a.number),
+        headSha: 'h',
+        baseSha: 'b',
+        files: [f('a.ts'), f('b.ts', '+b')],
+        filesStale: true as const,
+        failedPatches: ['a.ts'],
+      })),
+    }));
+    const { doc } = await collectCodeChanges(
+      { conversationId: 'c-local5', owner: { id: 'U', name: 'u' }, dirs: ['/s'], startedAt: START, prUrls: [url(5)] },
+      {
+        ...prDeps({}),
+        store: s,
+        listCheckoutDirs: async () => ({ dirs: ['/s/a'] }),
+        checkoutChanges: readCheckout as never,
+      },
+    );
+    expect(doc.prs[0].files.map((x) => [x.path, x.patch])).toEqual([
+      ['a.ts', '+a'],
+      ['b.ts', '+b'],
+    ]);
+    expect(doc.prs[0]).not.toHaveProperty('filesStale');
+    expect(doc.prs[0]).not.toHaveProperty('failedPatches');
+    expect(s.read('c-local5')?.prs[0].files.map((x) => x.patch)).toEqual(['+a', '+b']);
   });
 
   it('sessionPrChanges: unread lists only what neither GitHub nor a stored record gives', async () => {

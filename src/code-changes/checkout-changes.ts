@@ -88,8 +88,11 @@ export interface CheckoutInput {
   gitBytes?: GitRunBytes;
 }
 
-/** A PR read from a checkout's history (`mergedPulls`): the collector stamps when. */
-export type LocalPull = Omit<PrChanges, 'fetchedAt'>;
+/**
+ * A PR read from a checkout's history (`mergedPulls`): the collector stamps when. `failedPatches` names the files whose
+ * patch read failed (the PR is `filesStale`) — for the collector only, never stored.
+ */
+export type LocalPull = Omit<PrChanges, 'fetchedAt'> & { failedPatches?: string[] };
 
 /**
  * A checkout read: its changes (stored), the commits the session made in it (handed to the metrics), and the asked PRs
@@ -145,8 +148,8 @@ async function diffFiles(
   dir: string,
   from: string,
   to: string,
-  /** Set when a file's own patch read failed (not a size cut): a stored copy should be read again. */
-  report?: { failed: boolean },
+  /** Filled with the files whose own patch read failed (not a size cut): a stored copy should be read again. */
+  report?: { failed: string[] },
 ): Promise<ChangedFile[] | undefined> {
   const numstat = await git(dir, ['diff', ...DIFF_FLAGS, '--numstat', '-z', from, to, '--']);
   if (numstat === undefined) return undefined;
@@ -158,8 +161,9 @@ async function diffFiles(
   const patch =
     entries.length > MAX_LAYER_FILES ? undefined : await git(dir, ['diff', ...DIFF_FLAGS, '-U3', from, to, '--']);
   const files = joinDiff(entries, splitPatch(patch ?? ''));
-  if (patch === undefined && entries.length <= MAX_LAYER_FILES && !(await patchEach(git, dir, from, to, files))) {
-    if (report) report.failed = true;
+  if (patch === undefined && entries.length <= MAX_LAYER_FILES) {
+    const failed = await patchEach(git, dir, from, to, files);
+    if (report) report.failed.push(...failed);
   }
   for (const f of files) {
     const status = statuses.get(f.path);
@@ -177,19 +181,45 @@ const MAX_EACH_LINES = 5000;
  */
 const MAX_EACH_BYTES = 2 * 1024 * 1024;
 
-/** A side of a file past this many bytes makes its patch more than one git answer holds (16 MiB, two sides and more). */
+/**
+ * A side of a file past this many bytes gets no patch of its own: one git answer (16 MiB) may not hold its diff. Known
+ * before the read (`bigSides`), so a read that fails is a failure, never mistaken for a size cut (#1371 review).
+ */
 const MAX_EACH_FILE_BYTES = 6 * 1024 * 1024;
 
-/** Either side of the file is bigger than its patch can be read in one answer. */
-async function tooBig(git: GitRun, dir: string, from: string, to: string, f: ChangedFile): Promise<boolean> {
-  for (const [rev, at] of [
-    [from, f.oldPath ?? f.path],
-    [to, f.path],
-  ]) {
-    const size = Number(trim(await git(dir, ['cat-file', '-s', `${rev}:${at}`])));
-    if (Number.isFinite(size) && size > MAX_EACH_FILE_BYTES) return true;
+/** The files (by path) one of whose sides is past MAX_EACH_FILE_BYTES — from the trees, one call per side. */
+async function bigSides(
+  git: GitRun,
+  dir: string,
+  from: string,
+  to: string,
+  files: ChangedFile[],
+): Promise<Set<string>> {
+  const big = new Set<string>();
+  if (files.length === 0) return big;
+  const sides: Array<[string, (f: ChangedFile) => string]> = [
+    [from, (f) => f.oldPath ?? f.path],
+    [to, (f) => f.path],
+  ];
+  for (const [rev, at] of sides) {
+    const out = await git(dir, [
+      '--literal-pathspecs',
+      'ls-tree',
+      '-r',
+      '-z',
+      '-l',
+      rev,
+      '--',
+      ...new Set(files.map(at)),
+    ]);
+    const large = new Set(
+      parseLsTree(out ?? '')
+        .filter((e) => e.size > MAX_EACH_FILE_BYTES)
+        .map((e) => e.path),
+    );
+    for (const f of files) if (large.has(at(f))) big.add(f.path);
   }
-  return false;
+  return big;
 }
 
 /** Data more often generated than written (JSON, tables, lock files, maps, minified code): its patches come last. */
@@ -198,24 +228,26 @@ const DATA_FILE = /\.(?:json|jsonl|ndjson|tsv|csv|lock|svg|map|snap|min\.js|min\
 /**
  * The range's patch did not come in one answer — it outgrew git's output cap (a generated file of 200,000 lines does), or
  * the call failed: each file's own patch is read instead, code before data (DATA_FILE) and the smallest changes first,
- * until MAX_EACH_BYTES. A file left without one is marked `patchTruncated` by the caller. Pathspecs are literal: a file
- * named like `:(glob)*` is that file.
+ * until MAX_EACH_BYTES; a file with a side past MAX_EACH_FILE_BYTES is not read. A file left without one is marked
+ * `patchTruncated` by the caller; the ones whose read failed are returned. Pathspecs are literal: a file named like
+ * `:(glob)*` is that file.
  */
-async function patchEach(git: GitRun, dir: string, from: string, to: string, files: ChangedFile[]): Promise<boolean> {
+async function patchEach(git: GitRun, dir: string, from: string, to: string, files: ChangedFile[]): Promise<string[]> {
   const size = (f: ChangedFile) => f.additions + f.deletions;
   const data = (f: ChangedFile) => (DATA_FILE.test(f.path) ? 1 : 0);
   const order = files
     .filter((f) => !f.binary && !f.patch && size(f) > 0 && size(f) <= MAX_EACH_LINES)
     .sort((a, b) => data(a) - data(b) || size(a) - size(b));
+  const big = await bigSides(git, dir, from, to, order);
   let bytes = 0;
-  let whole = true;
+  const failed: string[] = [];
   for (const f of order) {
     if (bytes >= MAX_EACH_BYTES) break;
+    if (big.has(f.path)) continue;
     const paths = f.oldPath ? [f.oldPath, f.path] : [f.path];
     const out = await git(dir, ['--literal-pathspecs', 'diff', ...DIFF_FLAGS, '-U3', from, to, '--', ...paths]);
     if (out === undefined) {
-      // A file too big for one answer (a one-line bundle within the line limit) is a size cut, not a failed read.
-      if (!(await tooBig(git, dir, from, to, f))) whole = false;
+      failed.push(f.path);
       continue;
     }
     const [one] = joinDiff(
@@ -227,7 +259,7 @@ async function patchEach(git: GitRun, dir: string, from: string, to: string, fil
     if (one.patchTruncated) f.patchTruncated = true;
     bytes += Buffer.byteLength(one.patch, 'utf8');
   }
-  return whole;
+  return failed;
 }
 
 // ── The uncommitted layer, compared in this process ────────────────────────────────────────────────────────────────
@@ -806,7 +838,8 @@ const MAX_HISTORY = 1000;
  * remote-tracking refs' reflogs — a fetch puts upstream's heads there.
  *   merge: its head is one of them, or a local branch holds the head and not the merge;
  *   squash: one of them other than the squash itself carries the squash's tree, or a subject its message names (GitHub
- *   writes the PR title, then `* <subject>` per commit) — the default branch may have moved on since the branch left it.
+ *   writes the PR title, then `* <subject>` per commit) and the same changes (`sameChanges`) — the default branch may
+ *   have moved on since the branch left it.
  */
 interface Provenance {
   commits: Array<{ sha: string; tree: string; subject: string }>;
@@ -845,6 +878,7 @@ async function ownWork(
   commit: string,
   head: string | undefined,
   subject: string,
+  parent?: string,
 ): Promise<boolean> {
   if (head) {
     if (own.shas.has(head)) return true;
@@ -866,7 +900,32 @@ async function ownWork(
       .map((l) => l.trim())
       .filter(Boolean),
   );
-  return own.commits.some((c) => c.sha !== commit && ((!!tree && c.tree === tree) || named.has(c.subject)));
+  for (const c of own.commits) {
+    if (c.sha === commit) continue;
+    if (tree && c.tree === tree) return true;
+    // A subject alone is not the PR — an upstream squash can share one (#1371 review round 3): the changes must match too.
+    if (named.has(c.subject) && parent && (await sameChanges(git, dir, c.sha, commit, parent))) return true;
+  }
+  return false;
+}
+
+/**
+ * The branch commit `x` brings the same changes as the squash `commit` on `parent`: the same files with the same line
+ * counts — the branch against where it left the base, the squash against its parent (the base may have moved on).
+ */
+async function sameChanges(git: GitRun, dir: string, x: string, commit: string, parent: string): Promise<boolean> {
+  const base = trim(await git(dir, ['merge-base', x, parent]));
+  if (!base || !SHA.test(base)) return false;
+  const ours = await git(dir, ['diff', ...DIFF_FLAGS, '--numstat', '-z', base, x, '--']);
+  const theirs = await git(dir, ['diff', ...DIFF_FLAGS, '--numstat', '-z', parent, commit, '--']);
+  if (ours === undefined || theirs === undefined) return false;
+  const key = (out: string) =>
+    parseNumstatZ(out)
+      .map((e) => `${e.oldPath ?? ''}\t${e.path}\t${e.additions}\t${e.deletions}`)
+      .sort()
+      .join('\n');
+  const a = key(ours);
+  return a !== '' && a === key(theirs);
 }
 
 /**
@@ -917,12 +976,12 @@ export async function mergedPulls(
     }
     // Not this clone's work: an older commit naming the same number may be.
     own ??= await provenance(git, dir);
-    if (!(await ownWork(git, dir, own, sha, merge ? parents[1] : undefined, subject))) continue;
+    if (!(await ownWork(git, dir, own, sha, merge ? parents[1] : undefined, subject, parents[0]))) continue;
     want.delete(number);
     const head = merge ? parents[1] : sha;
     const base = merge ? trim(await git(dir, ['merge-base', parents[0], parents[1]])) : parents[0];
     if (!base || !SHA.test(base)) continue;
-    const report = { failed: false };
+    const report = { failed: [] as string[] };
     const files = await diffFiles(git, dir, base, head, report);
     if (!files) continue;
     // A merge commit's message is `Merge pull request …` then the PR's title; a squash's subject is the title.
@@ -949,7 +1008,10 @@ export async function mergedPulls(
     if (mergedAt !== undefined) pr.mergedAt = mergedAt;
     if (kept.length < files.length) pr.filesTruncated = true;
     // A file's patch that failed to come is asked again next time; one the budget dropped too.
-    if (report.failed) pr.filesStale = true;
+    if (report.failed.length) {
+      pr.filesStale = true;
+      pr.failedPatches = report.failed;
+    }
     if (trimPatches?.(kept)) pr.patchesDropped = true;
     out.push(pr);
   }

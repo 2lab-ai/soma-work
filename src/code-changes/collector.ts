@@ -121,7 +121,7 @@ export function applyPatchBudget(doc: CodeChangesDoc, max = MAX_DOC_PATCH_BYTES)
  * A local PR read again (its last read was partial) keeps the patches the last read had and this one did not get — the
  * same head against the same base, so the same patch (#1371 review). The document's budget pass runs after.
  */
-export function keepKnownPatches(next: PrChanges, last: PrChanges): void {
+export function keepKnownPatches(next: PrChanges & { failedPatches?: string[] }, last: PrChanges): void {
   if (last.source !== 'local' || last.headSha !== next.headSha || last.baseSha !== next.baseSha) return;
   const had = new Map(last.files.filter((f) => f.patch).map((f) => [f.path, f]));
   for (const f of next.files) {
@@ -131,6 +131,9 @@ export function keepKnownPatches(next: PrChanges, last: PrChanges): void {
     if (old.patchTruncated) f.patchTruncated = true;
     else delete f.patchTruncated;
   }
+  // Every file whose read failed this time has its patch from the last read: nothing is left to read again.
+  const missing = (next.failedPatches ?? []).filter((path) => !next.files.find((f) => f.path === path)?.patch);
+  if (next.filesStale && next.failedPatches && missing.length === 0) delete next.filesStale;
 }
 
 export async function collectCodeChanges(input: CollectInput, deps: CollectDeps): Promise<CollectResult> {
@@ -162,7 +165,7 @@ export async function collectCodeChanges(input: CollectInput, deps: CollectDeps)
   const lastRead = new Map((prev?.checkouts ?? []).map((c) => [c.id, c]));
   const checkouts: CheckoutChanges[] = [];
   const newCommits: CollectResult['newCommits'] = [];
-  const local = new Map<string, PrChanges>();
+  const local = new Map<string, PrChanges & { failedPatches?: string[] }>();
   for (const dir of dirs.slice(0, MAX_CHECKOUTS)) {
     const asks = unread.filter((a) => !local.has(a.id));
     // What a read charges to the PR budget stands only if its PRs are kept: a read thrown away (its git dirs changed
@@ -197,10 +200,10 @@ export async function collectCodeChanges(input: CollectInput, deps: CollectDeps)
   for (const p of local.values()) {
     // (Its patches were cut against the PR budget as it was read: trimPulls.)
     const at = prs.findIndex((x) => x.id === p.id);
-    if (at >= 0) {
-      keepKnownPatches(p, prs[at]);
-      prs[at] = p;
-    } else prs.push(p);
+    if (at >= 0) keepKnownPatches(p, prs[at]);
+    delete p.failedPatches;
+    if (at >= 0) prs[at] = p;
+    else prs.push(p);
   }
   // A local read has no creation time: its merge stands in for the order (newest first).
   prs.sort((a, b) => (b.createdAt ?? b.mergedAt ?? 0) - (a.createdAt ?? a.mergedAt ?? 0));

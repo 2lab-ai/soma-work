@@ -1322,9 +1322,10 @@ describe('PRs GitHub did not answer for, read from the checkout’s default bran
     expect(pr?.files.find((f) => f.path === 'one.txt')?.patch).toContain('+a');
     expect(pr?.files.find((f) => f.path === 'two.txt')?.patchTruncated).toBe(true);
     expect(pr?.filesStale).toBe(true);
+    expect(pr?.failedPatches).toEqual(['two.txt']);
   });
 
-  it('the PR branch deleted after the merge (gh pr merge --delete-branch): a merge by its head in HEAD’s reflog; a squash after main moved on, by a subject its message names', async () => {
+  it('the PR branch deleted after the merge (gh pr merge --delete-branch): a merge by its head in HEAD’s reflog; a squash after main moved on, by a subject its message names and the same changes; a shared subject alone is not it', async () => {
     const session = tmp('cc-local-pr6-');
     const dir = clone(session, 'web');
     // #7: merged with a merge commit, then the branch deleted.
@@ -1353,14 +1354,20 @@ describe('PRs GitHub did not answer for, read from the checkout’s default bran
     git(dir, ['merge', '-q', '--squash', 'feat/eight']);
     commitAll(dir, 'Eight (#8)\n\n* eight: add the file');
     git(dir, ['branch', '-q', '-D', 'feat/eight']);
+    // #12: a squash (an upstream's, synced in) whose subject a commit of the clone shares — with other changes.
+    git(dir, ['checkout', '-q', '-b', 'mine']);
+    write(dir, 'README.md', '# mine\n');
+    commitAll(dir, 'Update README.md');
+    git(dir, ['checkout', '-q', 'main']);
+    write(dir, 'theirs.txt', 't\n');
+    commitAll(dir, 'Update README.md (#12)');
     git(dir, ['update-ref', 'refs/remotes/origin/main', 'HEAD']);
-    const ask = (n: number): PullAsk => ({
-      id: `acme/web#${n}`,
-      url: `https://github.com/acme/web/pull/${n}`,
-      repo: 'acme/web',
-      number: n,
+    const read = await checkoutChanges({
+      dir,
+      sessionRoot: session,
+      roots: [session],
+      pulls: [ask(7), ask(8), ask(12)],
     });
-    const read = await checkoutChanges({ dir, sessionRoot: session, roots: [session], pulls: [ask(7), ask(8)] });
     expect((read?.pulls ?? []).map((p) => [p.number, p.files.map((f) => f.path)])).toEqual([
       [8, ['eight.txt']],
       [7, ['seven.txt']],
@@ -1395,7 +1402,7 @@ describe('PRs GitHub did not answer for, read from the checkout’s default bran
     expect(kept?.pulls?.[0]).not.toHaveProperty('patchesDropped');
   });
 
-  it('a file whose own patch is too big for one git answer is a size cut, not a failed read', async () => {
+  it('a file with a side too big for one git answer is not read (a size cut known before), so no failed read', async () => {
     const session = tmp('cc-local-pr8-');
     const dir = clone(session, 'web');
     git(dir, ['checkout', '-q', '-b', 'feat/ten']);
@@ -1407,9 +1414,10 @@ describe('PRs GitHub did not answer for, read from the checkout’s default bran
     git(dir, ['merge', '-q', '--squash', 'feat/ten']);
     commitAll(dir, 'ten (#10)');
     git(dir, ['update-ref', 'refs/remotes/origin/main', 'HEAD']);
+    const asked: string[] = [];
     const capped: GitRun = (d, args) => {
       if (args.includes('-U3') && args[args.length - 1] === '--') return Promise.resolve(undefined);
-      if (args.includes('-U3') && args[args.length - 1] === 'bundle.js') return Promise.resolve(undefined);
+      if (args.includes('-U3')) asked.push(args[args.length - 1]);
       return runGit(d, args);
     };
     const read = await checkoutChanges({
@@ -1422,7 +1430,27 @@ describe('PRs GitHub did not answer for, read from the checkout’s default bran
     const pr = read?.pulls?.[0];
     expect(pr?.files.find((f) => f.path === 'small.txt')?.patch).toContain('+s');
     expect(pr?.files.find((f) => f.path === 'bundle.js')?.patchTruncated).toBe(true);
+    // Known big before the read: never asked, so never a failed read.
+    expect(asked).toEqual(['small.txt']);
     expect(pr).not.toHaveProperty('filesStale');
+    expect(pr).not.toHaveProperty('failedPatches');
+  });
+
+  it('the remote’s default branch is the one origin/HEAD names (trunk), not a main that also exists', async () => {
+    const session = tmp('cc-local-pr9-');
+    const dir = clone(session, 'web');
+    git(dir, ['checkout', '-q', '-b', 'trunk']);
+    git(dir, ['checkout', '-q', '-b', 'feat/thirteen']);
+    write(dir, 'thirteen.txt', '13\n');
+    commitAll(dir, 'thirteen');
+    git(dir, ['checkout', '-q', 'trunk']);
+    git(dir, ['merge', '-q', '--no-ff', '-m', 'Merge pull request #13 from acme/feat/thirteen', 'feat/thirteen']);
+    git(dir, ['update-ref', 'refs/remotes/origin/trunk', 'HEAD']);
+    git(dir, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/trunk']);
+    // origin/main is still there, without the merge.
+    expect(git(dir, ['rev-parse', '--verify', 'refs/remotes/origin/main'])).toMatch(/^[0-9a-f]{40}$/);
+    const read = await checkoutChanges({ dir, sessionRoot: session, roots: [session], pulls: [ask(13)] });
+    expect((read?.pulls ?? []).map((p) => [p.number, p.files.map((f) => f.path)])).toEqual([[13, ['thirteen.txt']]]);
   });
 
   it('nothing is asked of a checkout of another repository, or with no remote default branch', async () => {
