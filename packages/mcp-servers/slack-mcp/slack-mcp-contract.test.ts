@@ -49,14 +49,7 @@ vi.mock('@modelcontextprotocol/sdk/types.js', () => ({
   ListToolsRequestSchema: 'ListToolsRequestSchema',
 }));
 vi.mock('@soma/process-shared/mcp/base-mcp-server.js', () => import('../../process-shared/src/mcp/base-mcp-server'));
-vi.mock('../../process-shared/src/stderr-logger', () => ({
-  StderrLogger: class {
-    debug() {}
-    info() {}
-    warn() {}
-    error() {}
-  },
-}));
+vi.mock('../../process-shared/src/stderr-logger');
 // The real upload queue, reporting when an upload reaches it — a checkpoint for the concurrent-upload test.
 vi.mock('./helpers/artifact-version.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./helpers/artifact-version.js')>();
