@@ -159,7 +159,7 @@ export async function collectCodeChanges(input: CollectInput, deps: CollectDeps)
       ...(input.startedAt !== undefined
         ? { commits: { since: Math.max(input.startedAt, input.commitsSince ?? 0), skip: counted } }
         : {}),
-      ...(asks.length ? { pulls: asks } : {}),
+      ...(asks.length ? { pulls: asks, trimPulls: (files: ChangedFile[]) => trimPatches(files, prBudget) } : {}),
     });
     if (!read) continue;
     const { sessionCommits: made, pulls: found, ...changes } = read;
@@ -175,7 +175,7 @@ export async function collectCodeChanges(input: CollectInput, deps: CollectDeps)
   checkouts.sort((a, b) => (a.repo < b.repo ? -1 : a.repo > b.repo ? 1 : a.dir < b.dir ? -1 : 1));
   // A PR found in a checkout takes the place of its stored record (one read there before, asked again), else joins.
   for (const p of local.values()) {
-    if (trimPatches(p.files, prBudget)) p.patchesDropped = true;
+    // (Its patches were cut against the PR budget as it was read: trimPulls.)
     const at = prs.findIndex((x) => x.id === p.id);
     if (at >= 0) prs[at] = p;
     else prs.push(p);

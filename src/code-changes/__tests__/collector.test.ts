@@ -911,6 +911,48 @@ describe('a PR GitHub does not answer for (a private repository the host token c
     expect(doc).not.toHaveProperty('unreadPrs');
   });
 
+  it('a found PR’s patches are cut against the same PR budget as GitHub’s, as it is read', async () => {
+    const s = store();
+    const deps = {
+      ...prDeps({ 1: detail(1) }),
+      // 24 files of 250 KB (each under the 256 KB a patch keeps): GitHub's #1 takes nearly the whole 6 MiB.
+      fetchPullFiles: vi.fn(async () => ({
+        files: Array.from({ length: 24 }, (_, i) => ({
+          ...FILE,
+          filename: `g${i}.ts`,
+          patch: `@@ -1 +1 @@\n+${'x'.repeat(250 * 1024)}`,
+        })),
+        truncated: false,
+      })),
+    };
+    const dropped: boolean[] = [];
+    const readCheckout = vi.fn(
+      async (input: { dir: string; pulls?: Array<{ number: number }>; trimPulls?: (f: unknown[]) => boolean }) => {
+        const pulls = (input.pulls ?? []).map((a) => {
+          const p = {
+            ...localPull(a.number),
+            files: [{ ...localPull(a.number).files[0], patch: `@@ -1 +1 @@\n+${'y'.repeat(2 * 1024 * 1024)}` }],
+          };
+          dropped.push(!!input.trimPulls?.(p.files));
+          return p;
+        });
+        return { ...clean(input.dir), pulls };
+      },
+    );
+    await collectCodeChanges(
+      {
+        conversationId: 'c-local3',
+        owner: { id: 'U', name: 'u' },
+        dirs: ['/s'],
+        startedAt: START,
+        prUrls: [url(1), url(5)],
+      },
+      { ...deps, store: s, listCheckoutDirs: async () => ({ dirs: ['/s/a'] }), checkoutChanges: readCheckout as never },
+    );
+    // GitHub's #1 took nearly all of the 6 MiB: the local #5's 2 MiB patch does not fit.
+    expect(dropped).toEqual([true]);
+  });
+
   it('sessionPrChanges: unread lists only what neither GitHub nor a stored record gives', async () => {
     const unread: Array<{ number: number }> = [];
     const stored = { ...localPull(7), fetchedAt: 1, filesStale: undefined };

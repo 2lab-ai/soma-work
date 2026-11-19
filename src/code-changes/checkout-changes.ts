@@ -82,6 +82,8 @@ export interface CheckoutInput {
   commits?: { since: number; skip: ReadonlySet<string> };
   /** PRs GitHub did not answer for: those of this checkout's repository are looked for on its default branch (`mergedPulls`). */
   pulls?: PullAsk[];
+  /** Cuts each found PR's patches as it is read (the document's PR budget); true when it dropped some. */
+  trimPulls?: (files: ChangedFile[]) => boolean;
   git?: GitRun;
   gitBytes?: GitRunBytes;
 }
@@ -138,7 +140,14 @@ function layer(files: ChangedFile[], truncated: boolean): LayerFiles {
  * patch is not kept — past MAX_LAYER_FILES, or the patch command failed or outgrew its output cap — keeps its status and
  * is marked `patchTruncated`.
  */
-async function diffFiles(git: GitRun, dir: string, from: string, to: string): Promise<ChangedFile[] | undefined> {
+async function diffFiles(
+  git: GitRun,
+  dir: string,
+  from: string,
+  to: string,
+  /** Set when a file's own patch read failed (not a size cut): a stored copy should be read again. */
+  report?: { failed: boolean },
+): Promise<ChangedFile[] | undefined> {
   const numstat = await git(dir, ['diff', ...DIFF_FLAGS, '--numstat', '-z', from, to, '--']);
   if (numstat === undefined) return undefined;
   const entries = parseNumstatZ(numstat);
@@ -149,7 +158,9 @@ async function diffFiles(git: GitRun, dir: string, from: string, to: string): Pr
   const patch =
     entries.length > MAX_LAYER_FILES ? undefined : await git(dir, ['diff', ...DIFF_FLAGS, '-U3', from, to, '--']);
   const files = joinDiff(entries, splitPatch(patch ?? ''));
-  if (patch === undefined && entries.length <= MAX_LAYER_FILES) await patchEach(git, dir, from, to, files);
+  if (patch === undefined && entries.length <= MAX_LAYER_FILES && !(await patchEach(git, dir, from, to, files))) {
+    if (report) report.failed = true;
+  }
   for (const f of files) {
     const status = statuses.get(f.path);
     if (status) f.status = status;
@@ -175,18 +186,22 @@ const DATA_FILE = /\.(?:json|jsonl|ndjson|tsv|csv|lock|svg|map|snap|min\.js|min\
  * until MAX_EACH_BYTES. A file left without one is marked `patchTruncated` by the caller. Pathspecs are literal: a file
  * named like `:(glob)*` is that file.
  */
-async function patchEach(git: GitRun, dir: string, from: string, to: string, files: ChangedFile[]): Promise<void> {
+async function patchEach(git: GitRun, dir: string, from: string, to: string, files: ChangedFile[]): Promise<boolean> {
   const size = (f: ChangedFile) => f.additions + f.deletions;
   const data = (f: ChangedFile) => (DATA_FILE.test(f.path) ? 1 : 0);
   const order = files
     .filter((f) => !f.binary && !f.patch && size(f) > 0 && size(f) <= MAX_EACH_LINES)
     .sort((a, b) => data(a) - data(b) || size(a) - size(b));
   let bytes = 0;
+  let whole = true;
   for (const f of order) {
     if (bytes >= MAX_EACH_BYTES) break;
     const paths = f.oldPath ? [f.oldPath, f.path] : [f.path];
     const out = await git(dir, ['--literal-pathspecs', 'diff', ...DIFF_FLAGS, '-U3', from, to, '--', ...paths]);
-    if (out === undefined) continue;
+    if (out === undefined) {
+      whole = false;
+      continue;
+    }
     const [one] = joinDiff(
       [{ path: f.path, oldPath: f.oldPath, additions: f.additions, deletions: f.deletions, binary: false }],
       splitPatch(out),
@@ -196,6 +211,7 @@ async function patchEach(git: GitRun, dir: string, from: string, to: string, fil
     if (one.patchTruncated) f.patchTruncated = true;
     bytes += Buffer.byteLength(one.patch, 'utf8');
   }
+  return whole;
 }
 
 // ── The uncommitted layer, compared in this process ────────────────────────────────────────────────────────────────
@@ -739,7 +755,7 @@ export async function checkoutChanges(input: CheckoutInput): Promise<CheckoutRea
   const committed = await committedLayer(git, top, head, prHeads, emptyTreeOf(format), input.sessionStartedAt);
   const made = input.commits ? await sessionCommits(top, input.commits.since, input.commits.skip, git) : undefined;
   const asks = (input.pulls ?? []).filter((p) => p.repo === repo);
-  const pulls = asks.length ? await mergedPulls(git, top, asks, input.sessionStartedAt) : undefined;
+  const pulls = asks.length ? await mergedPulls(git, top, asks, input.sessionStartedAt, input.trimPulls) : undefined;
   // Everything above came from the git dirs as checked — or they changed meanwhile, and none of it is kept.
   if (!(await safety.witness.intact())) return unread(CHANGED_DURING_READ);
   const out: CheckoutRead = {
@@ -768,10 +784,40 @@ const SQUASH_SUBJECT = /\(#(\d+)\)\s*$/;
 const MAX_HISTORY = 1000;
 
 /**
- * The asked PRs merged on the checkout's default branch (its remote-tracking ref), newest commit naming each. A PR merged
- * before the session started (less the slack) is not this session's and is left out.
+ * The PR's work was done in this clone — the number in a commit message alone is not the PR: a fork that synced its
+ * upstream has upstream's `#N` merges in its history too (#1371 review). A merge's head is on a local branch that does
+ * not hold the merge itself (the PR's branch, not the default branch pulled past it); a squash's tree is the tip of such
+ * a branch (squashed while up to date with its base).
  */
-export async function mergedPulls(git: GitRun, dir: string, asks: PullAsk[], startedAt?: number): Promise<LocalPull[]> {
+async function ownWork(git: GitRun, dir: string, merge: string, head: string | undefined): Promise<boolean> {
+  if (head) {
+    const on = await git(dir, [
+      'for-each-ref',
+      '--count=1',
+      `--contains=${head}`,
+      `--no-contains=${merge}`,
+      '--format=%(refname)',
+      'refs/heads/',
+    ]);
+    return !!on?.trim();
+  }
+  const tree = trim(await git(dir, ['rev-parse', '--verify', '--quiet', `${merge}^{tree}`]));
+  if (!tree) return false;
+  const tips = await git(dir, ['for-each-ref', `--no-contains=${merge}`, '--format=%(tree)', 'refs/heads/']);
+  return !!tips && tips.split('\n').some((t) => t.trim() === tree);
+}
+
+/**
+ * The asked PRs merged on the checkout's default branch (its remote-tracking ref), newest commit naming each whose work
+ * was this clone's (`ownWork`). A PR merged before the session started (less the slack) is not this session's.
+ */
+export async function mergedPulls(
+  git: GitRun,
+  dir: string,
+  asks: PullAsk[],
+  startedAt?: number,
+  trimPatches?: (files: ChangedFile[]) => boolean,
+): Promise<LocalPull[]> {
   let tip: string | undefined;
   for (const ref of ['refs/remotes/origin/HEAD', 'refs/remotes/origin/main', 'refs/remotes/origin/master']) {
     tip = trim(await git(dir, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`])) || undefined;
@@ -801,13 +847,19 @@ export async function mergedPulls(git: GitRun, dir: string, asks: PullAsk[], sta
     const ask = want.get(number);
     if (!ask) continue;
     if (merge ? parents.length < 2 : parents.length !== 1) continue;
-    want.delete(number);
     const mergedAt = Number(ct) * 1000 || undefined;
-    if (startedAt !== undefined && mergedAt !== undefined && mergedAt < startedAt - PR_START_SLACK_MS) continue;
+    if (startedAt !== undefined && mergedAt !== undefined && mergedAt < startedAt - PR_START_SLACK_MS) {
+      want.delete(number);
+      continue;
+    }
+    // Not this clone's work: an older commit naming the same number may be.
+    if (!(await ownWork(git, dir, sha, merge ? parents[1] : undefined))) continue;
+    want.delete(number);
     const head = merge ? parents[1] : sha;
     const base = merge ? trim(await git(dir, ['merge-base', parents[0], parents[1]])) : parents[0];
     if (!base || !SHA.test(base)) continue;
-    const files = await diffFiles(git, dir, base, head);
+    const report = { failed: false };
+    const files = await diffFiles(git, dir, base, head, report);
     if (!files) continue;
     // A merge commit's message is `Merge pull request …` then the PR's title; a squash's subject is the title.
     const title = merge
@@ -835,6 +887,9 @@ export async function mergedPulls(git: GitRun, dir: string, asks: PullAsk[], sta
     if (merge?.[2]) pr.headRef = merge[2];
     if (mergedAt !== undefined) pr.mergedAt = mergedAt;
     if (kept.length < files.length) pr.filesTruncated = true;
+    // A file's patch that failed to come is asked again next time; one the budget dropped too.
+    if (report.failed) pr.filesStale = true;
+    if (trimPatches?.(kept)) pr.patchesDropped = true;
     out.push(pr);
   }
   return out;

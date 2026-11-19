@@ -1098,7 +1098,7 @@ describe('PRs GitHub did not answer for, read from the checkout’s default bran
     number: n,
   });
 
-  it('a merge commit (head against where it left main) and a squash; one merged before the session and one not merged are not', () => {
+  it('a merge commit (head against where it left main) and a squash of the clone’s own branches; not: merged before the session, not merged, not this clone’s work, a number only mentioned', () => {
     const session = tmp('cc-local-pr-');
     const origin = path.join(session, '..', `${path.basename(session)}-origin`);
     roots.push(origin);
@@ -1140,21 +1140,34 @@ describe('PRs GitHub did not answer for, read from the checkout’s default bran
       'Five: b.ts and a line of a.ts',
       'feat/five',
     ]);
-    // #6: a squash — the commit is the PR.
+    // #6: a squash — the commit is the PR (the branch was up to date with main: same tree).
+    git(origin, ['checkout', '-q', '-b', 'feat/six']);
     write(origin, 'README.md', '# r\nsix\n');
+    commitAll(origin, 'six');
+    git(origin, ['checkout', '-q', 'main']);
+    git(origin, ['merge', '-q', '--squash', 'feat/six']);
     commitAll(origin, 'six: a README line (#6)');
+    // #8: merged on main, but its branch was never in the session's clone — upstream's history a fork synced, say.
+    git(origin, ['checkout', '-q', '-b', 'other/eight']);
+    write(origin, 'eight.txt', '8\n');
+    commitAll(origin, 'eight');
+    git(origin, ['checkout', '-q', 'main']);
+    git(origin, ['merge', '-q', '--no-ff', '-m', 'Merge pull request #8 from someone/other/eight', 'other/eight']);
     // A commit whose subject only mentions #9 in passing names no PR.
     write(origin, 'notes.txt', 'n\n');
     commitAll(origin, 'notes about #9 and (#9) later');
     const dir = path.join(session, 'web');
     git(session, ['clone', '-q', origin, dir]);
     git(dir, ['remote', 'set-url', 'origin', 'git@github.com:acme/web.git']);
+    // The session's own PR branches are in its clone (it pushed them from there).
+    git(dir, ['branch', '-q', 'feat/five', 'origin/feat/five']);
+    git(dir, ['branch', '-q', 'feat/six', 'origin/feat/six']);
     return checkoutChanges({
       dir,
       sessionRoot: session,
       roots: [session],
       sessionStartedAt: start,
-      pulls: [ask(4), ask(5), ask(6), ask(7), ask(5, 'acme/other')],
+      pulls: [ask(4), ask(5), ask(6), ask(7), ask(8), ask(9), ask(5, 'acme/other')],
     }).then((read) => {
       const pulls = read?.pulls ?? [];
       expect(pulls.map((p) => p.number)).toEqual([6, 5]);
@@ -1181,6 +1194,8 @@ describe('PRs GitHub did not answer for, read from the checkout’s default bran
       expect(six).toMatchObject({ title: 'six: a README line', additions: 1, deletions: 0, changedFiles: 1 });
       expect(six?.files.map((f) => f.path)).toEqual(['README.md']);
       expect(six).not.toHaveProperty('headRef');
+      // Each read whole: nothing to ask again.
+      expect(five).not.toHaveProperty('filesStale');
     });
   });
 
@@ -1194,6 +1209,10 @@ describe('PRs GitHub did not answer for, read from the checkout’s default bran
     write(dir, 'tiny.json', '{}\n');
     // A name git would read as a magic pathspec unless told the paths are literal.
     write(dir, ':(top)odd.txt', 'odd\n');
+    git(dir, ['checkout', '-q', '-b', 'feat/three']);
+    commitAll(dir, 'three');
+    git(dir, ['checkout', '-q', 'main']);
+    git(dir, ['merge', '-q', '--squash', 'feat/three']);
     commitAll(dir, 'a big squash (#3)');
     git(dir, ['update-ref', 'refs/remotes/origin/main', 'HEAD']);
     const calls: string[][] = [];
@@ -1213,6 +1232,8 @@ describe('PRs GitHub did not answer for, read from the checkout’s default bran
     const files = Object.fromEntries((read?.pulls?.[0]?.files ?? []).map((f) => [f.path, f]));
     expect(Object.keys(files).sort()).toEqual([':(top)odd.txt', 'huge.json', 'mid.txt', 'small.txt', 'tiny.json']);
     expect(files['tiny.json'].patch).toContain('+{}');
+    // Every file asked came whole: nothing to read again.
+    expect(read?.pulls?.[0]).not.toHaveProperty('filesStale');
     expect(files['small.txt'].patch).toContain('+a');
     expect(files['mid.txt'].patch).toContain('+m39');
     expect(files[':(top)odd.txt'].patch).toContain('+odd');
@@ -1223,6 +1244,78 @@ describe('PRs GitHub did not answer for, read from the checkout’s default bran
     expect(each.slice(0, 1)).toEqual([expect.stringMatching(/^(small\.txt|:\(top\)odd\.txt)$/)]);
     expect(each).not.toContain('huge.json');
     expect(each.slice(-2)).toEqual(['mid.txt', 'tiny.json']);
+  });
+
+  it('the per-file reads of one range stop at its budget: later files are not asked and say so', async () => {
+    const session = tmp('cc-local-pr5-');
+    const dir = clone(session, 'web');
+    git(dir, ['checkout', '-q', '-b', 'feat/five']);
+    // Twelve files of 300 KB each (each patch keeps 256 KB): more than the 2 MiB a range reads file by file.
+    for (let i = 10; i < 22; i++) {
+      write(dir, `p${i}.txt`, `${Array.from({ length: 1200 }, (_, k) => `${i}-${k}-`.padEnd(250, 'x')).join('\n')}\n`);
+    }
+    commitAll(dir, 'five');
+    git(dir, ['checkout', '-q', 'main']);
+    git(dir, ['merge', '-q', '--squash', 'feat/five']);
+    commitAll(dir, 'five (#5)');
+    git(dir, ['update-ref', 'refs/remotes/origin/main', 'HEAD']);
+    const asked: string[] = [];
+    const capped: GitRun = (d, args) => {
+      if (args.includes('-U3') && args[args.length - 1] === '--') return Promise.resolve(undefined);
+      if (args.includes('-U3')) asked.push(args[args.length - 1]);
+      return runGit(d, args);
+    };
+    const read = await checkoutChanges({
+      dir,
+      sessionRoot: session,
+      roots: [session],
+      git: capped,
+      pulls: [{ id: 'acme/web#5', url: 'https://github.com/acme/web/pull/5', repo: 'acme/web', number: 5 }],
+    });
+    const files = read?.pulls?.[0]?.files ?? [];
+    expect(files).toHaveLength(12);
+    const withPatch = files.filter((f) => f.patch);
+    const without = files.filter((f) => !f.patch);
+    expect(withPatch.length).toBeGreaterThanOrEqual(8);
+    expect(without.length).toBeGreaterThanOrEqual(1);
+    const bytes = withPatch.reduce((n, f) => n + Buffer.byteLength(f.patch ?? ''), 0);
+    expect(bytes).toBeGreaterThanOrEqual(2 * 1024 * 1024 - 256 * 1024);
+    expect(bytes).toBeLessThan(2 * 1024 * 1024 + 256 * 1024);
+    for (const f of without) {
+      expect(f.patchTruncated).toBe(true);
+      expect(asked).not.toContain(f.path);
+    }
+    // A cut for size is not a failed read.
+    expect(read?.pulls?.[0]).not.toHaveProperty('filesStale');
+  });
+
+  it('a file whose own patch read failed marks the PR to be read again (not a size cut)', async () => {
+    const session = tmp('cc-local-pr4-');
+    const dir = clone(session, 'web');
+    git(dir, ['checkout', '-q', '-b', 'feat/four']);
+    write(dir, 'one.txt', 'a\n');
+    write(dir, 'two.txt', 'b\n');
+    commitAll(dir, 'four');
+    git(dir, ['checkout', '-q', 'main']);
+    git(dir, ['merge', '-q', '--squash', 'feat/four']);
+    commitAll(dir, 'four (#4)');
+    git(dir, ['update-ref', 'refs/remotes/origin/main', 'HEAD']);
+    const flaky: GitRun = (d, args) => {
+      if (args.includes('-U3') && args[args.length - 1] === '--') return Promise.resolve(undefined);
+      if (args.includes('-U3') && args[args.length - 1] === 'two.txt') return Promise.resolve(undefined);
+      return runGit(d, args);
+    };
+    const read = await checkoutChanges({
+      dir,
+      sessionRoot: session,
+      roots: [session],
+      git: flaky,
+      pulls: [{ id: 'acme/web#4', url: 'https://github.com/acme/web/pull/4', repo: 'acme/web', number: 4 }],
+    });
+    const pr = read?.pulls?.[0];
+    expect(pr?.files.find((f) => f.path === 'one.txt')?.patch).toContain('+a');
+    expect(pr?.files.find((f) => f.path === 'two.txt')?.patchTruncated).toBe(true);
+    expect(pr?.filesStale).toBe(true);
   });
 
   it('nothing is asked of a checkout of another repository, or with no remote default branch', async () => {

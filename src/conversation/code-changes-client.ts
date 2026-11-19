@@ -395,7 +395,7 @@ function chgIssueTreeHtml(doc) {
           ' <span>' + chgDelta(p.additions, p.deletions) + '</span> <span class="chg-muted">' + chgEsc(CHG_FILES) + ' ' + chgNum(p.changedFiles) + '</span></button>' +
           chgLinkOut(p.url) + '</div>');
       } else {
-        var unread = chgUnreadOf(doc, n.url);
+        var unread = ((doc && doc.unreadPrs) || []).some(function(u) { return chgCanonUrl(u.url) === chgCanonUrl(n.url); });
         out.push('<div class="chg-inode chg-pr chg-pr-bare"' + pad + ' data-chg-node="' + chgEsc(n.id) + '">' + caret +
           '<span class="chg-pr-main">' + (num ? '<span class="chg-pr-num">#' + num + '</span> ' : '') + '<span class="chg-pr-title">' + chgEsc(title) + '</span>' + chgStateChip(state, CHG_PR_STATE) +
           (unread ? ' <span class="chg-unread" title="' + chgEsc(CHG_UNREAD_WHY) + '">' + chgEsc(CHG_UNREAD) + '</span>' : '') + '</span>' +
@@ -445,20 +445,13 @@ function chgTreeHtml(tree, current) {
   tree.forEach(function(r) { walk(r, 0); });
   return out.join('');
 }
-// The document's record of a PR it could not read at all (doc.unreadPrs), by the PR's URL.
-function chgUnreadOf(doc, url) {
-  var key = chgCanonUrl(url);
-  return ((doc && doc.unreadPrs) || []).filter(function(u) { return chgCanonUrl(u.url) === key; })[0] || null;
-}
 // The PRs the server could not read, per repository: which, and why their files are missing.
 function chgUnreadNote(doc) {
   var byRepo = {};
-  var order = [];
   ((doc && doc.unreadPrs) || []).forEach(function(u) {
-    if (!byRepo[u.repo]) { byRepo[u.repo] = []; order.push(u.repo); }
-    byRepo[u.repo].push('#' + chgNum(u.number));
+    (byRepo[u.repo] = byRepo[u.repo] || []).push('#' + chgNum(u.number));
   });
-  return order.map(function(repo) {
+  return Object.keys(byRepo).map(function(repo) {
     return '<div class="chg-note chg-note-unread">' + chgEsc(repo) + ' ' + chgEsc(byRepo[repo].join(' ')) + ' — ' + chgEsc(CHG_UNREAD_WHY) + '</div>';
   }).join('');
 }
