@@ -403,7 +403,7 @@ export class McpConfigBuilder {
   }
 
   /**
-   * The work-queue server (.prd/37 §3): it changes the shared ledger (`DATA_DIR/work-queues.json`) for this thread
+   * The work-queue server (.prd/37 §3): it changes the shared ledger (`DATA_DIR/work-queues.sqlite3`) for this thread
    * and reads the queues from `config.json#workQueues`. The thread is set here, in the parent — the model cannot line
    * up (or end an entry) for another thread.
    */

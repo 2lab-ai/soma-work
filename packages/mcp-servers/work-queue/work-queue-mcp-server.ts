@@ -5,7 +5,7 @@
  *
  * A queue is `<lane>:<env>` (`deploy:dev2`, `qa:stage0`), configured in `config.json#workQueues`. The server knows
  * nothing about what a lane means: deploy and QA use the same four tools. It changes the shared ledger
- * (`DATA_DIR/work-queues.json`, `@soma/process-shared/work-queue`) under the ledger's file lock and answers on the
+ * (`DATA_DIR/work-queues.sqlite3`, `@soma/process-shared/work-queue`) in one SQLite transaction and answers on the
  * spot — a conflict comes back in the same call, so the model never waits to learn it. The host reads the same
  * ledger: it wakes the thread whose turn came and gives back a turn its thread stopped working on.
  *
@@ -253,8 +253,11 @@ export function readWorkQueuesFromConfigFile(configFile: string | undefined): ()
     }
     if (good?.mtimeMs === mtimeMs) return good.queues;
     try {
-      const raw = JSON.parse(fs.readFileSync(configFile, 'utf8')) as Record<string, unknown>;
-      const parsed = parseWorkQueuesConfig(raw?.workQueues);
+      const raw: unknown = JSON.parse(fs.readFileSync(configFile, 'utf8'));
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        throw new Error('the config root is not an object');
+      }
+      const parsed = parseWorkQueuesConfig((raw as Record<string, unknown>).workQueues);
       for (const warning of parsed.warnings) logger.warn(`config.json ${warning}`);
       // A key whose every definition is invalid is a broken config, not a host without queues.
       if (parsed.queues.length === 0 && parsed.warnings.length > 0) {

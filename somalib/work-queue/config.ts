@@ -63,6 +63,8 @@ export function parseWorkQueuesConfig(raw: unknown): { queues: WorkQueueDef[]; w
 
   if (raw === undefined || raw === null) return { queues, warnings };
   if (Array.isArray(raw)) {
+    // `[]` was the #726 way to turn the queue off: still no queues, nothing to warn about.
+    if (raw.length === 0) return { queues, warnings };
     warnings.push('workQueues: the old array form — write { "<lane>": ["<env>", …] } instead');
     raw.forEach((entry, i) => {
       const e = (entry ?? {}) as Record<string, unknown>;

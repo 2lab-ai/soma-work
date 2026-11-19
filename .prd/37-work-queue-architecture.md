@@ -2,7 +2,7 @@
 
 Status: in-progress
 
-> 한 줄 결론: 원장(순수 전이 + 파일 잠금 저장)은 `somalib/work-queue`에 하나만 있다(MCP 서버는
+> 한 줄 결론: 원장(순수 전이 + SQLite 트랜잭션 저장)은 `somalib/work-queue`에 하나만 있다(MCP 서버는
 > `@soma/process-shared/work-queue` 재export로 닿는다). MCP 프로세스(`packages/mcp-servers/work-queue`)는 그 원장으로 줄
 > 서기 · 끝내기를 그 자리에서 처리하고, 호스트(`src/work-queue/host.ts`)는 같은 원장을 3초마다 읽어 차례가 온 세션을 깨우고, 일 안 하는 차례를
 > 돌려놓고, 보드 · 목표 루프 · 후속 질문 · hand-off에 "이 세션은 호스트를 기다린다"를 알려 준다.
@@ -30,7 +30,7 @@ somalib/work-queue/                          ← 원장의 유일한 본문 (호
   keys.ts        parseWorkKeys(raw[]) → {keys, invalid}          D10
   config.ts      parseWorkQueuesConfig(raw) → {queues, warnings}  §4.4 (예전 배열 모양 포함)
   ledger.ts      순수 전이: enter · end · sweep 결과 적용 · 보기       D3 D5
-  store.ts       WorkQueueStore: read() · mutate(fn) (파일 잠금 + tmp→rename)  D4
+  store.ts       WorkQueueStore: read() · mutate(fn) · stamp() (node:sqlite, BEGIN IMMEDIATE)  D4
 packages/mcp-servers/work-queue/
   work-queue-mcp-server.ts   queue_list · queue_enter · queue_done · queue_cancel
 src/work-queue/                               ← 호스트 쪽 (예전 packages/slack/src/work-queue 게이트는 지움)
@@ -53,7 +53,7 @@ src/
 
 ## 2. 원장
 
-### 2.1 모양 — `DATA_DIR/work-queues.json`
+### 2.1 모양 — `DATA_DIR/work-queues.sqlite3`의 한 행(JSON)
 
 ```ts
 interface WorkQueueLedger { version: 1; seq: number; entries: WorkQueueEntry[]; ended: WorkQueueEnded[] }
@@ -86,22 +86,19 @@ interface WorkQueueEnded extends WorkQueueEntry { endedAt: number; end: 'done' |
 - `releaseByHost(ledger, decisions, now)` — 호스트 정리의 결정(항목 번호 → 이유)을 한 번에 적용하고 promote.
 - 보기: `queueViews(ledger, queues)`, `entriesOf(ledger, holder)`.
 
-### 2.3 잠금 · 저장 — `WorkQueueStore`
+### 2.3 저장 — `WorkQueueStore` (`node:sqlite`)
 
-- `mutate(fn)`: `<file>.lock`을 배타 생성(`wx`)으로 잡고 `<pid> <시각> <토큰>`을 쓴다. 이미 있으면 20 ms씩 다시 보고,
-  3 s 마감은 모든 길(탈취 포함)에 걸린다. 10 s보다 오래됐고 그 pid가 살아 있지 않은 잠금만 탈취한다: 복구 가드
-  (`<lock>.reclaim`, 배타 생성) 아래에서 잠금을 다시 읽어 아직 그 오래된 잠금일 때만 지운다 — 살아 있는 소유자가 있는 동안
-  잠금 경로가 비는 틈이 없다. 가드를 쥔 채 죽은 복구자의 가드도 같은 규칙(오래됨 + pid 없음)으로 치운다. 해제는 자기
-  토큰일 때만. 잠금 안에서 읽기 → `fn` → 바뀌었으면 tmp(`<file>.<pid>.<rand>.tmp`) 쓰기 + fsync + rename → 해제. 동기
-  API(MCP · 호스트 모두 짧은 트랜잭션).
-- `stamp()`: inode · mtime · 크기. 쓰기는 늘 rename(새 inode)이라 한 시계 틱 안의 두 쓰기도 다른 stamp다.
-- `read()`: 잠금 없이 읽는다(rename이라 반쯤 쓴 파일은 없다). 파일이 없으면 빈 원장. 깨졌으면(레코드 하나라도 모양이
-  틀리면) `.bak`(마지막으로 잘 읽힌 내용을 쓰기 전에 복사)로 읽고 경고를 남기며, 그것도 없으면 오류 — 빈 원장으로
-  떨어뜨리지 않는다(rules/config.md 4).
-- `mtimeMs()`: 호스트 틱이 바뀐 것만 다시 읽게.
+- 표 하나 `ledger(id = 1, rev, body)`: 원장 전체가 JSON 한 행이다(전이는 순수 함수 그대로). WAL 모드, `busy_timeout` 5 s.
+- `mutate(fn)`: `BEGIN IMMEDIATE` → 읽기 → `fn` → 바뀌었으면 `body` 쓰기 + `rev + 1` → `COMMIT`. 던지면 `ROLLBACK`.
+  쓰는 쪽끼리는 SQLite 파일 잠금이 줄 세운다. 그 잠금은 OS가 프로세스 종료 때 푼다 — 오래된 잠금 · 탈취 · 복구 가드 ·
+  백업 파일이 없다. 새 파일을 여러 프로세스가 동시에 처음 열 때 WAL 전환이 즉시 `locked`로 실패할 수 있어(SQLite의 교착
+  회피 규칙) 열기 설정만 마감(5 s) 안에서 다시 시도한다.
+- `read()`: 커밋된 원장(WAL이라 쓰는 중에도 기다리지 않는다). 행이 없으면 빈 원장. 모양이 틀리면(레코드 하나라도) 오류 —
+  빈 원장으로 떨어뜨리지 않는다(rules/config.md 4).
+- `stamp()`: `rev`. 커밋마다 바뀐다 — 호스트는 바뀌었을 때만 다시 읽는다.
 
-`@soma/common/atomic-json`을 쓰지 않는 이유: 원장 본문은 `somalib`에 있고 `somalib`은 `@soma/common`에 기대지 않는다(MCP 서버 번들 경계).
-같은 tmp → fsync → rename 규칙을 그대로 따른다.
+처음 구현(2026-11-19 R0–R2)은 JSON 파일 + 직접 만든 잠금 파일이었다. 리뷰가 오래된 잠금 탈취에서 PID 재사용 · 복구 경합을
+거듭 찾아 SQLite로 옮겼다(.prd/36 D4).
 
 ## 3. MCP 서버 `work-queue`
 
@@ -171,7 +168,7 @@ interface WorkQueueEnded extends WorkQueueEntry { endedAt: number; end: 'done' |
 
 | 층 | 파일 | 무엇 |
 |---|---|---|
-| 원장 | `somalib/work-queue/{keys,config,ledger,store}.test.ts` | A1–A4 · A9의 전이, 잠금 경합(자식 프로세스 둘) · 오래된 잠금 · `.bak` |
+| 원장 | `somalib/work-queue/{keys,config,ledger,store}.test.ts` | A1–A4 · A9의 전이, 다중 프로세스 동시 쓰기(유실 0) · 롤백 · 모양 틀린 원장 |
 | MCP | `packages/mcp-servers/work-queue/work-queue-mcp-server.test.ts` | 도구 입출력 · 주인 검사 · `NO_QUEUES` · 설정 다시 읽기 |
 | 호스트 | `src/work-queue/__tests__/{host,host-wait}.test.ts` · `src/slack/__tests__/env-handoff-runs.test.ts` | A5–A8: 깨우기 한 번 · `gone` 반납 · 반납 규칙 · 재시작 뒤 깨우기 · `whenFree` |
 | hand-off | `src/slack/commands/__tests__/skill-force-handler-env-handoff.test.ts` | A10 · A11(동시 시작) |

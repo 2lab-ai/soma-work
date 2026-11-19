@@ -21,9 +21,12 @@ let store: WorkQueueStore;
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'work-queue-host-'));
-  store = new WorkQueueStore(path.join(dir, 'work-queues.json'));
+  store = new WorkQueueStore(path.join(dir, 'work-queues.sqlite3'));
 });
-afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+afterEach(() => {
+  store.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
 
 type Outcome = 'injected' | 'expired' | 'gone';
 

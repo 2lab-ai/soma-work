@@ -1,7 +1,7 @@
 /**
  * The work-queue ledger (.prd/36, .prd/37 §2) — who runs in which queue, who waits, what ended. Pure: every function
  * takes the ledger and `now` and returns a new ledger (the same object when nothing changed), so the MCP process and
- * the host apply the same rules inside one file lock ({@link WorkQueueStore.mutate}).
+ * the host apply the same rules inside one transaction ({@link WorkQueueStore.mutate}).
  *
  * Rules:
  * - An entry carries keys (Jira / GitHub, `keys.ts`). A key already running or waiting in the same queue refuses the

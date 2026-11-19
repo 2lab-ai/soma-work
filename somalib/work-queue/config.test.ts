@@ -38,6 +38,10 @@ describe('parseWorkQueuesConfig', () => {
     expect(warnings.join(' ')).toMatch(/old array form/);
   });
 
+  it('an empty old array (the #726 opt-out) is no queues without a warning', () => {
+    expect(parseWorkQueuesConfig([])).toEqual({ queues: [], warnings: [] });
+  });
+
   it('anything else is no queues and a warning', () => {
     expect(parseWorkQueuesConfig('deploy')).toEqual({ queues: [], warnings: [expect.stringMatching(/workQueues/)] });
   });

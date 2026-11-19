@@ -17,9 +17,12 @@ const QUEUES = [
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'work-queue-mcp-'));
-  store = new WorkQueueStore(path.join(dir, 'work-queues.json'));
+  store = new WorkQueueStore(path.join(dir, 'work-queues.sqlite3'));
 });
-afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+afterEach(() => {
+  store.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
 
 function tools(threadTs: string, queues = QUEUES, now = 1_000) {
   return createWorkQueueTools({
@@ -132,7 +135,7 @@ describe('work-queue MCP tools', () => {
   it('bad arguments are refused before the ledger is touched', () => {
     expect(tools('1.1').call('queue_done', {})).toMatchObject({ ok: false, code: 'INVALID_ARGS' });
     expect(tools('1.1').call('queue_enter', { keys: ['ABC-1'] })).toMatchObject({ ok: false, code: 'INVALID_ARGS' });
-    expect(fs.existsSync(path.join(dir, 'work-queues.json'))).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'work-queues.sqlite3'))).toBe(false);
   });
 
   it('a call from no thread is refused (the host gives every session its thread)', () => {
@@ -190,6 +193,14 @@ describe('readWorkQueuesFromConfigFile', () => {
     const bad = path.join(dir, 'bad.json');
     fs.writeFileSync(bad, JSON.stringify({ workQueues: { deploy: 'dev2' } }));
     expect(() => readWorkQueuesFromConfigFile(bad)()).toThrow(/workQueues/);
+    // A config root that is not an object (null, an array) is broken, not "no workQueues key".
+    const rootless = path.join(dir, 'rootless.json');
+    fs.writeFileSync(rootless, 'null');
+    expect(() => readWorkQueuesFromConfigFile(rootless)()).toThrow(/config/i);
+    // The #726 opt-out `[]` still reads as no queues (no error).
+    const optOut = path.join(dir, 'opt-out.json');
+    fs.writeFileSync(optOut, JSON.stringify({ workQueues: [] }));
+    expect(readWorkQueuesFromConfigFile(optOut)()).toEqual([]);
     // An explicit empty map is a host that queues nothing — that is not an error.
     const none = path.join(dir, 'none-on-purpose.json');
     fs.writeFileSync(none, JSON.stringify({ workQueues: {} }));
