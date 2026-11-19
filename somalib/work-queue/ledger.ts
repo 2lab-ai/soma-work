@@ -12,7 +12,7 @@
  *   yet: the host wakes its thread and stamps it ({@link markNotified}). An entry that runs from the moment it entered
  *   is stamped then (its own tool answer told the model).
  */
-import type { WorkQueueDef } from './config';
+import { normalizeQueueId, type WorkQueueDef } from './config';
 import { parseWorkKeys, WORK_KEYS_MAX } from './keys';
 
 export interface WorkQueueHolder {
@@ -162,6 +162,7 @@ export function enterQueue(
   now: number,
 ): { ledger: WorkQueueLedger; result: EnterResult } {
   const refuse = (result: EnterError) => ({ ledger, result });
+  req = { ...req, queue: normalizeQueueId(String(req.queue ?? '')) };
   if (!queues.some((q) => q.id === req.queue)) {
     const names = queues.map((q) => q.id);
     return refuse({

@@ -34,7 +34,7 @@ const WORKFLOW_BUDGET: Record<string, number> = {
   default: 12_100,
   // 2026-11-12 (#1232): + Delta and Risk Check before the confirmation, + Restart Re-Attach.
   // 2026-11-19 (.prd/36 G9): + Work Queue — line up in deploy:<target> by PR keys; replaces the #726 host gate.
-  deploy: 38_800, // env-access WU5 (#1213): the environment's GitHub reader, ahead of the broker; R6: `fields` + path encoding
+  deploy: 39_100, // env-access WU5 (#1213): the environment's GitHub reader, ahead of the broker; R6: `fields` + path encoding
   'jira-brainstorming': 8_700,
   'jira-create-pr': 10_600,
   'jira-executive-summary': 7_200,

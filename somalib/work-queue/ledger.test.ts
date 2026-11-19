@@ -46,6 +46,11 @@ describe('enterQueue', () => {
     });
   });
 
+  it('reads the queue name as the config does — `deploy:deploy/dev2` is `deploy:dev2`', () => {
+    const { result } = enter(emptyLedger(), A, ['ABC-1'], 'deploy:deploy/DEV2');
+    expect(result).toMatchObject({ ok: true, entry: { queue: 'deploy:dev2' } });
+  });
+
   it('refuses more than the key cap', () => {
     const keys = Array.from({ length: 51 }, (_, i) => `PTN-${i + 1}`);
     expect(enter(emptyLedger(), A, keys).result).toMatchObject({ ok: false, code: 'TOO_MANY_KEYS' });

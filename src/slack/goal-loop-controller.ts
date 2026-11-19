@@ -211,9 +211,9 @@ export interface GoalLoopControllerDeps {
    */
   isShuttingDown?: () => boolean;
   /**
-   * SSOT 2026-11-19 — true while environment work this session asked for waits in the host's queue or is in flight
-   * (`EnvRunQueue.isPending`). The session waits on the host, not on its owner: no eval runs (it would read the wait as
-   * no progress and stop the goal with a question), nothing is injected. The run's result turn drives the loop again.
+   * .prd/36 D8 — true while the session waits on the host (`waitsOnHost`: its work-queue entry waits, or an
+   * environment hand-off it asked for runs), not on its owner: no eval runs (it would read the wait as no progress and
+   * stop the goal with a question), nothing is injected. The host's wake or the hand-off's result turn drives the loop.
    */
   awaitingHostWork?: (sessionKey: string) => boolean;
 }

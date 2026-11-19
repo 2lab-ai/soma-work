@@ -2,7 +2,7 @@
  * `config.json#workQueues` (.prd/36 §4.4): lane → environments; queue id `<lane>:<env>`.
  */
 import { describe, expect, it } from 'vitest';
-import { parseWorkQueuesConfig } from './config';
+import { normalizeQueueId, parseWorkQueuesConfig } from './config';
 
 describe('parseWorkQueuesConfig', () => {
   it('reads lane → environments into `<lane>:<env>` queues, in order', () => {
@@ -40,5 +40,17 @@ describe('parseWorkQueuesConfig', () => {
 
   it('anything else is no queues and a warning', () => {
     expect(parseWorkQueuesConfig('deploy')).toEqual({ queues: [], warnings: [expect.stringMatching(/workQueues/)] });
+  });
+});
+
+describe('normalizeQueueId', () => {
+  it('reads a queue name the way the config reads environments: lower case, no deploy/ or refs/heads/ prefix', () => {
+    expect(normalizeQueueId('deploy:dev2')).toBe('deploy:dev2');
+    expect(normalizeQueueId(' QA:Stage0 ')).toBe('qa:stage0');
+    expect(normalizeQueueId('deploy:deploy/dev2')).toBe('deploy:dev2');
+    expect(normalizeQueueId('deploy:refs/heads/deploy/DEV2')).toBe('deploy:dev2');
+  });
+  it('leaves a name without a lane as written (lower-cased) — the caller reports it unknown', () => {
+    expect(normalizeQueueId('dev2')).toBe('dev2');
   });
 });

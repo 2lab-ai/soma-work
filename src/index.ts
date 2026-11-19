@@ -2304,13 +2304,23 @@ async function start() {
         return {
           exists: true,
           activity: s.activityState,
-          activityChangedAt: s.activityStateChangedAt,
+          // A hand-off that just ended restarts the idle clock: its result's wake is on the way.
+          activityChangedAt: Math.max(
+            Number(s.activityStateChangedAt) || 0,
+            envHandoffRuns.lastEndedAt(holder.channel, holder.threadTs) ?? 0,
+          ),
           handoffActive: envHandoffRuns.isRunning(holder.channel, holder.threadTs),
         };
       },
-      deliver: (holder, text, done) => {
+      deliver: (holder, text, done, current) => {
         const key = envWakeRegistry.getSessionKey(holder.channel, holder.threadTs);
-        void workQueueDelivery.deliver(key, text, done, undefined, holder.user);
+        // `false` = refused at once (the session is gone): the delivery never calls `done` then.
+        void workQueueDelivery
+          .deliver(key, text, done, current, holder.user)
+          .then((queued) => {
+            if (!queued) done('gone');
+          })
+          .catch(() => done('gone'));
       },
       post: (holder, text) =>
         slackHandler

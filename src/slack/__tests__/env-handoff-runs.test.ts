@@ -32,6 +32,16 @@ describe('EnvHandoffRuns', () => {
     expect(runs.isRunning('C1', '1.1')).toBe(false);
   });
 
+  it('remembers when the last run of a thread ended (its idle clock starts there)', () => {
+    let now = 100;
+    const runs = new EnvHandoffRuns(() => now);
+    expect(runs.lastEndedAt('C1', '1.1')).toBeUndefined();
+    const run = runs.start({ channel: 'C1', threadTs: '1.1' }, 'env:a');
+    now = 900;
+    run.end();
+    expect(runs.lastEndedAt('C1', '1.1')).toBe(900);
+  });
+
   it('no thread, no run', () => {
     expect(new EnvHandoffRuns().isRunning(undefined, undefined)).toBe(false);
   });

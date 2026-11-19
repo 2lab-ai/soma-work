@@ -46,10 +46,18 @@ export interface HolderProbe {
 export type WakeOutcome = 'injected' | 'expired' | 'gone';
 
 export interface WorkQueueHostDeps {
-  store: Pick<WorkQueueStore, 'read' | 'mutate' | 'mtimeMs'>;
+  store: Pick<WorkQueueStore, 'read' | 'mutate' | 'stamp'>;
   probe: (holder: WorkQueueHolder) => HolderProbe;
-  /** One host turn into the holder's thread once it is free; `done` says how it ended. */
-  deliver: (holder: WorkQueueHolder, text: string, done: (outcome: WakeOutcome) => void) => void;
+  /**
+   * One host turn into the holder's thread once it is free; `done` says how it ended. `current` turns false once the
+   * wake is no longer due (the entry ended, or was stamped) — the delivery then drops it.
+   */
+  deliver: (
+    holder: WorkQueueHolder,
+    text: string,
+    done: (outcome: WakeOutcome) => void,
+    current: () => boolean,
+  ) => void;
   /** One line into the holder's thread (never throws to the caller). */
   post: (holder: WorkQueueHolder, text: string) => Promise<unknown>;
   now?: () => number;
@@ -80,6 +88,7 @@ const RELEASE_WHY: Record<string, string> = {
   'holder-idle': '세션이 일을 하지 않음',
   'holder-asking': '사람 답을 오래 기다림',
   'holder-stuck': '턴이 너무 오래 멈춰 있음',
+  'wake-expired': '차례를 알리지 못함',
 };
 
 export function releasedText(entry: WorkQueueEntry, reason: string): string {
@@ -93,7 +102,9 @@ export class WorkQueueHost {
   private readonly logger = new Logger('WorkQueueHost');
   private readonly now: () => number;
   private ledger: WorkQueueLedger = emptyLedger();
-  private seenMtime: number | undefined | null = null;
+  private seenStamp: string | undefined | null = null;
+  /** A restart is not idle time: no holder's idle clock starts before this host did. */
+  private readonly startedAt: number;
   /** Entries whose wake is on its way (never sent twice). */
   private readonly waking = new Set<string>();
   private readonly freeWaiters = new Map<string, Array<() => void>>();
@@ -102,6 +113,7 @@ export class WorkQueueHost {
 
   constructor(private readonly deps: WorkQueueHostDeps) {
     this.now = deps.now ?? Date.now;
+    this.startedAt = this.now();
   }
 
   start(intervalMs = WORK_QUEUE_TICK_MS): void {
@@ -148,10 +160,13 @@ export class WorkQueueHost {
     return this.statusFor(channel, threadTs)?.state === 'queued';
   }
 
-  /** Settles once the thread holds no entry (at once when it holds none now). */
+  /**
+   * Settles once the thread holds no entry and no turn of it works (a woken turn that called `queue_done` is still
+   * writing its end) — at once when that holds now.
+   */
   whenFree(channel: string, threadTs: string): Promise<void> {
     this.refresh();
-    if (!this.holds(channel, threadTs)) return Promise.resolve();
+    if (this.free(channel, threadTs)) return Promise.resolve();
     return new Promise((resolve) => {
       const key = `${channel}\u0000${threadTs}`;
       const list = this.freeWaiters.get(key) ?? [];
@@ -160,10 +175,16 @@ export class WorkQueueHost {
     });
   }
 
-  /** Give back what nobody works on; drop waiting entries whose thread is gone. */
+  /**
+   * Give back what nobody works on; drop waiting entries whose thread is gone. A running entry's thread works on it
+   * while its turn runs (up to {@link WORK_QUEUE_WORKING_MAX_MS}) or an environment hand-off it asked for runs; idle,
+   * it keeps the entry for {@link WORK_QUEUE_IDLE_GRACE_MS}, waiting on a person for
+   * {@link WORK_QUEUE_ASKING_GRACE_MS} — counted from the latest of its last activity change, the wake (or the grant,
+   * while the wake waits) and this host's start. An entry whose wake waits for a working thread keeps its turn.
+   */
   sweep(): void {
     this.lastSweep = this.now();
-    this.refresh();
+    this.refresh(true);
     const now = this.now();
     const releases: Array<{ id: string; reason: string }> = [];
     for (const e of this.ledger.entries) {
@@ -172,19 +193,26 @@ export class WorkQueueHost {
         releases.push({ id: e.id, reason: 'holder-gone' });
         continue;
       }
-      if (e.state !== 'running' || e.notifiedAt === undefined || this.waking.has(e.id)) continue;
-      if (probe.handoffActive) continue;
-      const changed = Math.max(Number(probe.activityChangedAt) || 0, e.notifiedAt);
+      if (e.state !== 'running' || probe.handoffActive) continue;
+      const since = Math.max(Number(probe.activityChangedAt) || 0, e.notifiedAt ?? e.grantedAt ?? 0, this.startedAt);
       if (probe.activity === 'working') {
-        if (now - changed > WORK_QUEUE_WORKING_MAX_MS) releases.push({ id: e.id, reason: 'holder-stuck' });
+        if (now - since > WORK_QUEUE_WORKING_MAX_MS) releases.push({ id: e.id, reason: 'holder-stuck' });
         continue;
       }
       const grace = probe.activity === 'waiting' ? WORK_QUEUE_ASKING_GRACE_MS : WORK_QUEUE_IDLE_GRACE_MS;
-      if (now - changed >= grace) {
+      if (now - since >= grace) {
         releases.push({ id: e.id, reason: probe.activity === 'waiting' ? 'holder-asking' : 'holder-idle' });
       }
     }
-    if (releases.length === 0) return;
+    if (releases.length === 0) {
+      this.settleFree();
+      return;
+    }
+    this.releaseAndTell(releases);
+  }
+
+  /** Release entries, tell each running one's thread (a gone thread hears nothing), wake who comes next. */
+  private releaseAndTell(releases: Array<{ id: string; reason: string }>): void {
     const ended = this.release(releases);
     for (const e of ended) {
       this.logger.info('Work queue entry released by the host', { entry: e.id, queue: e.queue, reason: e.reason });
@@ -194,6 +222,12 @@ export class WorkQueueHost {
     }
     this.wake();
     this.settleFree();
+  }
+
+  /** The thread holds no entry and no turn of it works. */
+  private free(channel: string, threadTs: string): boolean {
+    if (this.holds(channel, threadTs)) return false;
+    return this.safeProbe({ user: '', channel, threadTs }).activity !== 'working';
   }
 
   private holds(channel: string, threadTs: string): boolean {
@@ -222,10 +256,8 @@ export class WorkQueueHost {
           if (outcome === 'injected') {
             this.deps.store.mutate((ledger) => ({ ledger: markNotified(ledger, e.id, this.now()), result: undefined }));
             this.refresh(true);
-          } else {
-            this.release([{ id: e.id, reason: outcome === 'gone' ? 'holder-gone' : 'wake-expired' }]);
-            this.wake();
-            this.settleFree();
+          } else if (this.due(e.id)) {
+            this.releaseAndTell([{ id: e.id, reason: outcome === 'gone' ? 'holder-gone' : 'wake-expired' }]);
           }
         } catch (error) {
           this.logger.warn('Work queue wake bookkeeping failed', { entry: e.id, error: (error as Error)?.message });
@@ -234,7 +266,7 @@ export class WorkQueueHost {
         }
       };
       try {
-        this.deps.deliver(e.holder, wakeText(e), done);
+        this.deps.deliver(e.holder, wakeText(e), done, () => this.due(e.id));
       } catch (error) {
         this.waking.delete(e.id);
         this.logger.warn('Work queue wake failed', { entry: e.id, error: (error as Error)?.message });
@@ -242,10 +274,16 @@ export class WorkQueueHost {
     }
   }
 
+  /** The entry still runs and its thread has not been told: its wake is still due. */
+  private due(id: string): boolean {
+    this.refresh();
+    return this.ledger.entries.some((x) => x.id === id && x.state === 'running' && x.notifiedAt === undefined);
+  }
+
   private settleFree(): void {
     for (const [key, resolvers] of [...this.freeWaiters]) {
       const [channel, threadTs] = key.split('\u0000');
-      if (this.holds(channel, threadTs)) continue;
+      if (!this.free(channel, threadTs)) continue;
       this.freeWaiters.delete(key);
       for (const resolve of resolvers) resolve();
     }
@@ -263,11 +301,11 @@ export class WorkQueueHost {
 
   /** Re-read the ledger when the file changed (`force`: always). A broken file keeps the last good read. */
   private refresh(force = false): void {
-    const mtime = this.deps.store.mtimeMs();
-    if (!force && mtime === this.seenMtime) return;
+    const stamp = this.deps.store.stamp();
+    if (!force && stamp === this.seenStamp) return;
     try {
       this.ledger = this.deps.store.read();
-      this.seenMtime = mtime;
+      this.seenStamp = stamp;
     } catch (error) {
       this.logger.warn('Work queue ledger unreadable — keeping the last read', {
         error: (error as Error)?.message ?? String(error),

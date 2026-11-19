@@ -222,6 +222,11 @@ describe('PromptBuilder', () => {
       expect(section).toMatch(/host wakes this thread/);
       expect(section).toContain('queue_done');
       expect(section).toContain('NO_QUEUES');
+      // Review R1 — the queue name is the target as `queue_list` names it, and an unknown name is checked, not skipped.
+      expect(section).toMatch(/without a `deploy\/` prefix, lower case/);
+      expect(section).toMatch(/UNKNOWN_QUEUE[^\n]*queues/);
+      // Review R1 — an answer to a question asked while holding the entry re-checks the entry before merging.
+      expect(section).toMatch(/queue_list[^\n]*mine/);
     });
 
     // #1232 — a deploy that restarts this host must not be merged a second time by the resumed session.

@@ -22,6 +22,7 @@ export interface EnvHandoffRun {
 
 export class EnvHandoffRuns {
   private readonly byThread = new Map<string, EnvHandoffStatus[]>();
+  private readonly endedAt = new Map<string, number>();
 
   constructor(private readonly now: () => number = Date.now) {}
 
@@ -39,8 +40,10 @@ export class EnvHandoffRuns {
         const live = this.byThread.get(key);
         if (!live) return;
         const at = live.indexOf(status);
-        if (at >= 0) live.splice(at, 1);
+        if (at < 0) return;
+        live.splice(at, 1);
         if (live.length === 0) this.byThread.delete(key);
+        this.endedAt.set(key, this.now());
       },
     };
   }
@@ -50,6 +53,15 @@ export class EnvHandoffRuns {
     if (!channel || !threadTs) return undefined;
     const first = this.byThread.get(`${channel}\u0000${threadTs}`)?.[0];
     return first ? { ...first, ...(first.envThread ? { envThread: { ...first.envThread } } : {}) } : undefined;
+  }
+
+  /**
+   * When this thread's last hand-off ended — the requester's idle clock starts there, not at its last turn (a work
+   * queue sweep must not take its lane in the moment between the end and the result's wake).
+   */
+  lastEndedAt(channel: string | undefined, threadTs: string | undefined): number | undefined {
+    if (!channel || !threadTs) return undefined;
+    return this.endedAt.get(`${channel}\u0000${threadTs}`);
   }
 
   isRunning(channel: string | undefined, threadTs: string | undefined): boolean {
