@@ -46,6 +46,8 @@ const INBOUND_HOLD_MS = 10_000;
 const CONNECT_TIMEOUT_MS = 15_000;
 /** A call's lease on the voice host is renewed this often (it lapses after LEASE_TTL_MS, 30 s, without one). */
 const LEASE_RENEW_MS = 10_000;
+/** A line phrase not synthesized in this long is given up, so the next idle pass can try again (a stalled host). */
+const PHRASE_SYNTH_MS = 30_000;
 
 export interface DialogAuth {
   env: Record<string, string | undefined>;
@@ -383,6 +385,10 @@ export class PhoneService {
   private async placeCall(line: PhoneLine, req: PhoneCallRequest): Promise<PhoneCallRequestResult> {
     // The voice host first: it does one job at a time. Busy → the call is still made, but only says it cannot go on.
     const host = await this.claimVoice(line, 'outbound');
+    if (this.stopped || this.lines.get(line.env) !== line) {
+      if (host.kind === 'held') await host.release(); // the line went while the host answered
+      return { ok: false, error: `phone line ${req.env} closed while the call was being set up` };
+    }
     const setupKey = `setup:${req.rid}`;
     const lease = this.holdLease(line, setupKey, host);
     const notice = host.kind === 'busy' ? this.noticeFor(line, 'outbound') : undefined;
@@ -560,9 +566,8 @@ export class PhoneService {
 
   private async dropLease(line: PhoneLine, callId: string): Promise<void> {
     const lease = line.voiceLeases.get(callId);
-    if (!lease) return;
     line.voiceLeases.delete(callId);
-    await lease.release();
+    await lease?.release();
   }
 
   // ── inbound ─────────────────────────────────────────────────
@@ -611,6 +616,10 @@ export class PhoneService {
     if (existing) return existing;
     // The voice host first: it does one job at a time. Busy → the caller hears that the call cannot be taken.
     const host = await this.claimVoice(line, 'inbound');
+    if (this.finished.has(callId) || this.stopped) {
+      if (host.kind === 'held') await host.release(); // the caller hung up while the host answered: a late grant
+      return null;
+    }
     if (host.kind === 'busy') return this.inboundNotice(line, callId, from, host);
     // Under the call id from the start: a caller who hangs up while the credentials are pending gives it back.
     this.holdLease(line, callId, host);
@@ -699,7 +708,7 @@ export class PhoneService {
 
   /** Synthesize `text` whole, as μ-law frames for the line. */
   private async synthFrames(line: PhoneLine, text: string): Promise<Buffer[]> {
-    const stream = await line.voice.speak(text);
+    const stream = await line.voice.speak(text, AbortSignal.timeout(PHRASE_SYNTH_MS));
     const rs = new StreamResampler(stream.sampleRate, LINE_SAMPLE_RATE);
     const parts: Buffer[] = [];
     for await (const chunk of stream.chunks) parts.push(this.deps.sdk.pcm16ToUlaw(rs.push(chunk)));

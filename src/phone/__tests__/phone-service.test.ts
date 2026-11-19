@@ -400,6 +400,7 @@ describe('PhoneService', () => {
     await svc.start();
     await agents[0].incoming?.(incoming('IN1', []));
     const starting = agents[0].start(fakeCall('IN1', 'inbound'));
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0)); // the run is waiting for credentials now
     await agents[0].handlers.call_failed(fakeCall('IN1', 'inbound', 'canceled'), 'canceled');
     letAuthGo();
     await starting;
@@ -514,16 +515,19 @@ describe('PhoneService', () => {
       return b;
     };
     /** A voice host that answers claims with `answer()`; `log` says which client did what. */
-    function voiceHost(answer: () => VoiceHostClaim['kind'], opts: { speakFails?: () => boolean } = {}) {
+    function voiceHost(
+      answer: () => VoiceHostClaim['kind'],
+      opts: { speakFails?: () => boolean; claimGate?: () => Promise<void> } = {},
+    ) {
       const log: string[] = [];
       const client = (tag: string): VoiceClient => ({
         transcribe: async () => {
           log.push(`${tag} transcribe`);
           return { text: '네', ms: 1 };
         },
-        speak: async (text) => {
+        speak: async (text, signal) => {
           if (opts.speakFails?.()) throw new Error('text-to-speech answered 409');
-          log.push(`${tag} speak ${text}`);
+          log.push(`${tag} speak ${text}${signal ? ' (bounded)' : ''}`);
           return {
             sampleRate: 8000,
             headersMs: 0,
@@ -537,6 +541,7 @@ describe('PhoneService', () => {
         ...client('line'),
         claim: async (owner) => {
           log.push(`claim ${owner}`);
+          await opts.claimGate?.();
           const kind = answer();
           if (kind === 'busy') return { kind, reason: 'busy with voicechat' };
           if (kind === 'shared') return { kind };
@@ -572,7 +577,10 @@ describe('PhoneService', () => {
       await svc.start();
       await settleAll();
       expect(host.log).toEqual(
-        expect.arrayContaining([`line speak ${BUSY_NOTICE.outbound}`, `line speak ${BUSY_NOTICE.inbound}`]),
+        expect.arrayContaining([
+          `line speak ${BUSY_NOTICE.outbound} (bounded)`,
+          `line speak ${BUSY_NOTICE.inbound} (bounded)`,
+        ]),
       );
       expect(host.log.some((l) => l.startsWith('claim'))).toBe(false);
       await svc.stop();
@@ -740,6 +748,36 @@ describe('PhoneService', () => {
       expect(await dialing).toMatchObject({ ok: true, callId: 'CA9' });
       await agents[0].handlers.call_end(fakeCall('CA9', 'outbound', 'completed'));
       expect(host.log.filter((l) => l === 'release')).toHaveLength(1); // moved to the call id, given back at its end
+      await svc.stop();
+    });
+
+    it('a caller who hangs up while the host is still answering the claim: the late grant goes straight back', async () => {
+      let letClaimGo!: () => void;
+      const claimGate = new Promise<void>((r) => {
+        letClaimGo = r;
+      });
+      const host = voiceHost(() => 'held', { claimGate: () => claimGate });
+      let authCalls = 0;
+      const { svc, agents, timers } = make(serverTools(), undefined, {
+        voiceClientFor: () => host.voice,
+        dialogAuth: async () => {
+          authCalls++;
+          return new Promise<never>(() => undefined);
+        },
+      });
+      await svc.start();
+      await settleAll();
+      await agents[0].incoming?.(incoming('IN1', []));
+      const starting = agents[0].start(fakeCall('IN1', 'inbound'));
+      await settleAll();
+      await agents[0].handlers.call_end(fakeCall('IN1', 'inbound', 'canceled')); // gone before the grant
+      letClaimGo();
+      await starting;
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1);
+      expect(authCalls).toBe(0);
+      timers.advance(60_000);
+      await settleAll();
+      expect(host.log.filter((l) => l === 'renew')).toHaveLength(0);
       await svc.stop();
     });
 

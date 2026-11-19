@@ -667,14 +667,14 @@ describe('CallRun — the voice host is busy: a notice, then the phone goes down
     run.attach(call as unknown as CallSessionLike);
     expect(call.frames).toBe(50);
     expect(record.transcript).toMatchObject([{ role: 'agent', text: notice.text }]);
-    // Words over the notice are not heard and do not hold the line open.
-    run.feedAudio(tone(800, 0.3));
-    run.feedAudio(quiet(600));
+    // Words over the notice — still going when the hang-up is due — are not heard and do not hold the line open.
+    for (let t = 0; t < 1600; t += 200) {
+      run.feedAudio(tone(200, 0.3));
+      clock.advance(200);
+      if (t < 1400) expect(call.hungUp).toBe(0);
+    }
     await settleAll();
-    clock.advance(999); // 50 frames = 1 s of audio, plus the tail
-    expect(call.hungUp).toBe(0);
-    clock.advance(700);
-    expect(call.hungUp).toBe(1);
+    expect(call.hungUp).toBe(1); // 1 s of notice + 0.6 s, while the caller is still talking
     expect(spoken).toEqual([]); // nothing synthesized: the notice was made before
     expect(heard.count).toBe(0); // and nothing transcribed
     expect(record.work.map((w) => (w.kind === 'event' ? w.text : w.kind))).toContain('안내 음성을 하고 끊음');
@@ -706,6 +706,29 @@ describe('CallRun — the voice host is busy: a notice, then the phone goes down
     expect(c2.frames).toBe(50);
     quietLine.clock.advance(1700);
     expect(c2.hungUp).toBe(1);
+  });
+
+  it('a notice call whose hang-up did not go through is still ended by the time limit (no dialog needed)', async () => {
+    const { run, clock, heard, dialog } = setup({ direction: 'inbound', notice, maxMinutes: 1 });
+    run.begin();
+    const call = fakeCall();
+    let attempts = 0;
+    call.hangup = async () => {
+      attempts++;
+      if (attempts === 1) throw new Error('platform did not answer');
+      call.hungUp++;
+    };
+    run.attach(call as unknown as CallSessionLike);
+    clock.advance(2_000);
+    await settleAll();
+    expect(attempts).toBe(1);
+    expect(call.hungUp).toBe(0); // the first hang-up failed: the call is still up
+    clock.advance(60_000 + 25_000); // the time limit, then its grace
+    await settleAll();
+    expect(attempts).toBe(2);
+    expect(call.hungUp).toBe(1);
+    expect(dialog()).toBeUndefined();
+    expect(heard.count).toBe(0);
   });
 
   it('outbound: a hello still going at 1.2 s is not talked over — the notice waits for its end', async () => {
