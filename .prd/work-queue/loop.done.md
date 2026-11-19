@@ -23,3 +23,27 @@ Loop: ./loop.md · Each round close appends one block at the bottom; nothing abo
 ### Round section (as it was in loop.md)
 
 라운드 1 — 원장 · MCP · 호스트 · 옛 장치 걷어내기. 리뷰 라운드: R1 독립 리뷰(재시작 유예 · 미통지 차례 · 큐 이름 정규화 · 늦은 답 재확인 · hand-off 경합 · 잠금 탈취 · deliver 계약 · stamp) → R2 리뷰 봇(설정 재읽기 실패를 "큐 없음"으로 캐시 · 레코드 검증 · 동시 프로세스 테스트) → R3 리뷰 봇(잠금 PID 재사용 · 복구 경합 → 저장소를 `node:sqlite`로 교체, `workQueues: []` 옛 끄기 보존) → CI Node 20(`node:sqlite` 없음) → 그런 런타임은 큐를 끄고 `QUEUE_UNAVAILABLE`, 호스트 · MCP 테스트는 메모리 저장소. sanitize: 예시 Jira 키 형식이 금지 패턴이라 브랜치 히스토리를 `ABC-n`으로 고쳐 씀.
+
+## R2 — closed 2026-11-19
+
+- measured 2✅ · result: the owner dev host runs `deploy:dev` · `qa:dev`; a live run with three real sessions passed A2 · A3 · A5 · A6 (refusal, purple 큐 대기 board card, idle turn given back, host wake with no user input) · closed rows: W9a, W9c · commit/PR: this round's docs PR (round 2 live evidence)
+
+### Closed rows
+
+| ID | 작업 단위 | Status | 증거 |
+|---|---|---|---|
+| W9a | 소유자 dev 호스트 설정 `workQueues {"deploy":["dev"],"qa":["dev"]}` | ✅ | 2026-11-19 20:31 KST 봇이 직접 넣음(백업 · 권한 600 유지). 재시작 없이 다음 호출부터 `queue_list` = `deploy:dev` · `qa:dev` (MCP가 호출마다 설정을 다시 읽는다) |
+| W9c | 실측: 호스트 깨우기(A5) · 일 안 하는 차례 반납(A6) · 보드 보라 `큐 대기`(A3) | ✅ | 대시보드에서 만든 테스트 세션 A · C와 이 작업 세션으로 2026-11-19 KST에 실측(아래 Round section의 시각표). 보드 캡처 · 두 스레드 원문 · 원장 상태 · 호스트 로그로 확인 |
+
+### Round section (as it was in loop.md)
+
+라운드 2 — 두 호스트에서 켜고 실측. 소유자 dev 호스트(v0.3.97-dev) 실측, 2026-11-19 KST:
+
+- 20:31 설정 `workQueues {"deploy":["dev"],"qa":["dev"]}` 반영 → `queue_list`가 두 큐를 보인다(재시작 없음).
+- 20:34:25 테스트 세션 A(대시보드 새 작업, autogoal · autoz 끔)가 `queue_enter qa:dev [ABC-901]` → `wq-1` running(position 0).
+- 20:34:37 작업 세션이 `[ABC-901, ABC-902]`로 들어가려 하자 → `CONFLICT`, 잡은 쪽(`wq-1`, A의 스레드)을 알려 준다(A2). 그 뒤 `[ABC-902]`만으로 들어가 `wq-2` queued #1, 바로 `queue_cancel`(대기 역할은 C에게: 보드의 보라 표시는 턴이 없는 세션에만 붙는다).
+- 20:35:42 테스트 세션 C가 `queue_enter qa:dev [ABC-902]` → `wq-3` queued #1. C의 답: "차례가 오면 호스트가 이 스레드를 깨웁니다 … 그 전까지는 아무것도 하지 않고 턴을 끝냅니다" — 질문 · 폴링 · 크론 없음.
+- 20:35 보드(`/api/dashboard/sessions` + 화면 캡처): C = `working` 열, `activityState: idle`, `queueWait {kind: queued, queue: qa:dev, position: 1}`, 카드는 보라 테두리에 `큐 대기 · qa:dev · #1`. A = `working` 열, `qa:dev · 진행 중`(보라 아님). 응답 필요 열에는 둘 다 없다(A3).
+- 20:39:32 A가 턴을 끝내고(20:34:30) 5분 → 호스트 로그 `Work queue entry released by the host {entry: wq-1, reason: holder-idle}`, A 스레드에 `⏹ 작업 큐 qa:dev 차례를 돌려놓았습니다 (wq-1 · 세션이 일을 하지 않음)`(A6).
+- 20:39:32 같은 틱에 `Work queue turn came — waking the holder {entry: wq-3}` → 20:39:35 C 스레드에 호스트 턴 `[work-queue] Your turn in qa:dev: entry wq-3 (ABC-902) runs now …` → C가 `queue_done {"entry":"wq-3"}`(원장 20:39:43 `done`)을 부르고 "QA 완료 (ABC-902)"를 답한다. 사람 입력 0(A5).
+- 끝난 뒤 원장: 진행 · 대기 0, ended = wq-2 cancelled · wq-1 released(holder-idle) · wq-3 done. 두 카드는 `완료` 열에 `queueWait` 없음. 테스트 카드 A · C는 대시보드에서 닫았다(20:42).
