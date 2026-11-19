@@ -8818,7 +8818,8 @@ function syncPanelWidth() {
 var _panelPlace = { side: 'right', locked: false };
 var _pdrag = null; // a press on the grip or the bar: { id, x0, y0, left0, w, vw, from, live, off, vx, t, x, target }
 var _pdragSettle = 0; // the timer that ends a settle
-var _panelPlaceSaving = 0; // place saves on the way: an older answer must not move the card back
+var _panelPlaceSaving = 0; // 1 while a place save is on its way: an older answer must not move the card back
+var _panelPlaceQueued = null; // the newest place chosen while a save was on its way (sent after it)
 var _panelPlaceWritable = true; // false once the settings say the server refuses this user's writes: no grip
 var PANEL_DOCK_MQ = '(min-width: 840px)'; // the drawer's dock-at: below it the card is a full-screen sheet
 var _panelPlaceRev = 0;
@@ -8937,35 +8938,49 @@ function placePanel(place, how) {
   return moved;
 }
 // The user's place, saved alone; the page's copy of the layouts carries it at once (a reload keeps it before the
-// answer). A failed save says so — the card stays where the reader put it on this page.
+// answer). One save at a time, in order: moves made while one is on its way send only the newest after it — so a
+// move and its 실행 취소, or a move waiting on a CSRF refresh, can never land in the wrong order. A failed save says
+// so — the card stays where the reader put it on this page.
 async function savePanelPlace(place) {
-  var rev = ++_panelPlaceRev;
+  _panelPlaceRev++;
   var doc = JSON.parse(JSON.stringify(_viewLayout || { v: 1 }));
   doc.panel = { side: place.side, locked: place.locked };
   _viewLayout = doc;
   try { localStorage.setItem(VIEW_LAYOUT_KEY, JSON.stringify(doc)); } catch (_e) {}
-  _panelPlaceSaving++;
+  _panelPlaceQueued = doc.panel;
+  if (_panelPlaceSaving) return; // the save on its way sends the newest after it
+  _panelPlaceSaving = 1;
   try {
-    var body = JSON.stringify({ panel: doc.panel });
-    var headers = { 'Content-Type': 'application/json' };
-    if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
-    var res = await fetch('/api/settings/dashboard-layout/panel', { method: 'PUT', headers: headers, body: body });
-    if (res.status === 403) {
-      await refreshCsrfToken();
-      var again = { 'Content-Type': 'application/json' };
-      if (_csrfToken) again['X-CSRF-Token'] = _csrfToken;
-      res = await fetch('/api/settings/dashboard-layout/panel', { method: 'PUT', headers: again, body: body });
+    while (_panelPlaceQueued) {
+      var next = _panelPlaceQueued;
+      _panelPlaceQueued = null;
+      try {
+        await putPanelPlace(next);
+      } catch (e) {
+        if (!_panelPlaceQueued)
+          dashToast({ title: '디테일 카드 위치를 저장하지 못했어요', description: String((e && e.message) || e), tone: 'error' });
+      }
     }
-    if (!res.ok) {
-      var why = '';
-      try { why = ((await res.json()) || {}).error || ''; } catch (_e) {}
-      throw new Error(why || ('HTTP ' + res.status));
-    }
-  } catch (e) {
-    if (rev === _panelPlaceRev)
-      dashToast({ title: '디테일 카드 위치를 저장하지 못했어요', description: String((e && e.message) || e), tone: 'error' });
   } finally {
-    _panelPlaceSaving--;
+    _panelPlaceSaving = 0;
+  }
+}
+// One PUT of a place, with the CSRF retry (a 403 after the JWT rotated refreshes the token once).
+async function putPanelPlace(panel) {
+  var body = JSON.stringify({ panel: panel });
+  var headers = { 'Content-Type': 'application/json' };
+  if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+  var res = await fetch('/api/settings/dashboard-layout/panel', { method: 'PUT', headers: headers, body: body });
+  if (res.status === 403) {
+    await refreshCsrfToken();
+    var again = { 'Content-Type': 'application/json' };
+    if (_csrfToken) again['X-CSRF-Token'] = _csrfToken;
+    res = await fetch('/api/settings/dashboard-layout/panel', { method: 'PUT', headers: again, body: body });
+  }
+  if (!res.ok) {
+    var why = '';
+    try { why = ((await res.json()) || {}).error || ''; } catch (_e) {}
+    throw new Error(why || ('HTTP ' + res.status));
   }
 }
 // The slots while a card is in hand: shown, the one it would land in lit.
@@ -14367,11 +14382,10 @@ function readViewLayout() {
 // The user's layouts arrived (or changed on the settings page): the page draws them and keeps the copy.
 function setViewLayout(doc) {
   var d = JSON.parse(JSON.stringify(doc && typeof doc === 'object' ? doc : { v: 1 }));
-  // A place this page is still saving is newer than an answer that left before it (SSOT 2026-11-19).
-  if (_panelPlaceSaving > 0 && _viewLayout && _viewLayout.panel) d.panel = _viewLayout.panel;
   var next = JSON.stringify(d);
   if (next === JSON.stringify(_viewLayout)) return;
-  var surfaces = layoutSurfacesKey(d) !== layoutSurfacesKey(_viewLayout);
+  // A place alone redraws no card (SSOT 2026-11-19): only the layouts key a rerender.
+  var surfaces = JSON.stringify(layoutSansPlace(d)) !== JSON.stringify(layoutSansPlace(_viewLayout));
   _viewLayout = d;
   try { localStorage.setItem(VIEW_LAYOUT_KEY, next); } catch (_e) {}
   // The place (settings page, another tab): the card moves to it, gliding when it is docked.
@@ -14380,21 +14394,23 @@ function setViewLayout(doc) {
   applyViewMode();
   rerenderForViewMode();
 }
-// Pure: the layouts without the card's place — a place alone redraws no card.
-function layoutSurfacesKey(doc) {
-  var out = {};
-  for (var k in doc || {}) if (k !== 'panel' && Object.prototype.hasOwnProperty.call(doc, k)) out[k] = doc[k];
-  return JSON.stringify(out);
-}
+
 async function loadViewLayout() {
   var load = ++_layoutLoads;
+  var placeRev = _panelPlaceRev;
   try {
     var res = await fetch('/api/settings/dashboard-layout');
     if (!res.ok) return;
     var data = await res.json();
     // An answer to an earlier load that lands after a later one is not drawn.
     if (load !== _layoutLoads || !data || !data.doc) return;
-    setViewLayout(data.doc);
+    var doc = data.doc;
+    // A place chosen here after this read left (saved or still saving) is newer than the place in its answer.
+    if (_panelPlaceSaving || placeRev !== _panelPlaceRev) {
+      doc = JSON.parse(JSON.stringify(doc));
+      if (_viewLayout && _viewLayout.panel) doc.panel = _viewLayout.panel; else delete doc.panel;
+    }
+    setViewLayout(doc);
   } catch (_e) {}
 }
 function detailShows(tok) {

@@ -244,6 +244,7 @@ function layAnnounce(text) {
 
 async function loadLayout() {
   setLayStatus('불러오는 중…');
+  var placeRev = _layPlaceRev;
   try {
     var res = await fetch('/api/settings/dashboard-layout');
     if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -258,7 +259,7 @@ async function loadLayout() {
   var placeHere = _layDoc && _layDoc.panel;
   if (!_layPending && !_laySaving) _layDoc = layClone(_lay.doc || { v: 1 });
   // The place is the server's (the dashboard may have moved the card) unless a choice made here is still saving.
-  var place = _layPlaceSaving ? placeHere : _lay.doc && _lay.doc.panel;
+  var place = _layPlaceSaving || placeRev !== _layPlaceRev ? placeHere : _lay.doc && _lay.doc.panel;
   if (place) _layDoc.panel = place; else delete _layDoc.panel;
   _layMode = _lay.mode === 'advanced' ? 'advanced' : 'minimal';
   _layPreset = layoutPreset(_layDoc, 'card', _lay.plan);
@@ -325,7 +326,7 @@ async function saveLayout() {
       _layResave = false;
       var rev = _layRev;
       var placeRev = _layPlaceRev;
-      var r = await apiWrite('PUT', '/api/settings/dashboard-layout', { doc: layDocSansPlace(_layDoc) });
+      var r = await apiWrite('PUT', '/api/settings/dashboard-layout', { doc: layoutSansPlace(_layDoc) });
       if (!r.ok) { why = r.error || 'HTTP'; break; }
       if (rev !== _layRev) continue; // the user moved on while it ran: save what they have now
       // The server's checked copy (its order, the items it appended) is the truth.
@@ -360,14 +361,9 @@ var LAY_PLACE_HINT = {
   locked: '잠겨 있습니다. 디테일 카드 상단바에 손잡이가 없고, 끌어서 옮길 수 없습니다. 위치는 여기서만 바뀝니다.',
   open: '꺼져 있으면 디테일 카드 상단바의 손잡이를 끌어 반대쪽에 놓을 수 있습니다. 손잡이를 누르거나 ←/→ 키로도 옮깁니다.',
 };
-var _layPlaceRev = 0;
-var _layPlaceSaving = 0;
-// Pure: the document without the place (the whole-document save).
-function layDocSansPlace(doc) {
-  var out = {};
-  for (var k in doc || {}) if (k !== 'panel' && Object.prototype.hasOwnProperty.call(doc, k)) out[k] = doc[k];
-  return out;
-}
+var _layPlaceRev = 0; // bumped by every choice made here: a read that left before one does not paint over it
+var _layPlaceSaving = 0; // 1 while a place PUT is on its way
+var _layPlaceQueued = null; // the newest choice made while a PUT was on its way: { place, shown }
 function layPaintPlace() {
   var p = panelPlaceOf(_layDoc);
   var off = !!(_lay && _lay.accepted === false);
@@ -385,42 +381,55 @@ function layPaintPlace() {
   if (sec) sec.setAttribute('data-locked', p.locked ? 'true' : 'false');
 }
 async function layPlaceSave(next) {
-  var before = panelPlaceOf(_layDoc);
-  var rev = ++_layPlaceRev;
+  var shown = panelPlaceOf(_layDoc);
+  _layPlaceRev++;
   _layDoc.panel = { side: next.side === 'left' ? 'left' : 'right', locked: !!next.locked };
   layPaintPlace();
   setLayStatus('저장 중…');
-  _layPlaceSaving++;
-  var r;
-  try { r = await apiWrite('PUT', '/api/settings/dashboard-layout/panel', { panel: _layDoc.panel }); }
-  catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
-  finally { _layPlaceSaving--; }
-  if (rev !== _layPlaceRev) return; // a newer choice is on its way
-  if (!r || !r.ok) {
-    // Refused: the controls show what is saved, and say why.
-    _layDoc.panel = before;
-    layPaintPlace();
-    setLayStatus('저장하지 못했습니다 — ' + ((r && r.error) || 'HTTP'));
-    return;
+  // One PUT at a time, in order: choices made while one is on its way send only the newest after it.
+  _layPlaceQueued = { place: _layDoc.panel, shown: shown };
+  if (_layPlaceSaving) return;
+  _layPlaceSaving = 1;
+  var saved = shown; // what the server has (the controls go back to it when the last save is refused)
+  try {
+    while (_layPlaceQueued) {
+      var job = _layPlaceQueued;
+      _layPlaceQueued = null;
+      var r;
+      try { r = await apiWrite('PUT', '/api/settings/dashboard-layout/panel', { panel: job.place }); }
+      catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+      if (_layPlaceQueued) { if (r && r.ok) saved = job.place; continue; } // a newer choice goes next
+      if (!r || !r.ok) {
+        // Refused: the controls show what is saved, and say why.
+        _layDoc.panel = saved;
+        layPaintPlace();
+        setLayStatus('저장하지 못했습니다 — ' + ((r && r.error) || 'HTTP'));
+        continue;
+      }
+      // The server's checked place is the truth.
+      _layDoc.panel = r.data && r.data.layout && r.data.layout.doc && r.data.layout.doc.panel ? r.data.layout.doc.panel : job.place;
+      layPaintPlace();
+      try { localStorage.setItem('soma-view-layout', JSON.stringify(_layDoc)); } catch (_e) {}
+      setLayStatus('저장됨');
+      var p = _layDoc.panel;
+      layAnnounce(p.side !== job.shown.side
+        ? (p.side === 'left' ? '디테일 카드를 왼쪽에 둡니다' : '디테일 카드를 오른쪽에 둡니다')
+        : (p.locked ? '위치를 잠갔습니다 — 상단바 손잡이가 사라집니다' : '잠금을 풀었습니다 — 상단바 손잡이로 옮길 수 있습니다'));
+    }
+  } finally {
+    _layPlaceSaving = 0;
   }
-  // The server's checked place is the truth.
-  if (r.data && r.data.layout && r.data.layout.doc && r.data.layout.doc.panel) _layDoc.panel = r.data.layout.doc.panel;
-  layPaintPlace();
-  try { localStorage.setItem('soma-view-layout', JSON.stringify(_layDoc)); } catch (_e) {}
-  setLayStatus('저장됨');
-  var p = _layDoc.panel;
-  layAnnounce(p.side !== before.side
-    ? (p.side === 'left' ? '디테일 카드를 왼쪽에 둡니다' : '디테일 카드를 오른쪽에 둡니다')
-    : (p.locked ? '위치를 잠갔습니다 — 상단바 손잡이가 사라집니다' : '잠금을 풀었습니다 — 상단바 손잡이로 옮길 수 있습니다'));
 }
 // Back on the page: a drag on the dashboard meanwhile shows here (unless a choice made here is still saving).
 async function layRefreshPlace() {
   if (!_layLoaded || _layPlaceSaving) return;
+  var placeRev = _layPlaceRev;
   try {
     var res = await fetch('/api/settings/dashboard-layout');
     if (!res.ok) return;
     var data = await res.json();
-    if (_layPlaceSaving || !data || !data.doc) return;
+    // A choice made here after this read left is newer than its answer.
+    if (_layPlaceSaving || placeRev !== _layPlaceRev || !data || !data.doc) return;
     if (data.doc.panel) _layDoc.panel = data.doc.panel; else delete _layDoc.panel;
     layPaintPlace();
   } catch (_e) {}

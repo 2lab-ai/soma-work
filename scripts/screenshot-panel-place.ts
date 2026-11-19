@@ -163,12 +163,6 @@ function check(ok: boolean, what: string, detail?: unknown) {
 }
 const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
 type Rect = { x: number; y: number; w: number; h: number };
-const rnd = (r: DOMRect | { x: number; y: number; width: number; height: number }): Rect => ({
-  x: Math.round(r.x),
-  y: Math.round(r.y),
-  w: Math.round(r.width),
-  h: Math.round(r.height),
-});
 
 async function rectOf(page: Page, sel: string): Promise<Rect | null> {
   return page.evaluate((s) => {

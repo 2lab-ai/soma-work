@@ -45,6 +45,13 @@ function panelPlaceOf(doc) {
   if ((side !== 'left' && side !== 'right') || typeof locked !== 'boolean') return { side: 'right', locked: false };
   return { side: side, locked: locked };
 }
+// Pure: a document without the place — the layouts alone (the settings page's whole-document save, the dashboard's
+// "does this redraw a card" check).
+function layoutSansPlace(doc) {
+  var out = {};
+  for (var k in doc || {}) if (k !== 'panel' && Object.prototype.hasOwnProperty.call(doc, k)) out[k] = doc[k];
+  return out;
+}
 // What a mode draws: the task card (face + open card) from its preset, the detail card from its own.
 function layoutsFor(doc, builtins, mode, plan) {
   var c = layoutPreset(doc, 'card', plan);

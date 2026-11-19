@@ -51,7 +51,10 @@ function fakeEl(id: string): El {
   };
 }
 
-function editor(answer: Record<string, unknown> = {}, opts: { gate?: boolean; refusePlace?: boolean } = {}) {
+function editor(
+  answer: Record<string, unknown> = {},
+  opts: { gate?: boolean; refusePlace?: boolean; gatePlace?: boolean; gateGet?: boolean } = {},
+) {
   const els: Record<string, El> = {};
   const el = (id: string) => (els[id] ??= fakeEl(id));
   for (const id of [
@@ -104,6 +107,8 @@ function editor(answer: Record<string, unknown> = {}, opts: { gate?: boolean; re
   let serverDoc: unknown = null;
   // With a gate, each PUT waits until the test releases it (a slow network).
   const gates: Array<() => void> = [];
+  const placeGates: Array<() => void> = [];
+  const getGates: Array<() => void> = [];
   const release = async () => {
     gates.shift()?.();
     for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
@@ -116,10 +121,16 @@ function editor(answer: Record<string, unknown> = {}, opts: { gate?: boolean; re
       return timers.length;
     },
     clearTimeout: () => {},
-    fetch: async () => ({ ok: true, json: async () => snapshot }),
+    fetch: async () => {
+      // The answer is the server's copy when the read left.
+      const sent = JSON.parse(JSON.stringify(snapshot));
+      if (opts.gateGet) await new Promise<void>((r) => getGates.push(r));
+      return { ok: true, json: async () => sent };
+    },
     apiWrite: async (method: string, url: string, body: { doc?: unknown; panel?: unknown }) => {
       puts.push({ method, url, body: JSON.parse(JSON.stringify(body)) });
       if (url === '/api/settings/dashboard-layout/panel') {
+        if (opts.gatePlace) await new Promise<void>((r) => placeGates.push(r));
         if (opts.refusePlace) return { ok: false, error: '관리자 승인을 받은 뒤에 바꿀 수 있습니다' };
         const doc = { ...((serverDoc as object) ?? snapshot.doc), panel: body.panel };
         serverDoc = doc;
@@ -147,7 +158,15 @@ function editor(answer: Record<string, unknown> = {}, opts: { gate?: boolean; re
     }
     await new Promise((r) => setImmediate(r));
   };
-  return { api, els, puts, stored, flush, timers, release };
+  const releasePlace = async () => {
+    placeGates.shift()?.();
+    for (let i = 0; i < 6; i++) await new Promise((r) => setImmediate(r));
+  };
+  const releaseGet = async () => {
+    getGates.shift()?.();
+    for (let i = 0; i < 6; i++) await new Promise((r) => setImmediate(r));
+  };
+  return { api, els, puts, stored, flush, timers, release, releasePlace, releaseGet, placeGates, getGates };
 }
 
 describe('E1 — loading', () => {
@@ -687,5 +706,52 @@ describe('E9 — a layouts save racing a place save keeps the newer place (revie
     api.set('_layPlaceSaving', 1);
     await api.loadLayout();
     expect(api.get('_layDoc').panel).toEqual({ side: 'left', locked: true });
+  });
+});
+
+describe('E10 — PR review (review-of-legends): place saves in order, stale reads (2026-11-19)', () => {
+  const pick = (lay: string, value: string, checked = false) => ({
+    target: { getAttribute: (k: string) => (k === 'data-lay' ? lay : null), value, checked },
+  });
+  const tick = async () => {
+    for (let i = 0; i < 6; i++) await new Promise((r) => setImmediate(r));
+  };
+
+  it('왼쪽 then 잠금 before the first answer: one PUT at a time, the second carries both choices', async () => {
+    const { api, els, puts, releasePlace } = editor({}, { gatePlace: true });
+    await api.loadLayout();
+    const a = api.layOnChange(pick('place-side', 'left'));
+    await tick();
+    const b = api.layOnChange(pick('place-lock', '', true));
+    await tick();
+    const placePuts = () => puts.filter((x: any) => x.url === '/api/settings/dashboard-layout/panel');
+    expect(placePuts()).toHaveLength(1);
+    await releasePlace();
+    expect(placePuts().map((x: any) => x.body.panel)).toEqual([
+      { side: 'left', locked: false },
+      { side: 'left', locked: true },
+    ]);
+    await releasePlace();
+    await Promise.all([a, b]);
+    expect(api.get('_layDoc').panel).toEqual({ side: 'left', locked: true });
+    expect(els['lay-place-lock'].checked).toBe(true);
+    expect(els['lay-status'].textContent).toBe('저장됨');
+  });
+
+  it('a refresh read that left before a pick does not paint the old place back after the pick saved', async () => {
+    const doc: Record<string, unknown> = { v: 1 };
+    const { api, els, releaseGet } = editor({ doc }, { gateGet: true });
+    const first = api.loadLayout();
+    await releaseGet();
+    await first;
+    // The tab comes back: a read leaves …
+    const refresh = api.layRefreshPlace();
+    await tick();
+    // … the reader picks 왼쪽, and its PUT answers before the read does.
+    await api.layOnChange(pick('place-side', 'left'));
+    await releaseGet();
+    await refresh;
+    expect(api.get('_layDoc').panel).toEqual({ side: 'left', locked: false });
+    expect(els['lay-place-left'].checked).toBe(true);
   });
 });

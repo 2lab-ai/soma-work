@@ -88,7 +88,6 @@ function el(id = '') {
 }
 
 const PLACE_FNS = ['applyPanelPlace', 'panelMovable', 'panelWide'];
-const PLACE_FNS_ALL = ['applyPanelPlace', 'panelMovable', 'panelWide'];
 const PLACE_VARS = ['_panelPlace', '_panelPlaceWritable', 'PANEL_GRIP_LABEL', 'PANEL_DOCK_MQ'];
 
 function placePage() {
@@ -185,8 +184,8 @@ describe('P4 — a moved card saves the place alone', () => {
     };
     const toasts: unknown[] = [];
     const c = load<Saver & { layout(): unknown; saving(): number }>(
-      ['savePanelPlace'],
-      ['_panelPlaceSaving', '_panelPlaceRev', 'VIEW_LAYOUT_KEY'],
+      ['savePanelPlace', 'putPanelPlace'],
+      ['_panelPlaceSaving', '_panelPlaceRev', '_panelPlaceQueued', 'VIEW_LAYOUT_KEY'],
       { fetch, localStorage, dashToast: (t: unknown) => toasts.push(t) },
       ', layout: function() { return _viewLayout; }, saving: function() { return _panelPlaceSaving; }',
       "var _viewLayout = { v: 1, active: { card: '2' } }; var _csrfToken = 'T1'; async function refreshCsrfToken() { _csrfToken = 'T2'; }",
@@ -273,17 +272,20 @@ describe('P5 — the markup and the CSS', () => {
 });
 
 describe('P6 — the board glides when the card changes side', () => {
+  // (the shared layout script's layoutSansPlace keys a rerender: see the last test)
   it('a card docked on the left is a layout of its own', () => {
     const fn = clientFn('currentLayoutMode');
     expect(fn).toContain("if (m.panel === 'docked' && _panelPlace.side === 'left') m.panel = 'docked-left';");
   });
-  it('a place alone redraws no card: only the surfaces key a rerender', () => {
-    const c = load<{ layoutSurfacesKey(d: unknown): string }>(['layoutSurfacesKey'], []);
-    expect(c.layoutSurfacesKey({ v: 1, active: { card: '2' }, panel: { side: 'left', locked: true } })).toBe(
-      c.layoutSurfacesKey({ v: 1, active: { card: '2' } }),
-    );
-    expect(c.layoutSurfacesKey({ v: 1, active: { card: '2' } })).not.toBe(
-      c.layoutSurfacesKey({ v: 1, active: { card: '3' } }),
+  it('a place alone redraws no card: the layouts without the place key a rerender (one helper, both pages)', async () => {
+    const { VIEW_LAYOUT_CLIENT_JS } = await import('../view-layout-client');
+    const sans = new Function(`${VIEW_LAYOUT_CLIENT_JS}\nreturn layoutSansPlace;`)() as (d: unknown) => unknown;
+    expect(sans({ v: 1, active: { card: '2' }, panel: { side: 'left', locked: true } })).toEqual({
+      v: 1,
+      active: { card: '2' },
+    });
+    expect(clientFn('setViewLayout')).toContain(
+      'JSON.stringify(layoutSansPlace(d)) !== JSON.stringify(layoutSansPlace(_viewLayout))',
     );
   });
 });
@@ -351,5 +353,138 @@ describe('P7 — review fixes (2026-11-19)', () => {
     expect(TEMPLATE).toMatch(
       /@media \(pointer: coarse\) and \(min-width: 840px\) \{[^}]*\.panel-grip \{ height: 24px; \}/,
     );
+  });
+});
+
+describe('P8 — PR review (review-of-legends): ordered saves, stale reads, the first move after a mid-glide grab', () => {
+  // A fetch double whose PUTs answer only when the test lets them (in order of arrival).
+  function net(getDoc: () => unknown) {
+    const puts: Array<{ body: unknown; done: () => void }> = [];
+    const gets: Array<(v: unknown) => void> = [];
+    const fetch = vi.fn((url: string, init?: { method?: string; body?: string }) => {
+      if (init && init.method === 'PUT') {
+        return new Promise((res) => {
+          puts.push({
+            body: JSON.parse(init.body || '{}'),
+            done: () => res({ ok: true, status: 200, json: async () => ({ ok: true }) }),
+          });
+        });
+      }
+      return new Promise((res) =>
+        gets.push(() => res({ ok: true, status: 200, json: async () => ({ doc: getDoc() }) })),
+      );
+    });
+    return { fetch, puts, gets };
+  }
+  const tick = async () => {
+    for (let i = 0; i < 6; i++) await new Promise((r) => setImmediate(r));
+  };
+  type Page = {
+    savePanelPlace(p: { side: string; locked: boolean }): Promise<void>;
+    loadViewLayout(): Promise<void>;
+    layout(): any;
+  };
+  function dash(n: ReturnType<typeof net>) {
+    const placed: unknown[] = [];
+    const c = load<Page>(
+      ['savePanelPlace', 'putPanelPlace', 'loadViewLayout'],
+      ['_panelPlaceSaving', '_panelPlaceRev', '_panelPlaceQueued', 'VIEW_LAYOUT_KEY', '_layoutLoads'],
+      {
+        fetch: n.fetch,
+        localStorage: { setItem() {}, getItem: () => null },
+        dashToast() {},
+        setViewLayout: (d: unknown) => placed.push(JSON.parse(JSON.stringify(d))),
+      },
+      ', layout: function() { return _viewLayout; }',
+      "var _viewLayout = { v: 1 }; var _csrfToken = 'T'; async function refreshCsrfToken() {}",
+    );
+    return { c, placed };
+  }
+
+  it('moves in a row go one at a time, in order; the moves made meanwhile send only the newest', async () => {
+    const n = net(() => ({ v: 1 }));
+    const { c } = dash(n);
+    const a = c.savePanelPlace({ side: 'left', locked: false });
+    const b = c.savePanelPlace({ side: 'right', locked: false }); // e.g. the toast's 실행 취소
+    const d = c.savePanelPlace({ side: 'left', locked: false });
+    await tick();
+    expect(n.puts.map((x) => x.body)).toEqual([{ panel: { side: 'left', locked: false } }]);
+    n.puts[0].done();
+    await tick();
+    // Only the newest of the two made meanwhile goes, after the first answered.
+    expect(n.puts.map((x) => x.body)).toEqual([
+      { panel: { side: 'left', locked: false } },
+      { panel: { side: 'left', locked: false } },
+    ]);
+    n.puts[1].done();
+    await Promise.all([a, b, d]);
+    expect(n.puts).toHaveLength(2);
+    expect(c.layout().panel).toEqual({ side: 'left', locked: false });
+  });
+
+  it('a layouts read that left before a move does not move the card back, even after the move saved', async () => {
+    const n = net(() => ({ v: 1 })); // the server's copy as it was when the read left: no place
+    const { c, placed } = dash(n);
+    const reading = c.loadViewLayout();
+    await tick();
+    const saving = c.savePanelPlace({ side: 'left', locked: false });
+    await tick();
+    n.puts[0].done();
+    await saving;
+    n.gets[0](undefined);
+    await reading;
+    expect((placed[placed.length - 1] as any).panel).toEqual({ side: 'left', locked: false });
+  });
+
+  it('the first move after a mid-glide grab continues from where the card is drawn (no jump toward its dock)', () => {
+    // The card is drawn 300px left of its right dock (x 700 of 1000), mid-glide; the press reads the drawn box, the
+    // settle is dropped, the dock is read.
+    const boxes = [
+      { left: 700, w: 440 },
+      { left: 1000, w: 440 },
+    ];
+    const panel = el('slide-panel');
+    (panel as any).querySelector = () => null;
+    const document = {
+      documentElement: el('html'),
+      getElementById: (id: string) => (id === 'slide-panel' ? panel : null),
+    };
+    const window = { addEventListener() {}, removeEventListener() {}, getSelection: () => null };
+    const c = load<{ pdragDown(e: unknown): void; pdragMove(e: unknown): void }>(
+      ['pdragDown', 'pdragMove', 'panelDragOffset', 'panelDropSide'],
+      ['_pdrag', 'PDRAG_SLOP', 'PDRAG_FLICK', '_panelPlace'],
+      {
+        document,
+        window,
+        panelBoxNow: () => boxes.shift() ?? { left: 1000, w: 440 },
+        panelMovable: () => true,
+        panelDocked: () => true,
+        pdragSource: () => true,
+        pdragClear: (p: any) => {
+          p.removeAttribute('data-pdrag');
+          p.style.removeProperty('--pdrag-x');
+        },
+        panelViewW: () => 1440,
+        paintDropZones() {},
+        pdragUp() {},
+        pdragCancel() {},
+      },
+    );
+    const target = { closest: () => null };
+    c.pdragDown({
+      button: 0,
+      isPrimary: true,
+      pointerId: 7,
+      clientX: 900,
+      clientY: 20,
+      timeStamp: 0,
+      target,
+      preventDefault() {},
+    });
+    // Held where it is drawn at the press.
+    expect(panel.props['--pdrag-x']).toBe('-300px');
+    c.pdragMove({ pointerId: 7, clientX: 910, clientY: 20, timeStamp: 16, preventDefault() {} });
+    // 10px right of where it was drawn — not 10px right of its dock (which would be +10px).
+    expect(panel.props['--pdrag-x']).toBe('-290px');
   });
 });
