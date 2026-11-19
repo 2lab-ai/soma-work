@@ -16,7 +16,7 @@ import {
   type SessionCommit,
   UNREAD_CHECKOUT,
 } from './checkout-changes';
-import { type PrDeps, sessionPrChanges } from './pr-changes';
+import { type PrDeps, type PullAsk, sessionPrChanges } from './pr-changes';
 import { type CodeChangesStore, MAX_COUNTED_COMMITS } from './store';
 import { summarizeCodeChanges } from './summary';
 import type { ChangedFile, CheckoutChanges, CodeChangesDoc, CodeChangesSummary, PrChanges } from './types';
@@ -117,14 +117,43 @@ export function applyPatchBudget(doc: CodeChangesDoc, max = MAX_DOC_PATCH_BYTES)
   for (const p of doc.prs) if (trimPatches(p.files, budget)) p.patchesDropped = true;
 }
 
+const patchBytes = (files: ChangedFile[]) =>
+  files.reduce((n, f) => n + (f.patch ? Buffer.byteLength(f.patch, 'utf8') : 0), 0);
+
+/**
+ * A local PR read again (its last read was partial) keeps the patches the last read had and this one did not get — the
+ * same head against the same base, so the same patch (#1371 review). The document's budget pass runs after.
+ */
+export function keepKnownPatches(next: PrChanges & { failedPatches?: string[] }, last: PrChanges): void {
+  if (last.source !== 'local' || last.headSha !== next.headSha || last.baseSha !== next.baseSha) return;
+  const had = new Map(last.files.filter((f) => f.patch).map((f) => [f.path, f]));
+  for (const f of next.files) {
+    const old = had.get(f.path);
+    if (f.patch || !old?.patch) continue;
+    f.patch = old.patch;
+    if (old.patchTruncated) f.patchTruncated = true;
+    else delete f.patchTruncated;
+  }
+  // Every file whose read failed this time has its patch from the last read: nothing is left to read again.
+  const missing = (next.failedPatches ?? []).filter((path) => !next.files.find((f) => f.path === path)?.patch);
+  if (next.filesStale && next.failedPatches && missing.length === 0) delete next.filesStale;
+}
+
 export async function collectCodeChanges(input: CollectInput, deps: CollectDeps): Promise<CollectResult> {
   const prev = deps.store.read(input.conversationId);
   // Patches are cut as they arrive, not only once the document is whole: twenty checkouts and twenty PRs of full patches
   // would otherwise sit in memory before the budget drops all but 6 MiB of them (#1299 review). The document's own
   // order (uncommitted, committed, PRs) is applied again at the end.
   const prBudget: PatchBudget = { used: 0, max: MAX_DOC_PATCH_BYTES };
-  const prs = await sessionPrChanges(input.prUrls, input.startedAt, prev?.prs ?? [], deps, (files) =>
-    trimPatches(files, prBudget),
+  // The PRs GitHub did not answer for (a private repository the host's token cannot read): asked of the checkouts below.
+  const unread: PullAsk[] = [];
+  const prs = await sessionPrChanges(
+    input.prUrls,
+    input.startedAt,
+    prev?.prs ?? [],
+    deps,
+    (files) => trimPatches(files, prBudget),
+    unread,
   );
   // One running budget per layer: a later checkout's uncommitted patch is never pushed out by an earlier checkout's
   // committed one — the end-of-document pass (uncommitted first) would never have dropped it (#1299 review).
@@ -139,7 +168,17 @@ export async function collectCodeChanges(input: CollectInput, deps: CollectDeps)
   const lastRead = new Map((prev?.checkouts ?? []).map((c) => [c.id, c]));
   const checkouts: CheckoutChanges[] = [];
   const newCommits: CollectResult['newCommits'] = [];
+  const local = new Map<string, PrChanges & { failedPatches?: string[] }>();
   for (const dir of dirs.slice(0, MAX_CHECKOUTS)) {
+    // A PR a checkout read only in part (a file's patch read failed) is asked of the next one too.
+    const asks = unread.filter((a) => !local.has(a.id) || local.get(a.id)?.filesStale);
+    // A PR an earlier clone read only in part is asked again: what that read holds is given back to the budget first,
+    // so this read has the room (#1371 review round 5) — and charged again below unless this read replaces it.
+    const again = asks.map((a) => local.get(a.id)).filter((p): p is NonNullable<typeof p> => !!p);
+    prBudget.used = Math.max(0, prBudget.used - again.reduce((n, p) => n + patchBytes(p.files), 0));
+    // What a read charges to the PR budget stands only if its PRs are kept: a read thrown away (its git dirs changed
+    // meanwhile) gives the budget back (#1371 review).
+    const charged = prBudget.used;
     const read = await readCheckout({
       dir,
       sessionRoot: input.sessionRoot,
@@ -150,9 +189,32 @@ export async function collectCodeChanges(input: CollectInput, deps: CollectDeps)
       ...(input.startedAt !== undefined
         ? { commits: { since: Math.max(input.startedAt, input.commitsSince ?? 0), skip: counted } }
         : {}),
+      ...(asks.length ? { pulls: asks, trimPulls: (files: ChangedFile[]) => trimPatches(files, prBudget) } : {}),
     });
+    if (!read?.pulls) prBudget.used = charged;
+    const found = read?.pulls ?? [];
+    // An earlier partial read this one did not replace stands, and holds its share of the budget again.
+    for (const p of again) if (!found.some((f) => f.id === p.id)) prBudget.used += patchBytes(p.files);
+    for (const p of found) {
+      const before = local.get(p.id);
+      const next = { ...p, fetchedAt: deps.now() };
+      if (before) {
+        // Another clone of the same repository: the same commits. Its read keeps what the earlier one had and it did not
+        // get; those patches are charged to the budget now, as this read's own were when read.
+        const had = new Set(next.files.filter((f) => f.patch).map((f) => f.path));
+        keepKnownPatches(next, before);
+        if (
+          trimPatches(
+            next.files.filter((f) => f.patch && !had.has(f.path)),
+            prBudget,
+          )
+        )
+          next.patchesDropped = true;
+      }
+      local.set(p.id, next);
+    }
     if (!read) continue;
-    const { sessionCommits: made, ...changes } = read;
+    const { sessionCommits: made, pulls: _found, ...changes } = read;
     const c = keepLastRead(changes, lastRead.get(changes.id));
     trimPatches(c.uncommitted.files, uncommittedBudget);
     trimPatches(c.committed.files, committedBudget);
@@ -162,6 +224,20 @@ export async function collectCodeChanges(input: CollectInput, deps: CollectDeps)
     for (const commit of made ?? []) newCommits.push({ ...commit, repo: c.repo });
   }
   checkouts.sort((a, b) => (a.repo < b.repo ? -1 : a.repo > b.repo ? 1 : a.dir < b.dir ? -1 : 1));
+  // A PR found in a checkout takes the place of its stored record (one read there before, asked again), else joins.
+  for (const p of local.values()) {
+    // (Its patches were cut against the PR budget as it was read: trimPulls.)
+    const at = prs.findIndex((x) => x.id === p.id);
+    if (at >= 0) keepKnownPatches(p, prs[at]);
+    delete p.failedPatches;
+    if (at >= 0) prs[at] = p;
+    else prs.push(p);
+  }
+  // A local read has no creation time: its merge stands in for the order (newest first).
+  prs.sort((a, b) => (b.createdAt ?? b.mergedAt ?? 0) - (a.createdAt ?? a.mergedAt ?? 0));
+  const unreadPrs = unread
+    .filter((a) => !prs.some((p) => p.id === a.id))
+    .map((a) => ({ url: a.url, repo: a.repo, number: a.number }));
   const doc: CodeChangesDoc = {
     version: 1,
     conversationId: input.conversationId,
@@ -173,6 +249,7 @@ export async function collectCodeChanges(input: CollectInput, deps: CollectDeps)
     counted: { commits: [...counted].slice(-MAX_COUNTED_COMMITS), merges: [...countedMerges] },
   };
   if (input.startedAt !== undefined) doc.sessionStartedAt = input.startedAt;
+  if (unreadPrs.length) doc.unreadPrs = unreadPrs;
   applyPatchBudget(doc);
   deps.store.write(doc);
   return {

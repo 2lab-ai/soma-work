@@ -11,13 +11,14 @@ import {
   collectCodeChanges,
   createCodeChangesScheduler,
   fileSources,
+  keepKnownPatches,
   keepLastRead,
   listView,
 } from '../collector';
 import { prFileOf, pullRefOf, sessionPrChanges } from '../pr-changes';
 import { CodeChangesStore, isStoreKey, MAX_COUNTED_COMMITS } from '../store';
 import { sanitizeCodeChangesSummary, summarizeCodeChanges } from '../summary';
-import type { CheckoutChanges, CodeChangesDoc } from '../types';
+import type { ChangedFile, CheckoutChanges, CodeChangesDoc } from '../types';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -800,5 +801,377 @@ describe('the fourth review round (#1299)', () => {
     const a = r.doc.checkouts.find((c) => c.id === 'a')!;
     expect(b.uncommitted.files[0].patch).toBe(big);
     expect(a.committed.files[0].patch).toBeUndefined();
+  });
+});
+
+describe('a PR GitHub does not answer for (a private repository the host token cannot read)', () => {
+  const url = (n: number, repo = 'acme/web') => `https://github.com/${repo}/pull/${n}`;
+  const localPull = (n: number) => ({
+    id: `acme/web#${n}`,
+    url: url(n),
+    repo: 'acme/web',
+    number: n,
+    state: 'merged' as const,
+    additions: 3,
+    deletions: 1,
+    changedFiles: 1,
+    files: [
+      { path: `f${n}.ts`, status: 'modified' as const, additions: 3, deletions: 1, patch: '@@ -1 +1 @@\n-a\n+b' },
+    ],
+    mergedAt: START + n * 1000,
+    source: 'local' as const,
+  });
+  const f = (path: string, patch?: string): ChangedFile => ({
+    path,
+    status: 'modified',
+    additions: 1,
+    deletions: 0,
+    ...(patch ? { patch } : { patchTruncated: true as const }),
+  });
+  const clean = (dir: string): CheckoutChanges => ({
+    id: dir,
+    repo: 'acme/web',
+    dir,
+    uncommitted: { files: [], additions: 0, deletions: 0 },
+    committed: { files: [], additions: 0, deletions: 0, commits: [] },
+  });
+
+  it('is asked of the checkouts: found → a merged PR read there; not found anywhere → listed as unread', async () => {
+    const s = store();
+    const deps = prDeps({});
+    const readCheckout = vi.fn(async (input: { dir: string; pulls?: Array<{ number: number; repo: string }> }) => ({
+      ...clean(input.dir),
+      // The first checkout has #5 merged; the second has #6. #9 is in neither.
+      pulls: (input.pulls ?? [])
+        .filter((a) => (input.dir === '/s/a' ? a.number === 5 : a.number === 6))
+        .map((a) => localPull(a.number)),
+    }));
+    const input = {
+      conversationId: 'c-local',
+      owner: { id: 'U', name: 'u' },
+      dirs: ['/s'],
+      startedAt: START,
+      prUrls: [url(5), url(6), url(9)],
+    };
+    const ctx = {
+      ...deps,
+      store: s,
+      listCheckoutDirs: async () => ({ dirs: ['/s/a', '/s/b'] }),
+      checkoutChanges: readCheckout as never,
+    };
+    const { doc, newMerges } = await collectCodeChanges(input, ctx);
+    // What was found in the first checkout is not asked of the second.
+    expect(readCheckout.mock.calls.map((c) => [c[0].dir, (c[0].pulls ?? []).map((a) => a.number)])).toEqual([
+      ['/s/a', [5, 6, 9]],
+      ['/s/b', [6, 9]],
+    ]);
+    expect(readCheckout.mock.calls[0][0].pulls?.[0]).toEqual({
+      id: 'acme/web#5',
+      url: url(5),
+      repo: 'acme/web',
+      number: 5,
+    });
+    // Newest merge first; stamped when collected.
+    expect(doc.prs.map((p) => [p.number, p.source, p.fetchedAt])).toEqual([
+      [6, 'local', START + 7200_000],
+      [5, 'local', START + 7200_000],
+    ]);
+    expect(doc.unreadPrs).toEqual([{ url: url(9), repo: 'acme/web', number: 9 }]);
+    expect(newMerges.map((p) => p.id)).toEqual(['acme/web#6', 'acme/web#5']);
+    expect(summarizeCodeChanges(doc).layers.merged).toEqual({ files: 2, additions: 6, deletions: 2 });
+    // The next collect reuses the two (merged: they do not change) without asking GitHub or the checkouts for them.
+    deps.fetchPullDetail.mockClear();
+    readCheckout.mockClear();
+    const again = await collectCodeChanges(input, ctx);
+    expect(deps.fetchPullDetail.mock.calls.map((c) => c[2])).toEqual([9]);
+    expect(readCheckout.mock.calls.map((c) => (c[0].pulls ?? []).map((a) => a.number))).toEqual([[9], [9]]);
+    expect(again.doc.prs.map((p) => p.number)).toEqual([6, 5]);
+    expect(again.doc.unreadPrs).toEqual([{ url: url(9), repo: 'acme/web', number: 9 }]);
+  });
+
+  it('a local record whose patches the budget dropped is read there again and replaced; none unread → no list', async () => {
+    const s = store();
+    s.write({
+      version: 1,
+      conversationId: 'c-local2',
+      owner: { id: 'U', name: 'u' },
+      updatedAt: 1,
+      checkouts: [],
+      prs: [{ ...localPull(5), files: [], patchesDropped: true, fetchedAt: 1 }],
+      counted: { commits: [] },
+    });
+    const readCheckout = vi.fn(async (input: { dir: string; pulls?: Array<{ number: number }> }) => ({
+      ...clean(input.dir),
+      pulls: (input.pulls ?? []).map((a) => localPull(a.number)),
+    }));
+    const { doc } = await collectCodeChanges(
+      { conversationId: 'c-local2', owner: { id: 'U', name: 'u' }, dirs: ['/s'], startedAt: START, prUrls: [url(5)] },
+      {
+        ...prDeps({}),
+        store: s,
+        listCheckoutDirs: async () => ({ dirs: ['/s/a'] }),
+        checkoutChanges: readCheckout as never,
+      },
+    );
+    expect(doc.prs).toHaveLength(1);
+    expect(doc.prs[0].files.map((f) => f.path)).toEqual(['f5.ts']);
+    expect(doc.prs[0]).not.toHaveProperty('patchesDropped');
+    expect(doc).not.toHaveProperty('unreadPrs');
+  });
+
+  it('a found PR’s patches are cut against the same PR budget as GitHub’s, as it is read', async () => {
+    const s = store();
+    const deps = {
+      ...prDeps({ 1: detail(1) }),
+      // 24 files of 250 KB (each under the 256 KB a patch keeps): GitHub's #1 takes nearly the whole 6 MiB.
+      fetchPullFiles: vi.fn(async () => ({
+        files: Array.from({ length: 24 }, (_, i) => ({
+          ...FILE,
+          filename: `g${i}.ts`,
+          patch: `@@ -1 +1 @@\n+${'x'.repeat(250 * 1024)}`,
+        })),
+        truncated: false,
+      })),
+    };
+    const dropped: boolean[] = [];
+    const readCheckout = vi.fn(
+      async (input: { dir: string; pulls?: Array<{ number: number }>; trimPulls?: (f: unknown[]) => boolean }) => {
+        const pulls = (input.pulls ?? []).map((a) => {
+          const p = {
+            ...localPull(a.number),
+            files: [{ ...localPull(a.number).files[0], patch: `@@ -1 +1 @@\n+${'y'.repeat(2 * 1024 * 1024)}` }],
+          };
+          dropped.push(!!input.trimPulls?.(p.files));
+          return p;
+        });
+        return { ...clean(input.dir), pulls };
+      },
+    );
+    await collectCodeChanges(
+      {
+        conversationId: 'c-local3',
+        owner: { id: 'U', name: 'u' },
+        dirs: ['/s'],
+        startedAt: START,
+        prUrls: [url(1), url(5)],
+      },
+      { ...deps, store: s, listCheckoutDirs: async () => ({ dirs: ['/s/a'] }), checkoutChanges: readCheckout as never },
+    );
+    // GitHub's #1 took nearly all of the 6 MiB: the local #5's 2 MiB patch does not fit.
+    expect(dropped).toEqual([true]);
+  });
+
+  it('a checkout read thrown away (its git dirs changed meanwhile) gives back what its PRs charged to the budget', async () => {
+    const s = store();
+    let calls = 0;
+    const readCheckout = vi.fn(
+      async (input: { dir: string; pulls?: Array<{ number: number }>; trimPulls?: (f: unknown[]) => boolean }) => {
+        calls++;
+        const p = {
+          ...localPull(5),
+          files: [{ ...localPull(5).files[0], patch: `@@ -1 +1 @@\n+${'y'.repeat(4 * 1024 * 1024)}` }],
+        };
+        const dropped = !!input.trimPulls?.(p.files);
+        // The first checkout's git dirs changed during the read: nothing of it is kept (checkoutChanges answers unread).
+        if (calls === 1)
+          return {
+            ...clean(input.dir),
+            uncommitted: { files: [], additions: 0, deletions: 0, skipped: 'repo-changed-during-read' },
+          };
+        return { ...clean(input.dir), pulls: [{ ...p, ...(dropped ? { patchesDropped: true as const } : {}) }] };
+      },
+    );
+    const { doc } = await collectCodeChanges(
+      { conversationId: 'c-local4', owner: { id: 'U', name: 'u' }, dirs: ['/s'], startedAt: START, prUrls: [url(5)] },
+      {
+        ...prDeps({}),
+        store: s,
+        listCheckoutDirs: async () => ({ dirs: ['/s/a', '/s/b'] }),
+        checkoutChanges: readCheckout as never,
+      },
+    );
+    // 4 MiB charged twice would not fit 6 MiB; given back once, the second read keeps its patch.
+    expect(doc.prs[0].files[0].patch?.length).toBeGreaterThan(4 * 1024 * 1024);
+    expect(doc.prs[0]).not.toHaveProperty('patchesDropped');
+  });
+
+  it('keepKnownPatches: a partial local read keeps the last read’s patches for the files it missed (same head and base)', () => {
+    const last = { ...localPull(5), headSha: 'h', baseSha: 'b', files: [f('a', '+a'), f('b')], fetchedAt: 1 };
+    const next = {
+      ...localPull(5),
+      headSha: 'h',
+      baseSha: 'b',
+      files: [f('a'), f('b', '+b')],
+      filesStale: true as const,
+      fetchedAt: 2,
+    };
+    keepKnownPatches({ ...next, files: next.files.map((x) => ({ ...x })) }, last);
+    const settled = { ...next, files: next.files.map((x) => ({ ...x })), failedPatches: ['a'] };
+    keepKnownPatches(settled, last);
+    expect(settled.files.map((x) => [x.path, x.patch, x.patchTruncated])).toEqual([
+      ['a', '+a', undefined],
+      ['b', '+b', undefined],
+    ]);
+    // The only file whose read failed got its patch from the last read: nothing to read again.
+    expect(settled).not.toHaveProperty('filesStale');
+    // One the last read did not have either: still to read again.
+    const still = { ...next, files: [f('a'), f('b', '+b'), f('c')], failedPatches: ['a', 'c'] };
+    keepKnownPatches(still, last);
+    expect(still.filesStale).toBe(true);
+    // Another head: nothing carried over.
+    const moved = { ...next, headSha: 'h2', files: [f('a')], failedPatches: ['a'] };
+    keepKnownPatches(moved, last);
+    expect(moved.files[0].patch).toBeUndefined();
+    expect(moved.filesStale).toBe(true);
+  });
+
+  it('a partial local read again, through the collector: the stored patch of the file it missed stays, and the PR settles', async () => {
+    const s = store();
+    s.write({
+      version: 1,
+      conversationId: 'c-local5',
+      owner: { id: 'U', name: 'u' },
+      updatedAt: 1,
+      checkouts: [],
+      prs: [
+        {
+          ...localPull(5),
+          headSha: 'h',
+          baseSha: 'b',
+          files: [f('a.ts', '+a'), f('b.ts')],
+          filesStale: true,
+          fetchedAt: 1,
+        },
+      ],
+      counted: { commits: [] },
+    });
+    const readCheckout = vi.fn(async (input: { dir: string; pulls?: Array<{ number: number }> }) => ({
+      ...clean(input.dir),
+      pulls: (input.pulls ?? []).map((a) => ({
+        ...localPull(a.number),
+        headSha: 'h',
+        baseSha: 'b',
+        files: [f('a.ts'), f('b.ts', '+b')],
+        filesStale: true as const,
+        failedPatches: ['a.ts'],
+      })),
+    }));
+    const { doc } = await collectCodeChanges(
+      { conversationId: 'c-local5', owner: { id: 'U', name: 'u' }, dirs: ['/s'], startedAt: START, prUrls: [url(5)] },
+      {
+        ...prDeps({}),
+        store: s,
+        listCheckoutDirs: async () => ({ dirs: ['/s/a'] }),
+        checkoutChanges: readCheckout as never,
+      },
+    );
+    expect(doc.prs[0].files.map((x) => [x.path, x.patch])).toEqual([
+      ['a.ts', '+a'],
+      ['b.ts', '+b'],
+    ]);
+    expect(doc.prs[0]).not.toHaveProperty('filesStale');
+    expect(doc.prs[0]).not.toHaveProperty('failedPatches');
+    expect(s.read('c-local5')?.prs[0].files.map((x) => x.patch)).toEqual(['+a', '+b']);
+  });
+
+  it('a PR one clone read only in part is asked of the next clone, which completes it', async () => {
+    const s = store();
+    const readCheckout = vi.fn(async (input: { dir: string; pulls?: Array<{ number: number }> }) => ({
+      ...clean(input.dir),
+      pulls: (input.pulls ?? []).map((a) =>
+        input.dir === '/s/a'
+          ? {
+              ...localPull(a.number),
+              headSha: 'h',
+              baseSha: 'b',
+              files: [f('a.ts', '+a'), f('b.ts')],
+              filesStale: true as const,
+              failedPatches: ['b.ts'],
+            }
+          : {
+              ...localPull(a.number),
+              headSha: 'h',
+              baseSha: 'b',
+              files: [f('a.ts'), f('b.ts', '+b')],
+              filesStale: true as const,
+              failedPatches: ['a.ts'],
+            },
+      ),
+    }));
+    const { doc } = await collectCodeChanges(
+      { conversationId: 'c-local6', owner: { id: 'U', name: 'u' }, dirs: ['/s'], startedAt: START, prUrls: [url(5)] },
+      {
+        ...prDeps({}),
+        store: s,
+        listCheckoutDirs: async () => ({ dirs: ['/s/a', '/s/b'] }),
+        checkoutChanges: readCheckout as never,
+      },
+    );
+    expect(readCheckout.mock.calls.map((c) => [c[0].dir, (c[0].pulls ?? []).map((a) => a.number)])).toEqual([
+      ['/s/a', [5]],
+      ['/s/b', [5]],
+    ]);
+    expect(doc.prs[0].files.map((x) => [x.path, x.patch])).toEqual([
+      ['a.ts', '+a'],
+      ['b.ts', '+b'],
+    ]);
+    expect(doc.prs[0]).not.toHaveProperty('filesStale');
+  });
+
+  it('the next clone asked for a partial PR reads it with the room the earlier read held (given back first)', async () => {
+    const s = store();
+    const big = (path: string, mib: number) => ({
+      ...f(path),
+      patch: `@@ -1 +1 @@\n+${'z'.repeat(mib * 1024 * 1024)}`,
+    });
+    const readCheckout = vi.fn(
+      async (input: { dir: string; pulls?: Array<{ number: number }>; trimPulls?: (f: ChangedFile[]) => boolean }) => ({
+        ...clean(input.dir),
+        pulls: (input.pulls ?? []).map((a) => {
+          // Clone A: a.ts (3 MiB) read, b.ts failed. Clone B: both read — a.ts 3 MiB, b.ts 2 MiB: 5 MiB, under the 6.
+          const files = input.dir === '/s/a' ? [big('a.ts', 3), f('b.ts')] : [big('a.ts', 3), big('b.ts', 2)];
+          const dropped = !!input.trimPulls?.(files);
+          return {
+            ...localPull(a.number),
+            headSha: 'h',
+            baseSha: 'b',
+            files,
+            ...(input.dir === '/s/a' ? { filesStale: true as const, failedPatches: ['b.ts'] } : {}),
+            ...(dropped ? { patchesDropped: true as const } : {}),
+          };
+        }),
+      }),
+    );
+    const { doc } = await collectCodeChanges(
+      { conversationId: 'c-local7', owner: { id: 'U', name: 'u' }, dirs: ['/s'], startedAt: START, prUrls: [url(5)] },
+      {
+        ...prDeps({}),
+        store: s,
+        listCheckoutDirs: async () => ({ dirs: ['/s/a', '/s/b'] }),
+        checkoutChanges: readCheckout as never,
+      },
+    );
+    expect(doc.prs[0].files.map((x) => [x.path, !!x.patch])).toEqual([
+      ['a.ts', true],
+      ['b.ts', true],
+    ]);
+    expect(doc.prs[0]).not.toHaveProperty('patchesDropped');
+    expect(doc.prs[0]).not.toHaveProperty('filesStale');
+  });
+
+  it('sessionPrChanges: unread lists only what neither GitHub nor a stored record gives', async () => {
+    const unread: Array<{ number: number }> = [];
+    const stored = { ...localPull(7), fetchedAt: 1, filesStale: undefined };
+    const apiOld = { ...localPull(8), source: undefined, closes: [], fetchedAt: 1, state: 'open' as const };
+    const out = await sessionPrChanges(
+      [url(5), url(7), url(8), url(10, 'x/y')],
+      START,
+      [stored, apiOld],
+      prDeps({}),
+      undefined,
+      unread as never,
+    );
+    expect(out.map((p) => p.number).sort()).toEqual([7, 8]);
+    expect(unread.map((a) => a.number)).toEqual([5, 10]);
   });
 });

@@ -27,6 +27,10 @@ Status: shipped (main `cda9d40a`, dev v0.3.56-dev) · 작성 2026-11-16 · 기�
 
 > 아 그리고 다른 사람의 작업도 변경점 읽을수 있게 해줘 왜 못읽게 함?
 
+### SSOT_7 — 2026-11-19 Slack, 같은 스레드 (원문 그대로, 스크린샷: dosi.dev tts 세션의 변경점 탭 — PR 7개 머지됨, 레포 0 · 파일 0)
+
+> 이세션 뭐야 pr 만 나오고 변경점 코드가 안나옴
+
 (SSOT_2–SSOT_5는 상세 카드 탭 줄 · 뷰어 두 모드 · 이슈 트리 — [`../28-detail-card-user-tasks-and-viewer-panel-spec.md`](../28-detail-card-user-tasks-and-viewer-panel-spec.md), [`../issue-tree/ssot.md`](../issue-tree/ssot.md).)
 
 ## SSOT-TASK-TREE
@@ -41,6 +45,7 @@ Status: shipped (main `cda9d40a`, dev v0.3.56-dev) · 작성 2026-11-16 · 기�
 - **T8** — 모델이 세션 데이터에서 이 데이터를 보고, 커밋하지 않은 변경을 안다 (SSOT_1 2-②)
 - **T9** — 리서치 → `.prd` 계획 → 구현 (SSOT_1 끝 문장)
 - **T10** — 다른 사람의 작업도 변경점을 읽는다: 그 작업 카드를 볼 수 있으면 변경점도 읽는다 (SSOT_6)
+- **T11** — 호스트 토큰이 못 읽는 비공개 레포의 PR도 변경 코드가 보인다: 세션 클론의 머지 커밋에서 읽고, 그래도 못 읽으면 이유를 보인다 (SSOT_7)
 
 ## INTENT-LIST
 

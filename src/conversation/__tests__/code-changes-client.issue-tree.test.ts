@@ -241,3 +241,62 @@ describe('the 변경점 tab’s issue tree', () => {
     expect(CODE_CHANGES_CSS).toContain('.chg-issue-internal .chg-imark {');
   });
 });
+
+describe('a PR the server could not read (a private repository the host token cannot read)', () => {
+  const tree = {
+    nodes: [
+      { id: 'internal:1', kind: 'issue', source: 'internal', title: 'work', placed: 'model' },
+      {
+        id: id('pull/5'),
+        kind: 'pr',
+        source: 'github',
+        url: `${GH}/pull/5`,
+        title: 'five',
+        status: 'merged',
+        parent: 'internal:1',
+        placed: 'model',
+      },
+      {
+        id: id('pull/9'),
+        kind: 'pr',
+        source: 'github',
+        url: `${GH}/pull/9`,
+        title: 'nine',
+        status: 'merged',
+        parent: 'internal:1',
+        placed: 'model',
+      },
+    ],
+  };
+  const doc = {
+    ...DOC,
+    prs: [pr(5, { source: 'local' })],
+    unreadPrs: [{ url: `${GH}/pull/9`, repo: 'acme/web', number: 9 }],
+  };
+
+  it('its row is marked 읽지 못함 with the reason; a note names it; a PR read from the session clone says so', () => {
+    const el: El = { innerHTML: '' };
+    const api = load(el, tree);
+    api.setState({ ...api.state(), cid: 'c1', doc, state: 'ok' });
+    api.chgPaint();
+    const html = el.innerHTML;
+    const row9 = html.split('data-chg-node="').find((r) => r.startsWith(id('pull/9'))) ?? '';
+    expect(row9).toContain('class="chg-unread"');
+    expect(row9).toContain('읽지 못함');
+    expect(row9).toContain('호스트 토큰에 권한이 없거나, 없는 PR이거나, 일시적 실패');
+    const row5 = html.split('data-chg-node="').find((r) => r.startsWith(id('pull/5'))) ?? '';
+    expect(row5).not.toContain('chg-unread');
+    expect(row5).toContain('세션 폴더 클론의 머지 커밋에서 읽은 변경');
+    expect(html).toContain('<div class="chg-note chg-note-unread">acme/web #9 — GitHub이 이 PR을 내주지 않았고');
+  });
+
+  it('nothing unread: no mark, no note', () => {
+    const el: El = { innerHTML: '' };
+    const api = load(el, tree);
+    api.setState({ ...api.state(), cid: 'c1', doc: { ...doc, prs: [pr(5)], unreadPrs: undefined }, state: 'ok' });
+    api.chgPaint();
+    expect(el.innerHTML).not.toContain('chg-unread');
+    expect(el.innerHTML).not.toContain('chg-note-unread');
+    expect(el.innerHTML).not.toContain('세션 폴더 클론');
+  });
+});

@@ -44,8 +44,8 @@ PR 감시  session-pr-watch(#928)가 세션 PR의 머지를 보면 snapshotCodeC
 | `src/code-changes/types.ts` | 저장 문서 · 요약 타입 |
 | `src/code-changes/git-diff-parse.ts` | `git diff` 출력 → 파일별 패치, `--numstat -z` 파싱, 새 파일 합성 패치 (순수) |
 | `src/code-changes/git-runner.ts` | 굳힌 git 실행기(§5) + 설정 게이트 |
-| `src/code-changes/checkout-changes.ts` | 체크아웃 하나의 커밋 안 함 · 커밋함 · 새 커밋 |
-| `src/code-changes/pr-changes.ts` | GitHub PR 상세 · 파일 (토큰은 `link-metadata-fetcher`의 `getGitHubToken`) |
+| `src/code-changes/checkout-changes.ts` | 체크아웃 하나의 커밋 안 함 · 커밋함 · 새 커밋 · GitHub이 답하지 않은 PR을 기본 브랜치의 머지 커밋에서(`mergedPulls`, 머지 커밋만, SSOT_7) · 한 번에 안 오는 diff는 파일별로(`patchEach`) |
+| `src/code-changes/pr-changes.ts` | GitHub PR 상세 · 파일 (토큰은 `link-metadata-fetcher`의 `getGitHubToken`) · GitHub이 답하지 않은 PR 목록(`unread`) — 수집기가 체크아웃에 묻고, 끝까지 못 읽은 것은 문서의 `unreadPrs` |
 | `src/code-changes/collector.ts` | 세션 하나 수집 · 요약 · 지표 · 스케줄(세션당 직렬, 최소 간격) · sweeper |
 | `src/code-changes/store.ts` | 대화별 문서 읽기/쓰기 |
 | `src/conversation/code-changes-routes.ts` | 두 라우트, 권한 = 카드 공개 규칙(`task-visibility.ts`, SSOT_6) |

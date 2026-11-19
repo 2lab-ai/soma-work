@@ -27,7 +27,21 @@ export interface PrDeps {
 
 const PULL_URL = /^https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)(?:[/?#]|$)/i;
 
-export function pullRefOf(url: string): { owner: string; repo: string; number: number; id: string } | undefined {
+export interface PullRef {
+  owner: string;
+  repo: string;
+  number: number;
+  /** `owner/name#number`, lower case. */
+  id: string;
+}
+
+/**
+ * A PR GitHub did not answer for, to be looked for in the session's checkouts (`mergedPulls`): its `repo` (lower case)
+ * names the only checkouts asked.
+ */
+export type PullAsk = Pick<PrChanges, 'id' | 'url' | 'repo' | 'number'>;
+
+export function pullRefOf(url: string): PullRef | undefined {
   const m = PULL_URL.exec(url.trim());
   if (!m) return undefined;
   const number = Number(m[3]);
@@ -85,6 +99,8 @@ export async function sessionPrChanges(
   deps: PrDeps,
   /** Cuts the patches of each PR's freshly read files as they arrive; true when it dropped some. */
   trim?: (files: ChangedFile[]) => boolean,
+  /** Filled with the PRs GitHub did not answer for and no stored record holds (or a local record to read again). */
+  unread?: PullAsk[],
 ): Promise<PrChanges[]> {
   const seen = new Set<string>();
   const out: PrChanges[] = [];
@@ -97,7 +113,9 @@ export async function sessionPrChanges(
     // A merged PR does not change — unless its files never arrived whole, or the budget dropped their patches. A closed
     // one is asked again: it can be reopened, and merged later. A merged record from before .prd/29 (no `closes`) is
     // read once more for its closing refs; its files are reused below (same head and base), not listed again (G4).
-    if (old && old.state === 'merged' && !old.filesStale && !old.patchesDropped && old.closes !== undefined) {
+    // A merged PR read from a session checkout (GitHub did not answer) is settled the same way; it has no closing refs.
+    const settled = old && old.state === 'merged' && !old.filesStale && !old.patchesDropped;
+    if (settled && (old.closes !== undefined || old.source === 'local')) {
       out.push(old);
       continue;
     }
@@ -105,6 +123,10 @@ export async function sessionPrChanges(
     const detail = await deps.fetchPullDetail(ref.owner, ref.repo, ref.number);
     if (!detail) {
       if (old) out.push(old);
+      // Nothing to show for it (a private repository the host's token cannot read): the collector asks the session's
+      // checkouts. A record read there before whose files did not arrive whole is asked again.
+      if (!old || old.source === 'local')
+        unread?.push({ id: ref.id, url, repo: `${ref.owner}/${ref.repo}`.toLowerCase(), number: ref.number });
       continue;
     }
     const createdAt = time(detail.created_at);
