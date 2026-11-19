@@ -1,6 +1,17 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { A2tService } from '../a2t-service';
 import type { A2tStatus } from '../types';
+
+// The real spawn runs; the wrapper only records what the worker was handed.
+const { spawnCalls } = vi.hoisted(() => ({ spawnCalls: [] as unknown[][] }));
+vi.mock('child_process', async (importOriginal) => {
+  const real = await importOriginal<typeof import('child_process')>();
+  const spawn = (...args: Parameters<typeof real.spawn>) => {
+    spawnCalls.push(args);
+    return real.spawn(...args);
+  };
+  return { ...real, default: { ...real, spawn }, spawn };
+});
 
 describe('A2tService — status management', () => {
   it('starts in not_initialized state', () => {
@@ -75,6 +86,28 @@ describe('A2tService — status management', () => {
 
     const python = new A2tService({ pythonPath: '/nonexistent/custom-python3', minMemoryMb: 1 });
     await expect(python.initialize()).rejects.toThrow("Python not found at '/nonexistent/custom-python3'");
+  });
+
+  it('initialize() hands the worker the configured model, device, compute type and memory floor', async () => {
+    spawnCalls.length = 0;
+    const service = new A2tService({
+      model: 'tiny',
+      device: 'cuda',
+      computeType: 'float16',
+      minMemoryMb: 1,
+      pythonPath: '/nonexistent/custom-python3',
+    });
+    await expect(service.initialize()).rejects.toThrow("Python not found at '/nonexistent/custom-python3'");
+
+    expect(spawnCalls).toHaveLength(1);
+    const [command, , options] = spawnCalls[0] as [string, string[], { env: Record<string, string> }];
+    expect(command).toBe('/nonexistent/custom-python3');
+    expect(options.env).toMatchObject({
+      A2T_MODEL: 'tiny',
+      A2T_DEVICE: 'cuda',
+      A2T_COMPUTE_TYPE: 'float16',
+      A2T_MIN_MEMORY_MB: '1',
+    });
   });
 
   it('initialize() rejects when memory insufficient', async () => {

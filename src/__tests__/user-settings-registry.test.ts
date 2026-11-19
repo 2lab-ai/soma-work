@@ -291,6 +291,12 @@ describe('settings registry — write', () => {
     expect(apply.sandbox).toHaveBeenCalledWith({ userId: 'U1', value: 'network_off' });
   });
 
+  it('slackTaskEntry is gone (#855): not listed, and a write to it is refused as an unknown key', async () => {
+    const { registry } = setup();
+    expect(registry.read('U1').settings.some((s) => s.key === ('slackTaskEntry' as never))).toBe(false);
+    await expect(registry.write('U1', 'slackTaskEntry' as never, true)).rejects.toThrow();
+  });
+
   it('epicTasks (E4 ④a-2): off by default, a toggle in account, written through the store setter', async () => {
     const { registry, store } = setup();
     const row = registry.read('U1').settings.find((s) => s.key === 'epicTasks')!;

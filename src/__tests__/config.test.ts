@@ -181,6 +181,15 @@ describe('config.autoRotate unit boundary (#781)', () => {
   it('operator sets 0..1 env: stored as percent (0..100) — same legacy contract', async () => {
     expect(await loadSevenDayMax('0.85')).toBeCloseTo(85, 9);
   });
+
+  it('the 5-hour knob is gone: config.autoRotate has no fiveHourMax (2026-11)', async () => {
+    // An operator .env written before 2026-11 may still set the retired knob; it must not be read.
+    vi.stubEnv('AUTO_ROTATE_FIVEH_THRESHOLD', '0.5');
+    vi.resetModules();
+    const { config } = await import('../config');
+    expect(config.autoRotate).not.toHaveProperty('fiveHourMax');
+    expect(Object.keys(config.autoRotate).sort()).toEqual(['dryRun', 'enabled', 'sevenDayMax']);
+  });
 });
 
 describe('parseBool (#666)', () => {

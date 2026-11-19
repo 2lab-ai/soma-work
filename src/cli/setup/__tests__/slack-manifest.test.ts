@@ -511,6 +511,7 @@ describe('parseManifestHelperArgv', () => {
       parseManifestHelperArgv(['xoxb-SENTINELARGVLEAK0001']);
       expect.unreachable('a positional argument must be refused');
     } catch (err) {
+      expect(err).toBeInstanceOf(SlackProjectOptionsError);
       expect((err as Error).message).not.toContain('SENTINELARGVLEAK0001');
     }
   });

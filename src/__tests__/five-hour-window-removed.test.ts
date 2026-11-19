@@ -1,19 +1,26 @@
 /**
  * The 5-hour usage window is gone (owner, 2026-11-04: "이제 5시간 사용량 있는
  * 프로바이더가 없어짐"; 2026-11-10: "llmux에서도 완전히 삭제해주고, soma-work에서도
- * 완전히 삭제해줘"). A reading that still arrives — an older llmux daemon, an
- * operator config.json seeded before the removal — is ignored, never an error.
+ * 완전히 삭제해줘"). A reading that still arrives — an older llmux daemon, a
+ * stored CCT snapshot, an operator config.json seeded before the removal — is
+ * ignored, never an error.
  */
 
 import { describe, expect, it } from 'vitest';
-import type { LlmuxAccount } from '../auth/llmux-client';
+import type { AuthKey } from '../auth/auth-key';
+import type { LlmuxAccount, LlmuxStatus } from '../auth/llmux-client';
+import type { CctStoreSnapshot, SlotState } from '../cct-store/types';
+import { buildCapacityView } from '../conversation/capacity-view';
+import { cctSlotsToUsage } from '../conversation/new-task-usage';
+import { selectBestRotationCandidate } from '../oauth/auto-rotate';
 import { accountLines, groupSummary } from '../slack/auth/capacity';
+import { buildSlotRow } from '../slack/cct/builder';
 import { normalizeUiSurfacesConfig } from '../slack/surface-config';
 
 const NOW_MS = Date.parse('2026-11-10T00:00:00Z');
 const NOW_S = NOW_MS / 1000;
 
-/** A stale 5h reading as an older llmux would still carry it. */
+/** A stale 5h reading as an older llmux / a stored snapshot would still carry it. */
 const LEGACY_FIVE = { utilization: 1, resets_at: NOW_S + 3600, resets_in_secs: 3600 };
 
 function llmuxAccount(over: Partial<LlmuxAccount> & Record<string, unknown> = {}): LlmuxAccount {
@@ -29,7 +36,71 @@ function llmuxAccount(over: Partial<LlmuxAccount> & Record<string, unknown> = {}
   } as LlmuxAccount;
 }
 
+function cctSlot(keyId: string): AuthKey {
+  return {
+    kind: 'cct',
+    source: 'setup',
+    keyId,
+    name: keyId,
+    setupToken: 'sk-ant-oat01-xxxxxxxx',
+    oauthAttachment: {
+      accessToken: 't',
+      refreshToken: 'r',
+      expiresAtMs: NOW_MS + 7 * 3_600_000,
+      scopes: ['user:profile', 'user:inference'],
+      acknowledgedConsumerTosRisk: true,
+    },
+    createdAt: '2026-11-01T00:00:00Z',
+  } as AuthKey;
+}
+
+/** A stored usage snapshot from before the removal still has `fiveHour`. */
+function legacyState(fiveUtil: number, sevenUtil: number): SlotState {
+  return {
+    authState: 'healthy',
+    activeLeases: [],
+    usage: {
+      fetchedAt: new Date(NOW_MS - 60_000).toISOString(),
+      fiveHour: { utilization: fiveUtil, resetsAt: new Date(NOW_MS + 3_600_000).toISOString() },
+      sevenDay: { utilization: sevenUtil, resetsAt: new Date(NOW_MS + 3 * 86_400_000).toISOString() },
+    },
+  } as unknown as SlotState;
+}
+
+describe('5h window removed — a stored CCT usage snapshot', () => {
+  it('auto-rotation gates and sorts on the weekly window only — a stored 5h reading changes nothing', () => {
+    const snap = {
+      registry: { slots: [cctSlot('a'), cctSlot('b')], activeKeyId: 'b' },
+      state: { a: legacyState(100, 10), b: legacyState(0, 10) },
+    } as unknown as CctStoreSnapshot;
+    // Same weekly reset and utilization: the tie goes to keyId order, not to the 5h reading.
+    const winner = selectBestRotationCandidate(snap, NOW_MS, { sevenDayMax: 90 });
+    expect(winner?.keyId).toBe('a');
+    expect(winner).not.toHaveProperty('fiveHourUtilization');
+  });
+
+  it('the CCT card shows no 5h row for a stored 5h reading', () => {
+    const blocks = buildSlotRow(cctSlot('a'), legacyState(42, 10), false, NOW_MS);
+    const text = JSON.stringify(blocks);
+    expect(text).toContain('7d');
+    // The panel row reads "5h        ████…" (a JSON "\n" before it, so no \b): any "5h" then a space.
+    expect(text).not.toMatch(/5h\s/);
+  });
+
+  it('the new-task battery reads no 5h window from a CCT slot', () => {
+    const [account] = cctSlotsToUsage([legacyState(42, 10)], NOW_MS);
+    expect(account.windows.map((w) => w.label)).toEqual(['7d', '7d-sonnet']);
+  });
+});
+
 describe('5h window removed — llmux status', () => {
+  it('a 5h reading from an older llmux is ignored: no 5h cut on "now", no 5h refill', () => {
+    const status = { accounts: [llmuxAccount({ five_hour: LEGACY_FIVE })] } as LlmuxStatus;
+    const [claude] = buildCapacityView(status, {}, NOW_MS).groups;
+    expect(claude.now).toBeCloseTo(0.6);
+    expect(claude.events.map((e) => e.cause)).toEqual(['7d']);
+  });
+
   it('a stale 5h reading from an older llmux does not mark the account unavailable on the Slack auth card', () => {
     const account = llmuxAccount({ five_hour: { ...LEGACY_FIVE, utilization: 1 } });
     const lines = [...groupSummary([account], NOW_MS), ...accountLines(account, NOW_MS)].join('\n');
