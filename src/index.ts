@@ -53,6 +53,7 @@ import {
   shutdownA2tService,
   shutdownDictationA2tService,
 } from './a2t/a2t-service';
+import { isAdminUser } from './admin-utils';
 import { auxModelFor } from './agent-runtime/aux-model';
 import { getClaudeChildProcessRegistry } from './agent-runtime/claude-child-process-registry';
 import { initAuthRuntimeDefault } from './auth/auth-runtime';
@@ -2286,7 +2287,10 @@ async function start() {
     // A cheap long poll to the local mailbox server; a model runs only when mail arrives. Absent `mailbox` = off.
     const mailboxParsed = parseMailboxConfig(appConfig.mailbox);
     if (mailboxParsed && !mailboxParsed.ok) logger.warn(`Ignoring config.json#"mailbox": ${mailboxParsed.error}`);
-    if (mailboxParsed?.ok) {
+    // The owner's DM takes host turns only for an admin owner (the DM gate); another owner needs a channel.
+    if (mailboxParsed?.ok && !mailboxParsed.config.channel && !isAdminUser(mailboxParsed.config.owner)) {
+      logger.warn('Ignoring config.json#"mailbox": the owner is not an admin, so mail needs `mailbox.channel`');
+    } else if (mailboxParsed?.ok) {
       const mailboxRegistry = claudeHandler.getSessionRegistry();
       mailboxPoller = createMailboxPoller({
         config: mailboxParsed.config,
@@ -2300,21 +2304,34 @@ async function start() {
           if (!dm.channel?.id) throw new Error(`could not open a DM with ${userId}`);
           return dm.channel.id;
         },
+        notify: async (channel, threadTs, text) => {
+          await app.client.chat.postMessage({ channel, thread_ts: threadTs, text });
+        },
         sessionState: (channel, threadTs) =>
           envSkillWakeState(mailboxRegistry.getSession(channel, threadTs), (c, t) => slackHandler.isHostTurnFree(c, t)),
-        inject: async ({ user, channel, threadTs, text }) => {
-          await messageInjector({
-            user,
-            channel,
-            thread_ts: threadTs,
-            ts: `${Date.now() / 1000}`,
-            text: inertSkillRefs(text),
-            synthetic: true,
-            skipDispatch: true,
-            // A mail body is another agent's words: never a command, never a skill call, never the user's answer.
-            routeContext: { skipAutoBotThread: true, verbatimPrompt: true, hostTurn: true },
-          });
-        },
+        // Resolves when the host TOOK the turn (#966 — `handleMessage` returning is not running it: the dispatch may
+        // not open, the fence may hold it, a gate may drop it), not when the turn ends. Only a taken turn acks the mail.
+        inject: ({ user, channel, threadTs, text }) =>
+          new Promise<boolean>((resolve) => {
+            const ts = `${Date.now() / 1000}`;
+            const unwatch = slackHandler.onTurnAccepted(channel, ts, () => resolve(true));
+            messageInjector({
+              user,
+              channel,
+              thread_ts: threadTs,
+              ts,
+              text: inertSkillRefs(text),
+              synthetic: true,
+              skipDispatch: true,
+              // A mail body is another agent's words: never a command, never a skill call, never the user's answer.
+              routeContext: { skipAutoBotThread: true, verbatimPrompt: true, hostTurn: true },
+            })
+              .catch((error) => logger.warn('Mail turn failed', { error: (error as Error)?.message }))
+              .finally(() => {
+                unwatch();
+                resolve(false); // no-op once taken
+              });
+          }),
       });
       mailboxPoller.start();
       timing('Mailbox poller started');
@@ -2660,6 +2677,9 @@ async function start() {
         // single freeze owner and closes admission so nothing new is parked
         // into a queue we are freezing. It throws on a store failure, which is
         // why it belongs INSIDE this try, immediately before the sweep.
+        // No new mail turn may start once intake closes: the poller stops first (a turn it starts after this would
+        // meet the closed intake, and its mail would be lost).
+        void mailboxPoller?.stop();
         slackHandler.prepareFollowupShutdown();
         slackHandler.getRequestCoordinator().clearAll();
       } catch (error) {
@@ -2690,7 +2710,6 @@ async function start() {
           cronScheduler.stop();
         }
         sessionPrWatch?.stop();
-        void mailboxPoller?.stop();
         prWatchDelivery?.stop();
         envSkillDelivery.stop();
 

@@ -27,14 +27,14 @@ describe('parseMailboxConfig', () => {
         allowFrom: ['soma-work:*:*'],
       }),
     });
-    const d = parseMailboxConfig({ owner: 'U0ABC' });
+    const d = parseMailboxConfig({ owner: 'U0ABC', allowFrom: ['*:*:*'] });
     expect(d?.ok && d.config.clientFile).toBe(path.join(os.homedir(), '.config/agent-mailbox/client.json'));
     expect(d?.ok && d.config.channel).toBeUndefined();
     expect(d?.ok && d.config.allowFrom).toEqual(['*:*:*']);
     expect(d?.ok && d.config.cli).toBe('mailbox');
-    const c = parseMailboxConfig({ owner: 'U0ABC', cli: '/opt/bin/mailbox' });
+    const c = parseMailboxConfig({ owner: 'U0ABC', allowFrom: ['*:*:*'], cli: '/opt/bin/mailbox' });
     expect(c?.ok && c.config.cli).toBe('/opt/bin/mailbox');
-    expect(parseMailboxConfig({ owner: 'U0ABC', cli: 'mailbox; rm -r x' })).toEqual({
+    expect(parseMailboxConfig({ owner: 'U0ABC', allowFrom: ['*:*:*'], cli: 'mailbox; rm -r x' })).toEqual({
       ok: false,
       error: expect.stringContaining('cli'),
     });
@@ -50,6 +50,11 @@ describe('parseMailboxConfig', () => {
     expect(parseMailboxConfig({ owner: 'U0ABC', intervalSeconds: 0 })).toEqual({
       ok: false,
       error: expect.stringContaining('interval'),
+    });
+    expect(parseMailboxConfig({ owner: 'U0ABC' })).toEqual({ ok: false, error: expect.stringContaining('allowFrom') });
+    expect(parseMailboxConfig({ owner: 'U0ABC', allowFrom: [] })).toEqual({
+      ok: false,
+      error: expect.stringContaining('allowFrom'),
     });
     expect(parseMailboxConfig({ owner: 'U0ABC', allowFrom: ['a:b'] })).toEqual({
       ok: false,
@@ -67,6 +72,12 @@ describe('readClientSettings', () => {
     expect(() =>
       readClientSettings('/x', () => JSON.stringify({ url: 'http://x', token: 'secret-token', address: 'bad' })),
     ).toThrow(/address/);
+    expect(() => readClientSettings('/x', () => '{"token":SECRETTOKEN-not-json')).toThrow(/missing or not JSON/);
+    try {
+      readClientSettings('/x', () => '{"token":SECRETTOKEN-not-json');
+    } catch (e) {
+      expect(String(e)).not.toContain('SECRET');
+    }
     try {
       readClientSettings('/x', () => JSON.stringify({ url: 'ftp://x', token: 'secret-token', address: 'a:b:c' }));
     } catch (e) {

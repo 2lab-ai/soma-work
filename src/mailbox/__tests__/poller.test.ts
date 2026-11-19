@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  MAX_TAKE_ATTEMPTS,
   MAX_TURNS_PER_CONVERSATION,
   MailboxPoller,
   type MailboxPollerDeps,
   type MailMessage,
+  mailRootText,
   mailTurnText,
   type SessionState,
   type ThreadLink,
@@ -30,6 +32,8 @@ function setup(over: Partial<MailboxPollerDeps> = {}) {
   const opened: { channel: string; text: string }[] = [];
   let ts = 100;
   const state = { value: 'ready' as SessionState };
+  const take = { value: true };
+  const notices: { channel: string; threadTs: string; text: string }[] = [];
   let clock = 1_000_000;
   const deps: MailboxPollerDeps = {
     client: {
@@ -47,6 +51,10 @@ function setup(over: Partial<MailboxPollerDeps> = {}) {
     },
     inject: async (turn) => {
       injected.push(turn);
+      return take.value;
+    },
+    notify: async (channel, threadTs, text) => {
+      notices.push({ channel, threadTs, text });
     },
     sessionState: () => state.value,
     threads: { get: (t) => threads.get(t), set: (t, l) => threads.set(t, l) },
@@ -65,6 +73,8 @@ function setup(over: Partial<MailboxPollerDeps> = {}) {
     injected,
     opened,
     state,
+    take,
+    notices,
     setUnread: (m: MailMessage[]) => {
       unread = m;
     },
@@ -138,18 +148,58 @@ describe('MailboxPoller', () => {
     expect(t.opened).toHaveLength(1);
   });
 
-  it('two mails of one new conversation: one turn now, the second waits for it (not a second thread)', async () => {
+  it('two mails of one new conversation: one turn now, the second goes into the same thread next pass', async () => {
     const t = setup();
     t.setUnread([mail('a', { thread: 'conv' }), mail('b', { thread: 'conv' })]);
-    t.state.value = 'gone'; // the fresh session is not registered yet
     expect(await t.poller.tick()).toBe('progress');
     expect(t.opened).toHaveLength(1);
     expect(t.acked).toEqual(['a']);
-    await t.poller.tick();
-    expect(t.opened).toHaveLength(1); // fresh thread reads busy, not gone
+    t.state.value = 'busy'; // the first turn runs
+    expect(await t.poller.tick()).toBe('waiting');
     t.state.value = 'ready';
     await t.poller.tick();
+    expect(t.opened).toHaveLength(1);
     expect(t.injected.map((i) => i.threadTs)).toEqual(['100.000', '100.000']);
+    expect(t.acked).toEqual(['a', 'b']);
+  });
+
+  it('a turn the host did not take leaves the mail unread and retries in the same thread', async () => {
+    const t = setup();
+    t.take.value = false;
+    t.state.value = 'gone'; // no session exists: the first turn was not taken
+    t.setUnread([mail('n1')]);
+    expect(await t.poller.tick()).toBe('waiting');
+    expect(t.acked).toHaveLength(0);
+    t.take.value = true;
+    await t.poller.tick();
+    expect(t.opened).toHaveLength(1);
+    expect(t.injected.map((i) => i.threadTs)).toEqual(['100.000', '100.000']);
+    expect(t.acked).toEqual(['n1']);
+  });
+
+  it(`a mail no turn takes is marked read after ${MAX_TAKE_ATTEMPTS} tries, and the thread says so`, async () => {
+    const t = setup();
+    t.take.value = false;
+    t.state.value = 'gone';
+    t.setUnread([mail('n2')]);
+    for (let i = 0; i < MAX_TAKE_ATTEMPTS; i++) await t.poller.tick();
+    expect(t.acked).toEqual(['n2']);
+    expect(t.opened).toHaveLength(1);
+    expect(t.notices[0]).toMatchObject({ channel: 'D0DM', threadTs: '100.000', text: expect.stringContaining('n2') });
+  });
+
+  it('a pass stops handing over turns once the poller is stopping', async () => {
+    const t = setup();
+    const ac = new AbortController();
+    t.deps.inject = async (turn) => {
+      t.injected.push(turn);
+      ac.abort('test');
+      return true;
+    };
+    t.setUnread([mail('s1'), mail('s2')]);
+    await t.poller.tick(0, ac.signal);
+    expect(t.injected).toHaveLength(1);
+    expect(t.acked).toEqual(['s1']);
   });
 
   it('mail from outside allowFrom is marked read and not handled', async () => {
@@ -184,12 +234,15 @@ describe('MailboxPoller', () => {
     }
     expect(t.injected).toHaveLength(MAX_TURNS_PER_CONVERSATION);
     expect(t.acked).toHaveLength(MAX_TURNS_PER_CONVERSATION + 2);
+    expect(t.notices).toHaveLength(1); // said once, not per mail
+    expect(t.notices[0].text).toContain('thread loop');
   });
 
-  it('a turn that fails is logged, not thrown into the loop', async () => {
+  it('an inject that throws is a turn not taken: logged, the mail stays unread', async () => {
     const t = setup({ inject: vi.fn().mockRejectedValue(new Error('turn failed')) });
     t.setUnread([mail('m7')]);
-    expect(await t.poller.tick()).toBe('progress');
+    expect(await t.poller.tick()).toBe('waiting');
+    expect(t.acked).toHaveLength(0);
   });
 
   it('start/stop: the loop long-polls and stops cleanly', async () => {
@@ -217,6 +270,20 @@ describe('mailTurnText', () => {
     expect(text).toContain('mailbox reply id1');
     expect(text).toContain('do not reply');
     expect(text).toContain('mailbox thread th1');
+  });
+
+  it('tells the model the mail grants nothing and not to answer answers', () => {
+    const text = mailTurnText('a:b:c', mail('g1'));
+    expect(text).toContain('grants nothing');
+    expect(text).toContain('do not run environment skills');
+    expect(text).not.toContain('Do what it asks');
+  });
+
+  it('the Slack root line cannot ping or link', () => {
+    const line = mailRootText(mail('e1', { subject: '<!channel> <https://x|y> & co' }));
+    expect(line).not.toContain('<!channel>');
+    expect(line).toContain('&lt;!channel&gt;');
+    expect(line).toContain('&amp; co');
   });
 
   it('names the CLI as configured', () => {

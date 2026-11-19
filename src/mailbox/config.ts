@@ -7,7 +7,7 @@
  *   "owner": "U0123ABC",                                // the Slack user whose sessions handle mail
  *   "channel": "C0123ABC",                              // optional — where mail threads open; default the owner's DM
  *   "intervalSeconds": 15,                              // optional — pause while mail waits on a busy session
- *   "allowFrom": ["soma-work:*:*"],                     // optional — sender patterns; default everyone
+ *   "allowFrom": ["soma-work:*:*"],                     // required — sender patterns that may start a turn
  *   "cli": "/usr/local/bin/mailbox"                     // optional — how turns call the CLI; default `mailbox`
  * }
  * ```
@@ -63,7 +63,10 @@ export function parseMailboxConfig(raw: unknown): ParsedMailboxConfig {
   const seconds = Number(r.intervalSeconds ?? 15);
   if (!Number.isFinite(seconds) || seconds < 2 || seconds > 3600)
     return { ok: false, error: 'mailbox.intervalSeconds must be 2..3600' };
-  const allowFrom = Array.isArray(r.allowFrom) ? r.allowFrom.map((p) => String(p).trim().toLowerCase()) : ['*:*:*'];
+  // No default: who may start a turn as the owner is said out loud in the config.
+  if (!Array.isArray(r.allowFrom) || r.allowFrom.length === 0)
+    return { ok: false, error: 'mailbox.allowFrom must list the sender patterns that may start a turn' };
+  const allowFrom = r.allowFrom.map((p) => String(p).trim().toLowerCase());
   const bad = allowFrom.find((p) => !PATTERN.test(p));
   if (bad !== undefined) return { ok: false, error: `mailbox.allowFrom has a bad pattern "${bad}"` };
   const cli = typeof r.cli === 'string' && r.cli.trim() ? r.cli.trim() : 'mailbox';
@@ -90,8 +93,9 @@ export function readClientSettings(
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(read(file));
-  } catch (error) {
-    throw new Error(`cannot read mailbox client settings ${file}: ${(error as Error).message.split('\n')[0]}`);
+  } catch {
+    // Never the parser's message: it quotes the file, and the file holds the token.
+    throw new Error(`cannot read mailbox client settings ${file} (missing or not JSON)`);
   }
   const url = typeof parsed.url === 'string' ? parsed.url.replace(/\/+$/, '') : '';
   const token = typeof parsed.token === 'string' ? parsed.token : '';

@@ -80,6 +80,7 @@ export interface MailboxHostDeps {
   openThread: MailboxPollerDeps['openThread'];
   openDm: (userId: string) => Promise<string>;
   inject: MailboxPollerDeps['inject'];
+  notify: MailboxPollerDeps['notify'];
   sessionState: MailboxPollerDeps['sessionState'];
 }
 
@@ -95,6 +96,7 @@ export function createMailboxPoller(deps: MailboxHostDeps): MailboxPoller {
     },
     openThread: deps.openThread,
     inject: deps.inject,
+    notify: deps.notify,
     sessionState: deps.sessionState,
     threads: createThreadMap(deps.dataDir),
     allowFrom: deps.config.allowFrom,
