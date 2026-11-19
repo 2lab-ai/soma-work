@@ -255,9 +255,11 @@ async function loadLayout() {
     return;
   }
   // An edit not yet saved (waiting for its debounce, or its PUT on the way) is newer than what the server sent.
+  var placeHere = _layDoc && _layDoc.panel;
   if (!_layPending && !_laySaving) _layDoc = layClone(_lay.doc || { v: 1 });
   // The place is the server's (the dashboard may have moved the card) unless a choice made here is still saving.
-  else if (!_layPlaceSaving) { if (_lay.doc && _lay.doc.panel) _layDoc.panel = _lay.doc.panel; else delete _layDoc.panel; }
+  var place = _layPlaceSaving ? placeHere : _lay.doc && _lay.doc.panel;
+  if (place) _layDoc.panel = place; else delete _layDoc.panel;
   _layMode = _lay.mode === 'advanced' ? 'advanced' : 'minimal';
   _layPreset = layoutPreset(_layDoc, 'card', _lay.plan);
   _layLoaded = true;
@@ -322,12 +324,16 @@ async function saveLayout() {
     for (;;) {
       _layResave = false;
       var rev = _layRev;
+      var placeRev = _layPlaceRev;
       var r = await apiWrite('PUT', '/api/settings/dashboard-layout', { doc: layDocSansPlace(_layDoc) });
       if (!r.ok) { why = r.error || 'HTTP'; break; }
       if (rev !== _layRev) continue; // the user moved on while it ran: save what they have now
       // The server's checked copy (its order, the items it appended) is the truth.
       if (r.data && r.data.layout && r.data.layout.doc) {
+        // A place picked while this PUT ran (saved or still saving) is newer than the place in its answer.
+        var placeHere = _layPlaceSaving || placeRev !== _layPlaceRev ? _layDoc.panel : undefined;
         _layDoc = layClone(r.data.layout.doc);
+        if (placeHere) _layDoc.panel = placeHere;
         try { localStorage.setItem('soma-view-layout', JSON.stringify(_layDoc)); } catch (_e) {}
       }
       if (!_layResave) { _layPending = false; break; }
@@ -397,6 +403,9 @@ async function layPlaceSave(next) {
     setLayStatus('저장하지 못했습니다 — ' + ((r && r.error) || 'HTTP'));
     return;
   }
+  // The server's checked place is the truth.
+  if (r.data && r.data.layout && r.data.layout.doc && r.data.layout.doc.panel) _layDoc.panel = r.data.layout.doc.panel;
+  layPaintPlace();
   try { localStorage.setItem('soma-view-layout', JSON.stringify(_layDoc)); } catch (_e) {}
   setLayStatus('저장됨');
   var p = _layDoc.panel;

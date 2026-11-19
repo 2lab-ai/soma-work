@@ -7140,6 +7140,12 @@ html[data-pdragging], html[data-pdragging] * { cursor: grabbing !important; user
   .pdz.is-target .pdz-tag { transform: none; }
 }
 @media (max-width: 839px) { .panel-grip, .panel-dropzones { display: none !important; } }
+/* A tablet (touch, docked): a sideways drag on the bar is the card's, not a pan; the grip is a finger's height. */
+@media (min-width: 840px) { .slide-panel[data-movable] .panel-header { touch-action: pan-y; } }
+@media (pointer: coarse) and (min-width: 840px) {
+  .panel-grip { height: 24px; }
+  .slide-panel[data-movable] .panel-header { padding-top: 24px; }
+}
 
 /* ── DETAIL DECK (SSOT 2026-10-29 T2) — every open card's detail card; the ones
    waiting behind the front card show their top edges above it (<ui-deck-nav peek="only">
@@ -8813,6 +8819,8 @@ var _panelPlace = { side: 'right', locked: false };
 var _pdrag = null; // a press on the grip or the bar: { id, x0, y0, left0, w, vw, from, live, off, vx, t, x, target }
 var _pdragSettle = 0; // the timer that ends a settle
 var _panelPlaceSaving = 0; // place saves on the way: an older answer must not move the card back
+var _panelPlaceWritable = true; // false once the settings say the server refuses this user's writes: no grip
+var PANEL_DOCK_MQ = '(min-width: 840px)'; // the drawer's dock-at: below it the card is a full-screen sheet
 var _panelPlaceRev = 0;
 var PDRAG_SLOP = 4; // px a press moves before it is a drag (less is a click, which stays one)
 var PDRAG_FLICK = 0.5; // px/ms: a throw this fast lands on the side it heads for, wherever it is let go
@@ -8834,8 +8842,16 @@ function panelDragOffset(dx, left0, w, viewW) {
   if (dx > hi) return hi + Math.min(48, (dx - hi) / 4);
   return dx;
 }
-// The place on the page: the drawer's side, the root's data-panel-side (the board's margin, the 변경점 viewer), the
-// grip shown only while unlocked (data-movable). True when the side changed.
+// Whether the reader may move the card here: unlocked, and the server would keep the move.
+function panelMovable() {
+  return !_panelPlace.locked && _panelPlaceWritable;
+}
+// A dock, not a sheet: left is where a docked card sits; a phone's full-screen sheet keeps the drawer's own side.
+function panelWide() {
+  return typeof window === 'undefined' || !window.matchMedia || window.matchMedia(PANEL_DOCK_MQ).matches;
+}
+// The place on the page: the drawer's side (docked only), the root's data-panel-side (the board's margin, the 변경점
+// viewer), the grip shown only while the card can move (data-movable). True when the side changed.
 function applyPanelPlace(place) {
   var side = place && place.side === 'left' ? 'left' : 'right';
   var locked = !!(place && place.locked);
@@ -8844,12 +8860,12 @@ function applyPanelPlace(place) {
   document.documentElement.setAttribute('data-panel-side', side);
   var panel = document.getElementById('slide-panel');
   if (panel) {
-    if (side === 'left') panel.setAttribute('side', 'left'); else panel.removeAttribute('side');
-    if (locked) panel.removeAttribute('data-movable'); else panel.setAttribute('data-movable', '');
+    if (side === 'left' && panelWide()) panel.setAttribute('side', 'left'); else panel.removeAttribute('side');
+    if (panelMovable()) panel.setAttribute('data-movable', ''); else panel.removeAttribute('data-movable');
   }
   var grip = document.getElementById('panel-grip');
   if (grip) {
-    grip.hidden = locked;
+    grip.hidden = !panelMovable();
     grip.setAttribute('aria-label', PANEL_GRIP_LABEL[side]);
     grip.title = '끌어서 왼쪽·오른쪽으로 옮기기 (←/→)';
   }
@@ -8977,14 +8993,20 @@ function pdragSource(t) {
 }
 function pdragDown(e) {
   if (_pdrag || e.button !== 0 || e.isPrimary === false) return;
-  if (_panelPlace.locked || !panelDocked() || !pdragSource(e.target)) return;
+  if (!panelMovable() || !panelDocked() || !pdragSource(e.target)) return;
   var box = panelBoxNow();
   if (!box) return;
   var panel = document.getElementById('slide-panel');
-  // A press during a settle starts from where the card is drawn.
-  var drawn = parseFloat(panel.style.getPropertyValue('--pdrag-x')) || 0;
+  // A press during a settle starts from where the card is drawn (mid-glide), measured against its dock: the
+  // settle's own offset is already on its way to 0, so the box is read, the settle dropped, and the dock read.
   pdragClear(panel);
-  _pdrag = { id: e.pointerId, x0: e.clientX - drawn, y0: e.clientY, left0: box.left - drawn, w: box.w, vw: panelViewW(), from: _panelPlace.side, live: false, off: drawn, vx: 0, t: e.timeStamp, x: e.clientX, target: '' };
+  var dock = panelBoxNow() || box;
+  var drawn = box.left - dock.left;
+  if (drawn) {
+    panel.setAttribute('data-pdrag', 'drag');
+    panel.style.setProperty('--pdrag-x', Math.round(drawn) + 'px');
+  }
+  _pdrag = { id: e.pointerId, x0: e.clientX - drawn, y0: e.clientY, left0: dock.left, w: dock.w, vw: panelViewW(), from: _panelPlace.side, live: false, off: drawn, vx: 0, t: e.timeStamp, x: e.clientX, target: '' };
   if (e.target.closest('#panel-grip')) e.preventDefault(); // the grip is only a handle: no focus ring, no text selection
   window.addEventListener('pointermove', pdragMove, true);
   window.addEventListener('pointerup', pdragUp, true);
@@ -9025,7 +9047,7 @@ function pdragEnd(e, cancelled) {
   window.removeEventListener('pointermove', pdragMove, true);
   window.removeEventListener('pointerup', pdragUp, true);
   window.removeEventListener('pointercancel', pdragCancel, true);
-  if (!d.live) return; // a press, not a drag: its click goes on
+  if (!d.live) { if (d.off) pdragSettle(document.getElementById('slide-panel'), d.off); return; } // a press: its click goes on
   // The click a drag ends with is no press — not on the grip, not on whatever is under the pointer.
   var swallow = function(ev) { ev.stopPropagation(); ev.preventDefault(); };
   window.addEventListener('click', swallow, true);
@@ -9044,12 +9066,12 @@ function pdragCancel(e) { pdragEnd(e, true); }
 // The grip's press and keys (WCAG 2.5.7 — dragging is never the only way): a press moves the card to the other side,
 // ←/→ to that side.
 function pdragGripClick() {
-  if (_panelPlace.locked) return;
+  if (!panelMovable()) return;
   placePanel({ side: _panelPlace.side === 'left' ? 'right' : 'left', locked: false }, { save: true, say: true });
 }
 function pdragGripKey(e) {
   var side = e.key === 'ArrowLeft' ? 'left' : e.key === 'ArrowRight' ? 'right' : '';
-  if (!side || _panelPlace.locked) return;
+  if (!side || !panelMovable()) return;
   e.preventDefault();
   e.stopPropagation(); // the deck's ←/→ is for the deck nav, not the grip
   if (side !== _panelPlace.side) placePanel({ side: side, locked: false }, { save: true, say: true });
@@ -9065,6 +9087,9 @@ function pdragGripKey(e) {
     grip.addEventListener('click', pdragGripClick);
     grip.addEventListener('keydown', pdragGripKey);
   }
+  // Across 840px the card turns dock ↔ sheet: left is a dock's side only.
+  var mq = window.matchMedia ? window.matchMedia(PANEL_DOCK_MQ) : null;
+  if (mq && mq.addEventListener) mq.addEventListener('change', function() { applyPanelPlace(_panelPlace); });
   // Esc puts a card in hand back where it was (and does not close it).
   document.addEventListener('keydown', function(e) {
     if (e.key !== 'Escape' || !_pdrag || !_pdrag.live) return;
@@ -11408,6 +11433,9 @@ async function loadMyDefaults() {
     // The user's view mode (SSOT 2026-11-01): the server's row wins over the device's copy. Saved only for a
     // user the server accepts (the registry refuses the others' writes).
     var vm = viewModeOfSettings(data);
+    // The detail card's place saves only for a user the server accepts: no grip for the others.
+    _panelPlaceWritable = !(data && data.accepted === false);
+    applyPanelPlace(_panelPlace);
     if (vm !== null) {
       _viewModeOnServer = !(data && data.accepted === false);
       if (_viewModeChosen) {

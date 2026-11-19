@@ -87,8 +87,9 @@ function el(id = '') {
   };
 }
 
-const PLACE_FNS = ['applyPanelPlace'];
-const PLACE_VARS = ['_panelPlace', 'PANEL_GRIP_LABEL'];
+const PLACE_FNS = ['applyPanelPlace', 'panelMovable', 'panelWide'];
+const PLACE_FNS_ALL = ['applyPanelPlace', 'panelMovable', 'panelWide'];
+const PLACE_VARS = ['_panelPlace', '_panelPlaceWritable', 'PANEL_GRIP_LABEL', 'PANEL_DOCK_MQ'];
 
 function placePage() {
   const root = el('html');
@@ -283,6 +284,72 @@ describe('P6 — the board glides when the card changes side', () => {
     );
     expect(c.layoutSurfacesKey({ v: 1, active: { card: '2' } })).not.toBe(
       c.layoutSurfacesKey({ v: 1, active: { card: '3' } }),
+    );
+  });
+});
+
+describe('P7 — review fixes (2026-11-19)', () => {
+  type Place = { applyPanelPlace(p: unknown): boolean; panelMovable(): boolean };
+  function page(wide: boolean) {
+    const pg = placePage();
+    const window = { matchMedia: (q: string) => ({ matches: q === '(min-width: 840px)' ? wide : false }) };
+    return { pg, window };
+  }
+
+  it('a phone: the sheet keeps the drawer’s own side (it slides in from the right) — left is a dock, not a sheet', () => {
+    const { pg, window } = page(false);
+    const c = load<Place>(PLACE_FNS, PLACE_VARS, { document: pg.document, window });
+    c.applyPanelPlace({ side: 'left', locked: false });
+    expect(pg.panel.hasAttribute('side')).toBe(false);
+    expect(pg.root.getAttribute('data-panel-side')).toBe('left');
+    const wide = page(true);
+    const w = load<Place>(PLACE_FNS, PLACE_VARS, { document: wide.pg.document, window: wide.window });
+    w.applyPanelPlace({ side: 'left', locked: false });
+    expect(wide.pg.panel.getAttribute('side')).toBe('left');
+  });
+
+  it('a user the server does not accept sees no grip: the move would be refused', () => {
+    const { pg, window } = page(true);
+    const c = load<Place & { setWritable(v: boolean): void }>(
+      PLACE_FNS,
+      PLACE_VARS,
+      { document: pg.document, window },
+      ', setWritable: function(v) { _panelPlaceWritable = v; }',
+    );
+    c.applyPanelPlace({ side: 'right', locked: false });
+    expect(pg.grip.hidden).toBe(false);
+    c.setWritable(false);
+    c.applyPanelPlace({ side: 'right', locked: false });
+    expect(pg.grip.hidden).toBe(true);
+    expect(pg.panel.hasAttribute('data-movable')).toBe(false);
+    expect(c.panelMovable()).toBe(false);
+  });
+
+  it('the settings answer says whether the place can be saved; the grip follows', () => {
+    const fn = clientFn('loadMyDefaults');
+    expect(fn).toMatch(
+      /_panelPlaceWritable = !\(data && data\.accepted === false\);\s*\n\s*applyPanelPlace\(_panelPlace\);/,
+    );
+  });
+
+  it('a press during a settle starts from where the card is drawn, measured against its dock', () => {
+    const fn = clientFn('pdragDown');
+    // The drawn box, then the dock without the settle's offset: the drag starts at the drawn place, its origin the dock.
+    expect(fn).toMatch(
+      /var box = panelBoxNow\(\);[\s\S]*pdragClear\(panel\);[\s\S]*var dock = panelBoxNow\(\) \|\| box;[\s\S]*var drawn = box\.left - dock\.left;/,
+    );
+    expect(fn).toContain('left0: dock.left');
+    expect(clientFn('pdragEnd')).toContain(
+      "if (!d.live) { if (d.off) pdragSettle(document.getElementById('slide-panel'), d.off); return; }",
+    );
+  });
+
+  it('a touch on the title bar drags it on a tablet (pan-y), and the grip is 24px tall for a finger', () => {
+    expect(TEMPLATE).toMatch(
+      /@media \(min-width: 840px\) \{ \.slide-panel\[data-movable\] \.panel-header \{ touch-action: pan-y; \} \}/,
+    );
+    expect(TEMPLATE).toMatch(
+      /@media \(pointer: coarse\) and \(min-width: 840px\) \{[^}]*\.panel-grip \{ height: 24px; \}/,
     );
   });
 });

@@ -96,6 +96,7 @@ const PAGE_HELPERS = [
 // The user's layout document as the server keeps it: a place PUT changes it, the next GET answers it.
 let DOC: Record<string, unknown> = { v: 1 };
 let placePuts: unknown[] = [];
+let ACCEPTED = true;
 let wholePuts: unknown[] = [];
 
 async function installMocks(page: Page) {
@@ -146,7 +147,7 @@ async function installMocks(page: Page) {
     });
   });
   await page.route(/\/api\/settings(\?.*)?$/, (r) =>
-    r.fulfill({ json: { userId: 'U001', isAdmin: false, accepted: true, groups: [], settings: [] } }),
+    r.fulfill({ json: { userId: 'U001', isAdmin: false, accepted: ACCEPTED, groups: [], settings: [] } }),
   );
 }
 
@@ -441,8 +442,65 @@ async function wideRun(browser: import('playwright').Browser) {
     'P5 a drag from the title bar’s text moves it too, nothing selected',
     { card: c8, sel },
   );
+  // Grabbed again mid-glide (review 2026-11-19): the press holds the card where it is drawn — no jump to its dock —
+  // and the drop goes by where it is, not by where the glide would have ended.
+  await page.click('#panel-grip'); // left → right, gliding
+  await sleep(90);
+  const gB = await grip(page);
+  await page.mouse.move(gB!.x + gB!.w / 2, gB!.y + gB!.h / 2);
+  const beforePress = await card(page);
+  await page.mouse.down();
+  const afterPress = await card(page);
+  check(
+    !!beforePress &&
+      !!afterPress &&
+      beforePress.x > 5 &&
+      beforePress.x < 990 &&
+      Math.abs(afterPress.x - beforePress.x) <= 40,
+    'P5 a press mid-glide holds the card where it is drawn (no jump)',
+    { beforePress, afterPress },
+  );
+  for (let i = 1; i <= 6; i++) {
+    await page.mouse.move(gB!.x + gB!.w / 2 - i * 10, gB!.y + 8);
+    await sleep(20);
+  }
+  const held = await card(page);
+  await sleep(160);
+  await page.mouse.up();
+  await sleep(700);
+  const landed = await card(page);
+  const expectSide = held && held.x + held.w / 2 < 720 ? 'left' : 'right';
+  check(
+    !!landed && (expectSide === 'left' ? landed.x === 0 : landed.x + landed.w >= 1430),
+    'P5 let go after a mid-glide grab: it lands on the side its centre is on',
+    { held, landed, expectSide },
+  );
   check(errors.length === 0, 'no page errors', errors);
   await ctx.close();
+}
+
+async function unacceptedRun(browser: import('playwright').Browser) {
+  DOC = { v: 1 };
+  ACCEPTED = false;
+  const ctx = await browser.newContext({
+    viewport: { width: 1440, height: 900 },
+    colorScheme: 'light',
+    deviceScaleFactor: 1,
+  });
+  const page = await ctx.newPage();
+  try {
+    await boot(page);
+    await openCard(page);
+    await sleep(400);
+    const g = await page.evaluate(() => ({
+      hidden: document.getElementById('panel-grip')!.hidden,
+      movable: document.getElementById('slide-panel')!.hasAttribute('data-movable'),
+    }));
+    check(g.hidden && !g.movable, 'P6 a user the server does not accept gets no grip (the move would be refused)', g);
+  } finally {
+    ACCEPTED = true;
+    await ctx.close();
+  }
 }
 
 async function lockedRun(browser: import('playwright').Browser) {
@@ -497,6 +555,12 @@ async function phoneRun(browser: import('playwright').Browser) {
   const g = await page.evaluate(() => getComputedStyle(document.getElementById('panel-grip')!).display);
   check(!!c && c.x === 0 && c.w === 390, 'P7 a phone: the card is a full-screen sheet', c);
   check(g === 'none', 'P7 a phone: no grip', g);
+  const sideAttr = await page.evaluate(() => document.getElementById('slide-panel')!.getAttribute('side'));
+  check(
+    sideAttr === null,
+    'P7 a phone: the sheet keeps its own side (slides in from the right) though the place is left',
+    sideAttr,
+  );
   await shot(page, '05-phone-sheet.png');
   await ctx.close();
 }
@@ -571,7 +635,7 @@ async function main() {
   await ws.startWebServer({ listen: true });
   log(`server ${BASE_URL}`);
   try {
-    for (const run of [wideRun, lockedRun, phoneRun, settingsRun]) {
+    for (const run of [wideRun, unacceptedRun, lockedRun, phoneRun, settingsRun]) {
       const browser = await chromium.launch({ headless: true, args: ['--single-process', '--no-zygote'] });
       try {
         await run(browser);

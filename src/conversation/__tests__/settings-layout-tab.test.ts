@@ -656,3 +656,36 @@ describe('E8 — 디테일 카드 위치: 왼쪽 · 오른쪽 and 위치 잠금 
     expect(els['lay-place-left'].checked).toBe(true);
   });
 });
+
+describe('E9 — a layouts save racing a place save keeps the newer place (review 2026-11-19)', () => {
+  it('the layouts’ answer that left before the place was picked does not paint it back', async () => {
+    const { api, els, puts, flush, stored, release } = editor({ doc: { v: 1 } }, { gate: true });
+    await api.loadLayout();
+    api.layDefault('card', '2');
+    // The debounced layouts PUT goes out and waits on the network …
+    const saving = flush();
+    for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+    expect(puts.filter((x: any) => x.url === '/api/settings/dashboard-layout')).toHaveLength(1);
+    // … the reader picks 왼쪽 meanwhile (its own PUT answers at once).
+    await api.layOnChange({
+      target: { getAttribute: (k: string) => (k === 'data-lay' ? 'place-side' : null), value: 'left', checked: false },
+    });
+    expect(els['lay-place-left'].checked).toBe(true);
+    // Now the layouts PUT answers with the document it carried — no place in it.
+    await release();
+    await saving;
+    expect(api.get('_layDoc').panel).toEqual({ side: 'left', locked: false });
+    expect(els['lay-place-left'].checked).toBe(true);
+    expect(JSON.parse(stored['soma-view-layout']).panel).toEqual({ side: 'left', locked: false });
+  });
+
+  it('loading while a place save is on its way keeps the place picked here', async () => {
+    const doc: Record<string, unknown> = { v: 1 };
+    const { api } = editor({ doc });
+    await api.loadLayout();
+    api.set('_layDoc', { v: 1, panel: { side: 'left', locked: true } });
+    api.set('_layPlaceSaving', 1);
+    await api.loadLayout();
+    expect(api.get('_layDoc').panel).toEqual({ side: 'left', locked: true });
+  });
+});
