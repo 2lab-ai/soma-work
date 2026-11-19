@@ -69,6 +69,11 @@ export interface CallRunPlan {
   greeting?: { text: string; frames: Buffer[] };
   /** Phrases already synthesized (μ-law frames): said at once, no synthesis. "네." is the opener of most replies. */
   phrases?: ReadonlyMap<string, Buffer[]>;
+  /**
+   * The call cannot be served (the voice host is doing another job): this, already synthesized, is said once the
+   * line is up and the phone put down. No dialog, nothing transcribed.
+   */
+  notice?: { text: string; frames: Buffer[] };
   model?: string;
 }
 
@@ -132,6 +137,8 @@ export class CallRun {
   private openerBuf = '';
 
   private hangupRequested = false;
+  /** {@link CallRunPlan.notice} went out: the call only waits for it to be heard. */
+  private noticeSaid = false;
   private hangupTimer: unknown = null;
   /** The next words to the dialog carry HANGUP_CANCELLED_CUE: the model had called hang_up. */
   private resumeAfterHangup = false;
@@ -155,6 +162,7 @@ export class CallRun {
 
   /** Open the dialog. Outbound: ask for the opening line now, while the phone rings. */
   begin(): void {
+    if (this.plan.notice) return;
     this.dialog = this.deps.openDialog(this.tools());
     void this.pump(this.dialog);
     if (this.plan.direction === 'outbound') this.sendToDialog(OPENING_CUE);
@@ -171,6 +179,13 @@ export class CallRun {
       r.answeredAt = at;
     });
     this.work({ kind: 'event', at, text: '상대가 전화를 받음' });
+    if (this.plan.notice) {
+      // Inbound: at once, as a greeting would be. Outbound: after the other side's "여보세요" (feedAudio), or a quiet
+      // spell.
+      if (this.plan.direction === 'inbound') this.sayNotice();
+      else this.later(() => this.sayNotice(), OPEN_AFTER_SILENCE_MS);
+      return;
+    }
     if (this.plan.direction === 'inbound') {
       if (this.plan.greeting) {
         this.addAgentLine(this.plan.greeting.text);
@@ -192,6 +207,12 @@ export class CallRun {
     if (this.ended || !this.answered) return;
     this.lastAudioAt = this.now();
     const pcm = this.deps.ulawToPcm16(ulaw);
+    if (this.plan.notice) {
+      // Listened to only until the notice starts; after it the line is put down whatever is said.
+      if (this.noticeSaid) return;
+      for (const ev of this.vad.push(pcm, false)) if (ev.type !== 'speech_start') this.sayNotice();
+      return;
+    }
     // Held audio is not playing: nothing of the agent's can echo back while the other side has the floor.
     for (const ev of this.vad.push(pcm, this.agentSpeaking() && !this.floorHeld.length)) {
       if (ev.type === 'speech_start') {
@@ -211,7 +232,22 @@ export class CallRun {
   }
 
   feedDtmf(digits: string): void {
+    if (this.plan.notice) return;
     this.sendToDialog(dtmfCue(digits));
+  }
+
+  /** Say the notice whole and put the phone down once it is heard. */
+  private sayNotice(): void {
+    const notice = this.plan.notice;
+    if (!notice || this.noticeSaid || this.ended || !this.call) return;
+    this.noticeSaid = true;
+    this.released = true;
+    this.vad.reset(); // nothing the other side says holds the hang-up
+    this.work({ kind: 'event', at: this.now(), text: '안내 음성을 하고 끊음' });
+    this.enterHangup();
+    this.addAgentLine(notice.text);
+    for (const f of notice.frames) this.sendFrame(f);
+    this.finishWhenQuiet();
   }
 
   /** The call is over (any reason): stop speaking, close the dialog, drop timers. */

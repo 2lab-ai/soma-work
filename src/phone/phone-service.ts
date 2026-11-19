@@ -24,9 +24,9 @@ import type { VoiceDialog, VoiceDialogTool } from '../agent-runtime/voice-dialog
 import { LINE_SAMPLE_RATE, StreamResampler } from './audio';
 import type { PhoneCallRecord, PhoneCallStore } from './call-store';
 import type { AgentLike, CallSessionLike, IncomingCallLike, KoreaAiTelSdk } from './koreaaitel';
-import { buildCallSystemPrompt, formatPhoneNumber, greetedNote } from './phone-prompt';
-import { createVoiceClient, type VoiceClient } from './voice-client';
-import { CallRun, OPENER, PhoneVoiceSession } from './voice-session';
+import { BUSY_NOTICE, buildCallSystemPrompt, formatPhoneNumber, greetedNote } from './phone-prompt';
+import { createVoiceClient, type VoiceClient, type VoiceHostClaim } from './voice-client';
+import { CallRun, type CallRunPlan, OPENER, PhoneVoiceSession } from './voice-session';
 
 const REQUEST_POLL_MS = 1000;
 /** How often the configuration is read again (a line added, changed, removed, or its secret put in place). */
@@ -44,6 +44,8 @@ const DIAL_WATCHDOG_MS = (DIAL_TIMEOUT_S + 30) * 1000;
 const INBOUND_HOLD_MS = 10_000;
 /** The SDK's connect() retries forever on network errors and 5xx; a line that is not up by then is retried later. */
 const CONNECT_TIMEOUT_MS = 15_000;
+/** A call's lease on the voice host is renewed this often (it lapses after LEASE_TTL_MS, 30 s, without one). */
+const LEASE_RENEW_MS = 10_000;
 
 export interface DialogAuth {
   env: Record<string, string | undefined>;
@@ -94,6 +96,12 @@ interface PhoneLine {
   phrases: Map<string, Buffer[]>;
   /** Lease of each call's dialog, released when the call ends. */
   auths: Map<string, DialogAuth>;
+  /** Each call's lease on the voice host (the host does one job at a time), renewed until the call ends. */
+  voiceLeases: Map<string, { release(): Promise<void>; timer: unknown }>;
+  /** Line phrases are being synthesized (at most one pass at a time). */
+  preparing: boolean;
+  /** Phrases whose synthesis failed, said once in the log until they are made. */
+  unprepared: Set<string>;
   /**
    * Calls being set up that have no run yet (an outbound dial waiting for auth or the platform; an inbound call
    * accepted but not yet started). Taken synchronously, before the first await: the line takes one call at a time.
@@ -198,6 +206,8 @@ export class PhoneService {
           this.deps.log('warn', `${msg} — retrying every ${CONFIG_SYNC_MS / 1000} s`);
         }
       }
+      // What did not get made when the line opened (the voice host was busy or down) is tried again while idle.
+      for (const line of this.lines.values()) if (!this.busy(line)) void this.prepareLine(line);
     } finally {
       this.syncing = false;
     }
@@ -212,6 +222,7 @@ export class PhoneService {
       // The line is dropped either way.
     }
     for (const auth of line.auths.values()) await auth.release().catch(() => undefined);
+    for (const callId of [...line.voiceLeases.keys()]) await this.dropLease(line, callId);
     this.deps.log('info', `phone: ${env} closed (configuration changed)`);
   }
 
@@ -242,6 +253,7 @@ export class PhoneService {
         // Shutting down: a line that does not close cleanly is dropped either way.
       }
       for (const auth of line.auths.values()) await auth.release().catch(() => undefined);
+      for (const callId of [...line.voiceLeases.keys()]) await this.dropLease(line, callId);
     }
     this.deps.store.flushAll();
   }
@@ -257,6 +269,9 @@ export class PhoneService {
       cfg,
       voice,
       auths: new Map(),
+      voiceLeases: new Map(),
+      preparing: false,
+      unprepared: new Set(),
       pending: 0,
       holds: new Map(),
       watchdogs: new Map(),
@@ -281,10 +296,7 @@ export class PhoneService {
     await this.connect(line);
     this.lines.set(env, line);
     this.deps.log('info', `phone: ${env} connected`, { number: formatPhoneNumber(cfg.number) });
-    void (async () => {
-      if (cfg.inbound.enabled) await this.prepareGreeting(line);
-      await this.preparePhrases(line);
-    })();
+    void this.prepareLine(line);
   }
 
   /** connect(), bounded: past the limit the attempt is dropped (its reconnect loop stopped) and sync() retries. */
@@ -360,17 +372,26 @@ export class PhoneService {
   }
 
   private async placeCall(line: PhoneLine, req: PhoneCallRequest): Promise<PhoneCallRequestResult> {
-    let auth: DialogAuth;
-    try {
-      auth = await this.deps.dialogAuth({ requester: req.requester, model: line.cfg.model });
-    } catch (err) {
-      return { ok: false, error: `no model credentials for the call: ${(err as Error).message}` };
+    // The voice host first: it does one job at a time. Busy → the call is still made, but only says it cannot go on.
+    const host = await this.claimVoice(line, 'outbound');
+    const notice = host.kind === 'busy' ? this.noticeFor(line, 'outbound') : undefined;
+    if (host.kind === 'busy' && !notice)
+      return { ok: false, error: `the voice host cannot take a call now (${host.reason}) and no notice is ready` };
+    let auth: DialogAuth | undefined;
+    if (!notice) {
+      try {
+        auth = await this.deps.dialogAuth({ requester: req.requester, model: line.cfg.model });
+      } catch (err) {
+        await this.letGo(host);
+        return { ok: false, error: `no model credentials for the call: ${(err as Error).message}` };
+      }
     }
     let call: CallSessionLike;
     try {
       call = await line.agent.call(req.to, { timeout: DIAL_TIMEOUT_S });
     } catch (err) {
-      await auth.release().catch(() => undefined);
+      await auth?.release().catch(() => undefined);
+      await this.letGo(host);
       return { ok: false, error: `dial failed: ${(err as Error).message}` };
     }
     const maxMinutes = Math.min(req.maxMinutes, line.cfg.outbound.maxMinutes);
@@ -389,26 +410,40 @@ export class PhoneService {
       ...(req.context?.conversationId ? { conversationId: req.context.conversationId } : {}),
       ...(req.context?.channel ? { channel: req.context.channel } : {}),
       ...(req.context?.threadTs ? { threadTs: req.context.threadTs } : {}),
-      model: auth.model,
+      ...(auth ? { model: auth.model } : {}),
       voice: line.cfg.voice.voice,
       transcript: [],
       work: [],
     };
-    const systemPrompt = buildCallSystemPrompt({
-      direction: 'outbound',
-      peerNumber: req.to,
-      ourNumber: line.cfg.number,
-      title: record.title,
-      purpose: req.purpose,
-      scenario: req.scenario,
-      envPrompt: line.cfg.outbound.systemPrompt,
-      requester: req.requester,
-      maxMinutes,
-    });
-    record.work.push({ kind: 'instruction', at: record.createdAt, text: systemPrompt });
-    this.deps.store.create(record);
-    line.auths.set(call.callId, auth);
-    const run = this.makeRun(line, call.callId, 'outbound', maxMinutes, systemPrompt, auth);
+    let run: CallRun;
+    if (notice) {
+      record.work.push({ kind: 'event', at: record.createdAt, text: busyNote(host) });
+      this.deps.store.create(record);
+      run = this.makeRun(line, { callId: call.callId, direction: 'outbound', maxMinutes, notice }, line.voice);
+    } else {
+      const dialogAuth = auth as DialogAuth;
+      const systemPrompt = buildCallSystemPrompt({
+        direction: 'outbound',
+        peerNumber: req.to,
+        ourNumber: line.cfg.number,
+        title: record.title,
+        purpose: req.purpose,
+        scenario: req.scenario,
+        envPrompt: line.cfg.outbound.systemPrompt,
+        requester: req.requester,
+        maxMinutes,
+      });
+      record.work.push({ kind: 'instruction', at: record.createdAt, text: systemPrompt });
+      this.deps.store.create(record);
+      line.auths.set(call.callId, dialogAuth);
+      this.keepLease(line, call.callId, host);
+      run = this.makeRun(
+        line,
+        { callId: call.callId, direction: 'outbound', maxMinutes, model: dialogAuth.model },
+        voiceOf(host, line),
+        { systemPrompt, auth: dialogAuth },
+      );
+    }
     line.session.register(run);
     run.begin();
     line.watchdogs.set(
@@ -421,33 +456,92 @@ export class PhoneService {
         void this.finish(line, call, 'no-answer');
       }, DIAL_WATCHDOG_MS),
     );
-    this.deps.log('info', 'phone: dialing', { env: req.env, callId: call.callId });
-    return { ok: true, callId: call.callId };
+    this.deps.log('info', 'phone: dialing', { env: req.env, callId: call.callId, ...(notice ? { notice: true } : {}) });
+    return notice
+      ? { ok: true, callId: call.callId, notice: `${busyNote(host)}: the call only says "${notice.text}" and hangs up` }
+      : { ok: true, callId: call.callId };
   }
 
+  /**
+   * A call's run. `dialog`: the model that talks on the call — none for a call that only says its
+   * {@link CallRunPlan.notice}.
+   */
   private makeRun(
     line: PhoneLine,
-    callId: string,
-    direction: 'outbound' | 'inbound',
-    maxMinutes: number,
-    systemPrompt: string,
-    auth: DialogAuth,
-    greeting?: { text: string; frames: Buffer[] },
+    plan: Omit<CallRunPlan, 'phrases'>,
+    voice: VoiceClient,
+    dialog?: { systemPrompt: string; auth: DialogAuth },
   ): CallRun {
     return new CallRun(
-      { callId, direction, maxMinutes, greeting, phrases: line.phrases, model: auth.model },
+      { ...plan, phrases: line.phrases },
       {
         ulawToPcm16: (b) => this.deps.sdk.ulawToPcm16(b),
         pcm16ToUlaw: (b) => this.deps.sdk.pcm16ToUlaw(b),
-        voice: line.voice,
-        openDialog: (tools) =>
-          this.deps.openDialog({ model: auth.model, systemPrompt, env: auth.env, effort: auth.effort, tools }),
+        voice,
+        openDialog: (tools) => {
+          if (!dialog) throw new Error('a call that only says a notice has no dialog');
+          const { auth, systemPrompt } = dialog;
+          return this.deps.openDialog({ model: auth.model, systemPrompt, env: auth.env, effort: auth.effort, tools });
+        },
         update: (mutate) => {
-          this.deps.store.update(callId, mutate);
+          this.deps.store.update(plan.callId, mutate);
         },
         log: (level, message, data) => this.deps.log(level, message, data),
       },
     );
+  }
+
+  // ── the voice host (one job at a time) ──────────────────────
+
+  /** Take the voice host for a call. A client without leases (a fake, an older service) shares it as before. */
+  private async claimVoice(line: PhoneLine, direction: 'outbound' | 'inbound'): Promise<VoiceHostClaim> {
+    const host = (await line.voice.claim?.(`phone:${line.env}:${direction}`)) ?? { kind: 'shared' };
+    if (host.kind === 'busy') this.deps.log('warn', 'phone: voice host busy', { env: line.env, reason: host.reason });
+    return host;
+  }
+
+  /** The notice a call that cannot be served says, if it is made. */
+  private noticeFor(
+    line: PhoneLine,
+    direction: 'outbound' | 'inbound',
+  ): { text: string; frames: Buffer[] } | undefined {
+    const text = BUSY_NOTICE[direction];
+    const frames = line.phrases.get(text);
+    return frames ? { text, frames } : undefined;
+  }
+
+  private async letGo(host: VoiceHostClaim): Promise<void> {
+    if (host.kind === 'held') await host.release();
+  }
+
+  /** Keep the call's lease alive until {@link dropLease}. */
+  private keepLease(line: PhoneLine, callId: string, host: VoiceHostClaim): void {
+    if (host.kind !== 'held') return;
+    const entry = { release: () => host.release(), timer: undefined as unknown };
+    let warned = false;
+    const arm = () => {
+      entry.timer = this.setTimer(() => {
+        if (line.voiceLeases.get(callId) !== entry) return;
+        void host.renew().then((ok) => {
+          if (line.voiceLeases.get(callId) !== entry) return;
+          if (!ok && !warned) {
+            warned = true;
+            this.deps.log('warn', 'phone: the voice host lease was not renewed', { env: line.env, callId });
+          }
+          arm();
+        });
+      }, LEASE_RENEW_MS);
+    };
+    line.voiceLeases.set(callId, entry);
+    arm();
+  }
+
+  private async dropLease(line: PhoneLine, callId: string): Promise<void> {
+    const entry = line.voiceLeases.get(callId);
+    if (!entry) return;
+    line.voiceLeases.delete(callId);
+    this.clearTimer(entry.timer);
+    await entry.release();
   }
 
   // ── inbound ─────────────────────────────────────────────────
@@ -494,15 +588,21 @@ export class PhoneService {
   private async prepareInbound(line: PhoneLine, callId: string, from: string): Promise<CallRun | null> {
     const existing = line.session.runOf(callId);
     if (existing) return existing;
+    // The voice host first: it does one job at a time. Busy → the caller hears that the call cannot be taken.
+    const host = await this.claimVoice(line, 'inbound');
+    if (host.kind === 'busy') return this.inboundNotice(line, callId, from, host);
     let auth: DialogAuth;
     try {
       auth = await this.deps.dialogAuth({ requester: line.cfg.owner, model: line.cfg.model });
     } catch (err) {
+      await this.letGo(host);
       this.deps.log('warn', 'phone: inbound call refused — no model credentials', { error: (err as Error).message });
       return null;
     }
     if (this.finished.has(callId)) {
-      await auth.release().catch(() => undefined); // the caller hung up while the run was being made
+      // The caller hung up while the run was being made.
+      await auth.release().catch(() => undefined);
+      await this.letGo(host);
       return null;
     }
     // Only a greeting made earlier: synthesizing now would keep the caller waiting in silence.
@@ -533,15 +633,46 @@ export class PhoneService {
       work: [{ kind: 'instruction', at: now, text: systemPrompt }],
     });
     line.auths.set(callId, auth);
+    this.keepLease(line, callId, host);
     const run = this.makeRun(
       line,
-      callId,
-      'inbound',
-      line.cfg.outbound.maxMinutes,
-      systemPrompt,
-      auth,
-      greeting ?? undefined,
+      { callId, direction: 'inbound', maxMinutes: line.cfg.outbound.maxMinutes, greeting, model: auth.model },
+      voiceOf(host, line),
+      { systemPrompt, auth },
     );
+    run.begin();
+    return run;
+  }
+
+  /** An inbound call the voice host cannot serve: answered with the notice, then put down. No notice made: refused. */
+  private inboundNotice(
+    line: PhoneLine,
+    callId: string,
+    from: string,
+    host: Extract<VoiceHostClaim, { kind: 'busy' }>,
+  ): CallRun | null {
+    const notice = this.noticeFor(line, 'inbound');
+    if (!notice) {
+      this.deps.log('warn', 'phone: inbound call put down — voice host busy and no notice made', { callId });
+      return null;
+    }
+    if (this.finished.has(callId)) return null;
+    const now = Date.now();
+    this.deps.store.create({
+      id: callId,
+      env: line.env,
+      direction: 'inbound',
+      ourNumber: line.cfg.number,
+      peerNumber: from,
+      title: `${formatPhoneNumber(from)}에서 온 전화`,
+      status: 'dialing',
+      createdAt: now,
+      ...(line.cfg.owner ? { requester: line.cfg.owner } : {}),
+      voice: line.cfg.voice.voice,
+      transcript: [],
+      work: [{ kind: 'event', at: now, text: busyNote(host) }],
+    });
+    const run = this.makeRun(line, { callId, direction: 'inbound', maxMinutes: 1, notice }, line.voice);
     run.begin();
     return run;
   }
@@ -561,27 +692,50 @@ export class PhoneService {
     return frames;
   }
 
-  /** The reply opener, made once per line: a reply that starts with "네," is heard ~0.8 s sooner. Best effort. */
-  private async preparePhrases(line: PhoneLine): Promise<void> {
+  /**
+   * What a call says without waiting for the engine, made while the line is idle: the inbound greeting, the reply
+   * opener "네." (a reply that starts with it is heard ~0.8 s sooner) and the notices for a busy voice host. What
+   * fails (the host is busy or down) is tried again on the next {@link sync}. Never throws.
+   */
+  private async prepareLine(line: PhoneLine): Promise<void> {
+    if (line.preparing) return;
+    line.preparing = true;
     try {
-      line.phrases.set(OPENER, await this.synthFrames(line, OPENER));
-    } catch (err) {
-      this.deps.log('warn', 'phone: opener not synthesized', { env: line.env, error: (err as Error).message });
+      if (line.cfg.inbound.enabled && !line.greeting) await this.prepareGreeting(line);
+      const texts = [OPENER, BUSY_NOTICE.outbound, ...(line.cfg.inbound.enabled ? [BUSY_NOTICE.inbound] : [])];
+      for (const text of texts) {
+        if (line.phrases.has(text)) continue;
+        if (this.busy(line)) return; // a call has the voice host now
+        try {
+          line.phrases.set(text, await this.synthFrames(line, text));
+          line.unprepared.delete(text);
+        } catch (err) {
+          if (line.unprepared.has(text)) continue;
+          line.unprepared.add(text);
+          this.deps.log('warn', 'phone: phrase not synthesized — retried while idle', {
+            env: line.env,
+            text,
+            error: (err as Error).message,
+          });
+        }
+      }
+    } finally {
+      line.preparing = false;
     }
   }
 
   /** Synthesize the inbound greeting once (μ-law frames), so a caller hears it the moment the line opens. */
-  private async prepareGreeting(line: PhoneLine): Promise<{ text: string; frames: Buffer[] } | undefined> {
+  private async prepareGreeting(line: PhoneLine): Promise<void> {
     const text = line.cfg.inbound.greeting;
     try {
       line.greeting = { text, frames: await this.synthFrames(line, text) };
-      return line.greeting;
     } catch (err) {
-      this.deps.log('warn', 'phone: inbound greeting not synthesized', {
+      if (line.unprepared.has(text)) return;
+      line.unprepared.add(text);
+      this.deps.log('warn', 'phone: inbound greeting not synthesized — retried while idle', {
         env: line.env,
         error: (err as Error).message,
       });
-      return undefined;
     }
   }
 
@@ -601,6 +755,7 @@ export class PhoneService {
     const auth = line.auths.get(call.callId);
     line.auths.delete(call.callId);
     if (auth) await auth.release().catch(() => undefined);
+    await this.dropLease(line, call.callId);
     if (!first) return; // the record, the summary and the owner's notice: once per call
     const now = Date.now();
     if (this.deps.store.get(call.callId)?.status === 'ended') return;
@@ -614,7 +769,8 @@ export class PhoneService {
     });
     if (!record) return;
     this.deps.log('info', 'phone: call ended', { env: line.env, callId: call.callId, endedStatus });
-    if (record.transcript.length && this.deps.summarize) {
+    // Nothing the other side said (a notice, an unanswered call): nothing to sum up.
+    if (record.transcript.some((l) => l.role === 'peer') && this.deps.summarize) {
       const summary = await this.deps.summarize(record).catch(() => null);
       if (summary) this.deps.store.update(call.callId, (r) => (r.summary = summary));
     }
@@ -637,4 +793,14 @@ export class PhoneService {
         .catch((err) => this.deps.log('warn', 'phone: owner notice failed', { error: (err as Error).message }));
     }
   }
+}
+
+/** The work-log line for a call the voice host could not serve. */
+function busyNote(host: VoiceHostClaim): string {
+  return `음성 서버가 다른 작업 중이라 안내 음성만 하고 끊음 (${host.kind === 'busy' ? host.reason : host.kind})`;
+}
+
+/** The voice client a call uses: the claimed host's, carrying the lease, or the line's when the host has no leases. */
+function voiceOf(host: VoiceHostClaim, line: { voice: VoiceClient }): VoiceClient {
+  return host.kind === 'held' ? host.voice : line.voice;
 }

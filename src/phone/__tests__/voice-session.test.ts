@@ -651,6 +651,59 @@ describe('CallRun — inbound', () => {
   });
 });
 
+describe('CallRun — the voice host is busy: a notice, then the phone goes down', () => {
+  const notice = {
+    text: '지금은 전화를 받을 수 없습니다. 잠시 후 다시 걸어 주세요.',
+    frames: Array.from({ length: 50 }, () => Buffer.alloc(160)),
+  };
+
+  it('inbound: the notice plays the moment the line opens, then the call is put down once it is heard', async () => {
+    const { run, clock, record, spoken, dialog } = setup({ direction: 'inbound', notice });
+    run.begin();
+    expect(dialog()).toBeUndefined(); // no dialog: nobody to talk to
+    const call = fakeCall();
+    run.attach(call as unknown as CallSessionLike);
+    expect(call.frames).toBe(50);
+    expect(record.transcript).toMatchObject([{ role: 'agent', text: notice.text }]);
+    // Words over the notice are not heard and do not hold the line open.
+    run.feedAudio(tone(800, 0.3));
+    run.feedAudio(quiet(600));
+    await settleAll();
+    clock.advance(999); // 50 frames = 1 s of audio, plus the tail
+    expect(call.hungUp).toBe(0);
+    clock.advance(700);
+    expect(call.hungUp).toBe(1);
+    expect(spoken).toEqual([]); // nothing synthesized: the notice was made before
+    expect(record.work.map((w) => (w.kind === 'event' ? w.text : w.kind))).toContain('안내 음성을 하고 끊음');
+  });
+
+  it('outbound: waits for the "여보세요" (or a quiet spell), then says the notice and hangs up', async () => {
+    const { run, clock, record, dialog } = setup({ direction: 'outbound', notice });
+    run.begin();
+    expect(dialog()).toBeUndefined();
+    const call = fakeCall();
+    run.attach(call as unknown as CallSessionLike);
+    expect(call.frames).toBe(0);
+    run.feedAudio(tone(500, 0.3)); // 여보세요
+    run.feedAudio(quiet(700));
+    expect(call.frames).toBe(50);
+    expect(record.transcript).toHaveLength(1);
+    clock.advance(1700);
+    expect(call.hungUp).toBe(1);
+
+    const quietLine = setup({ direction: 'outbound', notice });
+    quietLine.run.begin();
+    const c2 = fakeCall();
+    quietLine.run.attach(c2 as unknown as CallSessionLike);
+    quietLine.clock.advance(1199);
+    expect(c2.frames).toBe(0);
+    quietLine.clock.advance(1);
+    expect(c2.frames).toBe(50);
+    quietLine.clock.advance(1700);
+    expect(c2.hungUp).toBe(1);
+  });
+});
+
 describe('PhoneVoiceSession', () => {
   it('routes the line to the registered run, one call at a time', async () => {
     const { run } = setup();

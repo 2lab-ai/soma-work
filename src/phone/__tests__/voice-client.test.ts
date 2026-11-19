@@ -530,3 +530,89 @@ describe('createVoiceClient().speak — speed', () => {
 afterEach(() => {
   vi.useRealTimers();
 });
+
+describe('createVoiceClient().claim — one job at a time on the voice host', () => {
+  const cfg = { url: 'http://lease-host:9999', voice: 'v', model: 'drama-3', language: 'ko', token: 't0k' };
+  type Seen = { url: string; method: string; headers: Record<string, string>; body?: string };
+  function host(answer: (s: Seen) => Response) {
+    const seen: Seen[] = [];
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      const s: Seen = {
+        url,
+        method: init.method ?? 'GET',
+        headers: { ...(init.headers as Record<string, string>) },
+        body: typeof init.body === 'string' ? init.body : undefined,
+      };
+      seen.push(s);
+      return answer(s);
+    }) as unknown as typeof fetch;
+    return { seen, fetchImpl };
+  }
+
+  it('held: every request of the call carries the lease; renew and release send it too', async () => {
+    const { seen, fetchImpl } = host((s) => {
+      if (s.url.endsWith('/api/lease') && s.method === 'POST') return Response.json({ token: 'L1', owner: 'phone' });
+      if (s.url.endsWith('/api/stt')) return Response.json({ text: '네', ms: 5 });
+      if (s.url.endsWith('/api/tts/stream')) return new Response(new Uint8Array([0, 0]), { status: 200 });
+      return new Response(null, { status: s.method === 'DELETE' ? 204 : 200 });
+    });
+    const claim = await createVoiceClient(cfg, fetchImpl).claim?.('phone:dev:outbound');
+    expect(claim?.kind).toBe('held');
+    if (claim?.kind !== 'held') return;
+    expect(JSON.parse(String(seen[0].body))).toEqual({ owner: 'phone:dev:outbound', ttl_ms: 30_000 });
+    expect(seen[0].headers.authorization).toBe('Bearer t0k');
+    await claim.voice.transcribe(Buffer.alloc(10));
+    const s = await claim.voice.speak('안녕');
+    for await (const _ of s.chunks) {
+      // drained
+    }
+    expect(await claim.renew()).toBe(true);
+    await claim.release();
+    expect(seen.slice(1).map((r) => `${r.method} ${r.url.replace('http://lease-host:9999', '')}`)).toEqual([
+      'POST /api/stt',
+      'POST /api/tts/stream',
+      'POST /api/lease/renew',
+      'DELETE /api/lease',
+    ]);
+    for (const r of seen.slice(1)) {
+      expect(r.headers['x-soma-voice-lease']).toBe('L1');
+      expect(r.headers.authorization).toBe('Bearer t0k');
+    }
+  });
+
+  it('busy when the host answers 409 (with who holds it), cannot be reached, or errors', async () => {
+    const busy = host(() => Response.json({ error: 'busy', holder: 'voicechat', in_flight: 0 }, { status: 409 }));
+    expect(await createVoiceClient(cfg, busy.fetchImpl).claim?.('phone')).toEqual({
+      kind: 'busy',
+      reason: 'busy with voicechat',
+    });
+    const queued = host(() => Response.json({ error: 'busy', holder: null, in_flight: 2 }, { status: 409 }));
+    expect(await createVoiceClient(cfg, queued.fetchImpl).claim?.('phone')).toEqual({ kind: 'busy', reason: 'busy' });
+    const down = createVoiceClient(cfg, (async () => {
+      throw new Error('connect ECONNREFUSED');
+    }) as unknown as typeof fetch);
+    expect(await down.claim?.('phone')).toMatchObject({ kind: 'busy', reason: expect.stringContaining('unreachable') });
+    const broken = host(() => new Response('boom', { status: 500 }));
+    expect(await createVoiceClient(cfg, broken.fetchImpl).claim?.('phone')).toMatchObject({ kind: 'busy' });
+  });
+
+  it('shared when the host has no leases (an older service answers 404): the call goes on as before', async () => {
+    const old = host(() => new Response('not found', { status: 404 }));
+    expect(await createVoiceClient(cfg, old.fetchImpl).claim?.('phone')).toEqual({ kind: 'shared' });
+  });
+
+  it('a lease the host lost is reported by renew (false), and renew/release never throw', async () => {
+    let up = true;
+    const { fetchImpl } = host((s) => {
+      if (!up) throw new Error('down');
+      if (s.url.endsWith('/api/lease') && s.method === 'POST') return Response.json({ token: 'L2', owner: 'p' });
+      return Response.json({ error: 'lease is not held' }, { status: 404 });
+    });
+    const claim = await createVoiceClient(cfg, fetchImpl).claim?.('phone');
+    if (claim?.kind !== 'held') throw new Error('not held');
+    expect(await claim.renew()).toBe(false);
+    up = false;
+    expect(await claim.renew()).toBe(false);
+    await expect(claim.release()).resolves.toBeUndefined();
+  });
+});

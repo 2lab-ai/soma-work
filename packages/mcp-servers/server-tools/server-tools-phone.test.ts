@@ -189,6 +189,12 @@ describe('phone_call', () => {
     expect(lines[1].detail.callId).toBe('CA42');
   });
 
+  it('a call placed while the voice host is busy says so: it only plays a notice', async () => {
+    startDaemon(() => ({ ok: true, callId: 'CA55', notice: 'voice host busy: the call only says a notice' }));
+    const r = text((await handlePhoneCall({ server: '2lab-ai-dev', to: '010-1234-5678', purpose: '확인' })) as never);
+    expect(r).toMatchObject({ callId: 'CA55', status: 'dialing', notice: expect.stringContaining('busy') });
+  });
+
   it('reports the daemon refusing, and records the failure', async () => {
     startDaemon(() => ({ ok: false, error: 'phone line 2lab-ai-dev is busy with another call' }));
     await expect(handlePhoneCall({ server: '2lab-ai-dev', to: '01012345678', purpose: 'p' })).rejects.toThrow(

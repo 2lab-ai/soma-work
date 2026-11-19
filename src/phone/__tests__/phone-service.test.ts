@@ -10,7 +10,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { VoiceDialog, VoiceDialogEvent } from '../../agent-runtime/voice-dialog';
 import { PhoneCallStore } from '../call-store';
 import type { AgentLike, AgentOptions, CallSessionLike, IncomingCallLike, KoreaAiTelSdk } from '../koreaaitel';
+import { BUSY_NOTICE } from '../phone-prompt';
 import { PhoneService, type PhoneServiceDeps } from '../phone-service';
+import type { VoiceClient, VoiceHostClaim } from '../voice-client';
 
 let dir: string;
 beforeEach(() => {
@@ -497,5 +499,201 @@ describe('PhoneService', () => {
     });
     expect(reasons).toEqual(['rejected']);
     await svc.stop();
+  });
+
+  describe('one job at a time on the voice host', () => {
+    const settleAll = async () => {
+      for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0));
+    };
+    /** 0.3 s of a 300 Hz tone at 8 kHz (the test codec is identity: PCM16 goes in as if it were μ-law). */
+    const tone = (ms: number, amp: number) => {
+      const n = (8000 * ms) / 1000;
+      const b = Buffer.alloc(n * 2);
+      for (let i = 0; i < n; i++)
+        b.writeInt16LE(Math.round(Math.sin((2 * Math.PI * 300 * i) / 8000) * amp * 32767), i * 2);
+      return b;
+    };
+    /** A voice host that answers claims with `answer()`; `log` says which client did what. */
+    function voiceHost(answer: () => VoiceHostClaim['kind'], opts: { speakFails?: () => boolean } = {}) {
+      const log: string[] = [];
+      const client = (tag: string): VoiceClient => ({
+        transcribe: async () => {
+          log.push(`${tag} transcribe`);
+          return { text: '네', ms: 1 };
+        },
+        speak: async (text) => {
+          if (opts.speakFails?.()) throw new Error('text-to-speech answered 409');
+          log.push(`${tag} speak ${text}`);
+          return {
+            sampleRate: 8000,
+            headersMs: 0,
+            chunks: (async function* () {
+              yield Buffer.alloc(3200); // identity codec: 20 frames of 160 B
+            })(),
+          };
+        },
+      });
+      const voice: VoiceClient = {
+        ...client('line'),
+        claim: async (owner) => {
+          log.push(`claim ${owner}`);
+          const kind = answer();
+          if (kind === 'busy') return { kind, reason: 'busy with voicechat' };
+          if (kind === 'shared') return { kind };
+          return {
+            kind,
+            voice: client('leased'),
+            renew: async () => {
+              log.push('renew');
+              return true;
+            },
+            release: async () => {
+              log.push('release');
+            },
+          };
+        },
+      };
+      return { voice, log };
+    }
+    function liveCall(callId: string, direction: string) {
+      const call = { ...fakeCall(callId, direction), frames: 0, hungUp: 0 };
+      call.sendAudio = () => {
+        call.frames++;
+      };
+      call.hangup = async () => {
+        call.hungUp++;
+      };
+      return call;
+    }
+
+    it('the line makes the notices while it is idle, with the line client (no lease)', async () => {
+      const host = voiceHost(() => 'held');
+      const { svc } = make(serverTools(), undefined, { voiceClientFor: () => host.voice });
+      await svc.start();
+      await settleAll();
+      expect(host.log).toEqual(
+        expect.arrayContaining([`line speak ${BUSY_NOTICE.outbound}`, `line speak ${BUSY_NOTICE.inbound}`]),
+      );
+      expect(host.log.some((l) => l.startsWith('claim'))).toBe(false);
+      await svc.stop();
+    });
+
+    it('a call takes the host: its words go through the lease, renewed every 10 s, given back when it ends', async () => {
+      const host = voiceHost(() => 'held');
+      const { svc, agents, timers } = make(serverTools(), undefined, { voiceClientFor: () => host.voice });
+      await svc.start();
+      await settleAll();
+      host.log.length = 0;
+      await agents[0].incoming?.(incoming('IN1', []));
+      await agents[0].start(liveCall('IN1', 'inbound'));
+      expect(host.log).toEqual(['claim phone:2lab-ai-dev:inbound']);
+      const session = agents[0].options.session as unknown as { feedAudio(b: Buffer): void };
+      session.feedAudio(tone(600, 0.3));
+      session.feedAudio(tone(700, 0.0005));
+      await settleAll();
+      expect(host.log).toContain('leased transcribe');
+      expect(host.log).not.toContain('line transcribe');
+      timers.advance(10_000);
+      await settleAll();
+      timers.advance(10_000);
+      await settleAll();
+      expect(host.log.filter((l) => l === 'renew')).toHaveLength(2);
+      await agents[0].handlers.call_end(fakeCall('IN1', 'inbound', 'completed'));
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1);
+      timers.advance(30_000);
+      await settleAll();
+      expect(host.log.filter((l) => l === 'renew')).toHaveLength(2); // no renewal after the end
+      await svc.stop();
+    });
+
+    it('busy on an inbound call: the caller hears the notice, no model is used, the owner is told', async () => {
+      let kind: VoiceHostClaim['kind'] = 'held';
+      const host = voiceHost(() => kind);
+      const auths: string[] = [];
+      const { svc, agents, store, dialogs, notices } = make(serverTools(), undefined, {
+        voiceClientFor: () => host.voice,
+        dialogAuth: async () => {
+          auths.push('taken');
+          return { env: {}, model: 'm', release: async () => undefined };
+        },
+        summarize: async () => {
+          throw new Error('nothing to summarize');
+        },
+      });
+      await svc.start();
+      await settleAll();
+      kind = 'busy';
+      await agents[0].incoming?.(incoming('IN1', []));
+      const call = liveCall('IN1', 'inbound');
+      await agents[0].start(call);
+      expect(call.frames).toBe(20); // the notice, at once
+      const r = store.get('IN1');
+      expect(r?.transcript).toMatchObject([{ role: 'agent', text: BUSY_NOTICE.inbound }]);
+      expect(r?.work[0]).toMatchObject({ kind: 'event', text: expect.stringContaining('busy with voicechat') });
+      expect(auths).toEqual([]);
+      expect(dialogs).toHaveLength(0);
+      await agents[0].handlers.call_end(fakeCall('IN1', 'inbound', 'completed'));
+      expect(notices[0][1]).toContain(BUSY_NOTICE.inbound);
+      expect(host.log).not.toContain('release'); // nothing was held
+      await svc.stop();
+    });
+
+    it('busy on an outbound call: it is still placed, says only the notice, and the requester is told', async () => {
+      let kind: VoiceHostClaim['kind'] = 'held';
+      const host = voiceHost(() => kind);
+      const { svc, agents, store, dialogs, released } = make(serverTools(), undefined, {
+        voiceClientFor: () => host.voice,
+      });
+      await svc.start();
+      await settleAll();
+      kind = 'busy';
+      const result = await svc.dial(request() as never);
+      expect(result).toMatchObject({ ok: true, callId: 'CA1', notice: expect.stringContaining('busy with voicechat') });
+      expect(agents[0].dialed).toHaveLength(1);
+      expect(dialogs).toHaveLength(0);
+      const r = store.get('CA1');
+      expect(r?.model).toBeUndefined();
+      expect(r?.work[0]).toMatchObject({ kind: 'event', text: expect.stringContaining('안내 음성만') });
+      await agents[0].handlers.call_end(fakeCall('CA1', 'outbound', 'completed'));
+      expect(released).toEqual([]); // no model credentials were taken
+      kind = 'held';
+      expect(await svc.dial(request({ rid: 'zzz999yyy888' }) as never)).toMatchObject({ ok: true, callId: 'CA2' });
+      expect(store.get('CA2')?.work[0].kind).toBe('instruction');
+      await svc.stop();
+    });
+
+    it('busy and the notice could not be made: nothing is dialed; the notice is made on a later idle pass', async () => {
+      let fails = true;
+      const host = voiceHost(() => 'busy', { speakFails: () => fails });
+      const { svc, agents } = make(serverTools(), undefined, { voiceClientFor: () => host.voice });
+      await svc.start();
+      await settleAll();
+      expect(await svc.dial(request() as never)).toMatchObject({
+        ok: false,
+        error: expect.stringContaining('no notice is ready'),
+      });
+      expect(agents[0].dialed).toHaveLength(0);
+      fails = false;
+      await svc.sync();
+      await settleAll();
+      expect(await svc.dial(request({ rid: 'zzz999yyy888' }) as never)).toMatchObject({
+        ok: true,
+        notice: expect.any(String),
+      });
+      await svc.stop();
+    });
+
+    it('a dial that fails gives the host back at once', async () => {
+      const host = voiceHost(() => 'held');
+      const { svc, agents } = make(serverTools(), undefined, { voiceClientFor: () => host.voice });
+      await svc.start();
+      await settleAll();
+      agents[0].call = async () => {
+        throw new Error('422 quota');
+      };
+      expect(await svc.dial(request() as never)).toMatchObject({ ok: false, error: expect.stringContaining('422') });
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1);
+      await svc.stop();
+    });
   });
 });
