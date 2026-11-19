@@ -648,6 +648,33 @@ describe('createVoiceClient().claim — one job at a time on the voice host', ()
     });
   });
 
+  it('a renewal in flight when the call ends does not take the host again behind the release', async () => {
+    let claims = 0;
+    let letRenewAnswer!: () => void;
+    const renewGate = new Promise<void>((r) => {
+      letRenewAnswer = r;
+    });
+    const { seen, fetchImpl } = host((s) => {
+      if (s.url.endsWith('/api/lease') && s.method === 'POST') return Response.json({ token: `L${++claims}` });
+      return Response.json({}, { status: s.method === 'DELETE' ? 204 : 200 });
+    });
+    const slow = (async (url: string, init: RequestInit) => {
+      if (url.endsWith('/api/lease/renew')) {
+        await renewGate; // the release overtakes it: the host no longer knows the lease
+        return Response.json({ error: 'lease is not held' }, { status: 404 });
+      }
+      return fetchImpl(url, init);
+    }) as unknown as typeof fetch;
+    const claim = await createVoiceClient(cfg, slow).claim?.('phone');
+    if (claim?.kind !== 'held') throw new Error('not held');
+    const renewing = claim.renew();
+    await claim.release();
+    letRenewAnswer();
+    expect(await renewing).toBe(false);
+    expect(claims).toBe(1); // never taken again
+    expect(seen.filter((r) => r.method === 'DELETE')).toHaveLength(1);
+  });
+
   it('a lease answer that is JSON null is busy, not a crash', async () => {
     const nul = host(() => new Response('null', { status: 200, headers: { 'content-type': 'application/json' } }));
     expect(await createVoiceClient(cfg, nul.fetchImpl).claim?.('phone')).toMatchObject({ kind: 'busy' });

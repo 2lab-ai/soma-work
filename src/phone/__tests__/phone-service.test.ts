@@ -644,8 +644,13 @@ describe('PhoneService', () => {
     it('busy on an outbound call: it is still placed, says only the notice, and the requester is told', async () => {
       let kind: VoiceHostClaim['kind'] = 'held';
       const host = voiceHost(() => kind);
-      const { svc, agents, store, dialogs, released } = make(serverTools(), undefined, {
+      let authCalls = 0;
+      const { svc, agents, store, dialogs } = make(serverTools(), undefined, {
         voiceClientFor: () => host.voice,
+        dialogAuth: async () => {
+          authCalls++;
+          return { env: {}, model: 'm', release: async () => undefined };
+        },
       });
       await svc.start();
       await settleAll();
@@ -658,7 +663,7 @@ describe('PhoneService', () => {
       expect(r?.model).toBeUndefined();
       expect(r?.work[0]).toMatchObject({ kind: 'event', text: expect.stringContaining('안내 음성만') });
       await agents[0].handlers.call_end(fakeCall('CA1', 'outbound', 'completed'));
-      expect(released).toEqual([]); // no model credentials were taken
+      expect(authCalls).toBe(0); // no model credentials were asked for
       kind = 'held';
       expect(await svc.dial(request({ rid: 'zzz999yyy888' }) as never)).toMatchObject({ ok: true, callId: 'CA2' });
       expect(store.get('CA2')?.work[0].kind).toBe('instruction');
@@ -712,6 +717,68 @@ describe('PhoneService', () => {
       expect(await dialing).toMatchObject({ ok: true });
       await svc.stop();
       expect(host.log.filter((l) => l === 'release')).toHaveLength(1);
+    });
+
+    it('…and while the platform dial is still pending', async () => {
+      const host = voiceHost(() => 'held');
+      const { svc, agents, timers } = make(serverTools(), undefined, { voiceClientFor: () => host.voice });
+      await svc.start();
+      await settleAll();
+      let answer!: (c: CallSessionLike) => void;
+      agents[0].call = () =>
+        new Promise<CallSessionLike>((r) => {
+          answer = r;
+        });
+      const dialing = svc.dial(request() as never);
+      await settleAll();
+      for (let i = 0; i < 4; i++) {
+        timers.advance(10_000);
+        await settleAll();
+      }
+      expect(host.log.filter((l) => l === 'renew')).toHaveLength(4);
+      answer(fakeCall('CA9', 'outbound'));
+      expect(await dialing).toMatchObject({ ok: true, callId: 'CA9' });
+      await agents[0].handlers.call_end(fakeCall('CA9', 'outbound', 'completed'));
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1); // moved to the call id, given back at its end
+      await svc.stop();
+    });
+
+    it('teardown during a pending setup gives the host back and stops renewing', async () => {
+      const host = voiceHost(() => 'held');
+      const { svc, agents, timers } = make(serverTools(), undefined, {
+        voiceClientFor: () => host.voice,
+        dialogAuth: () => new Promise<never>(() => undefined), // stuck for good
+      });
+      await svc.start();
+      await settleAll();
+      void svc.dial(request() as never);
+      await agents[0].incoming?.(incoming('IN1', [])); // refused: the line is busy with the dial
+      await settleAll();
+      await svc.stop();
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1);
+      timers.advance(60_000);
+      await settleAll();
+      expect(host.log.filter((l) => l === 'renew')).toHaveLength(0);
+    });
+
+    it('an inbound caller who hangs up while the credentials are stuck gives the host back at once', async () => {
+      const host = voiceHost(() => 'held');
+      const { svc, agents, timers } = make(serverTools(), undefined, {
+        voiceClientFor: () => host.voice,
+        dialogAuth: () => new Promise<never>(() => undefined),
+      });
+      await svc.start();
+      await settleAll();
+      await agents[0].incoming?.(incoming('IN1', []));
+      void agents[0].start(fakeCall('IN1', 'inbound'));
+      await settleAll();
+      expect(host.log).toContain('claim phone:2lab-ai-dev:inbound');
+      await agents[0].handlers.call_end(fakeCall('IN1', 'inbound', 'canceled'));
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1);
+      timers.advance(60_000);
+      await settleAll();
+      expect(host.log.filter((l) => l === 'renew')).toHaveLength(0);
+      await svc.stop();
     });
 
     it('stop() with a call up gives its host back once, and no renewal follows', async () => {

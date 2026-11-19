@@ -180,10 +180,13 @@ export function createVoiceClient(
       if (first.kind !== 'token') return first;
       const lease = { token: first.token };
       const leased = () => ({ ...bearer, [LEASE_HEADER]: lease.token });
+      /** Released: a renewal still in flight must not take the host again behind it. */
+      let closed = false;
       return {
         kind: 'held',
         voice: createVoiceClient(cfg, fetchImpl, lease),
         async renew() {
+          if (closed) return false;
           let status: number;
           try {
             const r = await fetchImpl(`${base}/api/lease/renew`, {
@@ -200,21 +203,19 @@ export function createVoiceClient(
           if (status !== 404) return false;
           // The host does not know the lease any more (it restarted, or the lease lapsed): the call takes the host
           // again if it is free, and its requests carry the new token from here on.
+          if (closed) return false;
           const again = await takeLease(owner);
           if (again.kind !== 'token') return false;
+          if (closed) {
+            await dropLease(again.token); // the call ended meanwhile: the late grant goes straight back
+            return false;
+          }
           lease.token = again.token;
           return true;
         },
         async release() {
-          try {
-            await fetchImpl(`${base}/api/lease`, {
-              method: 'DELETE',
-              headers: leased(),
-              signal: AbortSignal.timeout(LEASE_REQUEST_MS),
-            });
-          } catch {
-            // Not given back: it lapses on the host within LEASE_TTL_MS.
-          }
+          closed = true;
+          await dropLease(lease.token);
         },
       };
     },
@@ -245,6 +246,19 @@ export function createVoiceClient(
       return done;
     },
   };
+
+  /** DELETE /api/lease, bounded. Never throws: a lease not given back lapses on the host within LEASE_TTL_MS. */
+  async function dropLease(token: string): Promise<void> {
+    try {
+      await fetchImpl(`${base}/api/lease`, {
+        method: 'DELETE',
+        headers: { ...bearer, [LEASE_HEADER]: token },
+        signal: AbortSignal.timeout(LEASE_REQUEST_MS),
+      });
+    } catch {
+      // lapses on the host
+    }
+  }
 
   /** POST /api/lease, bounded. Never throws. */
   async function takeLease(

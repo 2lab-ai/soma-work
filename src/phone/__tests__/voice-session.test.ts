@@ -154,6 +154,7 @@ function setup(
   };
   let dialog: FakeDialog | undefined;
   const spoken: string[] = [];
+  const heard = { count: 0 };
   const warmed: number[] = [];
   const voice: VoiceClient = {
     warm(signal) {
@@ -161,6 +162,7 @@ function setup(
       return opts.warm?.(signal);
     },
     async transcribe() {
+      heard.count++;
       await opts.sttGate?.();
       return { text: stt.shift() ?? '', ms: 5 };
     },
@@ -194,7 +196,7 @@ function setup(
       clearTimer: clock.clear,
     },
   );
-  return { run, clock, record, spoken, warmed, dialog: () => dialog as FakeDialog };
+  return { run, clock, record, spoken, warmed, heard, dialog: () => dialog as FakeDialog };
 }
 
 const settle = () => new Promise((r) => setTimeout(r, 0));
@@ -658,7 +660,7 @@ describe('CallRun — the voice host is busy: a notice, then the phone goes down
   };
 
   it('inbound: the notice plays the moment the line opens, then the call is put down once it is heard', async () => {
-    const { run, clock, record, spoken, dialog } = setup({ direction: 'inbound', notice });
+    const { run, clock, record, spoken, heard, dialog } = setup({ direction: 'inbound', notice });
     run.begin();
     expect(dialog()).toBeUndefined(); // no dialog: nobody to talk to
     const call = fakeCall();
@@ -674,11 +676,12 @@ describe('CallRun — the voice host is busy: a notice, then the phone goes down
     clock.advance(700);
     expect(call.hungUp).toBe(1);
     expect(spoken).toEqual([]); // nothing synthesized: the notice was made before
+    expect(heard.count).toBe(0); // and nothing transcribed
     expect(record.work.map((w) => (w.kind === 'event' ? w.text : w.kind))).toContain('안내 음성을 하고 끊음');
   });
 
   it('outbound: waits for the "여보세요" (or a quiet spell), then says the notice and hangs up', async () => {
-    const { run, clock, record, dialog } = setup({ direction: 'outbound', notice });
+    const { run, clock, record, heard, dialog } = setup({ direction: 'outbound', notice });
     run.begin();
     expect(dialog()).toBeUndefined();
     const call = fakeCall();
@@ -690,6 +693,8 @@ describe('CallRun — the voice host is busy: a notice, then the phone goes down
     expect(record.transcript).toHaveLength(1);
     clock.advance(1700);
     expect(call.hungUp).toBe(1);
+    await settleAll();
+    expect(heard.count).toBe(0); // the hello only triggered the notice
 
     const quietLine = setup({ direction: 'outbound', notice });
     quietLine.run.begin();

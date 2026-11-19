@@ -102,7 +102,10 @@ interface PhoneLine {
   phrases: Map<string, Buffer[]>;
   /** Lease of each call's dialog, released when the call ends. */
   auths: Map<string, DialogAuth>;
-  /** Each call's lease on the voice host (the host does one job at a time), renewed until the call ends. */
+  /**
+   * Leases on the voice host (it does one job at a time), renewed until given back: by call id, and an outbound call
+   * still being set up by `setup:<request id>`. Teardown gives back every one, also those of a setup still pending.
+   */
   voiceLeases: Map<string, HeldLease>;
   /** Line phrases are being synthesized (at most one pass at a time). */
   preparing: boolean;
@@ -380,7 +383,8 @@ export class PhoneService {
   private async placeCall(line: PhoneLine, req: PhoneCallRequest): Promise<PhoneCallRequestResult> {
     // The voice host first: it does one job at a time. Busy → the call is still made, but only says it cannot go on.
     const host = await this.claimVoice(line, 'outbound');
-    const lease = this.holdLease(line, host);
+    const setupKey = `setup:${req.rid}`;
+    const lease = this.holdLease(line, setupKey, host);
     const notice = host.kind === 'busy' ? this.noticeFor(line, 'outbound') : undefined;
     if (host.kind === 'busy' && !notice)
       return { ok: false, error: `the voice host cannot take a call now (${host.reason}) and no notice is ready` };
@@ -389,7 +393,7 @@ export class PhoneService {
       try {
         auth = await this.deps.dialogAuth({ requester: req.requester, model: line.cfg.model });
       } catch (err) {
-        await lease?.release();
+        await this.dropLease(line, setupKey);
         return { ok: false, error: `no model credentials for the call: ${(err as Error).message}` };
       }
     }
@@ -398,7 +402,7 @@ export class PhoneService {
       call = await line.agent.call(req.to, { timeout: DIAL_TIMEOUT_S });
     } catch (err) {
       await auth?.release().catch(() => undefined);
-      await lease?.release();
+      await this.dropLease(line, setupKey);
       return { ok: false, error: `dial failed: ${(err as Error).message}` };
     }
     const maxMinutes = Math.min(req.maxMinutes, line.cfg.outbound.maxMinutes);
@@ -443,7 +447,10 @@ export class PhoneService {
       record.work.push({ kind: 'instruction', at: record.createdAt, text: systemPrompt });
       this.deps.store.create(record);
       line.auths.set(call.callId, dialogAuth);
-      if (lease) line.voiceLeases.set(call.callId, lease);
+      if (lease && line.voiceLeases.get(setupKey) === lease) {
+        line.voiceLeases.delete(setupKey);
+        line.voiceLeases.set(call.callId, lease);
+      }
       run = this.makeRun(
         line,
         { callId: call.callId, direction: 'outbound', maxMinutes, model: dialogAuth.model },
@@ -519,9 +526,10 @@ export class PhoneService {
 
   /**
    * Renew a held host from the claim on — dialog credentials and the dial can take longer than the host's 30 s — until
-   * {@link HeldLease.release}. Null when nothing is held.
+   * {@link HeldLease.release}, registered on the line under `key` at once so that teardown finds it. Null when nothing
+   * is held.
    */
-  private holdLease(line: PhoneLine, host: VoiceHostClaim): HeldLease | null {
+  private holdLease(line: PhoneLine, key: string, host: VoiceHostClaim): HeldLease | null {
     if (host.kind !== 'held') return null;
     let over = false;
     let timer: unknown;
@@ -538,7 +546,7 @@ export class PhoneService {
       }, LEASE_RENEW_MS);
     };
     arm();
-    return {
+    const lease: HeldLease = {
       release: async () => {
         if (over) return;
         over = true;
@@ -546,6 +554,8 @@ export class PhoneService {
         await host.release();
       },
     };
+    line.voiceLeases.set(key, lease);
+    return lease;
   }
 
   private async dropLease(line: PhoneLine, callId: string): Promise<void> {
@@ -602,19 +612,20 @@ export class PhoneService {
     // The voice host first: it does one job at a time. Busy → the caller hears that the call cannot be taken.
     const host = await this.claimVoice(line, 'inbound');
     if (host.kind === 'busy') return this.inboundNotice(line, callId, from, host);
-    const lease = this.holdLease(line, host);
+    // Under the call id from the start: a caller who hangs up while the credentials are pending gives it back.
+    this.holdLease(line, callId, host);
     let auth: DialogAuth;
     try {
       auth = await this.deps.dialogAuth({ requester: line.cfg.owner, model: line.cfg.model });
     } catch (err) {
-      await lease?.release();
+      await this.dropLease(line, callId);
       this.deps.log('warn', 'phone: inbound call refused — no model credentials', { error: (err as Error).message });
       return null;
     }
     if (this.finished.has(callId)) {
       // The caller hung up while the run was being made.
       await auth.release().catch(() => undefined);
-      await lease?.release();
+      await this.dropLease(line, callId);
       return null;
     }
     // Only a greeting made earlier: synthesizing now would keep the caller waiting in silence.
@@ -645,7 +656,6 @@ export class PhoneService {
       work: [{ kind: 'instruction', at: now, text: systemPrompt }],
     });
     line.auths.set(callId, auth);
-    if (lease) line.voiceLeases.set(callId, lease);
     const run = this.makeRun(
       line,
       { callId, direction: 'inbound', maxMinutes: line.cfg.outbound.maxMinutes, greeting, model: auth.model },
@@ -684,9 +694,7 @@ export class PhoneService {
       transcript: [],
       work: [{ kind: 'event', at: now, text: busyNote(host) }],
     });
-    const run = this.makeRun(line, { callId, direction: 'inbound', maxMinutes: 1, notice }, line.voice);
-    run.begin();
-    return run;
+    return this.makeRun(line, { callId, direction: 'inbound', maxMinutes: 1, notice }, line.voice); // no dialog to begin
   }
 
   /** Synthesize `text` whole, as μ-law frames for the line. */
@@ -712,9 +720,9 @@ export class PhoneService {
   private async prepareLine(line: PhoneLine): Promise<void> {
     if (line.preparing) return;
     line.preparing = true;
+    const greeting = line.cfg.inbound.enabled ? line.cfg.inbound.greeting : undefined;
     try {
-      if (line.cfg.inbound.enabled && !line.greeting) await this.prepareGreeting(line);
-      const texts = [OPENER, BUSY_NOTICE.outbound, ...(line.cfg.inbound.enabled ? [BUSY_NOTICE.inbound] : [])];
+      const texts = [...(greeting ? [greeting, BUSY_NOTICE.inbound] : []), OPENER, BUSY_NOTICE.outbound];
       for (const text of texts) {
         if (line.phrases.has(text)) continue;
         if (this.busy(line)) return; // a call has the voice host now
@@ -733,21 +741,8 @@ export class PhoneService {
       }
     } finally {
       line.preparing = false;
-    }
-  }
-
-  /** Synthesize the inbound greeting once (μ-law frames), so a caller hears it the moment the line opens. */
-  private async prepareGreeting(line: PhoneLine): Promise<void> {
-    const text = line.cfg.inbound.greeting;
-    try {
-      line.greeting = { text, frames: await this.synthFrames(line, text) };
-    } catch (err) {
-      if (line.unprepared.has(text)) return;
-      line.unprepared.add(text);
-      this.deps.log('warn', 'phone: inbound greeting not synthesized — retried while idle', {
-        env: line.env,
-        error: (err as Error).message,
-      });
+      const frames = greeting ? line.phrases.get(greeting) : undefined;
+      if (greeting && frames) line.greeting = { text: greeting, frames };
     }
   }
 
