@@ -12,7 +12,8 @@
  *   P4  a reload opens it on the left; let go short of the middle and it settles back (nothing saved); Esc mid-drag too
  *   P5  ←/→ on the grip moves it from the keyboard; a press on the grip moves it to the other side; the title bar's
  *       own surface drags it too
- *   P6  locked: no grip, the title bar does not drag
+ *   P6  locked: no grip, the title bar does not drag; a user the server does not accept gets no grip; a touch tablet
+ *       drags the card from the title bar
  *   P7  a phone (390): a full-screen sheet, no grip
  *   P8  the settings page: 디테일 카드 위치 — two pictures and 위치 잠금; a pick and the lock each save alone
  *
@@ -121,9 +122,11 @@ async function installMocks(page: Page) {
     });
   });
   await page.route('**/api/settings/dashboard-layout/panel', async (r) => {
-    const body = r.request().postDataJSON() as { panel: unknown };
+    const body = r.request().postDataJSON() as { panel: Record<string, unknown> };
     placePuts.push(body);
-    DOC = { ...DOC, panel: body.panel };
+    // The server keeps what the write does not name (a dashboard move names the side only).
+    const prev = (DOC.panel as Record<string, unknown> | undefined) ?? { side: 'right', locked: false };
+    DOC = { ...DOC, panel: { ...prev, ...body.panel } };
     await r.fulfill({ json: { ok: true, layout: { doc: DOC } } });
   });
   await page.route('**/api/settings/dashboard-layout', async (r) => {
@@ -165,14 +168,10 @@ const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
 type Rect = { x: number; y: number; w: number; h: number };
 
 async function rectOf(page: Page, sel: string): Promise<Rect | null> {
-  return page.evaluate((s) => {
-    const el = document.querySelector(s) as HTMLElement | null;
-    if (!el) return null;
-    const r = el.getBoundingClientRect();
-    return r.width > 0 && r.height > 0
-      ? { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) }
-      : null;
-  }, sel);
+  const r = await page.locator(sel).first().boundingBox();
+  return r && r.width > 0 && r.height > 0
+    ? { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) }
+    : null;
 }
 const card = (page: Page) => rectOf(page, '#slide-panel[open] .panel-header');
 const grip = (page: Page) => rectOf(page, '#panel-grip');
@@ -343,8 +342,8 @@ async function wideRun(browser: import('playwright').Browser) {
   );
   check(
     placePuts.length === placeBefore + 1 &&
-      JSON.stringify(placePuts[placePuts.length - 1]) === '{"panel":{"side":"left","locked":false}}',
-    'P3 one PUT …/dashboard-layout/panel saves the place alone',
+      JSON.stringify(placePuts[placePuts.length - 1]) === '{"panel":{"side":"left"}}',
+    'P3 one PUT …/dashboard-layout/panel saves the side alone (the lock stays the server’s)',
     placePuts,
   );
   check(wholePuts.length === 0, 'P3 no whole-document save', wholePuts.length);
@@ -497,6 +496,48 @@ async function unacceptedRun(browser: import('playwright').Browser) {
   }
 }
 
+async function tabletRun(browser: import('playwright').Browser) {
+  DOC = { v: 1 };
+  placePuts = [];
+  const ctx = await browser.newContext({
+    viewport: { width: 1280, height: 900 },
+    hasTouch: true,
+    deviceScaleFactor: 1,
+  });
+  const page = await ctx.newPage();
+  await boot(page);
+  await openCard(page);
+  const c0 = await card(page);
+  const head = await rectOf(page, '#slide-panel[open] .panel-header');
+  const title = await rectOf(page, '#panel-title');
+  // A finger on the title bar's own surface (the title's words — clear of the drawer's 24px resize edge on a touch
+  // screen), then a sideways drag past the middle.
+  const cdp = await ctx.newCDPSession(page);
+  const x0 = Math.max(title!.x + 10, head!.x + 30);
+  const y0 = title!.y + title!.h / 2;
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: x0, y: y0 }] });
+  for (let i = 1; i <= 20; i++) {
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: x0 - i * 40, y: y0 + 2 }] });
+    await sleep(16);
+  }
+  await sleep(150);
+  const mid = await card(page);
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await sleep(700);
+  const c1 = await card(page);
+  check(
+    !!c0 && !!mid && mid.x < c0.x - 600,
+    'P6 a tablet: a touch drag on the title bar moves the card (no pan, no cancel)',
+    { start: c0, mid },
+  );
+  check(
+    !!c1 && c1.x === 0 && placePuts.length === 1,
+    'P6 a tablet: let go past the middle, it lands on the left and saves once',
+    { landed: c1, puts: placePuts },
+  );
+  await ctx.close();
+}
+
 async function lockedRun(browser: import('playwright').Browser) {
   DOC = { v: 1, panel: { side: 'left', locked: true } };
   placePuts = [];
@@ -629,7 +670,7 @@ async function main() {
   await ws.startWebServer({ listen: true });
   log(`server ${BASE_URL}`);
   try {
-    for (const run of [wideRun, unacceptedRun, lockedRun, phoneRun, settingsRun]) {
+    for (const run of [wideRun, unacceptedRun, tabletRun, lockedRun, phoneRun, settingsRun]) {
       const browser = await chromium.launch({ headless: true, args: ['--single-process', '--no-zygote'] });
       try {
         await run(browser);

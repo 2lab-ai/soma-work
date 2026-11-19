@@ -8917,7 +8917,7 @@ function placePanel(place, how) {
   var moved = applyPanelPlace(place);
   if (how.save) savePanelPlace(_panelPlace);
   if (!panel) return moved;
-  if (!moved || !before || how.animate === false || keyedNow() || reduceMotion() || !canAnimate()) {
+  if (!moved || !before || keyedNow() || reduceMotion() || !canAnimate()) {
     pdragClear(panel);
   } else {
     if (typeof panel.renderNow === 'function') panel.renderNow(); // the new dock is measured, not a frame later
@@ -8968,7 +8968,8 @@ async function savePanelPlace(place) {
 }
 // One PUT of a place, with the CSRF retry (a 403 after the JWT rotated refreshes the token once).
 async function putPanelPlace(panel) {
-  var body = JSON.stringify({ panel: panel });
+  // A move names the side only: the lock is the settings page's, and the server keeps the stored one.
+  var body = JSON.stringify({ panel: { side: panel.side } });
   var headers = { 'Content-Type': 'application/json' };
   if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
   var res = await fetch('/api/settings/dashboard-layout/panel', { method: 'PUT', headers: headers, body: body });

@@ -447,6 +447,15 @@ describe('settings registry — write', () => {
     expect(store.data.U_DENIED).toBeUndefined();
   });
 
+  it('a move that names only the side keeps the stored lock (a dashboard drag never unlocks) (PR review)', () => {
+    const { registry, store } = setup();
+    registry.writePanelPlace('U1', { side: 'right', locked: true });
+    registry.writePanelPlace('U1', { side: 'left' });
+    expect(store.data.U1.dashboardLayout.panel).toEqual({ side: 'left', locked: true });
+    expect(() => registry.writePanelPlace('U1', { side: 'up' })).toThrow(expect.objectContaining({ statusCode: 400 }));
+    expect(store.data.U1.dashboardLayout.panel).toEqual({ side: 'left', locked: true });
+  });
+
   it('read-only and unknown keys are refused; wrong value types are 400', async () => {
     const { registry } = setup();
     await refused(registry.write('U1', 'workingDirectory', '/tmp'), 403);

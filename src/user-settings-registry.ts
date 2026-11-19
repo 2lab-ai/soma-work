@@ -372,7 +372,10 @@ export interface SettingsRegistry {
    * from an editor loaded before a drag on the dashboard does not move the card back.
    */
   writeLayout(userId: string, doc: unknown): LayoutSnapshot;
-  /** Set only the detail card's place (side · lock, SSOT 2026-11-19) — checked (400), accepted users only (403). */
+  /**
+   * Set only the detail card's place (side · lock, SSOT 2026-11-19) — checked (400), accepted users only (403). The
+   * fields it names replace the stored ones; the others stay (a dashboard move names the side only).
+   */
   writePanelPlace(userId: string, place: unknown): LayoutSnapshot;
 }
 
@@ -983,16 +986,19 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
       return this.readLayout(userId);
     },
     writePanelPlace(userId, place) {
-      let panel: DashboardLayoutDoc['panel'];
       try {
         // Checked by normalizeLayoutDoc's own rule, before anything is read or written (400 before 403).
-        panel = normalizeLayoutDoc({ v: 1, panel: place }).panel;
+        normalizeLayoutDoc({ v: 1, panel: place });
       } catch (e) {
         if (e instanceof LayoutError) throw new SettingsError(400, e.message);
         throw e;
       }
       assertAccepted(userId);
-      store.setUserDashboardLayout(userId, { ...store.getUserDashboardLayout(userId), panel });
+      // What the write names over what is stored: a dashboard move names the side only, so a lock set meanwhile on
+      // the settings page stays.
+      const doc = store.getUserDashboardLayout(userId);
+      const panel = normalizeLayoutDoc({ v: 1, panel: { ...doc.panel, ...(place as object) } }).panel;
+      store.setUserDashboardLayout(userId, { ...doc, panel });
       return this.readLayout(userId);
     },
     async write(userId, key, value) {

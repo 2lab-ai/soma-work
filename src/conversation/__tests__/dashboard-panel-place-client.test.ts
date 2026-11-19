@@ -208,7 +208,8 @@ describe('P4 — a moved card saves the place alone', () => {
     expect(calls[0].url).toBe('/api/settings/dashboard-layout/panel');
     expect(calls[0].init.method).toBe('PUT');
     expect(calls[0].init.headers['X-CSRF-Token']).toBe('T1');
-    expect(JSON.parse(calls[0].init.body)).toEqual({ panel: { side: 'left', locked: false } });
+    // A move names the side only: the lock is the settings page's, and the server keeps it.
+    expect(JSON.parse(calls[0].init.body)).toEqual({ panel: { side: 'left' } });
     expect(toasts).toEqual([]);
   });
 
@@ -418,14 +419,11 @@ describe('P8 — PR review (review-of-legends): ordered saves, stale reads, the 
     const b = c.savePanelPlace({ side: 'left', locked: true });
     const d = c.savePanelPlace({ side: 'right', locked: false }); // e.g. the toast's 실행 취소
     await tick();
-    expect(n.puts.map((x) => x.body)).toEqual([{ panel: { side: 'left', locked: false } }]);
+    expect(n.puts.map((x) => x.body)).toEqual([{ panel: { side: 'left' } }]);
     n.puts[0].done();
     await tick();
     // Only the newest of the two made meanwhile goes, after the first answered — the move back to the right.
-    expect(n.puts.map((x) => x.body)).toEqual([
-      { panel: { side: 'left', locked: false } },
-      { panel: { side: 'right', locked: false } },
-    ]);
+    expect(n.puts.map((x) => x.body)).toEqual([{ panel: { side: 'left' } }, { panel: { side: 'right' } }]);
     n.puts[1].done();
     await Promise.all([a, b, d]);
     expect(n.puts).toHaveLength(2);
@@ -468,6 +466,60 @@ describe('P8 — PR review (review-of-legends): ordered saves, stale reads, the 
     n.gets[0](undefined);
     await reading;
     expect((placed[placed.length - 1] as any).panel).toEqual({ side: 'left', locked: true });
+  });
+
+  it('a quick throw lands where it heads; the same place let go after a pause settles back (release handler)', () => {
+    function run(pauseMs: number) {
+      const panel = el('slide-panel');
+      (panel as any).querySelector = () => null;
+      const document = {
+        documentElement: el('html'),
+        getElementById: (id: string) => (id === 'slide-panel' ? panel : null),
+      };
+      const window = { addEventListener() {}, removeEventListener() {}, getSelection: () => null };
+      const placed: unknown[] = [];
+      const settled: unknown[] = [];
+      const c = load<{ pdragDown(e: unknown): void; pdragMove(e: unknown): void; pdragUp(e: unknown): void }>(
+        ['pdragDown', 'pdragMove', 'pdragEnd', 'pdragUp', 'pdragCancel', 'panelDragOffset', 'panelDropSide'],
+        ['_pdrag', 'PDRAG_SLOP', 'PDRAG_FLICK', '_panelPlace'],
+        {
+          document,
+          window,
+          setTimeout: () => 0,
+          panelBoxNow: () => ({ left: 1000, w: 440 }),
+          panelMovable: () => true,
+          panelDocked: () => true,
+          pdragSource: () => true,
+          pdragClear() {},
+          panelViewW: () => 1440,
+          paintDropZones() {},
+          placePanel: (p: unknown, how: unknown) => placed.push({ p, how }),
+          pdragSettle: (_p: unknown, off: number) => settled.push(off),
+        },
+      );
+      const target = { closest: () => null };
+      c.pdragDown({
+        button: 0,
+        isPrimary: true,
+        pointerId: 3,
+        clientX: 1200,
+        clientY: 20,
+        timeStamp: 0,
+        target,
+        preventDefault() {},
+      });
+      // A short, fast drag left: 150px in 60ms — the centre stays on the right half (1000 − 150 + 220 = 1070).
+      for (let i = 1; i <= 6; i++)
+        c.pdragMove({ pointerId: 3, clientX: 1200 - i * 25, clientY: 20, timeStamp: i * 10, preventDefault() {} });
+      c.pdragUp({ pointerId: 3, clientX: 1050, clientY: 20, timeStamp: 60 + pauseMs });
+      return { placed, settled };
+    }
+    const thrown = run(0);
+    expect(thrown.placed).toEqual([{ p: { side: 'left', locked: false }, how: { save: true, say: true } }]);
+    expect(thrown.settled).toEqual([]);
+    const paused = run(120);
+    expect(paused.placed).toEqual([]);
+    expect(paused.settled).toEqual([-150]);
   });
 
   it('the first move after a mid-glide grab continues from where the card is drawn (no jump toward its dock)', () => {
