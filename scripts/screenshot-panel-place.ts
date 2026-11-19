@@ -646,10 +646,7 @@ async function settingsRun(browser: import('playwright').Browser) {
     status: document.getElementById('lay-status')!.textContent,
   }));
   check(
-    st1.left &&
-      st1.lock &&
-      JSON.stringify(placePuts[1]) === '{"panel":{"locked":true}}' &&
-      st1.status === '저장됨',
+    st1.left && st1.lock && JSON.stringify(placePuts[1]) === '{"panel":{"locked":true}}' && st1.status === '저장됨',
     'P8 위치 잠금 saves the lock alone; the hint says the grip is gone',
     st1,
   );
