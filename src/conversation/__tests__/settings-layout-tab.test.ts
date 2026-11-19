@@ -10,6 +10,8 @@
  *   E6  미니멀 상세 카드: the 대화 · 작업 로그 tab switch (on in minimal) and its preview row
  *   E7  상세 카드 세 구역 (SSOT 2026-11-03): 타이틀 바 · 입력 필요 · 탭 바 · 아래 — the title bar's items and the tabs
  *       switch and move; the preview's tabs open and close as the card's do
+ *   E8  디테일 카드 위치 (SSOT 2026-11-19): 왼쪽 · 오른쪽 and 위치 잠금 — saved alone and at once, outside 되돌리기;
+ *       the whole-document save leaves the place out
  */
 
 import { describe, expect, it } from 'vitest';
@@ -25,6 +27,13 @@ import { LAYOUT_CLIENT_JS, LAYOUT_TAB_HTML } from '../settings-layout-tab';
 import { renderSettingsPage } from '../settings-page';
 import { VIEW_LAYOUT_CLIENT_JS } from '../view-layout-client';
 
+// A change on a control of the editor (data-lay), and a few turns of the event loop.
+const pick = (lay: string, value: string, checked = false) => ({
+  target: { getAttribute: (k: string) => (k === 'data-lay' ? lay : null), value, checked },
+});
+const tick = async () => {
+  for (let i = 0; i < 6; i++) await new Promise((r) => setImmediate(r));
+};
 type El = Record<string, any>;
 function fakeEl(id: string): El {
   return {
@@ -49,7 +58,17 @@ function fakeEl(id: string): El {
   };
 }
 
-function editor(answer: Record<string, unknown> = {}, opts: { gate?: boolean } = {}) {
+function editor(
+  answer: Record<string, unknown> = {},
+  opts: {
+    gate?: boolean;
+    refusePlace?: boolean;
+    refusePlaceFrom?: number;
+    gatePlace?: boolean;
+    gateGet?: boolean;
+    failLayout?: boolean;
+  } = {},
+) {
   const els: Record<string, El> = {};
   const el = (id: string) => (els[id] ??= fakeEl(id));
   for (const id of [
@@ -70,6 +89,12 @@ function editor(answer: Record<string, unknown> = {}, opts: { gate?: boolean } =
     'lay-surface',
     'lay-sample',
     'lay-inbox',
+    'lay-place',
+    'lay-place-left',
+    'lay-place-right',
+    'lay-place-lock',
+    'lay-place-lock-word',
+    'lay-place-lock-hint',
   ])
     el(id);
   const timers: Array<() => void> = [];
@@ -81,6 +106,7 @@ function editor(answer: Record<string, unknown> = {}, opts: { gate?: boolean } =
     querySelector: () => null,
     querySelectorAll: () => [],
     activeElement: null,
+    addEventListener() {},
   };
   const snapshot = {
     userId: 'U1',
@@ -95,25 +121,52 @@ function editor(answer: Record<string, unknown> = {}, opts: { gate?: boolean } =
   let serverDoc: unknown = null;
   // With a gate, each PUT waits until the test releases it (a slow network).
   const gates: Array<() => void> = [];
+  const placeGates: Array<() => void> = [];
+  let placeCount = 0;
+  const getGates: Array<() => void> = [];
   const release = async () => {
     gates.shift()?.();
     for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
   };
   const inject = {
     document,
-    localStorage: { setItem: (k: string, v: string) => (stored[k] = v), getItem: () => null },
+    localStorage: { setItem: (k: string, v: string) => (stored[k] = v), getItem: (k: string) => stored[k] ?? null },
     setTimeout: (fn: () => void) => {
       timers.push(fn);
       return timers.length;
     },
     clearTimeout: () => {},
-    fetch: async () => ({ ok: true, json: async () => snapshot }),
-    apiWrite: async (method: string, url: string, body: { doc: unknown }) => {
+    fetch: async () => {
+      // The answer is the server's copy when the read left.
+      const sent = JSON.parse(JSON.stringify(snapshot));
+      if (opts.gateGet) await new Promise<void>((r) => getGates.push(r));
+      return { ok: true, json: async () => sent };
+    },
+    apiWrite: async (method: string, url: string, body: { doc?: unknown; panel?: unknown }) => {
       puts.push({ method, url, body: JSON.parse(JSON.stringify(body)) });
+      if (url === '/api/settings/dashboard-layout/panel') {
+        const nth = placeCount++;
+        if (opts.gatePlace) await new Promise<void>((r) => placeGates.push(r));
+        if (opts.refusePlace || (opts.refusePlaceFrom !== undefined && nth >= opts.refusePlaceFrom))
+          return { ok: false, error: '관리자 승인을 받은 뒤에 바꿀 수 있습니다' };
+        // The server merges the fields a write names over the stored place and counts the write (writePanelPlace).
+        const base = ((serverDoc as any) ?? (snapshot.doc as any)) || { v: 1 };
+        const prev = base.panel || {};
+        const doc = {
+          ...base,
+          panel: { side: 'right', locked: false, ...prev, ...(body.panel as object), rev: (prev.rev ?? 0) + 1 },
+        };
+        serverDoc = doc;
+        return { ok: true, data: { ok: true, layout: { doc } } };
+      }
       const sent = JSON.parse(JSON.stringify(body.doc));
+      // The server keeps the stored place when the document leaves it out (writeLayout), as it is when handled.
+      const kept = ((serverDoc as any) ?? (snapshot.doc as any))?.panel;
+      if (opts.failLayout) return { ok: false, error: '레이아웃을 저장하지 못했습니다' };
       if (opts.gate) await new Promise<void>((r) => gates.push(r));
-      serverDoc = sent;
-      return { ok: true, data: { ok: true, layout: { doc: sent } } };
+      const answer = kept && !sent.panel ? { ...sent, panel: kept } : sent;
+      serverDoc = answer;
+      return { ok: true, data: { ok: true, layout: { doc: answer } } };
     },
   };
   const names = Object.keys(inject);
@@ -121,7 +174,7 @@ function editor(answer: Record<string, unknown> = {}, opts: { gate?: boolean } =
     ...names,
     `${VIEW_LAYOUT_CLIENT_JS}\n${LAYOUT_CLIENT_JS}\nreturn {
       loadLayout, layMove, layToggle, layOpt, layFlag, laySelect, layDefault, layQuick, layThreadSet, layUndo, layReset,
-      layOnDrop, layOnDragStart, layOnChange, layOnClick, layPaint,
+      layOnDrop, layOnDragStart, layOnChange, layOnClick, layPaint, layPlaceSave, layRefreshPlace,
       get: function(n) { return eval(n); }, set: function(n, v) { eval(n + ' = v'); },
     };`,
   )(...names.map((n) => (inject as Record<string, unknown>)[n]));
@@ -132,7 +185,15 @@ function editor(answer: Record<string, unknown> = {}, opts: { gate?: boolean } =
     }
     await new Promise((r) => setImmediate(r));
   };
-  return { api, els, puts, stored, flush, timers, release };
+  const releasePlace = async () => {
+    placeGates.shift()?.();
+    for (let i = 0; i < 6; i++) await new Promise((r) => setImmediate(r));
+  };
+  const releaseGet = async (at = 0) => {
+    getGates.splice(at, 1)[0]?.();
+    for (let i = 0; i < 6; i++) await new Promise((r) => setImmediate(r));
+  };
+  return { api, els, puts, stored, flush, timers, release, releasePlace, releaseGet, placeGates, getGates };
 }
 
 describe('E1 — loading', () => {
@@ -534,5 +595,357 @@ describe('E7 — 상세 카드 세 구역: 타이틀 바 · 탭 바 · 아래 (S
     expect(pv().indexOf('<b>입력 필요</b>')).toBeGreaterThan(pv().indexOf('pv-midbar'));
     expect(pv().indexOf('<b>입력 필요</b>')).toBeGreaterThan(pv().indexOf('검증 규칙 4개를 추가했습니다'));
     expect(pv().indexOf('<b>입력 필요</b>')).toBeLessThan(pv().indexOf('pv-composer'));
+  });
+});
+
+describe('E8 — 디테일 카드 위치: 왼쪽 · 오른쪽 and 위치 잠금 (SSOT 2026-11-19)', () => {
+  it('the section is in the tab: two pictures as radio buttons, then the lock switch with its hint', () => {
+    expect(LAYOUT_TAB_HTML).toContain('<h2 id="h-lay-place">디테일 카드 위치</h2>');
+    expect(LAYOUT_TAB_HTML).toMatch(
+      /<input type="radio" name="lay-place-side" id="lay-place-left" value="left" data-lay="place-side">/,
+    );
+    expect(LAYOUT_TAB_HTML).toMatch(
+      /<input type="radio" name="lay-place-side" id="lay-place-right" value="right" data-lay="place-side">/,
+    );
+    expect(LAYOUT_TAB_HTML).toMatch(/<input type="checkbox" role="switch" id="lay-place-lock" data-lay="place-lock"/);
+    expect(LAYOUT_TAB_HTML).toContain('<span class="lay-name" id="lay-place-lock-name">위치 잠금</span>');
+    // Before the editor's toolbar: it is a setting of the dashboard, not of a preset.
+    expect(LAYOUT_TAB_HTML.indexOf('id="lay-place"')).toBeLessThan(LAYOUT_TAB_HTML.indexOf('class="lay-bar"'));
+  });
+
+  it('nothing saved: right, unlocked — the hint says the grip moves it', async () => {
+    const { api, els } = editor();
+    await api.loadLayout();
+    expect(els['lay-place-right'].checked).toBe(true);
+    expect(els['lay-place-left'].checked).toBe(false);
+    expect(els['lay-place-lock'].checked).toBe(false);
+    expect(els['lay-place-lock-word'].textContent).toBe('꺼짐');
+    expect(els['lay-place-lock-hint'].textContent).toContain('손잡이를 끌어 반대쪽에 놓을 수 있습니다');
+    expect(els['lay-place'].attrs['data-locked']).toBe('false');
+  });
+
+  it('a saved place shows as saved', async () => {
+    const { api, els } = editor({ doc: { v: 1, panel: { side: 'left', locked: true } } });
+    await api.loadLayout();
+    expect(els['lay-place-left'].checked).toBe(true);
+    expect(els['lay-place-lock'].checked).toBe(true);
+    expect(els['lay-place-lock-word'].textContent).toBe('켜짐');
+    expect(els['lay-place-lock-hint'].textContent).toContain('손잡이가 없고');
+    expect(els['lay-place'].attrs['data-locked']).toBe('true');
+  });
+
+  it('왼쪽 and 잠금 save at once, each alone (PUT …/panel) — no whole-document save, nothing to undo', async () => {
+    const { api, els, puts, flush, stored } = editor();
+    await api.loadLayout();
+    await api.layOnChange(pick('place-side', 'left'));
+    expect(puts).toEqual([
+      { method: 'PUT', url: '/api/settings/dashboard-layout/panel', body: { panel: { side: 'left' } } },
+    ]);
+    expect(els['lay-place-left'].checked).toBe(true);
+    expect(els['lay-status'].textContent).toBe('저장됨');
+    expect(JSON.parse(stored['soma-view-layout']).panel).toMatchObject({ side: 'left', locked: false });
+    await api.layOnChange(pick('place-lock', '', true));
+    expect(puts[1]).toEqual({
+      method: 'PUT',
+      url: '/api/settings/dashboard-layout/panel',
+      body: { panel: { locked: true } },
+    });
+    expect(els['lay-place-lock-word'].textContent).toBe('켜짐');
+    // No whole-document save follows, and 되돌리기 has nothing of it.
+    await flush();
+    expect(puts.filter((x: any) => x.url === '/api/settings/dashboard-layout')).toHaveLength(0);
+    expect(api.get('_layUndo')).toHaveLength(0);
+  });
+
+  it('the layouts’ save leaves the place out (the dashboard may have moved it); 되돌리기 keeps the place', async () => {
+    const { api, els, puts, flush } = editor({ doc: { v: 1, panel: { side: 'left', locked: false } } });
+    await api.loadLayout();
+    api.layDefault('card', '2');
+    await flush();
+    const whole = puts.find((x: any) => x.url === '/api/settings/dashboard-layout') as any;
+    expect(whole.body.doc).toEqual({ v: 1, active: { card: '2' } });
+    // After the layouts save the place is still the saved one, on the page and in the controls.
+    expect(api.get('_layDoc').panel).toMatchObject({ side: 'left', locked: false });
+    expect(els['lay-place-left'].checked).toBe(true);
+    await api.layOnChange(pick('place-side', 'right'));
+    api.layUndo();
+    expect(api.get('_layDoc').panel).toMatchObject({ side: 'right', locked: false });
+    expect(api.get('_layDoc').active).toBeUndefined();
+  });
+
+  it('a refused place goes back to what is saved and says why', async () => {
+    const { api, els } = editor({}, { refusePlace: true });
+    await api.loadLayout();
+    await api.layOnChange(pick('place-side', 'left'));
+    expect(els['lay-place-right'].checked).toBe(true);
+    // The place shown is the saved one (nothing saved: the default).
+    expect(api.get('layPlaceShown()')).toMatchObject({ side: 'right', locked: false });
+    expect(els['lay-status'].textContent).toBe('저장하지 못했습니다 — 관리자 승인을 받은 뒤에 바꿀 수 있습니다');
+  });
+
+  it('a user not yet accepted sees the place, not a control that would be refused', async () => {
+    const { api, els } = editor({ accepted: false });
+    await api.loadLayout();
+    expect(els['lay-place-left'].disabled).toBe(true);
+    expect(els['lay-place-right'].disabled).toBe(true);
+    expect(els['lay-place-lock'].disabled).toBe(true);
+  });
+
+  it('back on the page, a drag made on the dashboard meanwhile shows', async () => {
+    const doc: Record<string, unknown> = { v: 1 };
+    const { api, els } = editor({ doc });
+    await api.loadLayout();
+    expect(els['lay-place-right'].checked).toBe(true);
+    // The server now has the place the dashboard saved (its next revision).
+    doc.panel = { side: 'left', locked: false, rev: 1 };
+    await api.layRefreshPlace();
+    expect(els['lay-place-left'].checked).toBe(true);
+  });
+});
+
+describe('E9 — a layouts save racing a place save keeps the newer place (review 2026-11-19)', () => {
+  it('the layouts’ answer that left before the place was picked does not paint it back', async () => {
+    const { api, els, puts, flush, stored, release } = editor({ doc: { v: 1 } }, { gate: true });
+    await api.loadLayout();
+    api.layDefault('card', '2');
+    // The debounced layouts PUT goes out and waits on the network …
+    const saving = flush();
+    for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+    expect(puts.filter((x: any) => x.url === '/api/settings/dashboard-layout')).toHaveLength(1);
+    // … the reader picks 왼쪽 meanwhile (its own PUT answers at once).
+    await api.layOnChange({
+      target: { getAttribute: (k: string) => (k === 'data-lay' ? 'place-side' : null), value: 'left', checked: false },
+    });
+    expect(els['lay-place-left'].checked).toBe(true);
+    // Now the layouts PUT answers with the document it carried — no place in it.
+    await release();
+    await saving;
+    expect(api.get('_layDoc').panel).toMatchObject({ side: 'left', locked: false });
+    expect(els['lay-place-left'].checked).toBe(true);
+    expect(JSON.parse(stored['soma-view-layout']).panel).toMatchObject({ side: 'left', locked: false });
+  });
+
+  it('loading while a place save is on its way keeps the place picked here', async () => {
+    const doc: Record<string, unknown> = { v: 1 };
+    const { api } = editor({ doc });
+    await api.loadLayout();
+    api.set('_layDoc', { v: 1, panel: { side: 'left', locked: true } });
+    api.set('_layPlaceSaving', 1);
+    await api.loadLayout();
+    expect(api.get('_layDoc').panel).toMatchObject({ side: 'left', locked: true });
+  });
+});
+
+describe('E10 — PR review (review-of-legends): place saves in order, stale reads (2026-11-19)', () => {
+  it('왼쪽 then 잠금 before the first answer: one PUT at a time, the second carries both choices', async () => {
+    const { api, els, puts, releasePlace } = editor({}, { gatePlace: true });
+    await api.loadLayout();
+    const a = api.layOnChange(pick('place-side', 'left'));
+    await tick();
+    const b = api.layOnChange(pick('place-lock', '', true));
+    await tick();
+    const placePuts = () => puts.filter((x: any) => x.url === '/api/settings/dashboard-layout/panel');
+    expect(placePuts()).toHaveLength(1);
+    await releasePlace();
+    expect(placePuts().map((x: any) => x.body.panel)).toEqual([{ side: 'left' }, { locked: true }]);
+    await releasePlace();
+    await Promise.all([a, b]);
+    expect(api.get('_layDoc').panel).toMatchObject({ side: 'left', locked: true });
+    expect(els['lay-place-lock'].checked).toBe(true);
+    expect(els['lay-status'].textContent).toBe('저장됨');
+  });
+
+  it('a refresh read that left before a pick does not paint the old place back after the pick saved', async () => {
+    const doc: Record<string, unknown> = { v: 1 };
+    const { api, els, releaseGet } = editor({ doc }, { gateGet: true });
+    const first = api.loadLayout();
+    await releaseGet();
+    await first;
+    // The tab comes back: a read leaves …
+    const refresh = api.layRefreshPlace();
+    await tick();
+    // … the reader picks 왼쪽, and its PUT answers before the read does.
+    await api.layOnChange(pick('place-side', 'left'));
+    await releaseGet();
+    await refresh;
+    expect(api.get('_layDoc').panel).toMatchObject({ side: 'left', locked: false });
+    expect(els['lay-place-left'].checked).toBe(true);
+  });
+});
+
+describe('E11 — PR review round 2: saves pending when a request leaves, refresh order, status (2026-11-19)', () => {
+  it('a layouts PUT that left while a place save was on its way keeps the place, even answering after it', async () => {
+    const { api, els, flush, release, releasePlace, stored } = editor(
+      { doc: { v: 1 } },
+      { gate: true, gatePlace: true },
+    );
+    await api.loadLayout();
+    const placing = api.layOnChange(pick('place-side', 'left'));
+    await tick();
+    api.layDefault('card', '2');
+    const saving = flush(); // the layouts PUT leaves (handled now: the stored place is still none)
+    await tick();
+    await releasePlace(); // the place PUT answers first
+    await placing;
+    await release(); // then the layouts PUT's answer arrives, with the place as it was when handled
+    await saving;
+    expect(api.get('_layDoc').panel).toMatchObject({ side: 'left', locked: false });
+    expect(els['lay-place-left'].checked).toBe(true);
+    expect(JSON.parse(stored['soma-view-layout']).panel).toMatchObject({ side: 'left', locked: false });
+  });
+
+  it('a layouts answer never publishes a place to the shared copy (another tab may have moved the card since)', async () => {
+    const { api, flush, stored } = editor({ doc: { v: 1, panel: { side: 'right', locked: false } } });
+    await api.loadLayout();
+    stored['soma-view-layout'] = JSON.stringify({ v: 1, panel: { side: 'left', locked: false } }); // a dashboard drag
+    api.layDefault('card', '2');
+    await flush();
+    expect(JSON.parse(stored['soma-view-layout'])).toMatchObject({
+      v: 1,
+      active: { card: '2' },
+      panel: { side: 'left', locked: false },
+    });
+  });
+
+  it('two refresh reads answering out of order: the older answer does not paint over the newer', async () => {
+    const doc: Record<string, unknown> = { v: 1, panel: { side: 'right', locked: false } };
+    const { api, els, releaseGet } = editor({ doc }, { gateGet: true });
+    const first = api.loadLayout();
+    await releaseGet();
+    await first;
+    const older = api.layRefreshPlace(); // reads right
+    await tick();
+    doc.panel = { side: 'left', locked: false, rev: 9 }; // another tab moves the card
+    const newer = api.layRefreshPlace(); // reads left
+    await tick();
+    await releaseGet(1); // the newer answers first
+    await newer;
+    expect(els['lay-place-left'].checked).toBe(true);
+    await releaseGet(0); // then the older
+    await older;
+    expect(api.get('_layDoc').panel).toMatchObject({ side: 'left', locked: false });
+    expect(els['lay-place-left'].checked).toBe(true);
+  });
+
+  it('a failed layouts save keeps saying so after a place saves — the place is not the layouts', async () => {
+    const { api, els, flush } = editor({}, { failLayout: true });
+    await api.loadLayout();
+    api.layDefault('card', '2');
+    await flush();
+    expect(els['lay-status'].textContent).toContain('저장하지 못했습니다');
+    await api.layOnChange(pick('place-side', 'left'));
+    expect(els['lay-status'].textContent).toContain('저장하지 못했습니다');
+  });
+});
+
+describe('E12 — PR review round 3 (2026-11-19)', () => {
+  it('a layouts save that ends while a place save is on its way does not say 저장됨', async () => {
+    const { api, els, flush, releasePlace } = editor({}, { gatePlace: true });
+    await api.loadLayout();
+    const placing = api.layOnChange(pick('place-side', 'left'));
+    await tick();
+    api.layDefault('card', '2');
+    await flush();
+    expect(els['lay-status'].textContent).toBe('저장 중…');
+    await releasePlace();
+    await placing;
+    expect(els['lay-status'].textContent).toBe('저장됨');
+  });
+
+  it('a queued choice refused after an earlier one saved: back to the saved one, published, the failure shown', async () => {
+    const { api, els, releasePlace, stored } = editor({}, { gatePlace: true, refusePlaceFrom: 1 });
+    await api.loadLayout();
+    const a = api.layOnChange(pick('place-side', 'left'));
+    await tick();
+    const b = api.layOnChange(pick('place-lock', '', true));
+    await tick();
+    await releasePlace(); // 왼쪽 saves; the lock goes next
+    expect(JSON.parse(stored['soma-view-layout']).panel).toMatchObject({ side: 'left', locked: false });
+    await releasePlace(); // the lock is refused
+    await Promise.all([a, b]);
+    expect(api.get('_layDoc').panel).toMatchObject({ side: 'left', locked: false });
+    expect(els['lay-place-left'].checked).toBe(true);
+    expect(els['lay-place-lock'].checked).toBe(false);
+    expect(els['lay-status'].textContent).toContain('저장하지 못했습니다');
+    expect(JSON.parse(stored['soma-view-layout']).panel).toMatchObject({ side: 'left', locked: false });
+  });
+
+  it('a place save publishes the place only — never this tab’s layouts', async () => {
+    const { api, stored } = editor({ doc: { v: 1 } });
+    await api.loadLayout();
+    stored['soma-view-layout'] = JSON.stringify({ v: 1, active: { card: '3' } }); // another tab saved presets
+    await api.layOnChange(pick('place-side', 'left'));
+    expect(JSON.parse(stored['soma-view-layout'])).toMatchObject({
+      v: 1,
+      active: { card: '3' },
+      panel: { side: 'left', locked: false },
+    });
+  });
+
+  it('a place refresh makes a layouts answer that left before it stale', async () => {
+    const doc: Record<string, unknown> = { v: 1, panel: { side: 'right', locked: false } };
+    const { api, els, flush, release } = editor({ doc }, { gate: true });
+    await api.loadLayout();
+    api.layDefault('card', '2');
+    const saving = flush(); // handled now: the stored place is right
+    await tick();
+    doc.panel = { side: 'left', locked: false, rev: 9 }; // another tab moves the card
+    await api.layRefreshPlace();
+    expect(els['lay-place-left'].checked).toBe(true);
+    await release(); // the layouts answer, with the place as it was when handled
+    await saving;
+    expect(api.get('_layDoc').panel).toMatchObject({ side: 'left', locked: false });
+  });
+});
+
+describe('E13 — PR review round 4: each control sends only its own field (2026-11-19)', () => {
+  it('잠금 sends the lock only — a side moved elsewhere (the dashboard on another device) stays', async () => {
+    const doc: Record<string, unknown> = { v: 1, panel: { side: 'right', locked: false } };
+    const { api, els, puts } = editor({ doc });
+    await api.loadLayout(); // shows right
+    doc.panel = { side: 'left', locked: false, rev: 9 }; // another device moves the card (this page has not refreshed)
+    // The double's server is the snapshot's doc until a write: make it the moved one.
+    await api.layOnChange(pick('place-lock', '', true));
+    const last = puts[puts.length - 1] as any;
+    expect(last.body).toEqual({ panel: { locked: true } });
+    // The answer is the server's merged place: the side the other device chose, now locked.
+    expect(api.get('_layDoc').panel).toMatchObject({ side: 'left', locked: true });
+    expect(els['lay-place-left'].checked).toBe(true);
+  });
+
+  it('왼쪽 then 잠금 queued: the second PUT carries the lock only; the page shows both until the answers', async () => {
+    const { api, els, puts, releasePlace } = editor({}, { gatePlace: true });
+    await api.loadLayout();
+    const a = api.layOnChange(pick('place-side', 'left'));
+    await tick();
+    const b = api.layOnChange(pick('place-lock', '', true));
+    await tick();
+    // Shown at once, before any answer (the held place is still the server's).
+    expect(api.get('layPlaceShown()')).toMatchObject({ side: 'left', locked: true });
+    await releasePlace();
+    // After the first answer the queued lock still shows.
+    expect(els['lay-place-lock'].checked).toBe(true);
+    await releasePlace();
+    await Promise.all([a, b]);
+    expect(puts.filter((x: any) => x.url.endsWith('/panel')).map((x: any) => x.body.panel)).toEqual([
+      { side: 'left' },
+      { locked: true },
+    ]);
+    expect(api.get('_layDoc').panel).toMatchObject({ side: 'left', locked: true });
+  });
+});
+
+describe('E14 — places are ordered by the server’s revision (PR review round 5)', () => {
+  it('an older answer (a lock handled before another tab’s move, answering after it) changes nothing here', async () => {
+    const { api, els, stored } = editor({ doc: { v: 1, panel: { side: 'left', locked: false, rev: 5 } } });
+    await api.loadLayout();
+    stored['soma-view-layout'] = JSON.stringify({ v: 1, panel: { side: 'left', locked: false, rev: 5 } });
+    expect(api.get("layPlaceAccept({ side: 'right', locked: true, rev: 3 })")).toBe(false);
+    expect(api.get('layPlaceShown()')).toMatchObject({ side: 'left', locked: false });
+    expect(els['lay-place-left'].checked).toBe(true);
+    expect(JSON.parse(stored['soma-view-layout']).panel).toEqual({ side: 'left', locked: false, rev: 5 });
+    // A newer one is taken and published.
+    expect(api.get("layPlaceAccept({ side: 'right', locked: true, rev: 6 })")).toBe(true);
+    expect(JSON.parse(stored['soma-view-layout']).panel).toEqual({ side: 'right', locked: true, rev: 6 });
   });
 });

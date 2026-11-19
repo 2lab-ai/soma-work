@@ -35,6 +35,50 @@ function detailWithZones(d, b) {
   }
   return out;
 }
+// The detail card's place (SSOT 2026-11-19, view-layout.ts panelPlace): its side beside the board and its lock. A
+// device copy the server would refuse reads as the default — right, unlocked — never as a half-read place.
+function panelPlaceOf(doc) {
+  var p = doc && doc.panel;
+  if (!p || typeof p !== 'object' || Array.isArray(p)) return { side: 'right', locked: false };
+  var side = p.side === undefined ? 'right' : p.side;
+  var locked = p.locked === undefined ? false : p.locked;
+  if ((side !== 'left' && side !== 'right') || typeof locked !== 'boolean') return { side: 'right', locked: false };
+  return { side: side, locked: locked };
+}
+// Pure: a document without the place — the layouts alone (the settings page's whole-document save, the dashboard's
+// "does this redraw a card" check).
+function layoutSansPlace(doc) {
+  var out = {};
+  for (var k in doc || {}) if (k !== 'panel' && Object.prototype.hasOwnProperty.call(doc, k)) out[k] = doc[k];
+  return out;
+}
+// A place's revision (the server's count of place writes, view-layout.ts PanelPlace.rev); 0 for none. Every page
+// keeps the place with the highest revision, so a late answer, a late read or another tab's older copy never wins.
+function panelRevOf(place) {
+  var r = place && place.rev;
+  return typeof r === 'number' && r >= 0 ? r : 0;
+}
+// The shared copy (soma-view-layout: a page's first paint) — each writer puts in only what it has: the layouts from a
+// layouts answer (the copy's place stays unless this one is newer), a place from a place answer (only when newer).
+function layoutCacheGet() {
+  try {
+    var c = JSON.parse(localStorage.getItem('soma-view-layout') || 'null');
+    return c && typeof c === 'object' && !Array.isArray(c) ? c : { v: 1 };
+  } catch (_e) { return { v: 1 }; }
+}
+function layoutCachePutLayouts(doc) {
+  var out = layoutSansPlace(doc);
+  var cached = layoutCacheGet().panel;
+  var place = doc && doc.panel && panelRevOf(doc.panel) > panelRevOf(cached) ? doc.panel : cached;
+  if (place) out.panel = place;
+  try { localStorage.setItem('soma-view-layout', JSON.stringify(out)); } catch (_e) {}
+}
+function layoutCachePutPlace(place) {
+  var out = layoutCacheGet();
+  if (!place || (out.panel && panelRevOf(place) <= panelRevOf(out.panel))) return;
+  out.panel = place;
+  try { localStorage.setItem('soma-view-layout', JSON.stringify(out)); } catch (_e) {}
+}
 // What a mode draws: the task card (face + open card) from its preset, the detail card from its own.
 function layoutsFor(doc, builtins, mode, plan) {
   var c = layoutPreset(doc, 'card', plan);

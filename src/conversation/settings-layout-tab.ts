@@ -13,6 +13,9 @@
  *   - what always shows (title, status, actions, approvals, the composer) is listed with a lock, never a switch;
  *   - changes save at once (debounced PUT of the whole document) with 되돌리기 (and ⌘/Ctrl+Z) — no Save bar;
  *   - the thread card follows the task card by default; "따로 설정" starts from what it shows now;
+ *   - 디테일 카드 위치 (SSOT 2026-11-19): left or right as two pictures of the dashboard (radio buttons), and 위치 잠금
+ *     (a switch) — saved alone and at once (PUT …/dashboard-layout/panel), outside 되돌리기: the dashboard's drag writes
+ *     the same place, so the whole-document save leaves it out;
  *   - the detail card is edited as it reads (SSOT 2026-11-03): 타이틀 바 (what follows the time), 탭 바 (its tabs,
  *     closed until pressed — the preview's tabs open and close as the card's do), 아래 (대화 · 작업 로그, 입력 필요 as
  *     the chat's last message — SSOT 2026-11-13 — and the composer).
@@ -40,6 +43,20 @@ export const LAYOUT_TAB_HTML = `<div slot="layout" data-tab="layout" class="page
           <button type="button" class="ui-btn is-sm" data-lay="quick" data-v="2">2안</button>
           <button type="button" class="ui-btn is-sm" data-lay="quick" data-v="3">3안</button>
         </span></div>
+      </div>
+    </section>
+    <section class="group lay-place" id="lay-place" data-locked="false" aria-labelledby="h-lay-place">
+      <header><h2 id="h-lay-place">디테일 카드 위치</h2><p>넓은 화면(840px 이상)에서 디테일 카드가 보드의 어느 쪽에 붙을지 고릅니다. 좁은 화면에서는 전체 화면으로 열립니다.</p></header>
+      <div class="lay-place-body">
+        <fieldset class="lay-place-pick">
+          <legend class="ui-sr-only">디테일 카드를 둘 쪽</legend>
+          <label class="lay-place-opt"><input type="radio" name="lay-place-side" id="lay-place-left" value="left" data-lay="place-side"><span class="lay-place-pic" data-side="left" aria-hidden="true"><i class="pp-bar"></i><i class="pp-board"><b></b><b></b><b></b></i><i class="pp-card"><s></s></i></span><span class="lay-place-name">왼쪽</span></label>
+          <label class="lay-place-opt"><input type="radio" name="lay-place-side" id="lay-place-right" value="right" data-lay="place-side"><span class="lay-place-pic" data-side="right" aria-hidden="true"><i class="pp-bar"></i><i class="pp-board"><b></b><b></b><b></b></i><i class="pp-card"><s></s></i></span><span class="lay-place-name">오른쪽</span></label>
+        </fieldset>
+        <div class="lay-place-lock">
+          <div class="lay-text"><span class="lay-name" id="lay-place-lock-name">위치 잠금</span><span class="lay-place-hint" id="lay-place-lock-hint"></span></div>
+          <label class="ui-switch"><input type="checkbox" role="switch" id="lay-place-lock" data-lay="place-lock" aria-labelledby="lay-place-lock-name" aria-describedby="lay-place-lock-hint"><span aria-hidden="true" id="lay-place-lock-word">꺼짐</span></label>
+        </div>
       </div>
     </section>
     <div class="lay-bar" role="toolbar" aria-label="편집할 대상">
@@ -71,6 +88,40 @@ export const LAYOUT_TAB_CSS = String.raw`
 .lay-field select { min-width: 180px; }
 .lay-quick-btns { display: inline-flex; gap: 6px; }
 .lay-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 4px 0 10px; }
+/* 디테일 카드 위치 (SSOT 2026-11-19): two pictures of the dashboard — the card docked left, docked right — picked like
+   radio buttons (they are), the chosen one ringed and its card lit; the grip drawn on the card while unlocked. */
+.lay-place-body { display: flex; flex-wrap: wrap; align-items: center; gap: 16px 32px; padding: 14px 16px 16px; }
+.lay-place-pick { display: flex; gap: 12px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.lay-place-opt {
+  position: relative; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px 10px 8px;
+  border: 1px solid var(--border); border-radius: 12px; background: var(--surface); cursor: pointer;
+  transition: border-color var(--dur-press, 120ms) ease, box-shadow var(--dur-press, 120ms) ease;
+}
+.lay-place-opt > input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.lay-place-opt:has(input:checked) { border-color: color-mix(in srgb, var(--accent) 85%, var(--border)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent); }
+.lay-place-opt:has(input:focus-visible) { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+.lay-place-opt:has(input:disabled) { cursor: default; opacity: .6; }
+@media (hover: hover) and (pointer: fine) {
+  .lay-place-opt:not(:has(input:checked)):not(:has(input:disabled)):hover { border-color: var(--ib-muted); }
+}
+.lay-place-pic { position: relative; display: block; width: 136px; height: 84px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); overflow: hidden; }
+.lay-place-pic i, .lay-place-pic b, .lay-place-pic s { position: absolute; display: block; }
+.lay-place-pic .pp-bar { left: 0; right: 0; top: 0; height: 10px; background: var(--surface); border-bottom: 1px solid var(--border); }
+.lay-place-pic .pp-board { top: 17px; bottom: 9px; display: flex; gap: 4px; }
+.lay-place-pic .pp-board b { position: static; flex: 1; border-radius: 3px; background: color-mix(in srgb, var(--text-tertiary) 24%, transparent); }
+.lay-place-pic[data-side="left"] .pp-board { left: 60px; right: 8px; }
+.lay-place-pic[data-side="right"] .pp-board { left: 8px; right: 60px; }
+.lay-place-pic .pp-card { top: 10px; bottom: 0; width: 52px; background: var(--surface); box-shadow: var(--ib-shadow); transition: background-color var(--dur-press, 120ms) ease; }
+.lay-place-pic[data-side="left"] .pp-card { left: 0; border-right: 1px solid var(--border); }
+.lay-place-pic[data-side="right"] .pp-card { right: 0; border-left: 1px solid var(--border); }
+.lay-place-pic .pp-card s { top: 4px; left: 50%; width: 16px; height: 3px; margin-left: -8px; border-radius: 2px; background: var(--text-tertiary); }
+.lay-place[data-locked="true"] .lay-place-pic .pp-card s { display: none; }
+.lay-place-opt:has(input:checked) .pp-card { background: color-mix(in srgb, var(--accent) 16%, var(--surface)); border-color: color-mix(in srgb, var(--accent) 60%, var(--border)); }
+.lay-place-opt:has(input:checked) .pp-card s { background: var(--accent); }
+.lay-place-name { font-size: 13px; font-weight: 600; color: var(--text); }
+.lay-place-lock { display: flex; align-items: center; gap: 16px; flex: 1 1 280px; min-width: 0; max-width: 520px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; }
+.lay-place-lock > .ui-switch { flex: none; }
+.lay-place-hint { font-size: 12px; line-height: 1.45; color: var(--text-secondary); }
 .lay-spacer { flex: 1; }
 /* The kit's segmented control sets a display: the attribute must still hide it (the thread card has no preset). */
 .lay-bar [hidden], .lay-badge[hidden] { display: none !important; }
@@ -204,7 +255,10 @@ async function loadLayout() {
     return;
   }
   // An edit not yet saved (waiting for its debounce, or its PUT on the way) is newer than what the server sent.
+  var held = _layDoc && _layDoc.panel;
   if (!_layPending && !_laySaving) _layDoc = layClone(_lay.doc || { v: 1 });
+  // The place with the highest revision wins (the server's count of place writes orders every copy).
+  layPlaceKeepNewest(held, _lay.doc && _lay.doc.panel);
   _layMode = _lay.mode === 'advanced' ? 'advanced' : 'minimal';
   _layPreset = layoutPreset(_layDoc, 'card', _lay.plan);
   _layLoaded = true;
@@ -269,26 +323,134 @@ async function saveLayout() {
     for (;;) {
       _layResave = false;
       var rev = _layRev;
-      var r = await apiWrite('PUT', '/api/settings/dashboard-layout', { doc: _layDoc });
+      var r = await apiWrite('PUT', '/api/settings/dashboard-layout', { doc: layoutSansPlace(_layDoc) });
       if (!r.ok) { why = r.error || 'HTTP'; break; }
       if (rev !== _layRev) continue; // the user moved on while it ran: save what they have now
-      // The server's checked copy (its order, the items it appended) is the truth.
+      // The server's checked copy (its order, the items it appended) is the truth for the layouts; its place only
+      // when newer than the one held.
       if (r.data && r.data.layout && r.data.layout.doc) {
+        var held = _layDoc.panel;
         _layDoc = layClone(r.data.layout.doc);
-        try { localStorage.setItem('soma-view-layout', JSON.stringify(_layDoc)); } catch (_e) {}
+        layPlaceKeepNewest(held, r.data.layout.doc.panel);
+        layoutCachePutLayouts(_layDoc);
       }
       if (!_layResave) { _layPending = false; break; }
     }
   } catch (e) { why = String((e && e.message) || e); }
   finally { _laySaving = false; }
-  setLayStatus(why ? '저장하지 못했습니다 — ' + why : '저장됨');
+  _layFailed = why;
+  // Saved only when the place has no save on its way either.
+  setLayStatus(why ? '저장하지 못했습니다 — ' + why : _layPlaceSaving ? '저장 중…' : '저장됨');
   if (!why) layPaint();
 }
 function layUndo() {
   if (!_layUndo.length) return;
+  // The place is not an edit of the layouts: 되돌리기 leaves it where it is (it saves on its own, layPlaceSave).
+  var place = _layDoc.panel;
   _layDoc = _layUndo.pop();
+  if (place) _layDoc.panel = place; else delete _layDoc.panel;
   layChanged();
   layAnnounce('되돌렸습니다');
+}
+
+// ── 디테일 카드 위치 (SSOT 2026-11-19) — the side the dashboard docks the detail card on, and its lock ──
+// Saved alone (PUT …/dashboard-layout/panel) and at once, like a switch: the dashboard's drag writes the same place,
+// so neither page's save carries the other's copy (the whole-document save leaves it out — the server keeps it).
+var LAY_PLACE_HINT = {
+  locked: '잠겨 있습니다. 디테일 카드 상단바에 손잡이가 없고, 끌어서 옮길 수 없습니다. 위치는 여기서만 바뀝니다.',
+  open: '꺼져 있으면 디테일 카드 상단바의 손잡이를 끌어 반대쪽에 놓을 수 있습니다. 손잡이를 누르거나 ←/→ 키로도 옮깁니다.',
+};
+var _layPlaceSaving = 0; // 1 while a place PUT is on its way
+var _layPlaceQueued = null; // the changes made while a PUT was on its way (a patch: { side } and/or { locked })
+var _layPlaceIntent = null; // the changes chosen here the server has not confirmed yet (shown over the held place)
+var _layFailed = ''; // why the last layouts save failed ('' = saved): a place save does not hide it
+// The place the controls show: the held one (the server's, highest revision seen) with this page's unsaved changes.
+function layPlaceShown() {
+  return layPlaceWith(panelPlaceOf(_layDoc), _layPlaceIntent);
+}
+// Keep the newer of two places as _layDoc's (none when neither).
+function layPlaceKeepNewest(a, b) {
+  var p = a && (!b || panelRevOf(a) >= panelRevOf(b)) ? a : b;
+  if (p) _layDoc.panel = p; else delete _layDoc.panel;
+}
+// A place from the server (an answer, a read) is taken only when newer than the one held; it goes to the shared copy.
+function layPlaceAccept(place) {
+  if (!place || panelRevOf(place) <= panelRevOf(_layDoc && _layDoc.panel)) return false;
+  _layDoc.panel = place;
+  layoutCachePutPlace(place);
+  return true;
+}
+function layPaintPlace() {
+  var p = layPlaceShown();
+  var off = !!(_lay && _lay.accepted === false);
+  var left = document.getElementById('lay-place-left');
+  var right = document.getElementById('lay-place-right');
+  var lock = document.getElementById('lay-place-lock');
+  if (left) { left.checked = p.side === 'left'; left.disabled = off; }
+  if (right) { right.checked = p.side === 'right'; right.disabled = off; }
+  if (lock) { lock.checked = p.locked; lock.disabled = off; }
+  var word = document.getElementById('lay-place-lock-word');
+  if (word) word.textContent = p.locked ? '켜짐' : '꺼짐';
+  var hint = document.getElementById('lay-place-lock-hint');
+  if (hint) hint.textContent = p.locked ? LAY_PLACE_HINT.locked : LAY_PLACE_HINT.open;
+  var sec = document.getElementById('lay-place');
+  if (sec) sec.setAttribute('data-locked', p.locked ? 'true' : 'false');
+}
+// A choice saves only the field its control changed (patch: { side } or { locked }): the server keeps the other,
+// so a lock toggled here never moves back a card the dashboard moved elsewhere, and a side never undoes a lock. One PUT
+// at a time, in order: changes made while one is on its way go together after it. The answers' places are taken when
+// newer than the one held (the server's revision orders them), so a late answer never paints over a newer place.
+async function layPlaceSave(patch) {
+  var shown = layPlaceShown();
+  var change = {};
+  if (patch.side !== undefined) change.side = patch.side === 'left' ? 'left' : 'right';
+  if (patch.locked !== undefined) change.locked = !!patch.locked;
+  _layPlaceIntent = layPlaceWith(_layPlaceIntent, change);
+  _layPlaceQueued = layPlaceWith(_layPlaceQueued, change);
+  layPaintPlace();
+  setLayStatus('저장 중…');
+  if (_layPlaceSaving) return;
+  _layPlaceSaving = 1;
+  var failed = '';
+  try {
+    while (_layPlaceQueued) {
+      var job = _layPlaceQueued;
+      _layPlaceQueued = null;
+      var r;
+      try { r = await apiWrite('PUT', '/api/settings/dashboard-layout/panel', { panel: job }); }
+      catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+      // A failure stays on the line even when a later change of another field saves.
+      if (!r || !r.ok) failed = (r && r.error) || 'HTTP';
+      else layPlaceAccept(r.data && r.data.layout && r.data.layout.doc && r.data.layout.doc.panel);
+      layPaintPlace();
+    }
+  } finally {
+    _layPlaceSaving = 0;
+  }
+  // Every change is answered: the controls show the server's place (a refused change goes back to it).
+  _layPlaceIntent = null;
+  layPaintPlace();
+  if (failed) { setLayStatus('저장하지 못했습니다 — ' + failed); return; }
+  // The place is saved; the layouts' own state stays on the line (a failed or pending layouts save is not saved).
+  setLayStatus(_laySaving ? '저장 중…' : _layFailed ? '저장하지 못했습니다 — ' + _layFailed : _layPending ? '저장 중…' : '저장됨');
+  var p = layPlaceShown();
+  layAnnounce(p.side !== shown.side
+    ? (p.side === 'left' ? '디테일 카드를 왼쪽에 둡니다' : '디테일 카드를 오른쪽에 둡니다')
+    : (p.locked ? '위치를 잠갔습니다 — 상단바 손잡이가 사라집니다' : '잠금을 풀었습니다 — 상단바 손잡이로 옮길 수 있습니다'));
+}
+// Pure: a place (or a patch) with the fields of another patch over it.
+function layPlaceWith(base, patch) {
+  return Object.assign({}, base || {}, patch || {});
+}
+// Back on the page: a move on the dashboard meanwhile shows here (when newer than the place held).
+async function layRefreshPlace() {
+  if (!_layLoaded) return;
+  try {
+    var res = await fetch('/api/settings/dashboard-layout');
+    if (!res.ok) return;
+    var data = await res.json();
+    if (data && data.doc && layPlaceAccept(data.doc.panel)) layPaintPlace();
+  } catch (_e) {}
 }
 
 // ── Items ──
@@ -413,6 +575,7 @@ function layOptions(id, value, withFollow) {
 }
 function layPaint() {
   if (!_layLoaded) return;
+  layPaintPlace();
   layOptions('lay-def-card', layoutPreset(_layDoc, 'card', _lay.plan));
   layOptions('lay-def-detail', layoutPreset(_layDoc, 'detail', _lay.plan));
   var tm = document.getElementById('lay-thread-mode');
@@ -759,6 +922,8 @@ function layOnChange(e) {
   if (act === 'def-card') return layDefault('card', t.value);
   if (act === 'def-detail') return layDefault('detail', t.value);
   if (act === 'thread-mode') return layThreadSet(t.value);
+  if (act === 'place-side') return layPlaceSave({ side: t.value });
+  if (act === 'place-lock') return layPlaceSave({ locked: !!t.checked });
   if (act === 'lay-preset') { _layPreset = t.value; return layPaint(); }
   if (act === 'lay-mode') { _layMode = t.value === 'advanced' ? 'advanced' : 'minimal'; return layPaint(); }
   if (act === 'lay-surface') { _laySurface = t.value; return layPaint(); }
@@ -823,6 +988,7 @@ function initLayout() {
   root.addEventListener('dragover', layOnDragOver);
   root.addEventListener('drop', layOnDrop);
   root.addEventListener('dragend', function() { _layDrag = null; layClearDrop(); });
+  document.addEventListener('visibilitychange', function() { if (!document.hidden) layRefreshPlace(); });
   root.addEventListener('keydown', function(e) {
     if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) {
       var tag = e.target && e.target.tagName;

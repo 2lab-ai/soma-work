@@ -33,6 +33,7 @@ import {
   LAYOUT_CATALOG,
   LayoutError,
   normalizeLayoutDoc,
+  type PanelPlace,
   type PresetLayouts,
 } from './view-layout';
 
@@ -366,8 +367,17 @@ export interface SettingsRegistry {
   write(userId: string, key: string, value: unknown): Promise<SettingView>;
   /** The user's surface layouts for the editor and the dashboard (.prd/21). */
   readLayout(userId: string): LayoutSnapshot;
-  /** Replace the user's surface layouts — checked (400) and only for an accepted user (403). */
+  /**
+   * Replace the user's surface layouts — checked (400) and only for an accepted user (403). A document without the
+   * detail card's place keeps the saved one: the place has its own writer (writePanelPlace), so a whole-document save
+   * from an editor loaded before a drag on the dashboard does not move the card back.
+   */
   writeLayout(userId: string, doc: unknown): LayoutSnapshot;
+  /**
+   * Set only the detail card's place (side · lock, SSOT 2026-11-19) — checked (400), accepted users only (403). The
+   * fields it names replace the stored ones; the others stay (a dashboard move names the side only).
+   */
+  writePanelPlace(userId: string, place: unknown): LayoutSnapshot;
 }
 
 export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegistry {
@@ -971,7 +981,33 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
         throw e;
       }
       assertAccepted(userId);
+      const kept = store.getUserDashboardLayout(userId).panel;
+      if (!doc.panel) {
+        if (kept) doc.panel = kept;
+      } else {
+        // A document that names a place (an older editor) is a place write: the next revision, never the client's.
+        doc.panel = { side: doc.panel.side, locked: doc.panel.locked, rev: (kept?.rev ?? 0) + 1 };
+      }
       store.setUserDashboardLayout(userId, doc);
+      return this.readLayout(userId);
+    },
+    writePanelPlace(userId, place) {
+      try {
+        // Checked by normalizeLayoutDoc's own rule, before anything is read or written (400 before 403).
+        normalizeLayoutDoc({ v: 1, panel: place });
+      } catch (e) {
+        if (e instanceof LayoutError) throw new SettingsError(400, e.message);
+        throw e;
+      }
+      assertAccepted(userId);
+      // What the write names over what is stored: a dashboard move names the side only, so a lock set meanwhile on
+      // the settings page stays. The revision is the server's: the stored one plus one (a client's is ignored).
+      const doc = store.getUserDashboardLayout(userId);
+      const { rev: _clientRev, ...named } = place as Record<string, unknown>;
+      const merged = normalizeLayoutDoc({ v: 1, panel: { side: doc.panel?.side, locked: doc.panel?.locked, ...named } })
+        .panel as PanelPlace;
+      const panel: PanelPlace = { side: merged.side, locked: merged.locked, rev: (doc.panel?.rev ?? 0) + 1 };
+      store.setUserDashboardLayout(userId, { ...doc, panel });
       return this.readLayout(userId);
     },
     async write(userId, key, value) {

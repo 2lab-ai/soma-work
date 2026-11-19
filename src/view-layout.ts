@@ -134,7 +134,24 @@ export interface DashboardLayoutDoc {
   presets?: Partial<Record<PresetId, Partial<Record<ViewMode, Partial<ModeLayouts>>>>>;
   active?: { card?: PresetId; detail?: PresetId };
   thread?: { mode: ThreadMode; custom?: ThreadLayout };
+  /** Where the detail card docks beside the board, and whether its title bar's grip may move it (SSOT 2026-11-19). */
+  panel?: PanelPlace;
 }
+
+/** The detail card's side on a wide screen (docked from 840px; below it the card is a full-screen sheet). */
+export type PanelSide = 'left' | 'right';
+/** The detail card's place: its side, and the lock — locked, the title bar has no grip and only the settings move it. */
+export interface PanelPlace {
+  side: PanelSide;
+  locked: boolean;
+  /**
+   * The server's count of place writes (set by writePanelPlace, never by a client): every reader keeps the place with
+   * the highest revision, so a late answer, a late read or another tab's older copy never wins over a newer place.
+   */
+  rev?: number;
+}
+/** Nothing saved: the right side, unlocked (the grip shows, so the move can be found). */
+export const DEFAULT_PANEL_PLACE: Readonly<PanelPlace> = Object.freeze({ side: 'right', locked: false });
 
 const it = <T extends string>(id: T, on: boolean, opt?: string): LayoutItem<T> =>
   opt === undefined ? { id, on } : { id, on, opt };
@@ -715,6 +732,7 @@ export function normalizeLayoutDoc(input: unknown): DashboardLayoutDoc {
     }
     if (Object.keys(active).length) out.active = active;
   }
+  if (input.panel !== undefined) out.panel = normalizePanelPlace(input.panel);
   if (input.thread !== undefined) {
     if (!isObj(input.thread)) throw new LayoutError('thread는 객체여야 합니다');
     const mode = input.thread.mode;
@@ -726,6 +744,21 @@ export function normalizeLayoutDoc(input: unknown): DashboardLayoutDoc {
         : { mode };
   }
   return out;
+}
+
+// A saved place, checked: a wrong side or lock is refused (a 400), never moved somewhere the user did not pick; a
+// missing half takes its default.
+function normalizePanelPlace(input: unknown): PanelPlace {
+  if (!isObj(input)) throw new LayoutError('panel은 객체여야 합니다');
+  // Omitted takes the default; an explicit null is a wrong value like any other (it never clears a stored lock).
+  const side = input.side === undefined ? DEFAULT_PANEL_PLACE.side : input.side;
+  if (side !== 'left' && side !== 'right') throw new LayoutError('디테일 카드 위치는 left 또는 right여야 합니다');
+  const locked = input.locked === undefined ? DEFAULT_PANEL_PLACE.locked : input.locked;
+  if (typeof locked !== 'boolean') throw new LayoutError('디테일 카드 잠금은 true 또는 false여야 합니다');
+  if (input.rev === undefined) return { side, locked };
+  if (typeof input.rev !== 'number' || !Number.isInteger(input.rev) || input.rev < 0)
+    throw new LayoutError('디테일 카드 위치의 rev는 0 이상의 정수여야 합니다');
+  return { side, locked, rev: input.rev };
 }
 
 /** The preset a surface uses: the user's default for it, else the quick switch, else 1. */

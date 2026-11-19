@@ -50,6 +50,7 @@ describe('settings routes (SSOT 2026-10-23 T2)', () => {
     write: vi.fn(async (_userId: string, key: string, value: unknown) => ({ key, value })),
     readLayout: vi.fn((userId: string) => ({ userId, doc: { v: 1 } })),
     writeLayout: vi.fn((userId: string, doc: unknown) => ({ userId, doc })),
+    writePanelPlace: vi.fn((userId: string, panel: unknown) => ({ userId, doc: { v: 1, panel } })),
   };
 
   beforeEach(async () => {
@@ -58,6 +59,7 @@ describe('settings routes (SSOT 2026-10-23 T2)', () => {
     registry.write.mockClear();
     registry.readLayout.mockClear();
     registry.writeLayout.mockClear();
+    registry.writePanelPlace.mockClear();
     const webServer = await import('../web-server');
     stopWebServer = webServer.stopWebServer;
     injectWebServer = webServer.injectWebServer;
@@ -160,6 +162,64 @@ describe('settings routes (SSOT 2026-10-23 T2)', () => {
     });
     expect(bad.statusCode).toBe(400);
     expect(JSON.parse(bad.body)).toEqual({ error: '레이아웃은 객체여야 합니다' });
+  });
+
+  it('디테일 카드 위치 (SSOT 2026-11-19): PUT …/dashboard-layout/panel writes the place alone, with CSRF', async () => {
+    const auth = { ...(await signIn('U1')), 'content-type': 'application/json' };
+    const panel = { side: 'left', locked: false };
+    const put = await injectWebServer({
+      method: 'PUT',
+      url: '/api/settings/dashboard-layout/panel',
+      headers: auth,
+      payload: { panel, userId: 'U_OTHER' },
+    });
+    expect(put.statusCode).toBe(200);
+    expect(registry.writePanelPlace).toHaveBeenCalledWith('U1', panel);
+    expect(registry.writeLayout).not.toHaveBeenCalled();
+    expect(JSON.parse(put.body)).toEqual({ ok: true, layout: { userId: 'U1', doc: { v: 1, panel } } });
+    // Without a place: 400. Without CSRF: refused before the registry.
+    expect(
+      (
+        await injectWebServer({
+          method: 'PUT',
+          url: '/api/settings/dashboard-layout/panel',
+          headers: auth,
+          payload: {},
+        })
+      ).statusCode,
+    ).toBe(400);
+    registry.writePanelPlace.mockClear();
+    const noCsrf = await injectWebServer({
+      method: 'PUT',
+      url: '/api/settings/dashboard-layout/panel',
+      headers: { cookie: auth.cookie, 'content-type': 'application/json' },
+      payload: { panel },
+    });
+    expect(noCsrf.statusCode).toBe(403);
+    expect(registry.writePanelPlace).not.toHaveBeenCalled();
+    registry.writePanelPlace.mockImplementationOnce(() => {
+      throw new SettingsError(400, '디테일 카드 위치는 left 또는 right여야 합니다');
+    });
+    const bad = await injectWebServer({
+      method: 'PUT',
+      url: '/api/settings/dashboard-layout/panel',
+      headers: auth,
+      payload: { panel: { side: 'top' } },
+    });
+    expect(bad.statusCode).toBe(400);
+    expect(JSON.parse(bad.body)).toEqual({ error: '디테일 카드 위치는 left 또는 right여야 합니다' });
+  });
+
+  it('a JSON body that is not an object is a 400 on both layout writes, never a 500 (PR review)', async () => {
+    const auth = { ...(await signIn('U1')), 'content-type': 'application/json' };
+    for (const url of ['/api/settings/dashboard-layout', '/api/settings/dashboard-layout/panel'])
+      for (const payload of ['"left"', '7', 'true', '[]'])
+        expect(
+          (await injectWebServer({ method: 'PUT', url, headers: auth, payload })).statusCode,
+          `${url} ${payload}`,
+        ).toBe(400);
+    expect(registry.writeLayout).not.toHaveBeenCalled();
+    expect(registry.writePanelPlace).not.toHaveBeenCalled();
   });
 
   it('PATCH without a CSRF token is refused before the registry runs', async () => {

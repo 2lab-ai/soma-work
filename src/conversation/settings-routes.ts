@@ -83,8 +83,9 @@ export function registerSettingsRoutes(
       reply.status(503).send({ error: 'Settings are not available on this instance' });
       return;
     }
-    const body = request.body || {};
-    if (!('doc' in body)) {
+    // A JSON body that is not an object (a string, a number, an array) is a 400, not a TypeError.
+    const body = request.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body) || !('doc' in body)) {
       reply.status(400).send({ error: 'doc is required' });
       return;
     }
@@ -96,6 +97,32 @@ export function registerSettingsRoutes(
         return;
       }
       logger.error('Error writing the dashboard layout', { error });
+      reply.status(500).send({ error: 'Internal Server Error' });
+    }
+  });
+
+  // The detail card's place (SSOT 2026-11-19): the dashboard's drag and the editor's 위치 · 잠금 write it alone, so
+  // neither replaces the other's layouts.
+  server.put<{ Body: { panel?: unknown } }>('/api/settings/dashboard-layout/panel', write, async (request, reply) => {
+    const userId = requireSelfUser(request, reply);
+    if (!userId) return;
+    if (!_registry) {
+      reply.status(503).send({ error: 'Settings are not available on this instance' });
+      return;
+    }
+    const body = request.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body) || !('panel' in body)) {
+      reply.status(400).send({ error: 'panel is required' });
+      return;
+    }
+    try {
+      reply.send({ ok: true, layout: _registry.writePanelPlace(userId, body.panel) });
+    } catch (error) {
+      if (error instanceof SettingsError) {
+        reply.status(error.statusCode).send({ error: error.message });
+        return;
+      }
+      logger.error('Error writing the detail card place', { error });
       reply.status(500).send({ error: 'Internal Server Error' });
     }
   });

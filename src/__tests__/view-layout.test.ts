@@ -22,6 +22,7 @@ import {
   CARD_CHIPS,
   CARD_ROWS,
   type DashboardLayoutDoc,
+  DEFAULT_PANEL_PLACE,
   DETAIL_HEAD,
   DETAIL_TABS,
   followThreadLayout,
@@ -506,5 +507,68 @@ describe('L9 — a device copy saved before the zones reads as the server migrat
           const local = client.layoutOf(doc, BUILTIN_PRESETS, p, m, 'detail');
           expect(client.detailSpecOf(local), `${p} ${m} ${tasks}`).toEqual(client.detailSpecOf(server));
         }
+  });
+});
+
+describe('L10 — 디테일 카드 위치: the side it docks on and its lock (SSOT 2026-11-19)', () => {
+  it('nothing saved is the right side, unlocked (the grip shows); a saved place round-trips', () => {
+    expect(DEFAULT_PANEL_PLACE).toEqual({ side: 'right', locked: false });
+    expect(normalizeLayoutDoc({ v: 1 }).panel).toBeUndefined();
+    const doc = normalizeLayoutDoc({ v: 1, panel: { side: 'left', locked: true } });
+    expect(doc.panel).toEqual({ side: 'left', locked: true });
+  });
+
+  it('a stored place keeps its revision (the server’s write count, so every reader can order places)', () => {
+    expect(normalizeLayoutDoc({ v: 1, panel: { side: 'left', locked: true, rev: 7 } }).panel).toEqual({
+      side: 'left',
+      locked: true,
+      rev: 7,
+    });
+  });
+
+  it('a partial place keeps the other half at its default', () => {
+    expect(normalizeLayoutDoc({ v: 1, panel: { side: 'left' } }).panel).toEqual({ side: 'left', locked: false });
+    expect(normalizeLayoutDoc({ v: 1, panel: { locked: true } }).panel).toEqual({ side: 'right', locked: true });
+  });
+
+  it('a wrong place is refused (a 400), never silently moved', () => {
+    for (const bad of [
+      { panel: 'left' },
+      { panel: [] },
+      { panel: { side: 'top' } },
+      { panel: { side: 'LEFT' } },
+      { panel: { locked: 'yes' } },
+      { panel: { locked: 1 } },
+      { panel: { side: null } },
+      { panel: { locked: null } },
+      { panel: { side: 'left', rev: -1 } },
+      { panel: { side: 'left', rev: 1.5 } },
+    ])
+      expect(() => normalizeLayoutDoc(bad), JSON.stringify(bad)).toThrow(LayoutError);
+  });
+
+  it('the place sits beside the layouts: editing a preset keeps it, and it changes no surface', () => {
+    const doc = normalizeLayoutDoc({
+      v: 1,
+      active: { detail: '2' },
+      panel: { side: 'left', locked: false },
+    });
+    expect(doc.active).toEqual({ detail: '2' });
+    expect(resolveLayouts(doc, 'minimal')).toEqual(resolveLayouts({ v: 1, active: { detail: '2' } }, 'minimal'));
+  });
+
+  it('the client reads a place as the server does — a broken device copy is the default (view-layout-client.ts parity)', async () => {
+    const { VIEW_LAYOUT_CLIENT_JS } = await import('../conversation/view-layout-client');
+    const client = new Function(`${VIEW_LAYOUT_CLIENT_JS}\nreturn panelPlaceOf;`)() as (d: unknown) => unknown;
+    for (const doc of [
+      undefined,
+      { v: 1 },
+      { v: 1, panel: { side: 'left', locked: true } },
+      { v: 1, panel: { side: 'left' } },
+      { v: 1, panel: { locked: true } },
+    ])
+      expect(client(doc), JSON.stringify(doc)).toEqual(normalizeLayoutDoc(doc).panel ?? DEFAULT_PANEL_PLACE);
+    expect(client({ v: 1, panel: { side: 'top', locked: 'x' } })).toEqual({ side: 'right', locked: false });
+    expect(client({ v: 1, panel: 'left' })).toEqual({ side: 'right', locked: false });
   });
 });

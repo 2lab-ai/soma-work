@@ -422,6 +422,58 @@ describe('settings registry — write', () => {
     expect(store.data.U_DENIED).toBeUndefined();
   });
 
+  it('디테일 카드 위치 (SSOT 2026-11-19): the place is written alone, and a whole-document write without it keeps it', () => {
+    const { registry, store } = setup();
+    registry.writeLayout('U1', { active: { card: '2' } });
+    const placed = registry.writePanelPlace('U1', { side: 'left', locked: false });
+    expect(placed.doc.panel).toEqual({ side: 'left', locked: false, rev: 1 });
+    // The rest of the document is untouched by a place write.
+    expect(store.data.U1.dashboardLayout.active).toEqual({ card: '2' });
+    // The settings page writes the whole document without the place: the dashboard's drag stays.
+    registry.writeLayout('U1', { active: { card: '3' } });
+    expect(store.data.U1.dashboardLayout).toMatchObject({
+      active: { card: '3' },
+      panel: { side: 'left', locked: false },
+    });
+    // A document that names the place sets it.
+    registry.writeLayout('U1', { panel: { side: 'right', locked: true } });
+    expect(store.data.U1.dashboardLayout.panel).toEqual({ side: 'right', locked: true, rev: 2 });
+    // Checked (400) and accepted-only (403), like every layout write.
+    expect(() => registry.writePanelPlace('U1', { side: 'top' })).toThrow(expect.objectContaining({ statusCode: 400 }));
+    expect(() => registry.writePanelPlace('U1', 'left')).toThrow(expect.objectContaining({ statusCode: 400 }));
+    expect(() => registry.writePanelPlace('U_DENIED', { side: 'left' })).toThrow(
+      expect.objectContaining({ statusCode: 403 }),
+    );
+    expect(store.data.U_DENIED).toBeUndefined();
+  });
+
+  it('a move that names only the side keeps the stored lock (a dashboard drag never unlocks) (PR review)', () => {
+    const { registry, store } = setup();
+    registry.writePanelPlace('U1', { side: 'right', locked: true });
+    registry.writePanelPlace('U1', { side: 'left' });
+    expect(store.data.U1.dashboardLayout.panel).toEqual({ side: 'left', locked: true, rev: 2 });
+    expect(() => registry.writePanelPlace('U1', { side: 'up' })).toThrow(expect.objectContaining({ statusCode: 400 }));
+    expect(store.data.U1.dashboardLayout.panel).toEqual({ side: 'left', locked: true, rev: 2 });
+  });
+
+  it('every place write gets the next revision; a client cannot set it; a whole-layout write keeps it (PR review)', () => {
+    const { registry, store } = setup();
+    expect(registry.writePanelPlace('U1', { side: 'left' }).doc.panel).toEqual({ side: 'left', locked: false, rev: 1 });
+    expect(registry.writePanelPlace('U1', { locked: true, rev: 99 }).doc.panel).toEqual({
+      side: 'left',
+      locked: true,
+      rev: 2,
+    });
+    registry.writeLayout('U1', { active: { card: '2' } });
+    expect(store.data.U1.dashboardLayout.panel).toEqual({ side: 'left', locked: true, rev: 2 });
+    // A whole document that names a place (an older editor) is a place write too: the next revision.
+    registry.writeLayout('U1', { panel: { side: 'right', locked: false, rev: 1 } });
+    expect(store.data.U1.dashboardLayout.panel).toEqual({ side: 'right', locked: false, rev: 3 });
+    expect(() => registry.writePanelPlace('U1', { locked: null })).toThrow(
+      expect.objectContaining({ statusCode: 400 }),
+    );
+  });
+
   it('read-only and unknown keys are refused; wrong value types are 400', async () => {
     const { registry } = setup();
     await refused(registry.write('U1', 'workingDirectory', '/tmp'), 403);
