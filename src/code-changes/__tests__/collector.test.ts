@@ -1118,6 +1118,47 @@ describe('a PR GitHub does not answer for (a private repository the host token c
     expect(doc.prs[0]).not.toHaveProperty('filesStale');
   });
 
+  it('the next clone asked for a partial PR reads it with the room the earlier read held (given back first)', async () => {
+    const s = store();
+    const big = (path: string, mib: number) => ({
+      ...f(path),
+      patch: `@@ -1 +1 @@\n+${'z'.repeat(mib * 1024 * 1024)}`,
+    });
+    const readCheckout = vi.fn(
+      async (input: { dir: string; pulls?: Array<{ number: number }>; trimPulls?: (f: ChangedFile[]) => boolean }) => ({
+        ...clean(input.dir),
+        pulls: (input.pulls ?? []).map((a) => {
+          // Clone A: a.ts (3 MiB) read, b.ts failed. Clone B: both read — a.ts 3 MiB, b.ts 2 MiB: 5 MiB, under the 6.
+          const files = input.dir === '/s/a' ? [big('a.ts', 3), f('b.ts')] : [big('a.ts', 3), big('b.ts', 2)];
+          const dropped = !!input.trimPulls?.(files);
+          return {
+            ...localPull(a.number),
+            headSha: 'h',
+            baseSha: 'b',
+            files,
+            ...(input.dir === '/s/a' ? { filesStale: true as const, failedPatches: ['b.ts'] } : {}),
+            ...(dropped ? { patchesDropped: true as const } : {}),
+          };
+        }),
+      }),
+    );
+    const { doc } = await collectCodeChanges(
+      { conversationId: 'c-local7', owner: { id: 'U', name: 'u' }, dirs: ['/s'], startedAt: START, prUrls: [url(5)] },
+      {
+        ...prDeps({}),
+        store: s,
+        listCheckoutDirs: async () => ({ dirs: ['/s/a', '/s/b'] }),
+        checkoutChanges: readCheckout as never,
+      },
+    );
+    expect(doc.prs[0].files.map((x) => [x.path, !!x.patch])).toEqual([
+      ['a.ts', true],
+      ['b.ts', true],
+    ]);
+    expect(doc.prs[0]).not.toHaveProperty('patchesDropped');
+    expect(doc.prs[0]).not.toHaveProperty('filesStale');
+  });
+
   it('sessionPrChanges: unread lists only what neither GitHub nor a stored record gives', async () => {
     const unread: Array<{ number: number }> = [];
     const stored = { ...localPull(7), fetchedAt: 1, filesStale: undefined };

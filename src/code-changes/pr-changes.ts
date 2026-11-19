@@ -35,14 +35,11 @@ export interface PullRef {
   id: string;
 }
 
-/** A PR GitHub did not answer for, to be looked for in the session's checkouts (`mergedPulls`). */
-export interface PullAsk {
-  id: string;
-  url: string;
-  /** `owner/name`, lower case: only a checkout of this repository is asked. */
-  repo: string;
-  number: number;
-}
+/**
+ * A PR GitHub did not answer for, to be looked for in the session's checkouts (`mergedPulls`): its `repo` (lower case)
+ * names the only checkouts asked.
+ */
+export type PullAsk = Pick<PrChanges, 'id' | 'url' | 'repo' | 'number'>;
 
 export function pullRefOf(url: string): PullRef | undefined {
   const m = PULL_URL.exec(url.trim());

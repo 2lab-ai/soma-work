@@ -172,6 +172,10 @@ export async function collectCodeChanges(input: CollectInput, deps: CollectDeps)
   for (const dir of dirs.slice(0, MAX_CHECKOUTS)) {
     // A PR a checkout read only in part (a file's patch read failed) is asked of the next one too.
     const asks = unread.filter((a) => !local.has(a.id) || local.get(a.id)?.filesStale);
+    // A PR an earlier clone read only in part is asked again: what that read holds is given back to the budget first,
+    // so this read has the room (#1371 review round 5) — and charged again below unless this read replaces it.
+    const again = asks.map((a) => local.get(a.id)).filter((p): p is NonNullable<typeof p> => !!p);
+    prBudget.used = Math.max(0, prBudget.used - again.reduce((n, p) => n + patchBytes(p.files), 0));
     // What a read charges to the PR budget stands only if its PRs are kept: a read thrown away (its git dirs changed
     // meanwhile) gives the budget back (#1371 review).
     const charged = prBudget.used;
@@ -188,19 +192,29 @@ export async function collectCodeChanges(input: CollectInput, deps: CollectDeps)
       ...(asks.length ? { pulls: asks, trimPulls: (files: ChangedFile[]) => trimPatches(files, prBudget) } : {}),
     });
     if (!read?.pulls) prBudget.used = charged;
-    if (!read) continue;
-    const { sessionCommits: made, pulls: found, ...changes } = read;
-    for (const p of found ?? []) {
+    const found = read?.pulls ?? [];
+    // An earlier partial read this one did not replace stands, and holds its share of the budget again.
+    for (const p of again) if (!found.some((f) => f.id === p.id)) prBudget.used += patchBytes(p.files);
+    for (const p of found) {
       const before = local.get(p.id);
       const next = { ...p, fetchedAt: deps.now() };
       if (before) {
-        // Another clone of the same repository: the same commits. Its read keeps what the first one had, and the first
-        // one's charge to the budget is given back (its patches are now this read's or dropped with it).
+        // Another clone of the same repository: the same commits. Its read keeps what the earlier one had and it did not
+        // get; those patches are charged to the budget now, as this read's own were when read.
+        const had = new Set(next.files.filter((f) => f.patch).map((f) => f.path));
         keepKnownPatches(next, before);
-        prBudget.used = Math.max(0, prBudget.used - patchBytes(before.files));
+        if (
+          trimPatches(
+            next.files.filter((f) => f.patch && !had.has(f.path)),
+            prBudget,
+          )
+        )
+          next.patchesDropped = true;
       }
       local.set(p.id, next);
     }
+    if (!read) continue;
+    const { sessionCommits: made, pulls: _found, ...changes } = read;
     const c = keepLastRead(changes, lastRead.get(changes.id));
     trimPatches(c.uncommitted.files, uncommittedBudget);
     trimPatches(c.committed.files, committedBudget);

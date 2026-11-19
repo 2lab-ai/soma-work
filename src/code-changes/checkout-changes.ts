@@ -821,120 +821,55 @@ export async function checkoutChanges(input: CheckoutInput): Promise<CheckoutRea
 }
 
 // ── PRs GitHub did not answer for, from the checkout's history ─────────────────────────────────────────────────────
-// A private repository the host's token cannot read still has the session's clone, and GitHub's merge leaves a commit on
-// the default branch that names the PR: `Merge pull request #N from owner/branch` (a merge commit: the PR's head is its
-// second parent) or `title (#N)` (a squash: the commit is the PR). The files are what GitHub's PR shows: the head against
-// where it left the base. A rebase merge names no PR and is not found; an open PR has no such commit.
+// A private repository the host's token cannot read still has the session's clone, and GitHub's merge commit stays on
+// the default branch: `Merge pull request #N from owner/branch`, the PR's head its second parent. The files are what
+// GitHub's PR shows: the head against where it left the base. A squash or a rebase merge is not read here: its commit
+// carries no head, and telling the session's squash from another with the same number took guesses that each review
+// round broke (#1371 rounds 3–5) — such a PR stays unread, and the tab says why. An open PR has no merge commit.
 
 const MERGE_SUBJECT = /^Merge pull request #(\d+) from \S+?\/(\S+)/;
-const SQUASH_SUBJECT = /\(#(\d+)\)\s*$/;
-/** First-parent commits of the default branch looked through for the asked PRs. */
+/** First-parent commits of the default branch looked through for the asked PRs; HEAD reflog entries read. */
 const MAX_HISTORY = 1000;
 
 /**
- * Whether a PR's work was done in this clone — a number in a commit message alone is not the PR: a fork that synced its
- * upstream has upstream's `#N` merges too (#1371 review). The evidence is what this checkout itself has been at, which a
- * deleted branch leaves behind (#1371 review round 2): the commits in HEAD's reflog, and the local branch tips. Not the
- * remote-tracking refs' reflogs — a fetch puts upstream's heads there.
- *   merge: its head is one of them, or a local branch holds the head and not the merge;
- *   squash: one of them other than the squash itself carries the squash's tree, or one off the default branch brings
- *   the squash's very changes (`patchKey`: the diff from where it left the base) — the default branch may have moved
- *   on since, and the message need not name it.
+ * Whether the merged head is this clone's work — a number in a commit message alone is not the PR: a fork that synced
+ * its upstream has upstream's `#N` merges too (#1371 review). The evidence is what this checkout itself has been at,
+ * which a deleted branch leaves behind (`gh pr merge --delete-branch`): the head is in HEAD's reflog or a local branch
+ * tip, or a local branch holds the head and not the merge. Not the remote-tracking refs' reflogs: a fetch puts
+ * upstream's heads there.
  */
-interface Provenance {
-  commits: Array<{ sha: string; tree: string; subject: string }>;
-  shas: Set<string>;
-  /** Of `shas`, the ones the default branch does not hold (read once, for a squash). */
-  aside?: Set<string>;
+async function ownHead(git: GitRun, dir: string, seen: Set<string>, merge: string, head: string): Promise<boolean> {
+  if (seen.has(head)) return true;
+  const on = await git(dir, [
+    'for-each-ref',
+    '--count=1',
+    `--contains=${head}`,
+    `--no-contains=${merge}`,
+    '--format=%(refname)',
+    'refs/heads/',
+  ]);
+  return !!on?.trim();
 }
 
-async function provenance(git: GitRun, dir: string): Promise<Provenance> {
-  const rows = [
-    ...(
-      (await git(dir, [
-        'log',
-        '-g',
-        '--no-show-signature',
-        `--max-count=${MAX_HISTORY}`,
-        '--format=%H%x1f%T%x1f%s',
-        'HEAD',
-        '--',
-      ])) ?? ''
-    ).split('\n'),
-    ...(
-      (await git(dir, ['for-each-ref', '--format=%(objectname)%1f%(tree)%1f%(contents:subject)', 'refs/heads/'])) ?? ''
-    ).split('\n'),
-  ];
-  const commits: Provenance['commits'] = [];
-  for (const row of rows) {
-    const [sha, tree, subject = ''] = row.split('\x1f');
-    if (sha && SHA.test(sha) && tree && SHA.test(tree)) commits.push({ sha, tree, subject: subject.trim() });
-  }
-  return { commits, shas: new Set(commits.map((c) => c.sha)) };
-}
-
-/** Branch commits a squash is compared with, at most (the newest the clone was at, off the default branch). */
-const MAX_SQUASH_CANDIDATES = 30;
-
-async function ownWork(
-  git: GitRun,
-  dir: string,
-  own: Provenance,
-  commit: string,
-  head: string | undefined,
-  tip: string,
-  parent: string,
-): Promise<boolean> {
-  if (head) {
-    if (own.shas.has(head)) return true;
-    const on = await git(dir, [
-      'for-each-ref',
-      '--count=1',
-      `--contains=${head}`,
-      `--no-contains=${commit}`,
-      '--format=%(refname)',
-      'refs/heads/',
-    ]);
-    return !!on?.trim();
-  }
-  const tree = trim(await git(dir, ['rev-parse', '--verify', '--quiet', `${commit}^{tree}`]));
-  if (tree && own.commits.some((c) => c.sha !== commit && c.tree === tree)) return true;
-  // The commits the clone was at that the default branch does not hold — a squashed branch's own commits never reach it.
-  // A squash need not name them (a title-only message), and a subject or file counts can be shared by unrelated work
-  // (#1371 review rounds 3–4): one of them must bring the squash's very changes.
-  own.aside ??= new Set(
-    ((await git(dir, ['rev-list', `--max-count=${MAX_HISTORY}`, ...own.shas, '--not', tip, '--'])) ?? '')
+/** The commits HEAD's reflog names and the local branch tips. */
+async function headsSeen(git: GitRun, dir: string): Promise<Set<string>> {
+  const out = [
+    (await git(dir, ['log', '-g', '--no-show-signature', `--max-count=${MAX_HISTORY}`, '--format=%H', 'HEAD', '--'])) ??
+      '',
+    (await git(dir, ['for-each-ref', '--format=%(objectname)', 'refs/heads/'])) ?? '',
+  ].join('\n');
+  return new Set(
+    out
       .split('\n')
       .map((l) => l.trim())
-      .filter((l) => own.shas.has(l)),
+      .filter((l) => SHA.test(l)),
   );
-  const theirs = patchKey(await git(dir, ['diff', ...DIFF_FLAGS, '-U0', parent, commit, '--']));
-  if (!theirs) return false;
-  for (const sha of [...own.aside].slice(0, MAX_SQUASH_CANDIDATES)) {
-    const base = trim(await git(dir, ['merge-base', sha, parent]));
-    if (!base || !SHA.test(base)) continue;
-    if (patchKey(await git(dir, ['diff', ...DIFF_FLAGS, '-U0', base, sha, '--'])) === theirs) return true;
-  }
-  return false;
 }
 
 /**
- * A diff's changes without where they sit: no blob ids, no hunk line numbers, no context (`-U0`) — the same change on a
- * base that has moved on gives the same key. Empty for no diff or a failed one.
- */
-function patchKey(out: string | undefined): string {
-  if (!out) return '';
-  return out
-    .split('\n')
-    .filter((l) => !l.startsWith('index '))
-    .map((l) => (l.startsWith('@@') ? '@@' : l))
-    .join('\n')
-    .trim();
-}
-
-/**
- * The asked PRs merged on the checkout's default branch (its remote-tracking ref), newest commit naming each whose work
- * was this clone's (`ownWork`). A PR merged before the session started (less the slack) is not this session's.
+ * The asked PRs merged on the checkout's default branch (the remote's: origin/HEAD, else origin/main or master) by a
+ * merge commit whose head was this clone's work (`ownHead`), the newest such commit for each. A PR merged before the
+ * session started (less the slack) is not this session's.
  */
 export async function mergedPulls(
   git: GitRun,
@@ -952,6 +887,7 @@ export async function mergedPulls(
   const log = await git(dir, [
     'log',
     '--first-parent',
+    '--merges',
     '--no-show-signature',
     `--max-count=${MAX_HISTORY}`,
     '--format=%H%x1f%P%x1f%ct%x1f%s',
@@ -961,41 +897,36 @@ export async function mergedPulls(
   if (log === undefined) return [];
   const want = new Map(asks.map((a) => [a.number, a]));
   const out: LocalPull[] = [];
-  let own: Provenance | undefined;
+  let seen: Set<string> | undefined;
   for (const line of log.split('\n')) {
     if (want.size === 0) break;
     const [sha, parentList, ct, subject = ''] = line.split('\x1f');
     if (!sha || !SHA.test(sha)) continue;
     const parents = (parentList ?? '').split(' ').filter((p) => SHA.test(p));
     const merge = MERGE_SUBJECT.exec(subject);
-    const squash = merge ? null : SQUASH_SUBJECT.exec(subject);
-    const number = Number(merge?.[1] ?? squash?.[1]);
-    const ask = want.get(number);
-    if (!ask) continue;
-    if (merge ? parents.length < 2 : parents.length !== 1) continue;
+    const ask = merge ? want.get(Number(merge[1])) : undefined;
+    if (!merge || !ask || parents.length < 2) continue;
     const mergedAt = Number(ct) * 1000 || undefined;
     if (startedAt !== undefined && mergedAt !== undefined && mergedAt < startedAt - PR_START_SLACK_MS) {
-      want.delete(number);
+      want.delete(ask.number);
       continue;
     }
-    // Not this clone's work: an older commit naming the same number may be.
-    own ??= await provenance(git, dir);
-    if (!(await ownWork(git, dir, own, sha, merge ? parents[1] : undefined, tip, parents[0]))) continue;
-    want.delete(number);
-    const head = merge ? parents[1] : sha;
-    const base = merge ? trim(await git(dir, ['merge-base', parents[0], parents[1]])) : parents[0];
+    const head = parents[1];
+    seen ??= await headsSeen(git, dir);
+    // Not this clone's work: an older merge naming the same number may be.
+    if (!(await ownHead(git, dir, seen, sha, head))) continue;
+    want.delete(ask.number);
+    const base = trim(await git(dir, ['merge-base', parents[0], head]));
     if (!base || !SHA.test(base)) continue;
     const report = { failed: [] as string[] };
     const files = await diffFiles(git, dir, base, head, report);
     if (!files) continue;
-    // A merge commit's message is `Merge pull request …` then the PR's title; a squash's subject is the title.
-    const title = merge
-      ? trim(
-          (await git(dir, ['log', '-1', '--no-show-signature', '--format=%b', sha, '--']))
-            ?.split('\n')
-            .find((l) => l.trim()),
-        )
-      : subject.replace(SQUASH_SUBJECT, '').trim();
+    // The message is `Merge pull request …`, then the PR's title.
+    const title = trim(
+      (await git(dir, ['log', '-1', '--no-show-signature', '--format=%b', sha, '--']))
+        ?.split('\n')
+        .find((l) => l.trim()),
+    );
     const kept = files.slice(0, MAX_PR_FILES);
     const pr: LocalPull = {
       ...ask,
@@ -1005,10 +936,10 @@ export async function mergedPulls(
       files: kept,
       headSha: head,
       baseSha: base,
+      headRef: merge[2],
       source: 'local',
     };
     if (title) pr.title = title.slice(0, 200);
-    if (merge?.[2]) pr.headRef = merge[2];
     if (mergedAt !== undefined) pr.mergedAt = mergedAt;
     if (kept.length < files.length) pr.filesTruncated = true;
     // A file's patch that failed to come is asked again next time; one the budget dropped too.

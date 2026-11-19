@@ -1098,7 +1098,7 @@ describe('PRs GitHub did not answer for, read from the checkout’s default bran
     number: n,
   });
 
-  it('a merge commit (head against where it left main) and a squash of the clone’s own branches; not: merged before the session, not merged, not this clone’s work, a number only mentioned', () => {
+  it('a merge commit of the clone’s own branch (head against where it left main); not: a squash, merged before the session, not merged, not this clone’s work, a number only mentioned', () => {
     const session = tmp('cc-local-pr-');
     const origin = path.join(session, '..', `${path.basename(session)}-origin`);
     roots.push(origin);
@@ -1140,7 +1140,7 @@ describe('PRs GitHub did not answer for, read from the checkout’s default bran
       'Five: b.ts and a line of a.ts',
       'feat/five',
     ]);
-    // #6: a squash — the commit is the PR (the branch was up to date with main: same tree).
+    // #6: a squash of the clone's own branch — not read here (no head in the commit): it stays unread.
     git(origin, ['checkout', '-q', '-b', 'feat/six']);
     write(origin, 'README.md', '# r\nsix\n');
     commitAll(origin, 'six');
@@ -1176,7 +1176,7 @@ describe('PRs GitHub did not answer for, read from the checkout’s default bran
       pulls: [ask(4), ask(5), ask(6), ask(7), ask(8), ask(9), ask(11), ask(5, 'acme/other')],
     }).then((read) => {
       const pulls = read?.pulls ?? [];
-      expect(pulls.map((p) => p.number)).toEqual([6, 5]);
+      expect(pulls.map((p) => p.number)).toEqual([5]);
       const five = pulls.find((p) => p.number === 5);
       expect(five).toMatchObject({
         id: 'acme/web#5',
@@ -1196,10 +1196,6 @@ describe('PRs GitHub did not answer for, read from the checkout’s default bran
       ]);
       expect(five?.files[0].patch).toContain('+TWO');
       expect(typeof five?.mergedAt).toBe('number');
-      const six = pulls.find((p) => p.number === 6);
-      expect(six).toMatchObject({ title: 'six: a README line', additions: 1, deletions: 0, changedFiles: 1 });
-      expect(six?.files.map((f) => f.path)).toEqual(['README.md']);
-      expect(six).not.toHaveProperty('headRef');
       // Each read whole: nothing to ask again.
       expect(five).not.toHaveProperty('filesStale');
     });
@@ -1210,6 +1206,9 @@ describe('PRs GitHub did not answer for, read from the checkout’s default bran
     const dir = clone(session, 'web');
     write(dir, 'small.txt', 'a\n');
     write(dir, 'mid.txt', Array.from({ length: 40 }, (_, i) => `m${i}`).join('\n') + '\n');
+    // A renamed and edited file: its own read names both paths, so it stays a rename with a one-line change.
+    git(dir, ['mv', 'src/a.ts', 'src/moved.ts']);
+    write(dir, 'src/moved.ts', 'one\ntwo\nTHREE\n');
     write(dir, 'huge.json', Array.from({ length: 5001 }, (_, i) => `h${i}`).join('\n') + '\n');
     // Data (generated more often than written) comes after code, however small.
     write(dir, 'tiny.json', '{}\n');
@@ -1218,8 +1217,16 @@ describe('PRs GitHub did not answer for, read from the checkout’s default bran
     git(dir, ['checkout', '-q', '-b', 'feat/three']);
     commitAll(dir, 'three');
     git(dir, ['checkout', '-q', 'main']);
-    git(dir, ['merge', '-q', '--squash', 'feat/three']);
-    commitAll(dir, 'a big squash (#3)');
+    git(dir, [
+      'merge',
+      '-q',
+      '--no-ff',
+      '-m',
+      'Merge pull request #3 from acme/feat/three',
+      '-m',
+      'a big squash',
+      'feat/three',
+    ]);
     git(dir, ['update-ref', 'refs/remotes/origin/main', 'HEAD']);
     const calls: string[][] = [];
     // git's output cap, as seen from here: the range's whole patch does not come back.
@@ -1236,7 +1243,18 @@ describe('PRs GitHub did not answer for, read from the checkout’s default bran
       pulls: [{ id: 'acme/web#3', url: 'https://github.com/acme/web/pull/3', repo: 'acme/web', number: 3 }],
     });
     const files = Object.fromEntries((read?.pulls?.[0]?.files ?? []).map((f) => [f.path, f]));
-    expect(Object.keys(files).sort()).toEqual([':(top)odd.txt', 'huge.json', 'mid.txt', 'small.txt', 'tiny.json']);
+    expect(Object.keys(files).sort()).toEqual([
+      ':(top)odd.txt',
+      'huge.json',
+      'mid.txt',
+      'small.txt',
+      'src/moved.ts',
+      'tiny.json',
+    ]);
+    expect(files['src/moved.ts']).toMatchObject({ status: 'renamed', oldPath: 'src/a.ts', additions: 1, deletions: 1 });
+    expect(files['src/moved.ts'].patch).toContain('-three');
+    expect(files['src/moved.ts'].patch).toContain('+THREE');
+    expect(files['src/moved.ts'].patch).not.toContain('+one');
     expect(files['tiny.json'].patch).toContain('+{}');
     // Every file asked came whole: nothing to read again.
     expect(read?.pulls?.[0]).not.toHaveProperty('filesStale');
@@ -1262,8 +1280,7 @@ describe('PRs GitHub did not answer for, read from the checkout’s default bran
     }
     commitAll(dir, 'five');
     git(dir, ['checkout', '-q', 'main']);
-    git(dir, ['merge', '-q', '--squash', 'feat/five']);
-    commitAll(dir, 'five (#5)');
+    git(dir, ['merge', '-q', '--no-ff', '-m', 'Merge pull request #5 from acme/feat/five', '-m', 'five', 'feat/five']);
     git(dir, ['update-ref', 'refs/remotes/origin/main', 'HEAD']);
     const asked: string[] = [];
     const capped: GitRun = (d, args) => {
@@ -1303,8 +1320,7 @@ describe('PRs GitHub did not answer for, read from the checkout’s default bran
     write(dir, 'two.txt', 'b\n');
     commitAll(dir, 'four');
     git(dir, ['checkout', '-q', 'main']);
-    git(dir, ['merge', '-q', '--squash', 'feat/four']);
-    commitAll(dir, 'four (#4)');
+    git(dir, ['merge', '-q', '--no-ff', '-m', 'Merge pull request #4 from acme/feat/four', '-m', 'four', 'feat/four']);
     git(dir, ['update-ref', 'refs/remotes/origin/main', 'HEAD']);
     const flaky: GitRun = (d, args) => {
       if (args.includes('-U3') && args[args.length - 1] === '--') return Promise.resolve(undefined);
@@ -1325,7 +1341,7 @@ describe('PRs GitHub did not answer for, read from the checkout’s default bran
     expect(pr?.failedPatches).toEqual(['two.txt']);
   });
 
-  it('the PR branch deleted after the merge (gh pr merge --delete-branch): a merge by its head in HEAD’s reflog; a title-only squash after main moved on, by its very changes; the same subject, file and counts with other changes is not it', async () => {
+  it('the PR branch deleted after the merge (gh pr merge --delete-branch): a merge by its head in HEAD’s reflog; a squash, the clone’s own or not, is not read here', async () => {
     const session = tmp('cc-local-pr6-');
     const dir = clone(session, 'web');
     // #7: merged with a merge commit, then the branch deleted.
@@ -1355,8 +1371,7 @@ describe('PRs GitHub did not answer for, read from the checkout’s default bran
     // A title-only squash message (GitHub's PR-title setting): nothing in it names the branch's commits.
     commitAll(dir, 'Feature eight (#8)');
     git(dir, ['branch', '-q', '-D', 'feat/eight']);
-    // #12: a squash (an upstream's, synced in) that a commit of the clone matches in subject, file and line counts —
-    // but not in what it changes.
+    // #12: a squash (an upstream's, synced in) sharing a subject with a commit of the clone.
     git(dir, ['checkout', '-q', '-b', 'mine']);
     write(dir, 'README.md', '# mine\n');
     commitAll(dir, 'Update README.md');
@@ -1370,10 +1385,7 @@ describe('PRs GitHub did not answer for, read from the checkout’s default bran
       roots: [session],
       pulls: [ask(7), ask(8), ask(12)],
     });
-    expect((read?.pulls ?? []).map((p) => [p.number, p.files.map((f) => f.path)])).toEqual([
-      [8, ['eight.txt']],
-      [7, ['seven.txt']],
-    ]);
+    expect((read?.pulls ?? []).map((p) => [p.number, p.files.map((f) => f.path)])).toEqual([[7, ['seven.txt']]]);
   });
 
   it('a read whose patches the PR budget cut says so (the collect reads it again)', async () => {
@@ -1413,8 +1425,7 @@ describe('PRs GitHub did not answer for, read from the checkout’s default bran
     write(dir, 'bundle.js', `${'z'.repeat(7 * 1024 * 1024)}\n`);
     commitAll(dir, 'ten');
     git(dir, ['checkout', '-q', 'main']);
-    git(dir, ['merge', '-q', '--squash', 'feat/ten']);
-    commitAll(dir, 'ten (#10)');
+    git(dir, ['merge', '-q', '--no-ff', '-m', 'Merge pull request #10 from acme/feat/ten', '-m', 'ten', 'feat/ten']);
     git(dir, ['update-ref', 'refs/remotes/origin/main', 'HEAD']);
     const asked: string[] = [];
     const capped: GitRun = (d, args) => {
@@ -1460,7 +1471,7 @@ describe('PRs GitHub did not answer for, read from the checkout’s default bran
     const dir = clone(session, 'web');
     const read = await checkoutChanges({ dir, sessionRoot: session, roots: [session], pulls: [ask(1, 'acme/other')] });
     expect(read?.pulls).toBeUndefined();
-    // A squash the clone's own branch would vouch for, but no remote default branch to find it on: local main and HEAD
+    // A merge the clone's own branch would vouch for, but no remote default branch to find it on: local main and HEAD
     // are not the remote's.
     const lone = path.join(session, 'lone');
     fs.mkdirSync(lone);
@@ -1471,8 +1482,7 @@ describe('PRs GitHub did not answer for, read from the checkout’s default bran
     write(lone, 'x', '1\n');
     commitAll(lone, 'one');
     git(lone, ['checkout', '-q', 'main']);
-    git(lone, ['merge', '-q', '--squash', 'feat/one']);
-    commitAll(lone, 'x (#1)');
+    git(lone, ['merge', '-q', '--no-ff', '-m', 'Merge pull request #1 from acme/feat/one', '-m', 'x', 'feat/one']);
     git(lone, ['remote', 'add', 'origin', 'https://github.com/acme/lone.git']);
     const none = await checkoutChanges({
       dir: lone,
