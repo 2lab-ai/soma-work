@@ -151,6 +151,9 @@ import {
   fetchGitHubReceiptObject,
 } from './link-metadata-fetcher';
 import { Logger } from './logger';
+import { parseMailboxConfig } from './mailbox/config';
+import { createMailboxPoller } from './mailbox/host';
+import type { MailboxPoller } from './mailbox/poller';
 import { McpManager } from './mcp-manager';
 import { startLinkLeakReport, startReportScheduler, stopLinkLeakReport, stopReportScheduler } from './metrics';
 import { getMetricsEmitter } from './metrics/event-emitter';
@@ -210,7 +213,12 @@ import {
   installSlackDisplayTranslation,
 } from './slack/display-translate';
 import { envHandoffRuns } from './slack/env-handoff-runs';
-import { captureSessionIdentity, createEnvSkillHandoffHost, envSkillWakeState } from './slack/env-skill-handoff-host';
+import {
+  captureSessionIdentity,
+  createEnvSkillHandoffHost,
+  envSkillWakeState,
+  inertSkillRefs,
+} from './slack/env-skill-handoff-host';
 import {
   answerGoalCapDecision,
   flushGoalCapDmSync,
@@ -2167,6 +2175,7 @@ async function start() {
     // #928 (epic #935) — a session's PR keeps its card current after the turn: a merge or a close reaches the card and
     // the thread once (#644). Polls GitHub with ETags (a 304 is free); `SOMA_PR_WATCH=off` stops it.
     let sessionPrWatch: SessionPrWatch | null = null;
+    let mailboxPoller: MailboxPoller | null = null;
     let prWatchDelivery: ReturnType<typeof createSettledDelivery> | undefined;
     if (config.github.prWatch) {
       const prWatchRegistry = claudeHandler.getSessionRegistry();
@@ -2273,6 +2282,43 @@ async function start() {
       },
       logger,
     });
+    // agent-mailbox — this instance reads its own inbox and hands each new mail to a session (src/mailbox/poller.ts).
+    // A cheap long poll to the local mailbox server; a model runs only when mail arrives. Absent `mailbox` = off.
+    const mailboxParsed = parseMailboxConfig(appConfig.mailbox);
+    if (mailboxParsed && !mailboxParsed.ok) logger.warn(`Ignoring config.json#"mailbox": ${mailboxParsed.error}`);
+    if (mailboxParsed?.ok) {
+      const mailboxRegistry = claudeHandler.getSessionRegistry();
+      mailboxPoller = createMailboxPoller({
+        config: mailboxParsed.config,
+        dataDir: DATA_DIR,
+        openThread: async (channel, text) => {
+          const result = await app.client.chat.postMessage({ channel, text });
+          return result.ts as string | undefined;
+        },
+        openDm: async (userId) => {
+          const dm = await app.client.conversations.open({ users: userId });
+          if (!dm.channel?.id) throw new Error(`could not open a DM with ${userId}`);
+          return dm.channel.id;
+        },
+        sessionState: (channel, threadTs) =>
+          envSkillWakeState(mailboxRegistry.getSession(channel, threadTs), (c, t) => slackHandler.isHostTurnFree(c, t)),
+        inject: async ({ user, channel, threadTs, text }) => {
+          await messageInjector({
+            user,
+            channel,
+            thread_ts: threadTs,
+            ts: `${Date.now() / 1000}`,
+            text: inertSkillRefs(text),
+            synthetic: true,
+            skipDispatch: true,
+            // A mail body is another agent's words: never a command, never a skill call, never the user's answer.
+            routeContext: { skipAutoBotThread: true, verbatimPrompt: true, hostTurn: true },
+          });
+        },
+      });
+      mailboxPoller.start();
+      timing('Mailbox poller started');
+    }
     // .prd/36 — the work queue's host side: wake the thread whose turn came (the same settled delivery, as the entry's
     // holder), give back a turn its thread stopped working on, and answer "does this thread wait on the host?".
     const workQueueDelivery = createSettledDelivery({
@@ -2644,6 +2690,7 @@ async function start() {
           cronScheduler.stop();
         }
         sessionPrWatch?.stop();
+        void mailboxPoller?.stop();
         prWatchDelivery?.stop();
         envSkillDelivery.stop();
 

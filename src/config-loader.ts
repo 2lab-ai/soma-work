@@ -173,6 +173,11 @@ export interface Config {
    * pre-substitution object. Absent key = no queues.
    */
   workQueues?: unknown;
+  /**
+   * This instance's agent-mailbox inbox (`src/mailbox/config.ts`). Kept OPAQUE here like `workQueues`;
+   * `parseMailboxConfig` owns validation. Absent key = no mailbox poller.
+   */
+  mailbox?: unknown;
 }
 
 /**
@@ -613,6 +618,11 @@ export function loadConfig(configFile: string, opts: LoadConfigOptions = {}): Co
       const rawWorkQueues = (rawParsed as Record<string, unknown>).workQueues;
       if (rawWorkQueues !== undefined) {
         result.workQueues = rawWorkQueues;
+      }
+
+      const rawMailbox = (rawParsed as Record<string, unknown>).mailbox;
+      if (rawMailbox !== undefined) {
+        result.mailbox = rawMailbox;
       }
 
       const rawUi = (rawParsed as Record<string, unknown>).ui;

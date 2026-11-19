@@ -105,6 +105,16 @@ When the agent needs you to do something it cannot do itself — an owner-only v
 - After running it, press **✅ 완료했어요** or **❌ 안 됐어요** on the Slack card or in the dashboard section. The card loses its buttons, the dashboard updates, and the agent gets a message saying what you pressed, so it carries on. If that message cannot reach the agent, the task goes back to waiting so you can press again. Only the session owner (or someone approved for the session) can answer.
 - Spec: [`docs/current/spec/15-user-action.md`](../../current/spec/15-user-action.md).
 
+### 📬 Agent mailbox (mail between instances)
+
+An instance can read its own [agent-mailbox](https://github.com/2lab-ai/agent-mailbox) inbox, so agents on different hosts write to each other by address (`<agent>:<host>:<instance>`, e.g. `soma-work:host-b:dev`) without Slack. The host process long-polls the local mailbox server (no model runs for an empty inbox). New mail opens a bot thread in the configured channel (default: the owner's DM) and starts a host turn there as the owner; a reply in the same conversation goes back into that thread when its session is free, waits while it is busy (up to 10 minutes), and otherwise opens a new thread. The mail text is injected verbatim — never a command, a skill call or the user's answer. The turn answers with the mailbox CLI (`mailbox reply <id> -m "…"`).
+
+```json
+"mailbox": { "owner": "U0123ABC", "channel": "C0123ABC", "allowFrom": ["soma-work:*:*"] }
+```
+
+`client` (default `~/.config/agent-mailbox/client.json`, the mailbox CLI's own settings) holds the server URL, token and address; `intervalSeconds` (default 15) is the pause while mail waits on a busy session. No `mailbox` key = no poller. Code: `src/mailbox/`.
+
 ### 📞 Phone calls (server-tools)
 
 The agent can call a phone and take calls on a server-tools environment's own number ([한국AI통신](https://platform.koreaaitel.com/docs/getting-started), formerly ClawOps). It talks with its own voice and brain: it hears the other party through the voice service's speech-to-text, answers through the same model path every soma-work call takes (Agent SDK `query()` → llmux, the requester's key), and speaks with the voice service's streaming TTS (Drama 3, `cwon` by default).
