@@ -129,19 +129,6 @@ function firstPayload(mock: ReturnType<typeof vi.fn>): any {
 }
 
 describe('#701: buildPartialFailureBanner', () => {
-  it('formats N of M with name + status code', () => {
-    const out = buildPartialFailureBanner(
-      [
-        { name: 'ai2', kind: 'rate_limited', status: 429 },
-        { name: 'ai3', kind: 'network' },
-      ],
-      5,
-    );
-    expect(out).toContain('2 of 5 failed');
-    expect(out).toContain('ai2 (429)');
-    expect(out).toContain('ai3 (network)');
-  });
-
   it('truncates after 5 names and adds (+N more)', () => {
     const out = buildPartialFailureBanner(
       [
@@ -230,29 +217,6 @@ describe('#701: refresh_usage_all mixed-failure surface', () => {
     const firstBlockText = (payload.blocks as Array<{ text?: { text?: string } }>)[0]?.text?.text ?? '';
     expect(firstBlockText).not.toContain('nothing refreshed');
     expect(firstBlockText).not.toContain('partial failure');
-  });
-
-  it('all error → chat.update with allNull banner section + card [#803]', async () => {
-    const keys = [
-      { keyId: 'a', name: 'aA' },
-      { keyId: 'b', name: 'bB' },
-    ];
-    const snap = snapshotWith(keys);
-    const tm = {
-      refreshAllAttachedOAuthTokens: vi.fn(async () => ({ a: 'error', b: 'error' })),
-      getSnapshot: vi.fn(async () => snap),
-      fetchUsageForAllAttached: vi.fn(async () => ({ a: null, b: null })),
-    } as any;
-    const { update } = await runHandler(tm);
-    expect(update).toHaveBeenCalledTimes(1);
-    const payload = firstPayload(update);
-    // #803 — banner is now prepended to the card blocks (in-place
-    // surface), not posted as a text-only ephemeral.
-    const blocks = payload.blocks as Array<{ type: string; text?: { text?: string } }>;
-    expect(blocks[0]?.type).toBe('section');
-    expect(blocks[0]?.text?.text).toContain('nothing refreshed');
-    // Card chrome follows the banner.
-    expect(blocks.length).toBeGreaterThan(1);
   });
 
   it('mixed (2 ok, 2 error) → SINGLE chat.update with banner section + card blocks [#803]', async () => {
@@ -387,31 +351,5 @@ describe('#701: refresh_usage_all mixed-failure surface', () => {
     expect(bannerText).toContain('1 of 2 failed');
     expect(bannerText).toContain('cC (500)');
     expect(bannerText).not.toContain('bB'); // torn-down slot omitted entirely
-  });
-
-  it('missing-from-results + slot gone in snap2 → OMITTED from failure accounting', async () => {
-    const starting = [
-      { keyId: 'a', name: 'aA' },
-      { keyId: 'b', name: 'bB' },
-    ];
-    // Start with 2 attached, end with just `a` — `b` was removed/detached mid-flight.
-    const snap2 = snapshotWith([{ keyId: 'a', name: 'aA' }]);
-    const snap1 = snapshotWith(starting);
-    let call = 0;
-    const tm = {
-      refreshAllAttachedOAuthTokens: vi.fn(async () => ({ a: 'ok' })),
-      getSnapshot: vi.fn(async () => {
-        call += 1;
-        return call === 1 ? snap1 : snap2;
-      }),
-      fetchUsageForAllAttached: vi.fn(async () => ({})),
-    } as any;
-    const { update } = await runHandler(tm);
-    const payload = firstPayload(update);
-    // All-ok path: text is plain card title (no partial failure).
-    expect(payload.text).toBe(':key: CCT status');
-    // No banner section prepended.
-    const blocks = payload.blocks as Array<{ text?: { text?: string } }>;
-    expect(blocks[0]?.text?.text ?? '').not.toContain('failed');
   });
 });

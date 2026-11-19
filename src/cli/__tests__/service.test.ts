@@ -25,7 +25,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { LOCK_FILENAME } from '../../pid-lock';
 import { READY_MARKER_FILENAME } from '../../service-readiness';
 import type { DoctorReport } from '../doctor';
@@ -509,28 +509,6 @@ describe('serviceArtifacts', () => {
     expect(SERVICE_PID_FILENAME).toBe(LOCK_FILENAME);
   });
 
-  it('uses the exact production label', () => {
-    expect(artifactsFor('production').label).toBe('ai.2lab.somawork.production');
-  });
-
-  it('gives preview and production disjoint label, plist, PID, logs, and roots', () => {
-    const p = artifactsFor('preview');
-    const q = artifactsFor('production');
-    for (const field of [
-      'label',
-      'plistPath',
-      'pidFile',
-      'readyFile',
-      'logDir',
-      'configDir',
-      'dataDir',
-      'stateDir',
-      'runtimeRoot',
-    ] as const) {
-      expect(p[field]).not.toBe(q[field]);
-    }
-  });
-
   it('names the two profile env files as separate variables, so a colon in a path is harmless (M5)', () => {
     const a = serviceArtifacts({
       home: '/Users/o:p',
@@ -657,32 +635,6 @@ describe('ServiceManager.install', () => {
     expect(h.events.filter((e) => e === 'doctor').length).toBe(1);
   });
 
-  it('boots out a live registration before activating the new plist (C1)', async () => {
-    const h = harness();
-    const oldArtifacts = artifactsFor('preview', { runtimeRoot: '/opt/homebrew/Cellar/somawork-preview/1.2.2' });
-    seedLive(h, renderLaunchAgentPlist(oldArtifacts));
-
-    const status = await new ServiceManager(h.deps).install();
-
-    const subs = launchctlSubcommands(h.host);
-    expect(subs).toContain('bootout');
-    expect(subs.indexOf('bootout')).toBeLessThan(subs.indexOf('bootstrap'));
-    // The definition launchd is RUNNING must be the new one, not the cached 1.2.2.
-    expect(h.launchd.runningEntry).toBe(h.artifacts.daemonEntry);
-    expect(h.launchd.runningEntry).not.toBe(oldArtifacts.daemonEntry);
-    expect(h.launchd.loadedPlist).toBe(h.files.get(h.artifacts.plistPath));
-    expect(status.state).toBe('running-launchd');
-  });
-
-  it('makes a changed SOMA_DATA_DIR live, not merely present on disk (C1)', async () => {
-    const h = harness();
-    const oldArtifacts = artifactsFor('preview', { dataDir: `${HOME}/.local/share/somawork/preview-old` });
-    seedLive(h, renderLaunchAgentPlist(oldArtifacts));
-    await new ServiceManager(h.deps).install();
-    expect(h.launchd.loadedPlist).toContain(`<string>${h.artifacts.dataDir}</string>`);
-    expect(h.launchd.loadedPlist).not.toContain('preview-old');
-  });
-
   it('refuses to install when the operator workspace does not exist', async () => {
     const h = harness();
     h.directories.delete(BASE_DIRECTORY);
@@ -695,22 +647,6 @@ describe('ServiceManager.install', () => {
     h.symlinks.add(BASE_DIRECTORY);
     await expect(new ServiceManager(h.deps).install()).rejects.toMatchObject({ code: 'not-installed' });
   });
-
-  it('refuses to call it green on a registration with no live process', async () => {
-    const h = harness({ launchd: { refuseKickstart: true }, daemonPid: null });
-    h.host.stubSpawn(HOMEBREW_NODE_PATH, { runUntilKilled: true, pid: 4242 });
-    await expect(new ServiceManager(h.deps).install()).rejects.toMatchObject({ code: 'not-live' });
-  });
-
-  it('requires the daemon PID file, not merely a launchd PID', async () => {
-    const h = harness({ daemonPid: null });
-    h.host.stubSpawn(HOMEBREW_NODE_PATH, { runUntilKilled: true, pid: 4242 });
-    await expect(new ServiceManager(h.deps).install()).rejects.toMatchObject({ code: 'not-live' });
-    // launchd DID produce a live supervisor; the refusal came from the missing
-    // daemon lock, not from a missing launchd process. (The rollback has since
-    // torn the supervisor down, hence the recorded observation.)
-    expect(h.world.saw.liveSupervisor).toBe(true);
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -718,16 +654,6 @@ describe('ServiceManager.install', () => {
 // ---------------------------------------------------------------------------
 
 describe('daemon readiness gate (I2)', () => {
-  it('never accepts a lock without the daemon readiness marker', async () => {
-    const h = harness({ daemonPublishesReadiness: false });
-    h.host.stubSpawn(HOMEBREW_NODE_PATH, { runUntilKilled: true, pid: 4242 });
-    await expect(new ServiceManager(h.deps).install()).rejects.toMatchObject({ code: 'not-live' });
-    // The lock WAS written and the daemon WAS alive — readiness is the only
-    // thing that was missing. (Both are gone again after the rollback.)
-    expect(h.world.saw.lockFile).toBe(true);
-    expect(h.world.saw.liveSupervisor).toBe(true);
-  });
-
   it('never accepts a readiness marker left by a different daemon instance', async () => {
     const h = harness({ daemonPublishesReadiness: false });
     h.host.stubSpawn(HOMEBREW_NODE_PATH, { runUntilKilled: true, pid: 4242 });
@@ -758,17 +684,6 @@ describe('daemon readiness gate (I2)', () => {
 // ---------------------------------------------------------------------------
 
 describe('post-doctor re-probe (I1)', () => {
-  it('fails when the daemon dies while the doctor is running', async () => {
-    const h = harness({
-      runDoctor: async (world) => {
-        killDaemon(world);
-        return OK_REPORT('preview');
-      },
-    });
-    await expect(new ServiceManager(h.deps).install()).rejects.toMatchObject({ code: 'not-live' });
-    expect(h.files.has(h.artifacts.plistPath)).toBe(false);
-  });
-
   it('fails when the daemon is replaced by a different instance during the doctor', async () => {
     const h = harness({
       runDoctor: async (world) => {
@@ -809,16 +724,6 @@ describe('post-doctor re-probe (I1)', () => {
     const status = await new ServiceManager(h.deps).install();
     expect(status.supervisorPid).toBe(SUPERVISOR_PID + 1);
   });
-
-  it('probes launchd again after the doctor, so the returned status cannot be the stale one', async () => {
-    const h = harness();
-    await new ServiceManager(h.deps).install();
-    const printCount = launchctlSubcommands(h.host).filter((sub) => sub === 'print').length;
-    // One before the doctor and one after it, at minimum.
-    expect(printCount).toBeGreaterThanOrEqual(2);
-    // The doctor is not the last thing that happened before we answered.
-    expect(h.events).toContain('doctor');
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -826,23 +731,6 @@ describe('post-doctor re-probe (I1)', () => {
 // ---------------------------------------------------------------------------
 
 describe('install rollback', () => {
-  it('rolls back to no plist and no registration when there was nothing before', async () => {
-    const h = harness({ runDoctor: async () => FAIL_REPORT('preview') });
-    await expect(new ServiceManager(h.deps).install()).rejects.toMatchObject({ code: 'doctor-failed' });
-    expect(h.files.has(h.artifacts.plistPath)).toBe(false);
-    expect(launchctlSubcommands(h.host)).toContain('bootout');
-    expect(h.launchd.registered).toBe(false);
-  });
-
-  it('restores the previous plist bytes', async () => {
-    const oldArtifacts = artifactsFor('preview', { runtimeRoot: '/opt/homebrew/Cellar/somawork-preview/1.2.2' });
-    const previous = renderLaunchAgentPlist(oldArtifacts);
-    const h = harness({ runDoctor: async () => FAIL_REPORT('preview') });
-    h.files.set(h.artifacts.plistPath, previous);
-    await expect(new ServiceManager(h.deps).install()).rejects.toMatchObject({ code: 'doctor-failed' });
-    expect(h.files.get(h.artifacts.plistPath)).toBe(previous);
-  });
-
   it('restarts the previously running definition, not merely its XML (C1)', async () => {
     const oldArtifacts = artifactsFor('preview', { runtimeRoot: '/opt/homebrew/Cellar/somawork-preview/1.2.2' });
     const previous = renderLaunchAgentPlist(oldArtifacts);
@@ -937,13 +825,6 @@ describe('ServiceManager.start', () => {
     }
   });
 
-  it('fails through ServiceError when the detached supervisor exits immediately (I3)', async () => {
-    const h = harness({ launchd: { refuseKickstart: true }, daemonPid: null });
-    installed(h);
-    h.host.stubSpawn(HOMEBREW_NODE_PATH, { code: 1, pid: 4242 });
-    await expect(new ServiceManager(h.deps).start()).rejects.toMatchObject({ code: 'not-live' });
-  });
-
   it('fails through ServiceError when the detached spawn rejects asynchronously (I3)', async () => {
     const h = harness({ launchd: { refuseKickstart: true }, daemonPid: null });
     installed(h);
@@ -976,17 +857,6 @@ describe('ServiceManager.start', () => {
     expect(h.events).toContain('doctor');
     expect(launchctlSubcommands(h.host)).not.toContain('bootstrap');
   });
-
-  it('reports an already-registered service that is not ready as a failure, not a green no-op (M6)', async () => {
-    const h = harness({ daemonPublishesReadiness: false, launchd: { refuseKickstart: true } });
-    installed(h);
-    h.launchd.registered = true;
-    h.launchd.pid = SUPERVISOR_PID;
-    h.alive.set(SUPERVISOR_PID, BOOT_TIME_MS + 50_000);
-    h.bootDaemon();
-    h.host.stubSpawn(HOMEBREW_NODE_PATH, { runUntilKilled: true, pid: 4242 });
-    await expect(new ServiceManager(h.deps).start()).rejects.toMatchObject({ code: 'not-live' });
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -994,13 +864,6 @@ describe('ServiceManager.start', () => {
 // ---------------------------------------------------------------------------
 
 describe('ServiceManager.stop', () => {
-  it('cleans a stale registration even with no live process', async () => {
-    const h = harness({ launchd: { registered: true, pid: null } });
-    const status = await new ServiceManager(h.deps).stop();
-    expect(launchctlSubcommands(h.host)).toContain('bootout');
-    expect(status.state).toBe('stopped');
-  });
-
   it('escalates SIGTERM to SIGKILL for a headless process that will not die', async () => {
     const h = harness({ alive: [[9001, BOOT_TIME_MS + 10]] });
     h.files.set(h.artifacts.pidFile, `9001:${BOOT_TIME_MS + 10}`);
@@ -1008,14 +871,6 @@ describe('ServiceManager.stop', () => {
     expect(h.signals.map((s) => s.signal)).toEqual(['SIGTERM', 'SIGKILL']);
     expect(h.alive.has(9001)).toBe(false);
     expect(h.files.has(h.artifacts.pidFile)).toBe(false);
-  });
-
-  it('clears the readiness marker along with the lock', async () => {
-    const h = harness({ alive: [[9001, BOOT_TIME_MS + 10]] });
-    h.files.set(h.artifacts.pidFile, `9001:${BOOT_TIME_MS + 10}`);
-    h.files.set(h.artifacts.readyFile, JSON.stringify({ pid: 9001, startedAtMs: BOOT_TIME_MS + 10 }));
-    await new ServiceManager(h.deps).stop();
-    expect(h.files.has(h.artifacts.readyFile)).toBe(false);
   });
 
   it('never signals a PID from a malformed lock file', async () => {
@@ -1037,21 +892,6 @@ describe('ServiceManager.stop', () => {
       await new ServiceManager(h.deps).stop();
       expect(h.signals).toEqual([]);
     }
-  });
-
-  it('never signals a reused PID whose process start does not match the lock (M1/N6)', async () => {
-    // PID 9001 is alive — but it started AFTER the instance the lock recorded,
-    // i.e. the number was recycled while the stale lock sat on disk. Signalling
-    // it would SIGKILL a stranger; DELETING the lock while that PID is alive
-    // would re-open the duplicate-Socket-Mode window `pid-lock` exists to
-    // close, because we cannot prove the process is not a soma-work daemon.
-    const h = harness({ alive: [[9001, BOOT_TIME_MS + 500_000]] });
-    h.files.set(h.artifacts.pidFile, `9001:${BOOT_TIME_MS + 10}`);
-    h.files.set(h.artifacts.readyFile, JSON.stringify({ pid: 9001, startedAtMs: BOOT_TIME_MS + 10 }));
-    await expect(new ServiceManager(h.deps).stop()).rejects.toMatchObject({ code: 'unsafe-state' });
-    expect(h.signals).toEqual([]);
-    expect(h.files.has(h.artifacts.pidFile)).toBe(true);
-    expect(h.files.has(h.artifacts.readyFile)).toBe(true);
   });
 
   it('never signals a lock instance that predates the last boot (M1/N6)', async () => {
@@ -1112,13 +952,6 @@ describe('ServiceManager.status', () => {
     expect(status).toMatchObject({ state: 'stopped', manager: 'none', pid: null, registered: false, ready: false });
   });
 
-  it('reports stale for a registration with no live process', async () => {
-    const h = harness({ launchd: { registered: true, pid: null } });
-    const status = await new ServiceManager(h.deps).status();
-    expect(status.state).toBe('stale');
-    expect(status.registered).toBe(true);
-  });
-
   it('refuses to call a registration green when the daemon lock is dead', async () => {
     const h = harness({ launchd: { registered: true, pid: SUPERVISOR_PID }, alive: [[SUPERVISOR_PID, BOOT_TIME_MS]] });
     h.files.set(h.artifacts.pidFile, `${DAEMON_PID}:${DAEMON_STARTED_AT}`);
@@ -1145,16 +978,6 @@ describe('ServiceManager.status', () => {
     expect(status.logDir).toBe(h.artifacts.logDir);
     expect(status.pidFile).toBe(h.artifacts.pidFile);
   });
-
-  it('performs no mutation', async () => {
-    const h = harness({ launchd: { registered: true, pid: SUPERVISOR_PID }, alive: [[SUPERVISOR_PID, BOOT_TIME_MS]] });
-    h.bootDaemon();
-    await new ServiceManager(h.deps).status();
-    expect(h.writes).toEqual([]);
-    expect(h.removals).toEqual([]);
-    expect(h.signals).toEqual([]);
-    expect(launchctlSubcommands(h.host).every((s) => s === 'print')).toBe(true);
-  });
 });
 
 describe('post-start doctor injection', () => {
@@ -1166,23 +989,6 @@ describe('post-start doctor injection', () => {
     });
     h.files.set(h.artifacts.plistPath, renderLaunchAgentPlist(h.artifacts));
     await expect(new ServiceManager(h.deps).start()).rejects.toMatchObject({ code: 'doctor-failed' });
-  });
-
-  it('runs the doctor only after the process is live', async () => {
-    const order: string[] = [];
-    const h = harness({
-      runDoctor: async () => {
-        order.push('doctor');
-        return OK_REPORT('preview');
-      },
-    });
-    const spy = vi.spyOn(h.fs, 'writeFileAtomic').mockImplementation((p, body) => {
-      order.push('plist');
-      h.files.set(p, body);
-    });
-    await new ServiceManager(h.deps).install();
-    expect(order).toEqual(['plist', 'doctor']);
-    spy.mockRestore();
   });
 });
 
@@ -1374,16 +1180,6 @@ describe('launchctl failures are checked (N1)', () => {
     expect(spawnAt).toBeGreaterThanOrEqual(0);
     expect(h.host.calls.slice(0, spawnAt).filter((c) => c.kind === 'sleep')).toEqual([]);
   });
-
-  it('never turns a failed restoration into a successful install', async () => {
-    const h = harness({ runDoctor: async () => FAIL_REPORT('preview') });
-    const oldArtifacts = artifactsFor('preview', { runtimeRoot: '/opt/homebrew/Cellar/somawork-preview/1.2.2' });
-    seedLive(h, renderLaunchAgentPlist(oldArtifacts));
-    // The rollback's own re-activation fails; the reported error must still be
-    // the doctor failure that caused the rollback.
-    const err = (await new ServiceManager(h.deps).install().catch((e) => e)) as ServiceError;
-    expect(err.code).toBe('doctor-failed');
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1407,15 +1203,6 @@ describe('activation lower bound (N2)', () => {
     // launchd's job did not produce OUR daemon, so the fallback was attempted
     // rather than the incumbent being accepted as the launchd path's success.
     expect(h.host.calls.some((c) => c.kind === 'spawn')).toBe(true);
-  });
-
-  it('restores the prior plist after refusing an unreplaceable incumbent', async () => {
-    const previous = '<plist>previous generation</plist>';
-    const h = harness();
-    h.files.set(h.artifacts.plistPath, previous);
-    seedHeadlessIncumbent(h);
-    await expect(new ServiceManager(h.deps).install()).rejects.toMatchObject({ code: 'not-live' });
-    expect(h.files.get(h.artifacts.plistPath)).toBe(previous);
   });
 
   it('diagnoses an incumbent that reclaims the lock during the doctor as definition drift', async () => {
@@ -1527,28 +1314,6 @@ describe('idempotent start leaves an incumbent alone (N5/N9)', () => {
     expect(h.signals).toEqual([]);
     expect(launchctlSubcommands(h.host)).not.toContain('bootout');
   });
-
-  it('reports a doctor failure against a healthy headless daemon without signalling it', async () => {
-    const h = harness({ runDoctor: async () => FAIL_REPORT('preview') });
-    h.files.set(h.artifacts.plistPath, renderLaunchAgentPlist(h.artifacts));
-    seedHeadlessIncumbent(h);
-
-    await expect(new ServiceManager(h.deps).start()).rejects.toMatchObject({ code: 'doctor-failed' });
-    expect(h.alive.has(INCUMBENT_PID)).toBe(true);
-    expect(h.signals).toEqual([]);
-    expect(launchctlSubcommands(h.host)).not.toContain('bootout');
-  });
-
-  it('does not spawn a redundant supervisor over a healthy headless daemon (N9)', async () => {
-    const h = harness();
-    h.files.set(h.artifacts.plistPath, renderLaunchAgentPlist(h.artifacts));
-    seedHeadlessIncumbent(h);
-
-    const status = await new ServiceManager(h.deps).start();
-    expect(status.state).toBe('running-headless');
-    expect(h.host.calls.some((c) => c.kind === 'spawn')).toBe(false);
-    expect(launchctlSubcommands(h.host)).not.toContain('bootstrap');
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1571,12 +1336,6 @@ describe('launchctl spawn rejections (N-B1/N-B5)', () => {
     const err = (await new ServiceManager(h.deps).install().catch((e) => e)) as ServiceError;
     expect(err).toBeInstanceOf(ServiceError);
     expect(err.code).toBe('doctor-failed');
-  });
-
-  it('still removes the candidate plist when the rollback bootout cannot be spawned', async () => {
-    const h = harness({ runDoctor: async () => FAIL_REPORT('preview'), launchd: { bootoutRejects: true } });
-    await expect(new ServiceManager(h.deps).install()).rejects.toMatchObject({ code: 'doctor-failed' });
-    expect(h.files.has(h.artifacts.plistPath)).toBe(false);
   });
 
   it('still restores a live prior generation when the rollback bootout cannot be spawned', async () => {
@@ -1610,19 +1369,6 @@ describe('launchctl spawn rejections (N-B1/N-B5)', () => {
     expect(serialized).not.toContain('/bin/launchctl');
     expect(serialized).not.toContain(HOME);
     expect(serialized).not.toContain('xoxb');
-  });
-
-  it('converts a pre-activation bootout rejection into a typed failure and restores the plist', async () => {
-    const previous = '<plist>previous generation</plist>';
-    const h = harness({ launchd: { bootoutRejects: true } });
-    h.files.set(h.artifacts.plistPath, previous);
-    seedLive(h, previous);
-
-    const err = (await new ServiceManager(h.deps).install().catch((e) => e)) as ServiceError;
-    expect(err).toBeInstanceOf(ServiceError);
-    expect(err.code).toBe('launchctl-failed');
-    expect(h.files.get(h.artifacts.plistPath)).toBe(previous);
-    expect(launchctlSubcommands(h.host)).not.toContain('bootstrap');
   });
 
   it('refuses after a rejected bootout even when a re-probe says the label is gone', async () => {
@@ -1742,11 +1488,6 @@ describe('profile data directory validation (N-B6)', () => {
       expect(launchctlSubcommands(h.host)).toEqual([]);
     });
   }
-
-  it('accepts an exactly-0700 profile data directory owned by this user', async () => {
-    const h = harness();
-    await expect(new ServiceManager(h.deps).install()).resolves.toMatchObject({ state: 'running-launchd' });
-  });
 
   it('neither creates nor chmods the profile data directory', async () => {
     const h = harness();

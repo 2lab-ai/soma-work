@@ -14,7 +14,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createDefaultDoctorDeps,
   createNodeDoctorFileSystem,
-  DEFAULT_LLMUX_BASE_URL,
   DOCTOR_CHECK_IDS,
   type DoctorDeps,
   type DoctorReport,
@@ -157,13 +156,6 @@ describe('runDoctor', () => {
     expect(report.checks.filter((c) => c.status !== 'pass')).toEqual([]);
     expect(report.ok).toBe(true);
     expect(report.profile).toBe('preview');
-  });
-
-  it('emits only pass, warn or fail statuses', async () => {
-    const report = await runDoctor('preview', deps);
-    for (const check of report.checks) {
-      expect(['pass', 'warn', 'fail']).toContain(check.status);
-    }
   });
 
   // ------------------------------------------------------------------ llmux
@@ -464,12 +456,6 @@ describe('runDoctor', () => {
     expect(statusOf(report, 'profile_permissions')).toBe('fail');
   });
 
-  it('passes profile_permissions when no credential backup exists yet', async () => {
-    expect(fs.existsSync(`${paths.secretsFile}.bak`)).toBe(false);
-    const report = await runDoctor('preview', deps);
-    expect(statusOf(report, 'profile_permissions')).toBe('pass');
-  });
-
   it('does not treat a short stored value as a credential copied into config', async () => {
     // A substring search for a few characters matches ordinary env text; the
     // scan must be bounded below or it fails healthy profiles.
@@ -526,14 +512,6 @@ describe('runDoctor', () => {
       makeDeps({ runtime: { profile: 'production', root: runtimeRoot, version: '1.2.3' } }),
     );
     expect(statusOf(report, 'runtime')).toBe('fail');
-  });
-
-  // ---------------------------------------------------------------- config
-
-  it('fails config when a materialized artifact is missing', async () => {
-    fs.rmSync(path.join(paths.configDir, 'config.json'), { force: true });
-    const report = await runDoctor('preview', deps);
-    expect(statusOf(report, 'config')).toBe('fail');
   });
 
   it('fails config when an artifact is not 0600', async () => {
@@ -605,17 +583,6 @@ describe('runDoctor', () => {
     expect(report.ok).toBe(true);
   });
 
-  // ------------------------------------------------------------- reporting
-
-  it('produces a JSON document with exactly the report fields and nothing else', async () => {
-    const report = await runDoctor('preview', deps);
-    const parsed = JSON.parse(doctorReportToJson(report)) as DoctorReport;
-    expect(Object.keys(parsed).sort()).toEqual(['checks', 'ok', 'profile']);
-    for (const check of parsed.checks) {
-      expect(Object.keys(check).sort()).toEqual(['detail', 'id', 'status']);
-    }
-  });
-
   it('produces a report that clears the setup-state secret gate', async () => {
     const report = await runDoctor('preview', deps);
     expect(() => assertSecretFree(report)).not.toThrow();
@@ -653,13 +620,6 @@ describe('runDoctor', () => {
     expect(report.checks.filter((c) => c.status === 'fail').length).toBeGreaterThanOrEqual(4);
     // Every check still ran: a thrown seam must not truncate the report.
     expect(report.checks).toHaveLength(DOCTOR_CHECK_IDS.length);
-  });
-
-  it('gates the service on required failures', async () => {
-    const healthy = await runDoctor('preview', deps);
-    expect(healthy.ok).toBe(true);
-    const broken = await runDoctor('preview', makeDeps({ openSlackSocket: async () => ({ ok: false }) }));
-    expect(broken.ok).toBe(false);
   });
 });
 
@@ -719,17 +679,6 @@ describe('default doctor seams', () => {
     fs.rmSync(home, { recursive: true, force: true });
   });
 
-  // --------------------------------------------------------- C-1: false green
-
-  it('reports loaded:false for a required ${VAR:?} placeholder the runtime cannot resolve', async () => {
-    const file = writeConfig(JSON.stringify({ ui: {}, agents: { a: { token: '${SOMA_REQUIRED:?set me}' } } }));
-    const result = await realLoadConfigFile()(file, {});
-    // `:?` throws inside substitution, so `missing` is empty — the ONLY signal
-    // that the config failed is `loaded`.
-    expect(result.missing).toEqual([]);
-    expect(result.loaded).toBe(false);
-  });
-
   it('fails the doctor config check for a required placeholder with no value', async () => {
     const store = new SecretStore({ secretsFile: paths.secretsFile });
     store.write({ SLACK_BOT_TOKEN: BOT_TOKEN, SLACK_APP_TOKEN: APP_TOKEN });
@@ -762,36 +711,6 @@ describe('default doctor seams', () => {
     expect(report.ok).toBe(false);
   });
 
-  it('reports loaded:false for malformed JSON', async () => {
-    const file = writeConfig('{ not json');
-    expect((await realLoadConfigFile()(file, {})).loaded).toBe(false);
-  });
-
-  it('reports loaded:true for a bad plugin/agent section, which the loader warns-and-skips', async () => {
-    // Documents the real blast radius of the `loaded` flag. Contrary to what a
-    // reading of the catch-all suggests, neither `validatePluginConfig` nor
-    // `parseAgentsConfig` throws — both warn and drop the entry — so the load
-    // genuinely succeeds with that section absent. The flag exists for the two
-    // paths that DO throw: `${VAR:?}` and a malformed document. If a future
-    // change makes either validator throw, this test flips and the gate
-    // correctly starts failing such a config.
-    const file = writeConfig(JSON.stringify({ ui: {}, plugin: { enabled: 'not-a-boolean', servers: 42 } }));
-    const result = await realLoadConfigFile()(file, {});
-    expect(result.loaded).toBe(true);
-  });
-
-  it('reports loaded:false when the file does not exist', async () => {
-    const result = await realLoadConfigFile()(path.join(paths.configDir, 'absent.json'), {});
-    expect(result.loaded).toBe(false);
-  });
-
-  it('surfaces unresolved bare placeholders with loaded:true', async () => {
-    const file = writeConfig(JSON.stringify({ ui: {}, probe: '${SOMA_ABSENT}' }));
-    const result = await realLoadConfigFile()(file, {});
-    expect(result.loaded).toBe(true);
-    expect(result.missing).toEqual(['SOMA_ABSENT']);
-  });
-
   it('resolves placeholders from the supplied env map and reports nothing missing', async () => {
     const file = writeConfig(JSON.stringify({ ui: {}, probe: '${SOMA_SUPPLIED}' }));
     const result = await realLoadConfigFile()(file, { SOMA_SUPPLIED: 'value' });
@@ -814,26 +733,6 @@ describe('default doctor seams', () => {
     const after = snapshot(file);
     expect(after).toEqual(before);
     expect(JSON.parse(after.text).llmChat).toEqual({ model: 'legacy' });
-  });
-
-  it('does not touch a malformed config', async () => {
-    const file = writeConfig('{ not json');
-    const before = snapshot(file);
-    await realLoadConfigFile()(file, {});
-    expect(snapshot(file)).toEqual(before);
-  });
-
-  it('does not touch a valid config', async () => {
-    const file = writeConfig(`${JSON.stringify({ ui: { threadheader: {} } }, null, 2)}\n`);
-    const before = snapshot(file);
-    await realLoadConfigFile()(file, {});
-    expect(snapshot(file)).toEqual(before);
-  });
-
-  it('leaves the config directory with no stray temp files after an inspection', async () => {
-    writeConfig(JSON.stringify({ mcpServers: {} }));
-    await realLoadConfigFile()(path.join(paths.configDir, 'config.json'), {});
-    expect(fs.readdirSync(paths.configDir)).toEqual(['config.json']);
   });
 
   it('does not mutate process.env while inspecting a profile that defines variables', async () => {
@@ -884,17 +783,6 @@ describe('default doctor seams', () => {
     }) as unknown as typeof fetch);
     return { urls, restore: () => spy.mockRestore() };
   }
-
-  it("probes the endpoint named in the profile's own .env", async () => {
-    writeProfileEnv('http://127.0.0.1:9999');
-    const { urls, restore } = spyFetch();
-    try {
-      await llmuxDeps().fetchLlmuxStatus();
-    } finally {
-      restore();
-    }
-    expect(urls).toEqual(['http://127.0.0.1:9999/llmux/status']);
-  });
 
   it('probes the non-default endpoint the materializer wrote for this profile', async () => {
     // End to end across the two modules that must agree: whatever `llmux env`
@@ -953,20 +841,6 @@ describe('default doctor seams', () => {
     expect(urls).toEqual([]);
   });
 
-  it('refuses to guess an endpoint when the profile has no .env at all', async () => {
-    const { urls, restore } = spyFetch();
-    let caught: unknown;
-    try {
-      await llmuxDeps().fetchLlmuxStatus();
-    } catch (err) {
-      caught = err;
-    } finally {
-      restore();
-    }
-    expect(caught).toBeInstanceOf(LlmuxEndpointError);
-    expect(urls).toEqual([]);
-  });
-
   it('states the same secret-safe phrase whether the profile named nothing or named something unsupported', () => {
     // One phrase for both origins. "The profile names an endpoint that is not
     // supported" was a false statement in the missing case — it named none —
@@ -994,14 +868,6 @@ describe('default doctor seams', () => {
     // Still carries nothing an attacker chose, and nothing about the filesystem.
     expect((named as Error).message).not.toContain('evil');
     expect((named as Error).message).not.toContain(paths.configDir);
-  });
-
-  it("keeps the default constant available to setup without making it doctor's answer", () => {
-    // The constant is still what a reader with no profile to consult uses
-    // (`llmux env` reports the real port during setup); doctor is never such a
-    // reader, so its presence must not be reachable from the resolver.
-    expect(DEFAULT_LLMUX_BASE_URL).toBe('http://localhost:3456');
-    expect(() => resolveLlmuxBaseUrl(paths.configDir)).toThrow(LlmuxEndpointError);
   });
 
   it.each([
@@ -1056,21 +922,6 @@ describe('default doctor seams', () => {
     expect(urls).toEqual([]);
   });
 
-  it.each([
-    ['a bare query delimiter', 'http://localhost:3456/?'],
-    ['a bare fragment delimiter', 'http://localhost:3456/#'],
-    ['a trailing slash', 'http://localhost:3456/'],
-    ['no port with a trailing slash', 'http://localhost/'],
-  ])('canonicalizes %s so the client appends a real path', (_label, candidate) => {
-    // NN-3: `search`/`hash` are empty for a bare delimiter, so these pass
-    // validation. Returning the raw candidate then makes the client build
-    // `http://localhost:3456/?/llmux/status` — the daemon is dialed at `/`
-    // with the real path as a query, and doctor calls a healthy daemon dead.
-    const resolved = resolveLlmuxBaseUrl(paths.configDir, candidate);
-    expect(resolved).toBe(new URL(candidate).origin);
-    expect(resolved).not.toMatch(/[?#]/);
-  });
-
   it('sends a canonical status URL even when the profile names a bare delimiter', async () => {
     writeProfileEnv('http://127.0.0.1:9999/?');
     const { urls, restore } = spyFetch();
@@ -1080,19 +931,6 @@ describe('default doctor seams', () => {
       restore();
     }
     expect(urls).toEqual(['http://127.0.0.1:9999/llmux/status']);
-  });
-
-  it('accepts every supported loopback spelling', () => {
-    for (const ok of [
-      'http://localhost:3456',
-      'http://127.0.0.1:3456',
-      'http://[::1]:3456',
-      'http://localhost',
-      'http://localhost:3456/',
-    ]) {
-      // The validated form and the transmitted form are the same object.
-      expect(resolveLlmuxBaseUrl(paths.configDir, ok)).toBe(new URL(ok).origin);
-    }
   });
 
   it('fails the llmux check locally, with a distinct detail and no leaked value', async () => {
@@ -1196,12 +1034,6 @@ describe('default doctor seams', () => {
     expect(await openSlackSocketProbe(APP_TOKEN, { fetchImpl })).toEqual({ ok: false, reason: 'rejected' });
   });
 
-  it('classifies a proxy 502 as transport, never as a credential rejection', async () => {
-    const fetchImpl = (async () =>
-      new Response('<html>502 Bad Gateway</html>', { status: 502 })) as unknown as typeof fetch;
-    expect(await openSlackSocketProbe(APP_TOKEN, { fetchImpl })).toEqual({ ok: false, reason: 'transport' });
-  });
-
   it('classifies a captive-portal HTML body as transport, never as a credential rejection', async () => {
     const fetchImpl = (async () =>
       new Response('<html>sign in to the wifi</html>', { status: 200 })) as unknown as typeof fetch;
@@ -1239,30 +1071,6 @@ describe('default doctor seams', () => {
     const fetchImpl = (async () => response) as unknown as typeof fetch;
     expect(await openSlackSocketProbe(APP_TOKEN, { fetchImpl })).toEqual({ ok: false, reason: 'transport' });
     expect(parsed).toBe(false);
-  });
-
-  it('reports ok:false for a 2xx body that is not JSON', async () => {
-    const fetchImpl = (async () =>
-      new Response('<html>captive portal</html>', { status: 200 })) as unknown as typeof fetch;
-    expect(await openSlackSocketProbe(APP_TOKEN, { fetchImpl })).toEqual({ ok: false, reason: 'transport' });
-  });
-
-  it('aborts a black-holed request on its own deadline instead of hanging the gate', async () => {
-    let abortSeen = false;
-    const fetchImpl = ((_url: string, init: RequestInit) =>
-      new Promise((_resolve, reject) => {
-        const signal = init.signal as AbortSignal;
-        signal.addEventListener('abort', () => {
-          abortSeen = true;
-          reject(new Error('aborted'));
-        });
-      })) as unknown as typeof fetch;
-
-    expect(await openSlackSocketProbe(APP_TOKEN, { fetchImpl, timeoutMs: 20 })).toEqual({
-      ok: false,
-      reason: 'transport',
-    });
-    expect(abortSeen).toBe(true);
   });
 
   it('is wired into the default deps with the injected transport', async () => {

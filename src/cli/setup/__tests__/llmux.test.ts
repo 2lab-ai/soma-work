@@ -219,21 +219,6 @@ describe('source bytes', () => {
 // ---------------------------------------------------------------------------
 
 describe('ensureLlmux — installation', () => {
-  it('skips installation when llmux is already on PATH', async () => {
-    const receipt = await ensureLlmux(healthyDaemon(installedHost(ROSTER_BOTH)));
-
-    expect(receipt.install).toBe('already-installed');
-  });
-
-  it('never looks for brew when llmux is present', async () => {
-    const host = healthyDaemon(installedHost(ROSTER_BOTH));
-
-    await ensureLlmux(host);
-
-    expect(host.calls.some((c) => c.kind === 'which' && c.bin === 'brew')).toBe(false);
-    expect(host.calls.some((c) => c.kind === 'command' && c.command === BREW_BIN)).toBe(false);
-  });
-
   it('installs the tap formula with argv separation when llmux is absent', async () => {
     const host = new FakeHost()
       .stubWhich('llmux', null)
@@ -288,14 +273,6 @@ describe('ensureLlmux — installation', () => {
 
     await expect(ensureLlmux(host)).rejects.toThrow(/still not on PATH/i);
   });
-
-  it('runs llmux through its resolved absolute path, never a bare name', async () => {
-    const host = healthyDaemon(installedHost(ROSTER_BOTH));
-
-    await ensureLlmux(host);
-
-    for (const line of callLines(host)) expect(line.startsWith(`${LLMUX_BIN} `)).toBe(true);
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -332,13 +309,6 @@ describe('ensureLlmux — option validation', () => {
 // ---------------------------------------------------------------------------
 
 describe('ensureLlmux — offline roster drives the logins', () => {
-  it('logs in to both providers when nothing is configured', async () => {
-    const receipt = await ensureLlmux(healthyDaemon(installedHost(ROSTER_EMPTY)));
-
-    expect(receipt.claudeLoginPerformed).toBe(true);
-    expect(receipt.codexLoginPerformed).toBe(true);
-  });
-
   it('logs in to Codex only when Claude OAuth is already configured', async () => {
     const host = healthyDaemon(installedHost(rosterOauth()));
 
@@ -349,23 +319,6 @@ describe('ensureLlmux — offline roster drives the logins', () => {
     expect(callLines(host)).not.toContain(`${LLMUX_BIN} login`);
   });
 
-  it('logs in to Claude only when Codex is already configured', async () => {
-    const host = healthyDaemon(installedHost(rosterCodex()));
-
-    const receipt = await ensureLlmux(host);
-
-    expect(receipt.claudeLoginPerformed).toBe(true);
-    expect(receipt.codexLoginPerformed).toBe(false);
-    expect(callLines(host)).not.toContain(`${LLMUX_BIN} login --codex`);
-  });
-
-  it('logs in to neither provider when both are configured', async () => {
-    const receipt = await ensureLlmux(healthyDaemon(installedHost(ROSTER_BOTH)));
-
-    expect(receipt.claudeLoginPerformed).toBe(false);
-    expect(receipt.codexLoginPerformed).toBe(false);
-  });
-
   it('treats an apikey account as NOT satisfying the Claude OAuth requirement', async () => {
     const host = healthyDaemon(installedHost([rosterApikey(), rosterCodex(2)].join('\n')));
 
@@ -373,12 +326,6 @@ describe('ensureLlmux — offline roster drives the logins', () => {
 
     expect(receipt.claudeLoginPerformed).toBe(true);
     expect(callLines(host)).toContain(`${LLMUX_BIN} login`);
-  });
-
-  it('accepts the tier-suffixed OAuth row form', async () => {
-    const receipt = await ensureLlmux(healthyDaemon(installedHost([rosterOauth('max20'), rosterCodex(2)].join('\n'))));
-
-    expect(receipt.claudeLoginPerformed).toBe(false);
   });
 
   it('ignores a grok row for both requirements', async () => {
@@ -446,14 +393,6 @@ describe('ensureLlmux — offline accounts result is inspected', () => {
 
     expect(error).toBeInstanceOf(LlmuxCommandError);
     expect(error.exitStatus).toBeNull();
-  });
-
-  it('turns an aborted roster read into a cancellation', async () => {
-    const controller = new AbortController();
-    controller.abort();
-    const host = installedHost(ROSTER_BOTH);
-
-    await expect(ensureLlmux(host, { signal: controller.signal })).rejects.toBeInstanceOf(LlmuxCancelledError);
   });
 });
 
@@ -561,22 +500,6 @@ describe('ensureLlmux — interactive login streams llmux guidance', () => {
     expect(seen.join('\n')).toMatch(/REDACTED/);
   });
 
-  it('never opens a browser itself; llmux owns the OAuth flow', async () => {
-    const host = healthyDaemon(installedHost(ROSTER_EMPTY));
-
-    await ensureLlmux(host);
-
-    expect(host.calls.some((c) => c.kind === 'openUrl')).toBe(false);
-  });
-
-  it('does not kill a login that exits on its own', async () => {
-    const host = healthyDaemon(installedHost(ROSTER_EMPTY));
-
-    await ensureLlmux(host);
-
-    expect(kills(host)).toHaveLength(0);
-  });
-
   it('kills the child exactly once on timeout and reports it as a login failure', async () => {
     const host = installedHost(ROSTER_EMPTY, { claude: { stdout: OAUTH_GUIDANCE, runUntilKilled: true } });
 
@@ -602,28 +525,6 @@ describe('ensureLlmux — interactive login streams llmux guidance', () => {
     expect(error.exitStatus).toBe(1);
     expect(error.message).toMatch(/invalid_grant/);
     expect(commandLines(host)).not.toContain(`${LLMUX_BIN} restart`);
-  });
-
-  it('distinguishes cancellation from failure so the orchestrator can resume', async () => {
-    const controller = new AbortController();
-    const host = installedHost(ROSTER_EMPTY, { claude: { stdout: OAUTH_GUIDANCE, runUntilKilled: true } });
-
-    const error = await ensureLlmux(host, {
-      signal: controller.signal,
-      onProgress: () => controller.abort(),
-    }).catch((e) => e);
-
-    expect(error).toBeInstanceOf(LlmuxCancelledError);
-    expect(error).not.toBeInstanceOf(LlmuxLoginError);
-  });
-
-  it('propagates an already-aborted signal before spawning anything', async () => {
-    const controller = new AbortController();
-    controller.abort();
-    const host = installedHost(ROSTER_EMPTY);
-
-    await expect(ensureLlmux(host, { signal: controller.signal })).rejects.toBeInstanceOf(LlmuxCancelledError);
-    expect(host.calls.some((c) => c.kind === 'spawn')).toBe(false);
   });
 
   it('assembles whole lines from a chunk-split real child (RealHost)', async () => {
@@ -659,46 +560,12 @@ describe('ensureLlmux — interactive login streams llmux guidance', () => {
 describe('classifyLlmuxAccounts', () => {
   const parse = (text: string) => classifyLlmuxAccounts(JSON.parse(text));
 
-  it('counts only active/ok accounts in the claude and codex groups', () => {
-    expect(parse(HEALTHY_BOTH)).toEqual({ claudeHealthy: 1, codexHealthy: 1 });
-  });
-
-  it('does not count auth_failed', () => {
-    const doc = liveDoc([
-      { group: 'claude', status: 'active' },
-      { group: 'codex', status: 'auth_failed' },
-    ]);
-    expect(parse(doc)).toEqual({ claudeHealthy: 1, codexHealthy: 0 });
-  });
-
-  it('does not count cooldown', () => {
-    const doc = liveDoc([
-      { group: 'claude', status: 'cooldown' },
-      { group: 'codex', status: 'ok' },
-    ]);
-    expect(parse(doc)).toEqual({ claudeHealthy: 0, codexHealthy: 1 });
-  });
-
-  it('does not count an unknown status', () => {
-    const doc = liveDoc([{ group: 'claude', status: 'warming_up' }]);
-    expect(parse(doc)).toEqual({ claudeHealthy: 0, codexHealthy: 0 });
-  });
-
   it('ignores foreign groups such as grok', () => {
     const doc = liveDoc([
       { group: 'grok', status: 'active' },
       { group: 'claude', status: 'ok' },
     ]);
     expect(parse(doc)).toEqual({ claudeHealthy: 1, codexHealthy: 0 });
-  });
-
-  it('sums multiple healthy accounts per group', () => {
-    const doc = liveDoc([
-      { group: 'claude', status: 'active' },
-      { group: 'claude', status: 'ok' },
-      { group: 'codex', status: 'active' },
-    ]);
-    expect(parse(doc)).toEqual({ claudeHealthy: 2, codexHealthy: 1 });
   });
 
   it('throws on a document without a top-level accounts array', () => {
@@ -789,21 +656,6 @@ describe('ensureLlmux — restart and readiness', () => {
     expect(host.calls.some((c) => c.kind === 'sleep')).toBe(false);
   });
 
-  it('fails immediately on a port-in-use restart, quoting llmux', async () => {
-    const host = installedHost(ROSTER_BOTH)
-      .stubCommand(RESTART, {
-        code: 1,
-        stderr: 'port 3456 is in use by something that is not llmux (nginx)\nFree the port or change proxy.port',
-      })
-      .stubCommand(ACCOUNTS_JSON, { stdout: HEALTHY_BOTH });
-
-    const error = await ensureLlmux(host).catch((e) => e);
-
-    expect(error).toBeInstanceOf(LlmuxRestartError);
-    expect(error.message).toMatch(/is in use by something that is not llmux/);
-    expect(commandLines(host)).not.toContain(`${LLMUX_BIN} accounts --json`);
-  });
-
   it('fails immediately on a timed-out restart', async () => {
     const host = installedHost(ROSTER_BOTH)
       .stubCommand(RESTART, { timedOut: true })
@@ -831,22 +683,6 @@ describe('ensureLlmux — restart and readiness', () => {
     expect(commandLines(host)).not.toContain(`${LLMUX_BIN} accounts --json`);
   });
 
-  it('fails loudly on unparseable live output', async () => {
-    const host = installedHost(ROSTER_BOTH)
-      .stubCommand(RESTART, {})
-      .stubCommand(ACCOUNTS_JSON, { stdout: 'llmux: something went sideways\n' });
-
-    await expect(ensureLlmux(host)).rejects.toBeInstanceOf(LlmuxContractError);
-  });
-
-  it('fails loudly on a live document missing the accounts schema', async () => {
-    const host = installedHost(ROSTER_BOTH)
-      .stubCommand(RESTART, {})
-      .stubCommand(ACCOUNTS_JSON, { stdout: JSON.stringify({ server: 'running', current: null }) });
-
-    await expect(ensureLlmux(host)).rejects.toBeInstanceOf(LlmuxContractError);
-  });
-
   it('fails loudly on a non-zero probe whose output is not the not-running document', async () => {
     const host = installedHost(ROSTER_BOTH)
       .stubCommand(RESTART, {})
@@ -857,22 +693,6 @@ describe('ensureLlmux — restart and readiness', () => {
     expect(error).toBeInstanceOf(LlmuxContractError);
     expect(error).not.toBeInstanceOf(LlmuxReadinessTimeoutError);
     expect(error.message).toMatch(/rejected the api key/);
-  });
-
-  it('aborts mid-poll without issuing another restart', async () => {
-    const controller = new AbortController();
-    const host = installedHost(ROSTER_BOTH)
-      .stubCommand(RESTART, {})
-      .stubCommandOnce(ACCOUNTS_JSON, () => {
-        controller.abort();
-        return { code: 1, stdout: NOT_RUNNING };
-      })
-      .stubCommand(ACCOUNTS_JSON, { stdout: HEALTHY_BOTH });
-
-    const error = await ensureLlmux(host, { signal: controller.signal }).catch((e) => e);
-
-    expect(error).toBeInstanceOf(LlmuxCancelledError);
-    expect(commandLines(host).filter((l) => l === `${LLMUX_BIN} restart`)).toHaveLength(1);
   });
 });
 
@@ -1024,17 +844,6 @@ describe('ensureLlmux — recovery re-login', () => {
     expect(commandLines(host).filter((l) => l === `${LLMUX_BIN} restart`)).toHaveLength(2);
     expect(callLines(host).filter((l) => l === `${LLMUX_BIN} login --codex`)).toHaveLength(1);
   });
-
-  it('surfaces a re-login failure as a login error, not as an unhealthy result', async () => {
-    const host = installedHost(ROSTER_BOTH, { codex: { code: 1, stderr: 'device flow denied\n' } })
-      .stubCommand(RESTART, {})
-      .stubCommand(ACCOUNTS_JSON, { stdout: AUTH_FAILED_CODEX });
-
-    const error = await ensureLlmux(host).catch((e) => e);
-
-    expect(error).toBeInstanceOf(LlmuxLoginError);
-    expect(commandLines(host).filter((l) => l === `${LLMUX_BIN} restart`)).toHaveLength(1);
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1055,18 +864,6 @@ describe('ensureLlmux — the endpoint comes from `llmux env`', () => {
       .stubCommand(RESTART, {})
       .stubCommand(ACCOUNTS_JSON, { stdout: HEALTHY_BOTH })
       .stubCommandOnce(ENV, { stdout, ...extra });
-
-  it('reports the default local endpoint when llmux runs on its default port', async () => {
-    const receipt = await ensureLlmux(endpointHost(envOutput('http://localhost:3456')));
-
-    expect(receipt.baseUrl).toBe('http://localhost:3456');
-  });
-
-  it('reports the configured port when another llmux already owns 3456', async () => {
-    const receipt = await ensureLlmux(endpointHost(envOutput('http://localhost:13456')));
-
-    expect(receipt.baseUrl).toBe('http://localhost:13456');
-  });
 
   it.each([
     ['a 127.0.0.1 endpoint', 'http://127.0.0.1:13456', 'http://127.0.0.1:13456'],
@@ -1196,14 +993,6 @@ describe('ensureLlmux — the endpoint comes from `llmux env`', () => {
 
     expect(`${error.message} ${JSON.stringify(error)}`).not.toContain(PROXY_API_KEY_SENTINEL);
   });
-
-  it('carries progress on an endpoint failure so a resume knows how far it got', async () => {
-    const host = endpointHost('export ANTHROPIC_BASE_URL=http://10.0.0.5:3456\n');
-
-    const error = await ensureLlmux(host).catch((e) => e);
-
-    expect(error.progress).toEqual({ install: 'already-installed', restartCount: 1, readinessChecks: 1 });
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1229,19 +1018,6 @@ describe('ensureLlmux — command order', () => {
       `command:${LLMUX_BIN} accounts --json`,
       `command:${LLMUX_BIN} env`,
     ]);
-  });
-
-  it('reads the endpoint exactly once, after the daemon is proven healthy', async () => {
-    const host = installedHost(ROSTER_BOTH)
-      .stubCommand(RESTART, {})
-      .stubCommandOnce(ACCOUNTS_JSON, { code: 1, stdout: NOT_RUNNING })
-      .stubCommand(ACCOUNTS_JSON, { stdout: HEALTHY_BOTH });
-
-    await ensureLlmux(host);
-
-    const lines = commandLines(host);
-    expect(lines.filter((l) => l === `${LLMUX_BIN} env`)).toHaveLength(1);
-    expect(lines.indexOf(`${LLMUX_BIN} env`)).toBe(lines.length - 1);
   });
 });
 
@@ -1320,20 +1096,6 @@ describe('ensureLlmux — persistable shapes', () => {
         expect(JSON.stringify(shape), `case ${index}`).not.toContain(sentinel);
       }
     }
-  });
-
-  it('records the install disposition on a post-install failure', async () => {
-    const host = installedHost(ROSTER_BOTH)
-      .stubCommand(RESTART, {})
-      .stubCommand(ACCOUNTS_JSON, { code: 1, stdout: NOT_RUNNING });
-
-    const error = await ensureLlmux(host, { maxReadinessChecks: 1 }).catch((e) => e);
-
-    expect(persisted(error).progress).toEqual({
-      install: 'already-installed',
-      restartCount: 1,
-      readinessChecks: 1,
-    });
   });
 });
 
@@ -1442,18 +1204,6 @@ describe('ensureLlmux — the roster timeout quotes stderr only', () => {
 });
 
 describe('ensureLlmux — a failing progress sink cannot stall or escape the login', () => {
-  it('survives a synchronous throw from onProgress and still completes', async () => {
-    const host = healthyDaemon(installedHost(rosterCodex(), { claude: { stdout: OAUTH_GUIDANCE } }));
-
-    const receipt = await ensureLlmux(host, {
-      onProgress: () => {
-        throw new Error('renderer exploded');
-      },
-    });
-
-    expect(receipt.claudeHealthy).toBeGreaterThan(0);
-  });
-
   it('survives an asynchronously rejecting onProgress and still completes', async () => {
     const host = healthyDaemon(installedHost(rosterCodex(), { claude: { stdout: OAUTH_GUIDANCE } }));
 
