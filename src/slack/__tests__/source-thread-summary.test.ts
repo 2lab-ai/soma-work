@@ -528,15 +528,30 @@ describe('Block Kit truncation and escaping', () => {
 });
 
 describe('escaped text is cut before an entity, never through it', () => {
-  it('a 3000-char conclusion whose cut lands inside an escaped & stops before the entity', async () => {
+  // Hero text = '*결론*\n' (5 chars) + escaped summary, capped at 3000 chars.
+  it.each([
+    // Exactly at the cap: left as is.
+    ['a conclusion exactly at the 3000-char cap is not cut', 'a'.repeat(2995), `*결론*\n${'a'.repeat(2995)}`],
+    // Plain text over the cap: cut at 2997 + '...'.
+    ['plain text over the cap is cut to 2997 chars + "..."', 'a'.repeat(3100), `*결론*\n${'a'.repeat(2992)}...`],
+    // The escaped '&amp;' sits at 2995..2999, so a plain cut at 2997 would leave '&a...'; the entity-safe cut
+    // stops at 2995.
+    [
+      'a cut that lands inside an escaped & stops before the entity',
+      `${'a'.repeat(2990)}&${'b'.repeat(100)}`,
+      `*결론*\n${'a'.repeat(2990)}...`,
+    ],
+    // '&lt;' ends at 2992 and '&amp;' starts at 2993: the ';' of the first entity must not hide the open second one.
+    [
+      'a cut inside an entity right after another entity stops between them',
+      `${'a'.repeat(2984)}<&${'b'.repeat(100)}`,
+      `*결론*\n${'a'.repeat(2984)}&lt;...`,
+    ],
+  ])('%s', async (_name, executiveSummary, expected) => {
     const { buildRequestCompleteBlocks } = await import('../source-thread-summary');
-    // Hero text = '*결론*\n' (5 chars) + escaped summary. The escaped '&amp;' sits at 2995..2999, so a plain
-    // cut at 2997 would leave '&a...'; the entity-safe cut stops at 2995.
     const session = { title: 'Task', workflow: 'default', links: {} } as any;
-    const result = buildRequestCompleteBlocks(session, 'merged', {
-      executiveSummary: `${'a'.repeat(2990)}&${'b'.repeat(100)}`,
-    });
-    expect((result.blocks[1] as any).text.text).toBe(`*결론*\n${'a'.repeat(2990)}...`);
+    const result = buildRequestCompleteBlocks(session, 'merged', { executiveSummary });
+    expect((result.blocks[1] as any).text.text).toBe(expected);
   });
 });
 

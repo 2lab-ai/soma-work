@@ -3552,12 +3552,14 @@ describe('onSummaryTimerFire — render trigger after summary display', () => {
 
       const fire = (executor as any).onSummaryTimerFire({ isActive: true, actionPanel: {} }, 'C123:t456');
       await vi.advanceTimersByTimeAsync(59_000);
-      expect(signal?.aborted).toBe(false);
+      expect(mockSummaryService.execute).toHaveBeenCalledTimes(1);
+      const forkSignal = signal as AbortSignal;
+      expect(forkSignal.aborted).toBe(false);
       await vi.advanceTimersByTimeAsync(1_000);
       await expect(fire).resolves.toBeUndefined();
 
-      expect(signal?.aborted).toBe(true);
-      expect(signal?.reason).toBe('summary-timeout');
+      expect(forkSignal.aborted).toBe(true);
+      expect(forkSignal.reason).toBe('summary-timeout');
       expect(mockSummaryService.displayOnThread).not.toHaveBeenCalled();
       expect(mockThreadPanel.updatePanel).not.toHaveBeenCalled();
     } finally {
@@ -5724,6 +5726,63 @@ describe('turn-end surface guarantee — P0 holes', () => {
       vi.useRealTimers();
     }
   });
+
+  // C-5 on the error rails. The source check this replaced required EVERY temp-file cleanup to be bounded
+  // (no direct await at any call site); the execute() C-5 case covers the success rail, these the three
+  // handleError rails (the refused turn of a halted session: stream-executor-safeguard.test.ts).
+  it.each([
+    ['a generic error', () => [new Error('generic failure'), { ownerId: 'U_OWNER' }, false, null, undefined]],
+    [
+      'a turn aborted because the session was halted by a safeguards flag',
+      () => [new Error('aborted'), { ownerId: 'U_OWNER', safeguardHalt: { atMs: 1 } }, true, null, 'safeguard'],
+    ],
+    [
+      'a safeguards-flag error (the halt rail)',
+      () => [
+        Object.assign(new Error('blocked'), { safeguardFlag: { detail: 'reasoning_extraction' } }),
+        { ownerId: 'U_OWNER' },
+        false,
+        null,
+        undefined,
+      ],
+    ],
+  ] as const)('C-5: a temp-file cleanup that never settles holds handleError for 3s at most — %s', async (_rail, args) => {
+    vi.useFakeTimers();
+    try {
+      const deps = createExecutorDeps();
+      deps.fileHandler.cleanupTempFiles.mockImplementation(() => new Promise(() => {}));
+      const executor = new StreamExecutor(deps);
+      const [error, session, requestAborted, activeSlot, abortReason] = args();
+      let settled = false;
+      const done = (executor as any)
+        .handleError(
+          error,
+          session,
+          'C123:thread123',
+          'C123',
+          'thread123',
+          [{ path: '/tmp/test/a.png', name: 'a.png' }],
+          vi.fn().mockResolvedValue(undefined),
+          requestAborted,
+          activeSlot,
+          abortReason,
+        )
+        .finally(() => {
+          settled = true;
+        });
+
+      await vi.advanceTimersByTimeAsync(2_900);
+      expect(deps.fileHandler.cleanupTempFiles).toHaveBeenCalledTimes(1);
+      expect(settled).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(200);
+      await done;
+      expect(settled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('B-4: silent-abort reasons (supersede / user-stop) do NOT trigger say() fallback', async () => {
     const deps = createExecutorDeps();
     (deps as { turnNotifier?: unknown }).turnNotifier = undefined;

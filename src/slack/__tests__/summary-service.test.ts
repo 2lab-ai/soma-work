@@ -360,6 +360,13 @@ describe('SummaryService', () => {
         expect(lower).toMatch(/specific|concrete/);
       });
 
+      it('does NOT cap the work-summary section at 1-2 sentences', () => {
+        // The previous prompt said "Status: ... (1-2 sentences)" which forced
+        // a generic abstract status. The new prompt must not cap the work
+        // recap that tightly.
+        expect(SUMMARY_PROMPT).not.toMatch(/1-?2 sentences?/i);
+      });
+
       it('keeps the no-tools / no-external-calls guard', () => {
         // dispatchOneShot runs with tools: [] — the prompt must not invite the
         // model to try fetching git/PR state at runtime.

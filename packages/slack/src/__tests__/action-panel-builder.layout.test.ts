@@ -175,13 +175,12 @@ describe('ActionPanelBuilder — T2 closed rail', () => {
     expect(text.split('\n')[1]).toBe(odd);
   });
 
-  it('uses the injected clock for the close timestamp', () => {
-    const text = railText(build({ closed: true }).blocks);
-    const d = new Date(NOW);
-    const pad = (n: number) => String(n).padStart(2, '0');
-    expect(text).toContain(
-      `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())} 종료`,
-    );
+  it('uses the injected clock for the close timestamp, zero-padding every part', () => {
+    // A local time whose month, day, hour and minute are all single digits, so every pad shows.
+    const now = new Date(2026, 0, 5, 7, 3).getTime();
+    const [line1] = railText(build({ closed: true, now }).blocks).split('\n');
+
+    expect(line1).toBe('⚫ *종료됨* · 01-05 07:03 종료');
   });
 });
 

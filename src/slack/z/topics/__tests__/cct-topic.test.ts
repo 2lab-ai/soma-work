@@ -236,6 +236,26 @@ describe('cct-topic.renderCctCard', () => {
     expect(args).not.toHaveProperty('force');
   });
 
+  // ── T9b: Z3 — no `z_setting_cct_set_<name>` buttons are ever emitted ──
+  // (Card v2 follow-up dropped the legacy buttons; api_key exclusion is
+  //  now enforced by the render-side `visibleSlots` filter + applyCct
+  //  runtime fence instead of the button set.)
+  it('T9b: no z_setting_cct_set_<name> buttons exist even with api_key slots present', async () => {
+    resetMockStore();
+    mockStore.slots.push({
+      kind: 'api_key',
+      keyId: 'api-1',
+      name: 'ops-api',
+      value: 'sk-ant-api03-abcdefghij',
+      createdAt: '',
+    });
+    vi.mocked(isAdminUser).mockReturnValue(true);
+    const { blocks } = await renderCctCard({ userId: 'U1', issuedAt: 4 });
+    const ids = actionIds(blocks);
+    expect(ids).not.toContain('z_setting_cct_set_cct1');
+    expect(ids).not.toContain('z_setting_cct_set_ops-api');
+  });
+
   // ── T9c: Z3 — api_key slot rows are hidden from the card ──
   it('T9c: api_key slot rows are not rendered in the card', async () => {
     resetMockStore();

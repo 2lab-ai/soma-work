@@ -98,19 +98,17 @@ describe('runDispatch forceWorkflow — Site C (#698)', () => {
     const { sessionInitializer, primeSession } = buildInitializer({ transitionReturns: false });
     primeSession('C1', 't2', { handoffContext: { chainId: 'abc', handoffKind: 'plan-to-work' } as any });
 
-    await expect(
-      sessionInitializer.runDispatch('C1', 't2', 'https://github.com/x/y/pull/1', 'pr-review'),
-    ).rejects.toThrow(DispatchAbortError);
+    const err = await sessionInitializer.runDispatch('C1', 't2', 'https://github.com/x/y/pull/1', 'pr-review').then(
+      () => undefined,
+      (e: unknown) => e,
+    );
 
-    try {
-      await sessionInitializer.runDispatch('C1', 't2', 'https://github.com/x/y/pull/1', 'pr-review');
-    } catch (err) {
-      expect(err).toBeInstanceOf(DispatchAbortError);
-      const e = err as DispatchAbortError;
-      expect(e.reason).toBe('transition-failed');
-      expect(e.workflow).toBe('pr-review');
-      expect(e.handoffContext?.chainId).toBe('abc');
-    }
+    expect(err).toBeInstanceOf(DispatchAbortError);
+    expect(err).toMatchObject({
+      reason: 'transition-failed',
+      workflow: 'pr-review',
+      handoffContext: { chainId: 'abc' },
+    });
   });
 
   it('T2.9 forceWorkflow="onboarding" + transitionToMain returns false → DispatchAbortError with workflow="onboarding"', async () => {

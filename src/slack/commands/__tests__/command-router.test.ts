@@ -480,18 +480,61 @@ describe('CommandRouter — non-canonical bare input falls through to the model 
   });
 
   // Aliases retired in #506 read like chat. If one came back, the router would swallow the user's
-  // message — and for the session and plugin ones, act on it.
+  // message — and for the session and plugin ones, act on it. One row per input the old parsers
+  // accepted (4b852a12 removed them from command-parser.ts).
   it.each([
     'commands',
-    'servers',
-    'credentials',
-    '플러그인 업데이트',
+    'command',
     'help?',
+    'servers',
+    'server',
+    'mcp?',
+    'server reload',
+    'credentials',
+    'credential',
+    'credentials status',
     'end session',
     'kill session-123',
+    'terminate_session C123:T456',
     'nextcct',
+    'set_cct cct2',
+    '플러그인 업데이트',
+    '/플러그인 업데이트',
   ])('retired alias "%s" (#506) falls through to the model', async (text) => {
     await assertFallsThrough(text);
+  });
+
+  // #855 removed the dashboard-task entry switch (the `taskentry` command and the `/z taskentry` topic);
+  // the same words typed now are chat.
+  it.each([
+    'taskentry on',
+    '/taskentry off',
+    '/z taskentry',
+  ])('retired command "%s" (#855) falls through to the model', async (text) => {
+    await assertFallsThrough(text);
+  });
+
+  // The underscore forms of the admin `show prompt` / `show instructions` are still known keywords
+  // (COMMAND_KEYWORDS joins two words), so they are refused with the unknown-command hint — never run.
+  it.each([
+    ['show_prompt', 'show_prompt'],
+    ['/show_prompt', 'show_prompt'],
+    ['show_instructions', 'show_instructions'],
+    ['/show_instructions', 'show_instructions'],
+  ])('retired alias "%s" (#506) is refused with the unknown-command hint, not run', async (text, keyword) => {
+    const say = vi.fn().mockResolvedValue(undefined);
+    const deps = buildDeps();
+    const router = new CommandRouter(deps);
+
+    const result = await router.route({ text, user: 'U1', channel: 'C1', threadTs: 'T1', say } as any);
+
+    expect(result.handled).toBe(true);
+    expect(say).toHaveBeenCalledTimes(1);
+    expect(say).toHaveBeenCalledWith({
+      text: `❓ \`${keyword}\` 명령어를 인식할 수 없습니다. \`help\`를 입력하여 사용 가능한 명령어를 확인하세요.`,
+      thread_ts: 'T1',
+    });
+    expect(deps.slackApi.postSystemMessage).not.toHaveBeenCalled();
   });
 });
 

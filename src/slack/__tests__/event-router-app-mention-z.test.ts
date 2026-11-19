@@ -243,6 +243,27 @@ describe('EventRouter.app_mention — /z routing (FIX #1)', () => {
     expect(mockMessageHandler).not.toHaveBeenCalled();
   });
 
+  it('bare `@bot commands` (retired) falls through to legacy pipeline — no tombstone (#530)', async () => {
+    const dispatch = vi.fn().mockResolvedValue({ handled: true });
+    eventRouter.zRouter = { dispatch };
+
+    const handler = eventHandlers['app_mention'];
+    await handler({
+      event: {
+        user: 'U_X',
+        channel: 'C_X',
+        ts: '1.1',
+        text: '<@B_BOT> commands',
+        team: 'T_X',
+      },
+      say: vi.fn(),
+    });
+
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(mockMessageHandler).toHaveBeenCalledTimes(1);
+    expect(mockMessageHandler.mock.calls[0][0].text).toBe('commands');
+  });
+
   it('forbidden `@bot /z new` (slash-only) IS allowed via channel_mention (not slash)', async () => {
     // Per SLASH_FORBIDDEN semantics, channel_mention is NOT blocked — only
     // slash is. Verify dispatch still happens.

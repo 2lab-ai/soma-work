@@ -142,14 +142,11 @@ describe('markdownToBlocks overflow', () => {
     const md = `| A | B |\n|---|---|\n| 1 | 2 |\n\nSome text\n\n| C | D |\n|---|---|\n| 3 | 4 |`;
     const result = markdownToBlocks(md);
 
+    // One table per message: the first stays in the primary message, the second goes to an overflow message.
     const primaryTables = result.blocks.filter((b) => b.type === 'table');
-    expect(primaryTables.length).toBeLessThanOrEqual(1);
-
-    if (result.overflow.length > 0) {
-      // Second table should be in overflow
-      const overflowTables = result.overflow.flatMap((msg) => msg.filter((b) => b.type === 'table'));
-      expect(overflowTables.length).toBeGreaterThan(0);
-    }
+    const overflowTables = result.overflow.flatMap((msg) => msg.filter((b) => b.type === 'table'));
+    expect(primaryTables).toHaveLength(1);
+    expect(overflowTables).toHaveLength(1);
   });
 });
 
@@ -159,10 +156,10 @@ describe('markdownToBlocks table sanitization', () => {
     const md = `| Name | Value |\n|------|-------|\n${rows}`;
 
     const result = markdownToBlocks(md);
-    const tableBlock = result.blocks.find((b) => b.type === 'table');
-    if (tableBlock) {
-      expect(tableBlock.rows.length).toBeLessThanOrEqual(100);
-    }
+    const tables = result.blocks.filter((b) => b.type === 'table');
+    // Header + 150 data rows are capped at Slack's 100 rows; the table itself is kept.
+    expect(tables).toHaveLength(1);
+    expect(tables[0].rows).toHaveLength(100);
   });
 
   it('keeps GFM table rows uniform (regression guard for #1005 padding)', () => {
