@@ -586,6 +586,44 @@ describe('PhoneService', () => {
       await svc.stop();
     });
 
+    it('made phrases are kept on disk: a restart while the host is busy still has its notices', async () => {
+      const host = voiceHost(() => 'held');
+      const first = make(serverTools(), undefined, { voiceClientFor: () => host.voice });
+      await first.svc.start();
+      await settleAll();
+      await first.svc.stop();
+      expect(fs.readdirSync(path.join(dir, 'phrases')).filter((f) => f.endsWith('.ulaw'))).toHaveLength(4);
+      // After the restart the host cannot synthesize anything (a batch holds it): the notices come from disk.
+      const busy = voiceHost(() => 'busy', { speakFails: () => true });
+      const second = make(serverTools(), undefined, { voiceClientFor: () => busy.voice });
+      await second.svc.start();
+      await settleAll();
+      expect(busy.log.filter((l) => l.includes('speak'))).toEqual([]);
+      expect(await second.svc.dial(request() as never)).toMatchObject({ ok: true, notice: expect.any(String) });
+      await second.agents[0].handlers.call_end(fakeCall('CA1', 'outbound', 'completed'));
+      // A different voice is a different phrase: not taken from the cache.
+      const other = make(serverTools({ voice: { url: 'http://voice-host:9999', voice: 'other' } }), undefined, {
+        voiceClientFor: () => busy.voice,
+      });
+      await other.svc.start();
+      await settleAll();
+      expect(await other.svc.dial(request({ rid: 'zzz999yyy888' }) as never)).toMatchObject({ ok: false });
+      await second.svc.stop();
+      await other.svc.stop();
+    });
+
+    it('the busy notices are made first', async () => {
+      const host = voiceHost(() => 'held');
+      const { svc } = make(serverTools(), undefined, { voiceClientFor: () => host.voice });
+      await svc.start();
+      await settleAll();
+      expect(host.log.filter((l) => l.startsWith('line speak')).slice(0, 2)).toEqual([
+        `line speak ${BUSY_NOTICE.inbound} (bounded)`,
+        `line speak ${BUSY_NOTICE.outbound} (bounded)`,
+      ]);
+      await svc.stop();
+    });
+
     it('a call takes the host: its words go through the lease, renewed every 10 s, given back when it ends', async () => {
       const host = voiceHost(() => 'held');
       const { svc, agents, timers } = make(serverTools(), undefined, { voiceClientFor: () => host.voice });

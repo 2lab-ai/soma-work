@@ -7,6 +7,7 @@
  * `<rid>.result.json`. Every call is a {@link CallRun} (voice-session.ts) and a record in the {@link PhoneCallStore}.
  */
 
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
@@ -46,8 +47,13 @@ const INBOUND_HOLD_MS = 10_000;
 const CONNECT_TIMEOUT_MS = 15_000;
 /** A call's lease on the voice host is renewed this often (it lapses after LEASE_TTL_MS, 30 s, without one). */
 const LEASE_RENEW_MS = 10_000;
-/** A line phrase not synthesized in this long is given up, so the next idle pass can try again (a stalled host). */
-const PHRASE_SYNTH_MS = 30_000;
+/**
+ * A line phrase not synthesized in this long is given up, so the next idle pass can try again (a stalled host). Long
+ * enough to wait its turn behind another client's batch job on the one-job-at-a-time host (seen: 3-minute jobs back to
+ * back, a 30 s bound never got a turn).
+ */
+const PHRASE_SYNTH_MS = 10 * 60_000;
+const FRAME_BYTES = 160;
 /**
  * An outbound call not set up (credentials + the dial request) in this long gives the voice host back: a stuck setup
  * must not keep the one shared host from everybody else. What comes back later is put down.
@@ -749,12 +755,44 @@ export class PhoneService {
     for await (const chunk of stream.chunks) parts.push(this.deps.sdk.pcm16ToUlaw(rs.push(chunk)));
     const ulaw = Buffer.concat(parts);
     if (!ulaw.length) throw new Error('the voice service answered without audio');
-    const frames: Buffer[] = [];
-    for (let off = 0; off < ulaw.length; off += 160) {
-      const f = ulaw.subarray(off, off + 160);
-      frames.push(f.length === 160 ? Buffer.from(f) : Buffer.concat([f, Buffer.alloc(160 - f.length, 0xff)]));
+    return toFrames(ulaw);
+  }
+
+  /**
+   * Made phrases are kept on disk (`<phone dir>/phrases/`), keyed by everything that shapes their sound — the voice
+   * service, voice, model, speed and words — so a restart while the voice host is busy still has its notices.
+   */
+  private phraseFile(line: PhoneLine, text: string): string {
+    const v = line.cfg.voice;
+    const key = createHash('sha256')
+      .update(JSON.stringify([v.url, v.voice, v.model, v.speed ?? 1, text]))
+      .digest('hex')
+      .slice(0, 32);
+    return path.join(this.deps.phoneDir, 'phrases', `${key}.ulaw`);
+  }
+
+  private loadPhrase(line: PhoneLine, text: string): Buffer[] | undefined {
+    try {
+      const ulaw = fs.readFileSync(this.phraseFile(line, text));
+      return ulaw.length ? toFrames(ulaw) : undefined;
+    } catch {
+      return undefined; // not made yet
     }
-    return frames;
+  }
+
+  private savePhrase(line: PhoneLine, text: string, frames: Buffer[]): void {
+    const file = this.phraseFile(line, text);
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+      const tmp = `${file}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, Buffer.concat(frames), { mode: 0o600 });
+      fs.renameSync(tmp, file);
+    } catch (err) {
+      this.deps.log('warn', 'phone: phrase not saved — made again after a restart', {
+        env: line.env,
+        error: (err as Error).message,
+      });
+    }
   }
 
   /**
@@ -767,15 +805,30 @@ export class PhoneService {
     line.preparing = true;
     const greeting = line.cfg.inbound.enabled ? line.cfg.inbound.greeting : undefined;
     try {
-      const texts = [...(greeting ? [greeting, BUSY_NOTICE.inbound] : []), OPENER, BUSY_NOTICE.outbound];
+      // The busy notices first: without them a call the host cannot serve is put down in silence.
+      const texts = [
+        ...(greeting ? [BUSY_NOTICE.inbound] : []),
+        BUSY_NOTICE.outbound,
+        ...(greeting ? [greeting] : []),
+        OPENER,
+      ];
+      const ready = (text: string, frames: Buffer[]) => {
+        line.phrases.set(text, frames);
+        if (text === greeting) line.greeting = { text, frames }; // usable at once, not after the whole pass
+        line.unprepared.delete(text);
+      };
       for (const text of texts) {
         if (line.phrases.has(text)) continue;
+        const saved = this.loadPhrase(line, text);
+        if (saved) {
+          ready(text, saved);
+          continue;
+        }
         if (this.busy(line)) return; // a call has the voice host now
         try {
           const frames = await this.synthFrames(line, text);
-          line.phrases.set(text, frames);
-          if (text === greeting) line.greeting = { text, frames }; // usable at once, not after the whole pass
-          line.unprepared.delete(text);
+          ready(text, frames);
+          this.savePhrase(line, text, frames);
         } catch (err) {
           if (line.unprepared.has(text)) continue;
           line.unprepared.add(text);
@@ -855,4 +908,16 @@ function busyNote(host: VoiceHostClaim): string {
 /** The voice client a call uses: the claimed host's, carrying the lease, or the line's when the host has no leases. */
 function voiceOf(host: VoiceHostClaim, line: { voice: VoiceClient }): VoiceClient {
   return host.kind === 'held' ? host.voice : line.voice;
+}
+
+/** μ-law → 20 ms frames, the last one padded with silence. */
+function toFrames(ulaw: Buffer): Buffer[] {
+  const frames: Buffer[] = [];
+  for (let off = 0; off < ulaw.length; off += FRAME_BYTES) {
+    const f = ulaw.subarray(off, off + FRAME_BYTES);
+    frames.push(
+      f.length === FRAME_BYTES ? Buffer.from(f) : Buffer.concat([f, Buffer.alloc(FRAME_BYTES - f.length, 0xff)]),
+    );
+  }
+  return frames;
 }
