@@ -94,11 +94,7 @@ describe('A2tService — status management', () => {
     await expect(service.initialize()).rejects.toThrow("Python not found at '/nonexistent/custom-python3'");
 
     expect(vi.mocked(spawn)).toHaveBeenCalledTimes(1);
-    const [command, , options] = vi.mocked(spawn).mock.calls[0] as unknown as [
-      string,
-      string[],
-      { env: Record<string, string> },
-    ];
+    const [command, , options] = vi.mocked(spawn).mock.calls[0];
     expect(command).toBe('/nonexistent/custom-python3');
     expect(options.env).toMatchObject({
       A2T_MODEL: 'tiny',
