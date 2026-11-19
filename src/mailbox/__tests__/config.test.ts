@@ -32,6 +32,13 @@ describe('parseMailboxConfig', () => {
     expect(d?.ok && d.config.channel).toBeUndefined();
     expect(d?.ok && d.config.allowFrom).toEqual(['*:*:*']);
     expect(d?.ok && d.config.cli).toBe('mailbox');
+    // a client file the CLI would not read by itself is passed to it, or replies leave from another mailbox
+    const own = parseMailboxConfig({ owner: 'U0ABC', allowFrom: ['*:*:*'], client: '/srv/mbx/client.json' });
+    expect(own?.ok && own.config.cli).toBe('mailbox --config /srv/mbx/client.json');
+    expect(parseMailboxConfig({ owner: 'U0ABC', allowFrom: ['*:*:*'], client: '/a b/c.json' })).toEqual({
+      ok: false,
+      error: expect.stringContaining('client'),
+    });
     const c = parseMailboxConfig({ owner: 'U0ABC', allowFrom: ['*:*:*'], cli: '/opt/bin/mailbox' });
     expect(c?.ok && c.config.cli).toBe('/opt/bin/mailbox');
     expect(parseMailboxConfig({ owner: 'U0ABC', allowFrom: ['*:*:*'], cli: 'mailbox; rm -r x' })).toEqual({
@@ -113,7 +120,7 @@ describe('createMailboxClient', () => {
     const r = await client.inbox(25);
     expect(r.messages).toEqual([{ id: 'm1' }]);
     expect(calls[0].url).toBe(
-      'http://127.0.0.1:7780/v1/mailboxes/soma-work%3Ahost-a%3Adev/inbox?unread=true&limit=20&wait=25',
+      'http://127.0.0.1:7780/v1/mailboxes/soma-work%3Ahost-a%3Adev/inbox?unread=true&limit=100&wait=25',
     );
     expect((calls[0].init.headers as Record<string, string>).authorization).toBe('Bearer tok');
     await client.ack(['m1']);

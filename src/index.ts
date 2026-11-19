@@ -2287,9 +2287,14 @@ async function start() {
     // A cheap long poll to the local mailbox server; a model runs only when mail arrives. Absent `mailbox` = off.
     const mailboxParsed = parseMailboxConfig(appConfig.mailbox);
     if (mailboxParsed && !mailboxParsed.ok) logger.warn(`Ignoring config.json#"mailbox": ${mailboxParsed.error}`);
-    // The owner's DM takes host turns only for an admin owner (the DM gate); another owner needs a channel.
-    if (mailboxParsed?.ok && !mailboxParsed.config.channel && !isAdminUser(mailboxParsed.config.owner)) {
-      logger.warn('Ignoring config.json#"mailbox": the owner is not an admin, so mail needs `mailbox.channel`');
+    // A DM takes host turns only for an admin owner (the DM gate) — the default DM and an explicit `D…` channel
+    // alike; another owner needs a channel.
+    const mailboxInDm =
+      mailboxParsed?.ok && (!mailboxParsed.config.channel || mailboxParsed.config.channel.startsWith('D'));
+    if (mailboxParsed?.ok && mailboxInDm && !isAdminUser(mailboxParsed.config.owner)) {
+      logger.warn(
+        'Ignoring config.json#"mailbox": the owner is not an admin, so mail needs a non-DM `mailbox.channel`',
+      );
     } else if (mailboxParsed?.ok) {
       const mailboxRegistry = claudeHandler.getSessionRegistry();
       mailboxPoller = createMailboxPoller({

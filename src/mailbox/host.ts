@@ -13,13 +13,21 @@ const MAX_THREADS = 1000;
 
 /** Talks to the mailbox server named in the CLI settings file, re-read on every call. */
 export function createMailboxClient(clientFile: string, fetchImpl: typeof fetch = fetch): MailboxClient {
-  const call = async (method: string, route: (address: string) => string, body?: unknown, signal?: AbortSignal) => {
+  const call = async (
+    method: string,
+    route: (address: string) => string,
+    body: unknown,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ) => {
     const s = readClientSettings(clientFile);
+    // A server that accepts the call and never answers must not stall the loop: every call has a deadline.
+    const deadline = AbortSignal.timeout(timeoutMs);
     const res = await fetchImpl(s.url + route(encodeURIComponent(s.address)), {
       method,
       headers: { authorization: `Bearer ${s.token}`, ...(body ? { 'content-type': 'application/json' } : {}) },
       body: body ? JSON.stringify(body) : undefined,
-      signal,
+      signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
     });
     const text = await res.text();
     if (!res.ok) throw new Error(`mailbox server answered ${res.status}: ${text.slice(0, 200)}`);
@@ -29,14 +37,15 @@ export function createMailboxClient(clientFile: string, fetchImpl: typeof fetch 
     async inbox(waitSeconds, signal) {
       const json = await call(
         'GET',
-        (a) => `/v1/mailboxes/${a}/inbox?unread=true&limit=20&wait=${waitSeconds}`,
+        (a) => `/v1/mailboxes/${a}/inbox?unread=true&limit=100&wait=${waitSeconds}`,
         undefined,
+        (waitSeconds + 15) * 1000,
         signal,
       );
       return { address: String(json.address ?? ''), messages: Array.isArray(json.messages) ? json.messages : [] };
     },
     async ack(ids) {
-      await call('POST', (a) => `/v1/mailboxes/${a}/ack`, { ids });
+      await call('POST', (a) => `/v1/mailboxes/${a}/ack`, { ids }, 15_000);
     },
   };
 }
@@ -102,6 +111,5 @@ export function createMailboxPoller(deps: MailboxHostDeps): MailboxPoller {
     allowFrom: deps.config.allowFrom,
     cli: deps.config.cli,
     intervalMs: deps.config.intervalMs,
-    busyMaxWaitMs: deps.config.busyMaxWaitMs,
   });
 }

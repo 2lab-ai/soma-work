@@ -24,10 +24,8 @@ export interface MailboxConfig {
   owner: string;
   channel?: string;
   intervalMs: number;
-  /** A mail for a thread whose session stays busy this long opens a new thread instead. */
-  busyMaxWaitMs: number;
   allowFrom: string[];
-  /** The mailbox CLI as the turn text names it. */
+  /** The mailbox CLI as the turn text names it, with `--config` when the client file is not the CLI default. */
   cli: string;
 }
 
@@ -39,6 +37,10 @@ export interface MailboxClientSettings {
 
 const ADDRESS = /^[a-z0-9][a-z0-9._-]{0,62}:[a-z0-9][a-z0-9._-]{0,62}:[a-z0-9][a-z0-9._-]{0,62}$/;
 const PATTERN = /^(\*|[a-z0-9][a-z0-9._-]{0,62}):(\*|[a-z0-9][a-z0-9._-]{0,62}):(\*|[a-z0-9][a-z0-9._-]{0,62})$/;
+
+/** A command or path the turn text may name in a shell command as is: no spaces, quotes or shell syntax. */
+const SAFE_PATH = /^[\w./~-]+$/;
+export const DEFAULT_CLIENT_FILE = '~/.config/agent-mailbox/client.json';
 
 function expandHome(p: string): string {
   return p === '~' || p.startsWith('~/') ? path.join(os.homedir(), p.slice(1)) : p;
@@ -58,7 +60,7 @@ export function parseMailboxConfig(raw: unknown): ParsedMailboxConfig {
   if (channel && !/^[CDG][A-Z0-9]{2,}$/.test(channel))
     return { ok: false, error: 'mailbox.channel must be a Slack channel id' };
   const clientFile = expandHome(
-    typeof r.client === 'string' && r.client.trim() ? r.client.trim() : '~/.config/agent-mailbox/client.json',
+    typeof r.client === 'string' && r.client.trim() ? r.client.trim() : DEFAULT_CLIENT_FILE,
   );
   const seconds = Number(r.intervalSeconds ?? 15);
   if (!Number.isFinite(seconds) || seconds < 2 || seconds > 3600)
@@ -70,16 +72,18 @@ export function parseMailboxConfig(raw: unknown): ParsedMailboxConfig {
   const bad = allowFrom.find((p) => !PATTERN.test(p));
   if (bad !== undefined) return { ok: false, error: `mailbox.allowFrom has a bad pattern "${bad}"` };
   const cli = typeof r.cli === 'string' && r.cli.trim() ? r.cli.trim() : 'mailbox';
-  if (!/^[\w./~-]+$/.test(cli)) return { ok: false, error: 'mailbox.cli must be a command name or path' };
+  if (!SAFE_PATH.test(cli)) return { ok: false, error: 'mailbox.cli must be a command name or path' };
+  if (!SAFE_PATH.test(clientFile)) return { ok: false, error: 'mailbox.client must be a plain file path' };
+  // The turn's CLI must read the same settings file the poller does, or replies leave from the wrong mailbox.
+  const cliCommand = clientFile === expandHome(DEFAULT_CLIENT_FILE) ? cli : `${cli} --config ${clientFile}`;
   return {
     ok: true,
     config: {
-      cli,
+      cli: cliCommand,
       clientFile,
       owner,
       ...(channel ? { channel } : {}),
       intervalMs: seconds * 1000,
-      busyMaxWaitMs: 10 * 60_000,
       allowFrom,
     },
   };

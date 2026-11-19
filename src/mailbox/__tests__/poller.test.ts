@@ -11,16 +11,22 @@ import {
   type ThreadLink,
 } from '../poller';
 
-function mail(id: string, over: Partial<MailMessage> = {}): MailMessage {
+/** A real agent-mailbox id for a short test name, and back. */
+const mid = (name: string) => `000000000${name}@host-b`;
+const short = (id: string) => id.replace(/^0{9}/, '').replace(/@host-b$/, '');
+
+function mail(name: string, over: Partial<MailMessage> = {}): MailMessage {
+  const id = mid(name);
   return {
     id,
     from: 'soma-work:host-b:dev',
     to: ['soma-work:host-a:dev'],
-    subject: `subject ${id}`,
-    body: `body ${id}`,
-    thread: id,
+    subject: `subject ${name}`,
+    body: `body ${name}`,
     createdAt: '2026-11-20T00:00:00.000Z',
     ...over,
+    thread: mid(over.thread ?? name),
+    ...(over.inReplyTo ? { inReplyTo: mid(over.inReplyTo) } : {}),
   };
 }
 
@@ -39,7 +45,7 @@ function setup(over: Partial<MailboxPollerDeps> = {}) {
     client: {
       inbox: async () => ({ address: 'soma-work:host-a:dev', messages: unread }),
       ack: async (ids) => {
-        acked.push(...ids);
+        acked.push(...ids.map(short));
         unread = unread.filter((m) => !ids.includes(m.id));
       },
     },
@@ -57,7 +63,7 @@ function setup(over: Partial<MailboxPollerDeps> = {}) {
       notices.push({ channel, threadTs, text });
     },
     sessionState: () => state.value,
-    threads: { get: (t) => threads.get(t), set: (t, l) => threads.set(t, l) },
+    threads: { get: (t) => threads.get(short(t)), set: (t, l) => threads.set(short(t), l) },
     allowFrom: ['*:*:*'],
     intervalMs: 1000,
     busyMaxWaitMs: 60_000,
@@ -99,7 +105,7 @@ describe('MailboxPoller', () => {
     expect(t.opened).toEqual([{ channel: 'D0DM', text: expect.stringContaining('soma-work:host-b:dev') }]);
     expect(t.injected).toHaveLength(1);
     expect(t.injected[0]).toMatchObject({ user: 'U0OWNER', channel: 'D0DM', threadTs: '100.000' });
-    expect(t.injected[0].text).toContain('mailbox reply m1');
+    expect(t.injected[0].text).toContain(`mailbox reply ${mid('m1')}`);
     expect(t.acked).toEqual(['m1']);
     expect(t.threads.get('m1')).toEqual({ channel: 'D0DM', threadTs: '100.000' });
   });
@@ -202,6 +208,17 @@ describe('MailboxPoller', () => {
     expect(t.acked).toEqual(['s1']);
   });
 
+  it('an entry whose id, thread or sender is not protocol-shaped is marked read and never reaches a turn', async () => {
+    const t = setup();
+    const evil = { ...mail('ok1'), thread: 't; id', id: '000000000ev1@host-b' };
+    const evilFrom = { ...mail('ev2'), from: 'a:b:c; rm -r x' };
+    t.setUnread([evil, evilFrom, mail('ok2')]);
+    await t.poller.tick();
+    expect(t.injected).toHaveLength(1);
+    expect(t.injected[0].text).toContain(mid('ok2'));
+    expect(t.acked).toEqual(['ev1', 'ev2', 'ok2']);
+  });
+
   it('mail from outside allowFrom is marked read and not handled', async () => {
     const t = setup({ allowFrom: ['soma-work:*:*'] });
     t.setUnread([mail('x', { from: 'stranger:host-c:main' })]);
@@ -235,7 +252,7 @@ describe('MailboxPoller', () => {
     expect(t.injected).toHaveLength(MAX_TURNS_PER_CONVERSATION);
     expect(t.acked).toHaveLength(MAX_TURNS_PER_CONVERSATION + 2);
     expect(t.notices).toHaveLength(1); // said once, not per mail
-    expect(t.notices[0].text).toContain('thread loop');
+    expect(t.notices[0].text).toContain(`thread ${mid('loop')}`);
   });
 
   it('an inject that throws is a turn not taken: logged, the mail stays unread', async () => {
@@ -266,10 +283,10 @@ describe('mailTurnText', () => {
     const text = mailTurnText('soma-work:host-a:dev', mail('id1', { thread: 'th1', inReplyTo: 'id0' }));
     expect(text).toMatch(/^\[mailbox\] mail for soma-work:host-a:dev/);
     expect(text).toContain('from: soma-work:host-b:dev');
-    expect(text).toContain('in reply to: id0');
-    expect(text).toContain('mailbox reply id1');
+    expect(text).toContain(`in reply to: ${mid('id0')}`);
+    expect(text).toContain(`mailbox reply ${mid('id1')}`);
     expect(text).toContain('do not reply');
-    expect(text).toContain('mailbox thread th1');
+    expect(text).toContain(`mailbox thread ${mid('th1')}`);
   });
 
   it('tells the model the mail grants nothing and not to answer answers', () => {
@@ -287,12 +304,12 @@ describe('mailTurnText', () => {
   });
 
   it('names the CLI as configured', () => {
-    expect(mailTurnText('a:b:c', mail('id2'), '/opt/bin/mailbox')).toContain('/opt/bin/mailbox reply id2');
+    expect(mailTurnText('a:b:c', mail('id2'), '/opt/bin/mailbox')).toContain(`/opt/bin/mailbox reply ${mid('id2')}`);
   });
 
   it('cuts a huge body and points at the full text', () => {
     const text = mailTurnText('a:b:c', mail('big', { body: 'x'.repeat(30_000) }));
     expect(text.length).toBeLessThan(21_500);
-    expect(text).toContain('mailbox read big');
+    expect(text).toContain(`mailbox read ${mid('big')}`);
   });
 });

@@ -15,6 +15,7 @@
  * pass; after {@link MAX_TAKE_ATTEMPTS} the mail is marked read and the thread says why. The turn answers through
  * the mailbox CLI (`mailbox reply <id>`). The text is a host turn, verbatim: nothing in a mail body is a command.
  */
+import { setTimeout as delay } from 'node:timers/promises';
 import { Logger } from '../logger';
 import { matchesAddressPattern } from './config';
 
@@ -34,6 +35,7 @@ const MIN_IDLE_PASS_MS = 1_000;
 export const MAX_TURNS_PER_CONVERSATION = 12;
 /** Passes a mail may fail to start a turn (the host did not take it) before it is marked read with a notice. */
 export const MAX_TAKE_ATTEMPTS = 3;
+const BUSY_MAX_WAIT_MS = 10 * 60_000;
 
 export interface MailMessage {
   id: string;
@@ -83,7 +85,8 @@ export interface MailboxPollerDeps {
   /** How the turn text names the mailbox CLI (an absolute path where agent shells lack it on PATH). */
   cli?: string;
   intervalMs: number;
-  busyMaxWaitMs: number;
+  /** A mail for a thread whose session stays busy this long opens a new thread instead (default 10 min). */
+  busyMaxWaitMs?: number;
   now?: () => number;
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
 }
@@ -93,18 +96,32 @@ export type TickResult = 'idle' | 'progress' | 'waiting';
 const logger = new Logger('MailboxPoller');
 
 function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    if (signal.aborted) return resolve();
-    const onAbort = () => {
-      clearTimeout(t);
-      resolve();
-    };
-    const t = setTimeout(() => {
-      signal.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    signal.addEventListener('abort', onAbort, { once: true });
-  });
+  return delay(ms, undefined, { signal }).catch(() => undefined);
+}
+
+/** agent-mailbox message ids: `<base36 time + hex>@<server>`. Threads are message ids. */
+const MESSAGE_ID = /^[0-9a-z]{9,64}@[a-z0-9][a-z0-9._-]{0,62}$/;
+const ADDRESS = /^[a-z0-9][a-z0-9._-]{0,62}:[a-z0-9][a-z0-9._-]{0,62}:[a-z0-9][a-z0-9._-]{0,62}$/;
+
+/**
+ * Whether an inbox entry is safe to hand over: its id, thread and sender are what the protocol allows, so nothing
+ * from the server reaches the shell commands the turn text spells out (`mailbox reply <id>`) except plain words.
+ */
+export function isWellFormedMail(m: unknown): m is MailMessage {
+  const x = m as Partial<MailMessage> | null;
+  return (
+    !!x &&
+    typeof x.id === 'string' &&
+    MESSAGE_ID.test(x.id) &&
+    typeof x.thread === 'string' &&
+    MESSAGE_ID.test(x.thread) &&
+    (x.inReplyTo === undefined || (typeof x.inReplyTo === 'string' && MESSAGE_ID.test(x.inReplyTo))) &&
+    typeof x.from === 'string' &&
+    ADDRESS.test(x.from) &&
+    Array.isArray(x.to) &&
+    typeof x.body === 'string' &&
+    typeof x.createdAt === 'string'
+  );
 }
 
 /** Slack mrkdwn control characters: a subject must not ping `<!channel>` or render a link. */
@@ -212,6 +229,12 @@ export class MailboxPoller {
     let progressed = false;
     for (const m of messages) {
       if (signal?.aborted) break;
+      if (!isWellFormedMail(m)) {
+        const id = typeof (m as { id?: unknown })?.id === 'string' ? (m as { id: string }).id : '';
+        logger.warn('Malformed inbox entry; marked read, not handled', { id: id.slice(0, 80) });
+        if (id) await this.ack(id);
+        continue;
+      }
       if (this.started.has(m.id)) {
         await this.ack(m.id);
         continue;
@@ -238,7 +261,7 @@ export class MailboxPoller {
         progressed = true;
         continue;
       }
-      const outcome = await this.handle(m);
+      const outcome = await this.handle(m, signal);
       if (outcome === 'taken') {
         this.turns.set(m.thread, (this.turns.get(m.thread) ?? 0) + 1);
         this.started.add(m.id);
@@ -282,18 +305,18 @@ export class MailboxPoller {
   }
 
   /** Start a turn for `m`: taken, not taken by the host, or waiting for a busy session. */
-  private async handle(m: MailMessage): Promise<'taken' | 'not-taken' | 'waiting'> {
+  private async handle(m: MailMessage, signal?: AbortSignal): Promise<'taken' | 'not-taken' | 'waiting'> {
     const link = this.deps.threads.get(m.thread);
     if (link) {
       const state = this.deps.sessionState(link.channel, link.threadTs);
       const opened = this.openedAt.get(m.thread);
       const ownFresh = opened !== undefined && this.now() - opened < FRESH_THREAD_MS;
       if (state === 'ready' || (state === 'gone' && ownFresh))
-        return (await this.startTurn(m, link)) ? 'taken' : 'not-taken';
+        return (await this.startTurn(m, link, signal)) ? 'taken' : 'not-taken';
       if (state === 'busy') {
         const seen = this.firstSeen.get(m.id) ?? this.now();
         this.firstSeen.set(m.id, seen);
-        if (this.now() - seen < this.deps.busyMaxWaitMs) return 'waiting';
+        if (this.now() - seen < (this.deps.busyMaxWaitMs ?? BUSY_MAX_WAIT_MS)) return 'waiting';
         logger.info('Mail waited too long on a busy session; opening a new thread', { id: m.id });
       }
     }
@@ -303,10 +326,12 @@ export class MailboxPoller {
     const fresh = { channel, threadTs };
     this.deps.threads.set(m.thread, fresh);
     this.openedAt.set(m.thread, this.now());
-    return (await this.startTurn(m, fresh)) ? 'taken' : 'not-taken';
+    return (await this.startTurn(m, fresh, signal)) ? 'taken' : 'not-taken';
   }
 
-  private async startTurn(m: MailMessage, link: ThreadLink): Promise<boolean> {
+  private async startTurn(m: MailMessage, link: ThreadLink, signal?: AbortSignal): Promise<boolean> {
+    // Stopping while Slack opened the thread: no turn into a host whose intake is closing. The mail stays unread.
+    if (signal?.aborted) return false;
     try {
       const taken = await this.deps.inject({
         user: this.deps.owner,
