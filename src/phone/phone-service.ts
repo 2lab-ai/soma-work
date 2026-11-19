@@ -486,11 +486,6 @@ export class PhoneService {
       record.work.push({ kind: 'instruction', at: record.createdAt, text: systemPrompt });
       this.deps.store.create(record);
       line.auths.set(call.callId, dialogAuth);
-      const release = line.voiceLeases.get(setupKey);
-      if (release) {
-        line.voiceLeases.delete(setupKey);
-        line.voiceLeases.set(call.callId, release);
-      }
       run = this.makeRun(
         line,
         { callId: call.callId, direction: 'outbound', maxMinutes, model: dialogAuth.model },
@@ -500,6 +495,13 @@ export class PhoneService {
     }
     line.session.register(run);
     run.begin();
+    // Set up: the lease now belongs to the call (until here a throw left it under the setup key, which the caller
+    // drops).
+    const release = line.voiceLeases.get(setupKey);
+    if (release) {
+      line.voiceLeases.delete(setupKey);
+      line.voiceLeases.set(call.callId, release);
+    }
     line.watchdogs.set(
       call.callId,
       this.setTimer(() => {
@@ -746,6 +748,7 @@ export class PhoneService {
     const parts: Buffer[] = [];
     for await (const chunk of stream.chunks) parts.push(this.deps.sdk.pcm16ToUlaw(rs.push(chunk)));
     const ulaw = Buffer.concat(parts);
+    if (!ulaw.length) throw new Error('the voice service answered without audio');
     const frames: Buffer[] = [];
     for (let off = 0; off < ulaw.length; off += 160) {
       const f = ulaw.subarray(off, off + 160);

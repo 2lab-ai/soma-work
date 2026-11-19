@@ -517,7 +517,7 @@ describe('PhoneService', () => {
     /** A voice host that answers claims with `answer()`; `log` says which client did what. */
     function voiceHost(
       answer: () => VoiceHostClaim['kind'],
-      opts: { speakFails?: () => boolean; claimGate?: () => Promise<void> } = {},
+      opts: { speakFails?: () => boolean; claimGate?: () => Promise<void>; renewOk?: () => boolean } = {},
     ) {
       const log: string[] = [];
       const client = (tag: string): VoiceClient => ({
@@ -550,7 +550,7 @@ describe('PhoneService', () => {
             voice: client('leased'),
             renew: async () => {
               log.push('renew');
-              return true;
+              return opts.renewOk?.() ?? true;
             },
             release: async () => {
               log.push('release');
@@ -1039,6 +1039,61 @@ describe('PhoneService', () => {
       timers.advance(60_000);
       await settleAll();
       expect(host.log.filter((l) => l === 'renew')).toHaveLength(0);
+      await svc.stop();
+    });
+
+    it('a renewal that fails is tried again on the next tick, and the call still gives the host back once', async () => {
+      const answers = [false, true, true];
+      const host = voiceHost(() => 'held', { renewOk: () => answers.shift() ?? true });
+      const { svc, agents, timers } = make(serverTools(), undefined, { voiceClientFor: () => host.voice });
+      await svc.start();
+      await settleAll();
+      expect(await svc.dial(request() as never)).toMatchObject({ ok: true });
+      for (let i = 0; i < 3; i++) {
+        timers.advance(10_000);
+        await settleAll();
+      }
+      expect(host.log.filter((l) => l === 'renew')).toHaveLength(3); // false, then on
+      await agents[0].handlers.call_end(fakeCall('CA1', 'outbound', 'completed'));
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1);
+      timers.advance(30_000);
+      await settleAll();
+      expect(host.log.filter((l) => l === 'renew')).toHaveLength(3);
+      await svc.stop();
+    });
+
+    it('a run that cannot be made (the dialog throws) leaves no lease behind', async () => {
+      const host = voiceHost(() => 'held');
+      const { svc, timers } = make(serverTools(), undefined, {
+        voiceClientFor: () => host.voice,
+        openDialog: () => {
+          throw new Error('no dialog');
+        },
+      });
+      await svc.start();
+      await settleAll();
+      await expect(svc.dial(request() as never)).rejects.toThrow('no dialog');
+      expect(host.log.filter((l) => l === 'release')).toHaveLength(1);
+      timers.advance(30_000);
+      await settleAll();
+      expect(host.log.filter((l) => l === 'renew')).toHaveLength(0);
+      await svc.stop();
+    });
+
+    it('a synthesis that answers without audio is not a made notice', async () => {
+      const voice: VoiceClient = {
+        transcribe: async () => ({ text: '', ms: 0 }),
+        speak: async () => ({ sampleRate: 8000, headersMs: 0, chunks: (async function* () {})() }),
+        claim: async () => ({ kind: 'busy', reason: 'busy with voicechat' }),
+      };
+      const { svc, agents } = make(serverTools(), undefined, { voiceClientFor: () => voice });
+      await svc.start();
+      await settleAll();
+      expect(await svc.dial(request() as never)).toMatchObject({
+        ok: false,
+        error: expect.stringContaining('no notice'),
+      });
+      expect(agents[0].dialed).toHaveLength(0);
       await svc.stop();
     });
 
