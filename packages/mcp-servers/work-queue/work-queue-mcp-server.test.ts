@@ -178,6 +178,24 @@ describe('readWorkQueuesFromConfigFile', () => {
     expect(() => readWorkQueuesFromConfigFile(broken)()).toThrow(/config/i);
   });
 
+  it('a workQueues key with no valid queue is not "no queues": it keeps the last good queues or throws', () => {
+    const file = path.join(dir, 'config.json');
+    fs.writeFileSync(file, JSON.stringify({ workQueues: { deploy: ['dev'] } }));
+    const read = readWorkQueuesFromConfigFile(file);
+    expect(read().map((q) => q.id)).toEqual(['deploy:dev']);
+    fs.writeFileSync(file, JSON.stringify({ workQueues: 'deploy' }));
+    const later = new Date(Date.now() + 5_000);
+    fs.utimesSync(file, later, later);
+    expect(read().map((q) => q.id)).toEqual(['deploy:dev']);
+    const bad = path.join(dir, 'bad.json');
+    fs.writeFileSync(bad, JSON.stringify({ workQueues: { deploy: 'dev2' } }));
+    expect(() => readWorkQueuesFromConfigFile(bad)()).toThrow(/workQueues/);
+    // An explicit empty map is a host that queues nothing — that is not an error.
+    const none = path.join(dir, 'none-on-purpose.json');
+    fs.writeFileSync(none, JSON.stringify({ workQueues: {} }));
+    expect(readWorkQueuesFromConfigFile(none)()).toEqual([]);
+  });
+
   it('a config that cannot be read answers CONFIG_UNREADABLE — retry, never go on without a line', () => {
     const t = createWorkQueueTools({
       store,

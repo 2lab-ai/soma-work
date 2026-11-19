@@ -234,7 +234,8 @@ export function createWorkQueueTools(deps: WorkQueueToolsDeps): {
 
 /**
  * `config.json#workQueues`, re-read when the file changes (no restart needed to add a queue). A config that cannot be
- * read or parsed keeps the last good queues and is tried again on the next call (never cached as "no queues": that
+ * read or parsed — or whose `workQueues` holds no valid queue — keeps the last good queues and is tried again on the
+ * next call (never cached as "no queues": that
  * would tell a model to go on without a line while another thread holds the lane); with no good read yet it throws,
  * which the tools answer as `CONFIG_UNREADABLE`. A missing file is no queues.
  */
@@ -255,6 +256,10 @@ export function readWorkQueuesFromConfigFile(configFile: string | undefined): ()
       const raw = JSON.parse(fs.readFileSync(configFile, 'utf8')) as Record<string, unknown>;
       const parsed = parseWorkQueuesConfig(raw?.workQueues);
       for (const warning of parsed.warnings) logger.warn(`config.json ${warning}`);
+      // A key whose every definition is invalid is a broken config, not a host without queues.
+      if (parsed.queues.length === 0 && parsed.warnings.length > 0) {
+        throw new Error(`workQueues has no valid queue (${parsed.warnings.join('; ')})`);
+      }
       good = { mtimeMs, queues: parsed.queues };
       return parsed.queues;
     } catch (error) {

@@ -98,8 +98,8 @@ describe('McpConfigBuilder internal MCP servers e2e', () => {
     expect(path.basename(executablePath(servers['work-queue']))).toMatch(/^work-queue-mcp-server\.(ts|js)$/);
     expect(JSON.parse(servers['work-queue'].env.SOMA_WORK_QUEUE_CONTEXT)).toEqual({
       user: 'U123',
-      channel: expect.any(String),
-      threadTs: expect.any(String),
+      channel: 'C123',
+      threadTs: '1700000000.000000',
     });
     expect(servers['work-queue'].env.SOMA_DATA_DIR).toEqual(expect.any(String));
     expect(servers['work-queue'].env.SOMA_CONFIG_FILE).toEqual(expect.any(String));
