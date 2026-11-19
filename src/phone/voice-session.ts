@@ -179,6 +179,8 @@ export class CallRun {
       r.answeredAt = at;
     });
     this.work({ kind: 'event', at, text: '상대가 전화를 받음' });
+    // Also the backstop of a notice call whose hang-up did not go through.
+    this.later(() => this.timeUp(), this.plan.maxMinutes * 60_000);
     if (this.plan.notice) {
       // Inbound: at once, as a greeting would be. Outbound: after the other side's "여보세요" (feedAudio), or a quiet
       // spell.
@@ -200,7 +202,6 @@ export class CallRun {
         if (!this.released && !this.vad.speaking) this.release('상대가 조용해서 첫 마디 시작');
       }, OPEN_AFTER_SILENCE_MS);
     }
-    this.later(() => this.timeUp(), this.plan.maxMinutes * 60_000);
   }
 
   feedAudio(ulaw: Buffer): void {
