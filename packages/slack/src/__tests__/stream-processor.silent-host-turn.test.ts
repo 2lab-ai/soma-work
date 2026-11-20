@@ -32,14 +32,7 @@ function pollTurn(last: string | undefined, finalText: string | undefined, narra
   ];
 }
 
-interface Harness {
-  context: StreamContext;
-  say: ReturnType<typeof vi.fn>;
-  appendText: ReturnType<typeof vi.fn>;
-  log: WorkLogInput[];
-}
-
-function harness(opts: { isUserInputTurn?: boolean; logVerbosity?: number; stream?: boolean }): Harness {
+function harness(opts: { isUserInputTurn?: boolean; logVerbosity?: number; stream?: boolean }) {
   const say = vi.fn().mockResolvedValue({ ts: 'm' });
   const appendText = vi.fn().mockResolvedValue(true);
   const log: WorkLogInput[] = [];
@@ -61,6 +54,8 @@ function harness(opts: { isUserInputTurn?: boolean; logVerbosity?: number; strea
   };
   return { context, say, appendText, log };
 }
+
+type Harness = ReturnType<typeof harness>;
 
 async function run(h: Harness, list: AgentStreamEvent[]) {
   return new AgentStreamProcessor({}).process(events(list), h.context, new AbortController().signal);
@@ -127,6 +122,36 @@ describe('a host-started turn that ends on a placeholder ends silently', () => {
     expect(h.log.filter((e) => e.kind === 'final')).toEqual([]);
   });
 
+  it.each([
+    undefined,
+    '',
+  ])('a streamed placeholder and a result with finalText %j: withheld narration is not promoted', async (finalText) => {
+    const h = harness({ isUserInputTurn: false, logVerbosity: LOG_MINIMAL });
+
+    const result = await run(h, pollTurn('(no message)', finalText, 'Checking the lane lock.'));
+
+    expect(posted(h)).toBe(0);
+    expect(h.log.filter((e) => e.kind === 'final')).toEqual([]);
+    expect(result.collectedText).toBe('Checking the lane lock.\n(no message)');
+  });
+
+  it('a real answer after an earlier placeholder is the answer (no finalText, minimal)', async () => {
+    const h = harness({ isUserInputTurn: false, logVerbosity: LOG_MINIMAL });
+    const answer = 'Lane done: 4/4 in QA (dev2).';
+
+    await run(h, [
+      { type: 'assistant_delta', text: '(no message)' },
+      { type: 'tool_call', toolCallId: 'tu_1', name: 'Bash', input: { command: 'cat lock/owner.txt' } },
+      { type: 'tool_result', toolCallId: 'tu_1', content: [{ type: 'text', text: 'no lock' }] },
+      { type: 'assistant_delta', text: answer },
+      { type: 'result', stopReason: 'end_turn' },
+    ]);
+
+    expect(h.appendText).toHaveBeenCalledTimes(1);
+    expect(h.appendText).toHaveBeenCalledWith('C1:T1:turn-1', answer);
+    expect(h.log.filter((e) => e.kind === 'final')).toMatchObject([{ text: answer }]);
+  });
+
   it('a host turn with a real answer still posts it', async () => {
     const h = harness({ isUserInputTurn: false });
     const answer = 'The QA lane finished: 4/4 moved to QA (dev2).';
@@ -140,6 +165,15 @@ describe('a host-started turn that ends on a placeholder ends silently', () => {
   it('text that merely mentions a placeholder is an answer, not silence', async () => {
     const h = harness({ isUserInputTurn: false });
     const answer = 'The last cron turn posted (no message) — that was the host, not the run.';
+
+    await run(h, pollTurn(answer, answer));
+
+    expect(h.appendText).toHaveBeenCalledWith('C1:T1:turn-1', answer);
+  });
+
+  it('short prose around a placeholder (within the length cap) is an answer, not silence', async () => {
+    const h = harness({ isUserInputTurn: false });
+    const answer = 'Last reply: (no message)';
 
     await run(h, pollTurn(answer, answer));
 
