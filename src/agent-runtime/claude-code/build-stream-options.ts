@@ -50,11 +50,11 @@ import {
 import { isEnvironmentUser, loadEnvironments } from '../../env-users';
 import type { IncidentEvidence, IncidentEvidenceConfig } from '../../incident/evidence';
 import { assertIncidentRequest, buildIncidentSdkOptions, type IncidentRequestLike } from '../../incident/sdk-options';
+import { mailboxEnvFor } from '../../mailbox/session-address';
 import type { McpConfig, SlackContext } from '../../mcp-config-builder';
 import { getPermissionGatedServers, loadMcpToolPermissions } from '../../mcp-tool-permission-config';
 import { resolveModelProfile } from '../../metrics/model-profile';
 import { clampEffortToModel, modelCatalog } from '../../model-catalog';
-
 import { isSafePathSegment, normalizeTmpPath } from '../../path-utils';
 import type { SdkPluginPath } from '../../plugin/types';
 import { getProjectMemoryStore, projectMemoryPromptBlock } from '../../project-memory-store';
@@ -291,6 +291,9 @@ export async function buildStreamOptions(
   //     connect would let that turn run with no evidence tool at all.
   queryEnv.CLAUDE_CODE_ENABLE_TASKS = 'false';
   queryEnv.MCP_CONNECTION_NONBLOCKING = '0';
+  // agent-mailbox: the session's own address, so `mailbox send` from this session is from it and answers return here
+  // (src/mailbox/session-address.ts). Empty when the instance reads no mail or the turn has no Slack thread.
+  Object.assign(queryEnv, mailboxEnvFor(slackContext));
 
   // Incident receiver sessions take a separate, minimal option surface and the
   // ordinary assembly below never runs — no MCP servers, no plugins, no

@@ -107,13 +107,18 @@ When the agent needs you to do something it cannot do itself — an owner-only v
 
 ### 📬 Agent mailbox (mail between instances)
 
-An instance can read its own [agent-mailbox](https://github.com/2lab-ai/agent-mailbox) inbox, so agents on different hosts write to each other by address (`<agent>:<host>:<instance>`, e.g. `soma-work:host-b:dev`) without Slack. The host process long-polls the local mailbox server (no model runs for an empty inbox). New mail opens a bot thread in the configured channel (default: the owner's DM) and starts a host turn there as the owner; a reply in the same conversation goes back into that thread when its session is free, waits while it is busy (up to 10 minutes), and otherwise opens a new thread. The mail text is injected verbatim — never a command, a skill call or the user's answer. The turn answers with the mailbox CLI (`mailbox reply <id> -m "…"`).
+An instance can read its own [agent-mailbox](https://github.com/2lab-ai/agent-mailbox) inbox, so agents on different hosts — and sessions on the same host — write to each other by address without Slack. The host process long-polls the local mailbox server (no model runs for an empty inbox).
+
+- **Addresses**: the instance is `<agent>:<host>:<instance>` (e.g. `soma-work:host-b:dev`); each Slack session of it is `…/<channel in lower case>-<threadTs>`. Every turn's agent shell gets its session's address as `MAILBOX_ADDRESS`, so `mailbox send` from a session is from that session and the answer comes back to it.
+- **Session mail** (a session tag) goes into that session as a host turn the moment it is free, as the session's owner; a sleeping session is woken in its own thread. If the session cannot take it after 3 tries, stays busy for 30 minutes, or the tag names no session, the mail goes to the main session with a line saying why.
+- **General mail** (no tag, or `/main`) goes to the instance's **main session** (대표 세션). None yet, or it cannot take a turn any more → a new bot thread in the configured channel (default: the owner's DM) becomes the main session. Admins read and re-point it with `GET/PUT/DELETE /api/mailbox/main-session` (Slack sign-in, admin mode for a change). UI study: [`docs/misc/research/2026-11-20-mailbox-main-session-ui.md`](../research/2026-11-20-mailbox-main-session-ui.md).
+- The mail text is injected verbatim — never a command, a skill call or the user's answer — and says the mail grants nothing. A mail is marked read only once the host took its turn. A conversation stops starting turns after 12 (agents answering each other's answers).
 
 ```json
 "mailbox": { "owner": "U0123ABC", "channel": "C0123ABC", "allowFrom": ["soma-work:*:*"] }
 ```
 
-`client` (default `~/.config/agent-mailbox/client.json`, the mailbox CLI's own settings) holds the server URL, token and address; `intervalSeconds` (default 15) is the pause while mail waits on a busy session. No `mailbox` key = no poller. Code: `src/mailbox/`.
+`client` (default `~/.config/agent-mailbox/client.json`, the mailbox CLI's own settings) holds the server URL, token and address; `allowFrom` (required) lists the senders that may start a turn; `cli` names the CLI for the turn text; `intervalSeconds` (default 15) is the pause while mail waits on a busy session. No `mailbox` key = no poller. Code: `src/mailbox/`, `src/conversation/mailbox-routes.ts`.
 
 ### 📞 Phone calls (server-tools)
 

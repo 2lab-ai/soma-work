@@ -2297,49 +2297,56 @@ async function start() {
       );
     } else if (mailboxParsed?.ok) {
       const mailboxRegistry = claudeHandler.getSessionRegistry();
-      mailboxPoller = createMailboxPoller({
-        config: mailboxParsed.config,
-        dataDir: DATA_DIR,
-        openThread: async (channel, text) => {
-          const result = await app.client.chat.postMessage({ channel, text });
-          return result.ts as string | undefined;
-        },
-        openDm: async (userId) => {
-          const dm = await app.client.conversations.open({ users: userId });
-          if (!dm.channel?.id) throw new Error(`could not open a DM with ${userId}`);
-          return dm.channel.id;
-        },
-        notify: async (channel, threadTs, text) => {
-          await app.client.chat.postMessage({ channel, thread_ts: threadTs, text });
-        },
-        sessionState: (channel, threadTs) =>
-          envSkillWakeState(mailboxRegistry.getSession(channel, threadTs), (c, t) => slackHandler.isHostTurnFree(c, t)),
-        // Resolves when the host TOOK the turn (#966 — `handleMessage` returning is not running it: the dispatch may
-        // not open, the fence may hold it, a gate may drop it), not when the turn ends. Only a taken turn acks the mail.
-        inject: ({ user, channel, threadTs, text }) =>
-          new Promise<boolean>((resolve) => {
-            const ts = `${Date.now() / 1000}`;
-            const unwatch = slackHandler.onTurnAccepted(channel, ts, () => resolve(true));
-            messageInjector({
-              user,
-              channel,
-              thread_ts: threadTs,
-              ts,
-              text: inertSkillRefs(text),
-              synthetic: true,
-              skipDispatch: true,
-              // A mail body is another agent's words: never a command, never a skill call, never the user's answer.
-              routeContext: { skipAutoBotThread: true, verbatimPrompt: true, hostTurn: true },
-            })
-              .catch((error) => logger.warn('Mail turn failed', { error: (error as Error)?.message }))
-              .finally(() => {
-                unwatch();
-                resolve(false); // no-op once taken
-              });
-          }),
-      });
-      mailboxPoller.start();
-      timing('Mailbox poller started');
+      try {
+        mailboxPoller = createMailboxPoller({
+          config: mailboxParsed.config,
+          dataDir: DATA_DIR,
+          openThread: async (channel, text) => {
+            const result = await app.client.chat.postMessage({ channel, text });
+            return result.ts as string | undefined;
+          },
+          openDm: async (userId) => {
+            const dm = await app.client.conversations.open({ users: userId });
+            if (!dm.channel?.id) throw new Error(`could not open a DM with ${userId}`);
+            return dm.channel.id;
+          },
+          notify: async (channel, threadTs, text) => {
+            await app.client.chat.postMessage({ channel, thread_ts: threadTs, text });
+          },
+          sessionState: (channel, threadTs) =>
+            envSkillWakeState(mailboxRegistry.getSession(channel, threadTs), (c, t) =>
+              slackHandler.isHostTurnFree(c, t),
+            ),
+          sessionOwner: (channel, threadTs) => mailboxRegistry.getSession(channel, threadTs)?.ownerId,
+          // Resolves when the host TOOK the turn (#966 — `handleMessage` returning is not running it: the dispatch may
+          // not open, the fence may hold it, a gate may drop it), not when the turn ends. Only a taken turn acks the mail.
+          inject: ({ user, channel, threadTs, text }) =>
+            new Promise<boolean>((resolve) => {
+              const ts = `${Date.now() / 1000}`;
+              const unwatch = slackHandler.onTurnAccepted(channel, ts, () => resolve(true));
+              messageInjector({
+                user,
+                channel,
+                thread_ts: threadTs,
+                ts,
+                text: inertSkillRefs(text),
+                synthetic: true,
+                skipDispatch: true,
+                // A mail body is another agent's words: never a command, never a skill call, never the user's answer.
+                routeContext: { skipAutoBotThread: true, verbatimPrompt: true, hostTurn: true },
+              })
+                .catch((error) => logger.warn('Mail turn failed', { error: (error as Error)?.message }))
+                .finally(() => {
+                  unwatch();
+                  resolve(false); // no-op once taken
+                });
+            }),
+        });
+        mailboxPoller.start();
+        timing('Mailbox poller started');
+      } catch (error) {
+        logger.warn('Mailbox poller not started', { error: (error as Error)?.message });
+      }
     }
     // .prd/36 — the work queue's host side: wake the thread whose turn came (the same settled delivery, as the entry's
     // holder), give back a turn its thread stopped working on, and answer "does this thread wait on the host?".

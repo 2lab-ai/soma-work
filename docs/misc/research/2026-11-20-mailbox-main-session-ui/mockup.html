@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><title>메인 세션 — 대시보드 목업</title>
+<style>
+:root{--bg:#0f1115;--panel:#171a21;--line:#262b36;--text:#e6e8ee;--dim:#9aa3b2;--acc:#6aa9ff;--ok:#3ecf8e;--warn:#f5b84d;--hot:#ff6b6b}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Segoe UI",sans-serif}
+.top{display:flex;align-items:center;gap:10px;padding:12px 20px;border-bottom:1px solid var(--line)}
+.top b{font-size:15px}.chip{border:1px solid var(--line);border-radius:999px;padding:3px 10px;color:var(--dim);font-size:12px}
+.chip.on{border-color:var(--warn);color:var(--warn)}.sp{flex:1}
+.cap{margin:12px 20px;padding:8px 12px;border:1px dashed var(--line);border-radius:8px;color:var(--dim);font-size:12px}
+.main{margin:0 20px 16px;border:1px solid #2e4a75;background:linear-gradient(180deg,#152033,#141922);border-radius:12px;padding:14px 16px;display:grid;grid-template-columns:1.25fr 1fr;gap:16px;position:relative}
+.tag{position:absolute;top:-10px;left:14px;background:#2e4a75;color:#cfe1ff;font-size:11px;padding:2px 8px;border-radius:6px;letter-spacing:.3px}
+.row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.pill{font-size:12px;padding:2px 9px;border-radius:999px;background:#13301f;color:var(--ok);border:1px solid #1e5c3a}
+.pill.busy{background:#3a2a10;color:var(--warn);border-color:#6b4d16}
+.title{font-weight:600;font-size:15px}
+.addr{font-family:ui-monospace,Menlo,monospace;font-size:12px;background:#0d1320;border:1px solid var(--line);border-radius:6px;padding:3px 7px;color:#b9c7e6}
+.btn{border:1px solid var(--line);background:#1c2230;color:var(--text);border-radius:7px;padding:4px 10px;font-size:12px}
+.btn.pri{background:var(--acc);border-color:var(--acc);color:#071223;font-weight:600}
+.stats{display:flex;gap:14px;margin-top:10px;color:var(--dim);font-size:12px}.stats b{color:var(--text)}
+.tx{margin-top:10px;border-top:1px solid var(--line);padding-top:8px}
+.msg{display:flex;gap:8px;padding:5px 0;font-size:13px}.who{width:64px;color:var(--dim);font-size:12px;flex:none}
+.msg.mail .who{color:#8fb7ff}.compose{display:flex;gap:8px;margin-top:10px}
+.compose input{flex:1;background:#0d1320;border:1px solid var(--line);border-radius:8px;color:var(--text);padding:8px 10px;font-size:13px}
+.feed h4{margin:0 0 6px;font-size:13px;color:var(--dim);font-weight:600}
+.f{display:grid;grid-template-columns:42px 1fr auto;gap:8px;padding:6px 0;border-bottom:1px solid #1d222c;font-size:12px}
+.f .t{color:var(--dim)}.st{font-size:11px;padding:1px 7px;border-radius:999px;border:1px solid var(--line);color:var(--dim)}
+.st.push{color:var(--ok);border-color:#1e5c3a}.st.wait{color:var(--warn);border-color:#6b4d16}.st.main{color:#8fb7ff;border-color:#2e4a75}
+.board{margin:0 20px;display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.col{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px}
+.col h3{margin:0 0 8px;font-size:12px;color:var(--dim);letter-spacing:.4px}
+.card{background:#1b1f28;border:1px solid var(--line);border-radius:8px;padding:9px 10px;margin-bottom:8px}
+.card.mainc{border-color:#2e4a75;box-shadow:0 0 0 1px #2e4a75 inset}
+.card .h{display:flex;gap:6px;align-items:center}.badge{font-size:10px;background:#2e4a75;color:#cfe1ff;padding:1px 6px;border-radius:5px}
+.card .s{color:var(--dim);font-size:12px;margin-top:3px}.menu{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
+.menu .btn{padding:2px 8px;font-size:11px}.note{margin:14px 20px;color:var(--dim);font-size:11px}
+.call{position:absolute;font-size:11px;color:#ffd27a;background:#2a210f;border:1px solid #6b4d16;border-radius:6px;padding:2px 6px}
+</style></head><body>
+<div class="top"><b>soma-work</b><span class="chip">보드</span><span class="chip">설정</span><span class="sp"></span><span class="chip">관리자 승인 0</span><span class="chip on">관리자 모드 켜짐</span></div>
+<div class="cap">capacity · 지금 일하는 세션 3 / 오늘 비용 …</div>
+
+<section class="main"><span class="tag">메인 세션 · 어드민에게만 보임</span>
+  <div>
+    <div class="row"><span class="pill">● 대기 중</span><span class="title">📬 main mailbox session</span><button class="btn">스레드 열기</button><button class="btn">다른 세션을 메인으로…</button></div>
+    <div class="row" style="margin-top:8px"><span class="addr">soma-work:host-a:dev</span><span style="color:var(--dim);font-size:12px">일반 메일 · /main</span><span class="addr">…/d0dm-1795133327.189209</span><button class="btn">주소 복사</button></div>
+    <div class="stats"><span>안 읽은 일반 메일 <b>0</b></span><span>오늘 받은 메일 <b>6</b></span><span>세션으로 바로 감 <b>4</b></span><span>메인으로 넘어옴 <b>1</b></span></div>
+    <div class="tx">
+      <div class="msg mail"><span class="who">✉ 09:41</span><span>soma-work:host-b:dev → "[e2e-5] 버전 보고 요청"</span></div>
+      <div class="msg"><span class="who">봇 09:42</span><span>hostname·version 답장 보냄 (mailbox reply …@host-b)</span></div>
+      <div class="msg"><span class="who">Z 09:50</span><span>pickle한테 오늘 일정 정리 메일 보내줘</span></div>
+    </div>
+    <div class="compose"><input placeholder="메인 세션에 지시하기… (기존 세션 지시 API로 이 스레드에 들어감)"><button class="btn pri">보내기</button></div>
+  </div>
+  <div class="feed"><h4>메일 흐름 (최근)</h4>
+    <div class="f"><span class="t">09:58</span><span>host-b:dev/c0x…-1795.1 → <b>이 스레드 세션</b></span><span class="st push">세션에 넣음</span></div>
+    <div class="f"><span class="t">09:55</span><span>pickle:fold8:main → <b>/main</b></span><span class="st main">메인 세션</span></div>
+    <div class="f"><span class="t">09:51</span><span>host-b:dev → <b>…/c0abc-1795.2</b> (작업 중)</span><span class="st wait">비면 넣음</span></div>
+    <div class="f"><span class="t">09:44</span><span>host-b:dev → <b>…/c0old-1790.9</b> (응답 없음)</span><span class="st main">메인으로 넘어옴</span></div>
+    <div class="f"><span class="t">09:41</span><span>host-b:dev → <b>soma-work:host-a:dev</b></span><span class="st main">메인 세션</span></div>
+  </div>
+</section>
+
+<div class="board">
+  <div class="col"><h3>WORKING</h3>
+    <div class="card"><div class="h"><b>로그인 오류 조사</b></div><div class="s">C0ABC · 작업 중</div>
+      <div class="menu"><button class="btn">✉ 주소 복사</button><button class="btn">📬 메인으로 지정</button></div></div>
+  </div>
+  <div class="col"><h3>WAITING</h3>
+    <div class="card"><div class="h"><b>배포 승인 대기</b></div><div class="s">C0DEF · 답 기다림</div>
+      <div class="menu"><button class="btn">✉ 주소 복사</button><button class="btn">📬 메인으로 지정</button></div></div>
+  </div>
+  <div class="col"><h3>DONE</h3>
+    <div class="card mainc"><div class="h"><b>main mailbox session</b><span class="badge">메인</span></div><div class="s">D0DM · 대기 중 · 메일 6</div>
+      <div class="menu"><button class="btn">✉ 주소 복사</button><button class="btn">메인 해제</button></div></div>
+  </div>
+</div>
+<div class="note">목업(와이어프레임) — 색·간격은 실제 대시보드 토큰을 따른다. 데이터: GET /api/mailbox/main-session · 보드 session_update(카드에 mainSession·mailAddress) · 지시: POST /api/dashboard/session/:key/command · 지정: PUT /api/mailbox/main-session</div>
+</body></html>

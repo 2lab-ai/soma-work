@@ -107,13 +107,18 @@ Slack 네이티브 버튼/폼 UX로 권한 승인, 선택지, 세션 관리를 �
 
 ### 📬 에이전트 우편함 (인스턴스끼리 메일)
 
-인스턴스가 자기 [agent-mailbox](https://github.com/2lab-ai/agent-mailbox) 우편함을 읽는다. 다른 호스트의 에이전트끼리 슬랙 없이 주소(`<에이전트>:<호스트>:<인스턴스>`, 예: `soma-work:host-b:dev`)로 메일을 주고받는다. 호스트 프로세스가 로컬 우편함 서버를 롱폴로 확인하고(빈 함에는 모델이 돌지 않는다), 새 메일이 오면 설정한 채널(기본: 오너 DM)에 봇 스레드를 열고 오너로 호스트 턴을 시작한다. 같은 대화의 답장은 그 세션이 비어 있으면 그 스레드로, 바쁘면 기다렸다가(최대 10분), 아니면 새 스레드로 간다. 메일 본문은 그대로 들어간다 — 명령·스킬 호출·유저 답으로 읽히지 않는다. 턴은 우편함 CLI로 답한다(`mailbox reply <id> -m "…"`).
+인스턴스가 자기 [agent-mailbox](https://github.com/2lab-ai/agent-mailbox) 우편함을 읽는다. 다른 호스트의 에이전트끼리, 그리고 같은 호스트의 세션끼리 슬랙 없이 주소로 메일을 주고받는다. 호스트 프로세스가 로컬 우편함 서버를 롱폴로 확인한다(빈 함에는 모델이 돌지 않는다).
+
+- **주소**: 인스턴스는 `<에이전트>:<호스트>:<인스턴스>`(예: `soma-work:host-b:dev`), 그 인스턴스의 Slack 세션은 `…/<채널 소문자>-<threadTs>`. 턴마다 에이전트 셸에 그 세션의 주소가 `MAILBOX_ADDRESS`로 들어가서, 세션에서 `mailbox send`로 보낸 메일은 그 세션이 보낸 것이 되고 답장도 그 세션으로 돌아온다.
+- **세션 메일**(꼬리표 있음)은 그 세션이 비는 순간 그 세션 주인으로 호스트 턴이 된다. 잠든 세션은 자기 스레드에서 깨운다. 3번 못 받거나 30분 바쁘거나 그런 세션이 없으면 메인 세션으로 가고, 왜 왔는지 한 줄이 붙는다.
+- **일반 메일**(꼬리표 없음, `/main`)은 인스턴스의 **메인 세션(대표 세션)**이 받는다. 아직 없거나 더 이상 턴을 못 받으면 설정한 채널(기본: 오너 DM)에 새 봇 스레드를 열어 메인 세션으로 삼는다. 어드민은 `GET/PUT/DELETE /api/mailbox/main-session`(Slack 로그인, 변경은 관리자 모드)으로 보고 바꾼다. UI 연구: [`docs/misc/research/2026-11-20-mailbox-main-session-ui.md`](../research/2026-11-20-mailbox-main-session-ui.md).
+- 메일 본문은 그대로 들어간다 — 명령·스킬 호출·유저 답으로 읽히지 않고, 메일이 아무 권한도 주지 않는다고 적혀 들어간다. 호스트가 턴을 받았을 때만 읽음 처리한다. 한 대화가 12번 턴을 열면 멈춘다(에이전트끼리 답장에 답장하는 것 방지).
 
 ```json
 "mailbox": { "owner": "U0123ABC", "channel": "C0123ABC", "allowFrom": ["soma-work:*:*"] }
 ```
 
-`client`(기본 `~/.config/agent-mailbox/client.json`, 우편함 CLI 자신의 설정)에 서버 URL·토큰·주소가 있다. `intervalSeconds`(기본 15)는 바쁜 세션을 기다리는 간격. `mailbox` 키가 없으면 poller도 없다. 코드: `src/mailbox/`.
+`client`(기본 `~/.config/agent-mailbox/client.json`, 우편함 CLI 자신의 설정)에 서버 URL·토큰·주소가 있다. `allowFrom`(필수)은 턴을 열 수 있는 보낸 사람, `cli`는 턴 안내문에 쓸 CLI, `intervalSeconds`(기본 15)는 바쁜 세션을 기다리는 간격. `mailbox` 키가 없으면 poller도 없다. 코드: `src/mailbox/`, `src/conversation/mailbox-routes.ts`.
 
 ### 📞 전화 걸고 받기 (server-tools)
 

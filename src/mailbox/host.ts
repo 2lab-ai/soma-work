@@ -1,15 +1,13 @@
 /**
- * Production wiring of the mailbox poller: the HTTP client for the local mailbox server and the file that remembers
- * which Slack thread each mail conversation lives in.
+ * Production wiring of the mailbox poller: the HTTP client for the local mailbox server, the main session store, and
+ * the instance's mail identity (the per-session `MAILBOX_ADDRESS` agent shells get).
  */
+import * as os from 'node:os';
 import * as path from 'node:path';
-import { atomicWriteJson, readJsonWithBackup } from '@soma/common/atomic-json';
-import { Logger } from '../logger';
-import { type MailboxConfig, readClientSettings } from './config';
-import { type MailboxClient, MailboxPoller, type MailboxPollerDeps, type ThreadLink, type ThreadMap } from './poller';
-
-const logger = new Logger('MailboxHost');
-const MAX_THREADS = 1000;
+import { DEFAULT_CLIENT_FILE, type MailboxConfig, readClientSettings } from './config';
+import { createMainSessionStore } from './main-session';
+import { type MailboxClient, MailboxPoller, type MailboxPollerDeps } from './poller';
+import { setMailboxIdentity } from './session-address';
 
 /** Talks to the mailbox server named in the CLI settings file, re-read on every call. */
 export function createMailboxClient(clientFile: string, fetchImpl: typeof fetch = fetch): MailboxClient {
@@ -50,39 +48,6 @@ export function createMailboxClient(clientFile: string, fetchImpl: typeof fetch 
   };
 }
 
-/** mail thread id → Slack thread, kept in DATA_DIR so a restart keeps conversations in their threads. */
-export function createThreadMap(dataDir: string): ThreadMap {
-  const file = path.join(dataDir, 'mailbox-threads.json');
-  type Entry = ThreadLink & { at: string };
-  let entries: Record<string, Entry> = {};
-  try {
-    const loaded = readJsonWithBackup<Record<string, Entry>>(file, (raw) => {
-      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('not an object');
-      return raw as Record<string, Entry>;
-    });
-    if (loaded) entries = loaded;
-  } catch (error) {
-    logger.warn('Could not read the mailbox thread map; starting empty', { error: (error as Error)?.message });
-  }
-  return {
-    get: (thread) => {
-      const e = entries[thread];
-      return e ? { channel: e.channel, threadTs: e.threadTs } : undefined;
-    },
-    set: (thread, link) => {
-      entries[thread] = { ...link, at: new Date().toISOString() };
-      const keys = Object.keys(entries);
-      if (keys.length > MAX_THREADS) {
-        for (const k of keys
-          .sort((x, y) => entries[x].at.localeCompare(entries[y].at))
-          .slice(0, keys.length - MAX_THREADS))
-          delete entries[k];
-      }
-      atomicWriteJson(file, entries);
-    },
-  };
-}
-
 export interface MailboxHostDeps {
   config: MailboxConfig;
   dataDir: string;
@@ -91,10 +56,19 @@ export interface MailboxHostDeps {
   inject: MailboxPollerDeps['inject'];
   notify: MailboxPollerDeps['notify'];
   sessionState: MailboxPollerDeps['sessionState'];
+  sessionOwner: MailboxPollerDeps['sessionOwner'];
 }
 
 export function createMailboxPoller(deps: MailboxHostDeps): MailboxPoller {
   let dm: string | undefined;
+  // The address agent shells send as: this instance's mailbox + the session tag (src/mailbox/session-address.ts).
+  const settings = readClientSettings(deps.config.clientFile);
+  const defaultClient = path.join(os.homedir(), DEFAULT_CLIENT_FILE.slice(2));
+  setMailboxIdentity({
+    address: settings.address,
+    ...(deps.config.clientFile !== defaultClient ? { clientFile: deps.config.clientFile } : {}),
+  });
+  const mainStore = createMainSessionStore(deps.dataDir);
   return new MailboxPoller({
     client: createMailboxClient(deps.config.clientFile),
     owner: deps.config.owner,
@@ -107,7 +81,13 @@ export function createMailboxPoller(deps: MailboxHostDeps): MailboxPoller {
     inject: deps.inject,
     notify: deps.notify,
     sessionState: deps.sessionState,
-    threads: createThreadMap(deps.dataDir),
+    sessionOwner: deps.sessionOwner,
+    mainSession: {
+      get: () => mainStore.get(),
+      set: (link) => {
+        mainStore.set(link, 'poller');
+      },
+    },
     allowFrom: deps.config.allowFrom,
     cli: deps.config.cli,
     intervalMs: deps.config.intervalMs,
