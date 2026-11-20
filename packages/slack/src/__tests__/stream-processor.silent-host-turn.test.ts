@@ -152,6 +152,17 @@ describe('a host-started turn that ends on a placeholder ends silently', () => {
     expect(h.log.filter((e) => e.kind === 'final')).toMatchObject([{ text: answer }]);
   });
 
+  it('a real finalText after a streamed placeholder is the answer (result-only)', async () => {
+    const h = harness({ isUserInputTurn: false, logVerbosity: LOG_MINIMAL });
+    const answer = 'Lane done: 4/4 in QA (dev2).';
+
+    await run(h, pollTurn('(no message)', answer));
+
+    expect(h.appendText).toHaveBeenCalledTimes(1);
+    expect(h.appendText).toHaveBeenCalledWith('C1:T1:turn-1', answer);
+    expect(h.log.filter((e) => e.kind === 'final')).toMatchObject([{ text: answer }]);
+  });
+
   it('a host turn with a real answer still posts it', async () => {
     const h = harness({ isUserInputTurn: false });
     const answer = 'The QA lane finished: 4/4 moved to QA (dev2).';

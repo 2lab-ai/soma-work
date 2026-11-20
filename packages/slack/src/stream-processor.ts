@@ -1988,12 +1988,11 @@ export class AgentStreamProcessor {
     // A host-started turn's placeholder for "no message" is silence: it stays
     // in the turn's text (the record and the goal read what the model wrote),
     // but is never posted or logged as an answer. A user's turn posts it.
-    if (context.isUserInputTurn === false && textIsSilencePlaceholder(textContent)) {
+    this.lastTextWasSilence = context.isUserInputTurn === false && textIsSilencePlaceholder(textContent);
+    if (this.lastTextWasSilence) {
       segment.shown = '';
-      this.lastTextWasSilence = true;
       return;
     }
-    this.lastTextWasSilence = false;
     this.lastShownSegment = segment;
     // Work log first — before any of the suppressions below (spec 10 §3.3).
     // Held: if this segment turns out to be the final answer it is recorded
