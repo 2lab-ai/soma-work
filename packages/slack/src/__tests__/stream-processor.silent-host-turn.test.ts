@@ -152,6 +152,26 @@ describe('a host-started turn that ends on a placeholder ends silently', () => {
     expect(h.log.filter((e) => e.kind === 'final')).toMatchObject([{ text: answer }]);
   });
 
+  it('a placeholder split across deltas is one segment, and silence', async () => {
+    const h = harness({ isUserInputTurn: false, logVerbosity: LOG_MINIMAL });
+
+    const result = await run(h, [
+      { type: 'tool_call', toolCallId: 'tu_1', name: 'Bash', input: { command: 'cat lock/owner.txt' } },
+      {
+        type: 'tool_result',
+        toolCallId: 'tu_1',
+        content: [{ type: 'text', text: 'session_1 full-deploy range=a..b' }],
+      },
+      { type: 'assistant_delta', text: '(no' },
+      { type: 'assistant_delta', text: ' message)' },
+      { type: 'result', stopReason: 'end_turn' },
+    ]);
+
+    expect(posted(h)).toBe(0);
+    expect(h.log.filter((e) => e.kind === 'final' || e.kind === 'narration')).toEqual([]);
+    expect(result.collectedText).toBe('(no message)');
+  });
+
   it('a real finalText after a streamed placeholder is the answer (result-only)', async () => {
     const h = harness({ isUserInputTurn: false, logVerbosity: LOG_MINIMAL });
     const answer = 'Lane done: 4/4 in QA (dev2).';
