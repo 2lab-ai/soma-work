@@ -217,6 +217,36 @@ function textIndicatesCompactionErrorLeak(text: unknown, isCompactTurn = false):
   return t.includes('api error: 400') && t.includes('text content blocks must be non-empty');
 }
 
+/**
+ * What a model writes when it means "no message". A turn the host started that changed nothing ends without a message
+ * (common.prompt "Host-woken turns"); models sometimes write one of these as the turn's text instead, and the host
+ * posted it as the answer — live 2026-11-20, a 30-minute poll put `(no message)` into a daily-run thread, which then
+ * read as a dead run while it waited on its QA lane.
+ */
+const SILENCE_PLACEHOLDERS = new Set([
+  'no message',
+  'no content',
+  'no response',
+  'no response requested',
+  'silent',
+  '메시지 없음',
+  '응답 없음',
+]);
+
+/** Whether the WHOLE text is a placeholder for silence; prose that mentions one is an answer. */
+function textIsSilencePlaceholder(text: string): boolean {
+  const t = text.trim();
+  if (t.length === 0 || t.length > 40) return false;
+  const bare = t
+    .replace(/^[*_`~\s]+|[*_`~\s]+$/g, '')
+    .replace(/[.!。]+$/, '')
+    .replace(/^[([{]\s*|\s*[)\]}]$/g, '')
+    .replace(/[.!。]+$/, '')
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+  return SILENCE_PLACEHOLDERS.has(bare);
+}
+
 /** Work-log `tool` entries carry at most this many characters (spec 10 §3.3). */
 const WORK_LOG_TOOL_TEXT_MAX = 200;
 
@@ -951,6 +981,11 @@ export class AgentStreamProcessor {
    */
   private slackTextPosted = false;
   /**
+   * The turn's last text segment was a host-started turn's placeholder for silence ({@link textIsSilencePlaceholder}).
+   * A result with no `finalText` then ends the turn silent, as one naming the placeholder does.
+   */
+  private lastTextWasSilence = false;
+  /**
    * Max ms between iterator `.next()` resolutions before
    * {@link StreamCallbacks.onIdleTimeout} fires and the loop returns
    * `aborted: true`. `0` disables — see {@link readIdleTimeoutMs}.
@@ -1143,6 +1178,7 @@ export class AgentStreamProcessor {
     this.lastShownSegment = undefined;
     this.pendingNarration = undefined;
     this.slackTextPosted = false;
+    this.lastTextWasSilence = false;
     // Note: per-turn state fields (_lastAssistantTurnUsage, _lastToolName,
     // _endTurnInfo, _sdkResultError) are NOT reset
     // here — stream-executor constructs a fresh AgentStreamProcessor per turn,
@@ -1949,6 +1985,15 @@ export class AgentStreamProcessor {
 
     currentMessages.push(textContent);
     this.recordSegment(textContent, segment);
+    // A host-started turn's placeholder for "no message" is silence: it stays
+    // in the turn's text (the record and the goal read what the model wrote),
+    // but is never posted or logged as an answer. A user's turn posts it.
+    if (context.isUserInputTurn === false && textIsSilencePlaceholder(textContent)) {
+      segment.shown = '';
+      this.lastTextWasSilence = true;
+      return;
+    }
+    this.lastTextWasSilence = false;
     this.lastShownSegment = segment;
     // Work log first — before any of the suppressions below (spec 10 §3.3).
     // Held: if this segment turns out to be the final answer it is recorded
@@ -2396,12 +2441,23 @@ export class AgentStreamProcessor {
       };
     } else {
       const finalResult = typeof event.finalText === 'string' ? event.finalText : '';
+      // A host-started turn that ends on a placeholder for "no message" ends
+      // silent: no answer, no `final`, and no withheld narration standing in.
+      const endsSilent =
+        context.isUserInputTurn === false &&
+        (finalResult.trim() ? textIsSilencePlaceholder(finalResult) : this.lastTextWasSilence);
       // A finalText that differs from a suppressed leak only by whitespace is
       // that same leak — matched trimmed, so it is not logged a second time.
       const known = finalResult
         ? (this.segments.get(finalResult) ?? this.suppressedByTrimmed.get(finalResult.trim()))
         : undefined;
-      if (known) {
+      if (endsSilent) {
+        // Kept in the turn's text like a streamed placeholder; nothing posted.
+        if (finalResult.trim() && !known) currentMessages.push(stripEchoedDisplayLangTag(finalResult));
+        this.logger.debug('Host-started turn ended on a silence placeholder — nothing posted', {
+          sessionKey: context.sessionKey,
+        });
+      } else if (known) {
         // The answer already streamed as a segment: its directives fired then.
         // A suppressed leak is never the answer: it was recorded as `error`.
         if (known.fate !== 'suppressed' && known.shown.trim()) {
@@ -2427,7 +2483,8 @@ export class AgentStreamProcessor {
       // Nothing reached Slack yet — no `finalText`, or one that showed nothing
       // (directive-only / whitespace): the withheld narration is the answer.
       // Never after a transport-error leak: the executor recovers that turn.
-      if (known?.fate !== 'suppressed') {
+      // Never when the turn chose silence.
+      if (!endsSilent && known?.fate !== 'suppressed') {
         await this.postLastWithheldIfSilent(context, usage, event.durationMs);
       }
       this.settleNarration(context);
