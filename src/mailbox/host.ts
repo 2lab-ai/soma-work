@@ -61,14 +61,7 @@ export interface MailboxHostDeps {
 
 export function createMailboxPoller(deps: MailboxHostDeps): MailboxPoller {
   let dm: string | undefined;
-  // The address agent shells send as: this instance's mailbox + the session tag (src/mailbox/session-address.ts).
-  const settings = readClientSettings(deps.config.clientFile);
   const defaultClient = path.join(os.homedir(), DEFAULT_CLIENT_FILE.slice(2));
-  setMailboxIdentity({
-    address: settings.address,
-    owner: deps.config.owner,
-    ...(deps.config.clientFile !== defaultClient ? { clientFile: deps.config.clientFile } : {}),
-  });
   const mainStore = createMainSessionStore(deps.dataDir);
   return new MailboxPoller({
     client: createMailboxClient(deps.config.clientFile),
@@ -83,10 +76,18 @@ export function createMailboxPoller(deps: MailboxHostDeps): MailboxPoller {
     notify: deps.notify,
     sessionState: deps.sessionState,
     sessionOwner: deps.sessionOwner,
+    // The address agent shells send as: this instance's mailbox + the session tag (src/mailbox/session-address.ts).
+    // Set from the server's answer, so a client file fixed after startup still brings mail (the poll loop retries).
+    onAddress: (address) =>
+      setMailboxIdentity({
+        address,
+        owner: deps.config.owner,
+        ...(deps.config.clientFile !== defaultClient ? { clientFile: deps.config.clientFile } : {}),
+      }),
     mainSession: {
       get: () => {
         const r = mainStore.get();
-        return r ? { channel: r.channel, threadTs: r.threadTs, openedByPoller: r.setBy === 'poller' } : undefined;
+        return r ? { channel: r.channel, threadTs: r.threadTs } : undefined;
       },
       set: (link) => {
         mainStore.set(link, 'poller');

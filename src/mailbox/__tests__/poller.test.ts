@@ -44,7 +44,7 @@ function mail(name: string, over: Partial<MailMessage> & { thread?: string; inRe
 function setup(over: Partial<MailboxPollerDeps> = {}) {
   let unread: MailMessage[] = [];
   const acked: string[] = [];
-  let main: (ThreadLink & { openedByPoller?: boolean }) | undefined;
+  let main: ThreadLink | undefined;
   const owners = new Map<string, string>([
     ['C0OTHER', 'U0OWNER'],
     ['C0MAIN', 'U0OWNER'],
@@ -84,7 +84,7 @@ function setup(over: Partial<MailboxPollerDeps> = {}) {
     mainSession: {
       get: () => main,
       set: (link) => {
-        main = { ...link, openedByPoller: true };
+        main = link;
       },
     },
     allowFrom: ['*:*:*'],
@@ -287,6 +287,82 @@ describe('MailboxPoller — routing', () => {
     expect(t.opened).toHaveLength(0);
     expect(t.getMain()).toEqual({ channel: 'C0OLD', threadTs: '1000.000' });
     expect(t.acked).toEqual(['s8']);
+  });
+
+  it('refused twice, then its session is gone: the main session still gets its own tries', async () => {
+    const t = setup();
+    t.setMain({ channel: 'C0MAIN', threadTs: '1111.000' });
+    t.states.set('C0MAIN-1111.000', 'ready');
+    t.take.value = false; // nobody takes it
+    t.setUnread([mail('s9', { rcpt: `${BASE}/${OTHER_TAG}` })]);
+    await t.poller.tick();
+    await t.poller.tick(); // two refusals in C0OTHER
+    t.owners.delete('C0OTHER'); // the session is gone now
+    for (let i = 0; i < MAX_TAKE_ATTEMPTS - 1; i++) await t.poller.tick();
+    expect(t.injected.filter((x) => x.channel === 'C0MAIN')).toHaveLength(MAX_TAKE_ATTEMPTS - 1);
+    expect(t.acked).toEqual([]); // not dropped on the main session's first refusal
+    await t.poller.tick();
+    expect(t.injected.filter((x) => x.channel === 'C0MAIN')).toHaveLength(MAX_TAKE_ATTEMPTS);
+    expect(t.acked).toEqual(['s9']);
+  });
+
+  it('nobody takes it: no redirect before the session limit, a fresh budget for the main session, then one ack and one warning', async () => {
+    const t = setup();
+    t.setMain({ channel: 'C0MAIN', threadTs: '1111.000' });
+    t.states.set('C0MAIN-1111.000', 'ready');
+    t.take.value = false;
+    t.setUnread([mail('s10', { rcpt: `${BASE}/${OTHER_TAG}` })]);
+    for (let i = 0; i < MAX_TAKE_ATTEMPTS; i++) await t.poller.tick();
+    expect(t.injected.map((x) => x.channel)).toEqual(Array(MAX_TAKE_ATTEMPTS).fill('C0OTHER'));
+    expect(t.acked).toEqual([]);
+    for (let i = 0; i < MAX_TAKE_ATTEMPTS - 1; i++) await t.poller.tick();
+    expect(t.acked).toEqual([]);
+    expect(t.notices).toHaveLength(0);
+    await t.poller.tick();
+    expect(t.injected.filter((x) => x.channel === 'C0MAIN')).toHaveLength(MAX_TAKE_ATTEMPTS);
+    expect(t.acked).toEqual(['s10']);
+    expect(t.notices).toEqual([
+      { channel: 'C0MAIN', threadTs: '1111.000', text: expect.stringContaining('could not start a turn') },
+    ]);
+    await t.poller.tick();
+    expect(t.acked).toEqual(['s10']);
+  });
+
+  it('session busy too long and the main session busy too: the main session gets its own wait before a one-off thread', async () => {
+    const t = setup({ sessionMaxWaitMs: 60_000, busyMaxWaitMs: 30_000 });
+    t.setMain({ channel: 'C0MAIN', threadTs: '1111.000' });
+    t.states.set('C0MAIN-1111.000', 'busy');
+    t.states.set('C0OTHER-2222.000', 'busy');
+    t.setUnread([mail('s11', { rcpt: `${BASE}/${OTHER_TAG}` })]);
+    await t.poller.tick();
+    t.advance(61_000);
+    expect(await t.poller.tick()).toBe('waiting'); // moved to main; main is busy: its wait starts now
+    expect(t.opened).toHaveLength(0);
+    t.advance(31_000);
+    await t.poller.tick();
+    expect(t.opened).toHaveLength(1);
+    expect(t.injected[0].text).toContain('stayed busy');
+  });
+
+  it('a main thread the poller opened before a restart and that never registered is not trusted: a fresh main opens', async () => {
+    const t = setup();
+    t.take.value = false; // its first turn was never taken: no registered session
+    t.setUnread([mail('g6')]);
+    await t.poller.tick();
+    expect(t.getMain()).toEqual({ channel: 'D0DM', threadTs: '100.000' });
+    t.take.value = true;
+    const restarted = new MailboxPoller(t.deps);
+    await restarted.tick();
+    expect(t.injected[t.injected.length - 1]).toMatchObject({ channel: 'D0DM', threadTs: '101.000' });
+    expect(t.getMain()).toEqual({ channel: 'D0DM', threadTs: '101.000' });
+  });
+
+  it('tells the host the mailbox address the server answered with, once per change', async () => {
+    const seen: string[] = [];
+    const t = setup({ onAddress: (a) => seen.push(a) });
+    await t.poller.tick();
+    await t.poller.tick();
+    expect(seen).toEqual([BASE]);
   });
 
   it('a tag that names no session goes to the main session', async () => {

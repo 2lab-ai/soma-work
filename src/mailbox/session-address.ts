@@ -40,11 +40,6 @@ export function tagOf(address: string): string | undefined {
   return slash < 0 ? undefined : address.slice(slash + 1);
 }
 
-export function baseOf(address: string): string {
-  const slash = address.indexOf('/');
-  return slash < 0 ? address : address.slice(0, slash);
-}
-
 interface MailboxIdentity {
   /** This instance's mailbox address, no tag. */
   address: string;

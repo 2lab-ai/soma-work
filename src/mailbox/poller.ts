@@ -24,7 +24,7 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { Logger } from '../logger';
 import { matchesAddressPattern } from './config';
-import { baseOf, MAIN_SESSION_TAG, type SessionTarget, sessionFromTag, sessionMailTag, tagOf } from './session-address';
+import { MAIN_SESSION_TAG, type SessionTarget, sessionFromTag, sessionMailTag, tagOf } from './session-address';
 
 export const LONG_POLL_SECONDS = 25;
 const MAX_BODY_CHARS = 20_000;
@@ -64,8 +64,7 @@ export interface MailboxClient {
 export type ThreadLink = SessionTarget;
 
 export interface MainSessionAccess {
-  /** `openedByPoller`: the poller opened this thread itself (it may run turns there as the mailbox owner). */
-  get(): (ThreadLink & { openedByPoller?: boolean }) | undefined;
+  get(): ThreadLink | undefined;
   set(link: ThreadLink): void;
 }
 
@@ -89,8 +88,10 @@ export interface MailboxPollerDeps {
   /** A plain line in a thread (why a mail was not handled, or came here instead of its session). */
   notify: (channel: string, threadTs: string, text: string) => Promise<void>;
   sessionState: (channel: string, threadTs: string) => SessionState;
-  /** Who owns a session — a turn in an existing session runs as its owner. */
+  /** Who owns a session (undefined: no such session). Only the mailbox owner's own sessions take mail. */
   sessionOwner: (channel: string, threadTs: string) => string | undefined;
+  /** The mailbox address the server answered with, on the first pass and whenever it changes. */
+  onAddress?: (address: string) => void;
   mainSession: MainSessionAccess;
   allowFrom: string[];
   /** How the turn text names the mailbox CLI (an absolute path where agent shells lack it on PATH). */
@@ -213,7 +214,11 @@ export class MailboxPoller {
   private failedTakes = new Map<string, number>();
   /** Session mail that gave up on its session and goes to the main session now. */
   private redirected = new Map<string, string>();
-  /** Main threads this poller opened, by when: a fresh one whose session reads gone is retried in place. */
+  /**
+   * Main threads this poller opened in this process, by when: a fresh one whose session reads gone is retried in
+   * place, and one whose session is not registered yet may still take turns as the owner. Not persisted: after a
+   * restart (or an owner change) an unregistered thread is replaced, never trusted on a record alone.
+   */
   private openedAt = new Map<string, number>();
   private capNoticed = new Set<string>();
   private abort?: AbortController;
@@ -274,6 +279,7 @@ export class MailboxPoller {
   /** One pass over the unread mail. Exposed for tests. */
   async tick(waitSeconds = 0, signal?: AbortSignal): Promise<TickResult> {
     const { address, messages } = await this.deps.client.inbox(waitSeconds, signal);
+    if (address && address !== this.address) this.deps.onAddress?.(address);
     this.address = address;
     if (messages.length === 0) return 'idle';
     /** Sessions (and the main session) that got a turn this pass: the next mail for them waits. */
@@ -294,7 +300,7 @@ export class MailboxPoller {
         await this.ack(m);
         continue;
       }
-      if (!this.deps.allowFrom.some((p) => matchesAddressPattern(baseOf(m.from), p))) {
+      if (!this.deps.allowFrom.some((p) => matchesAddressPattern(m.from.split('/', 1)[0], p))) {
         logger.warn('Mail from a sender outside allowFrom; marked read, not handled', { id: m.id, from: m.from });
         await this.ack(m);
         progressed = true;
@@ -330,8 +336,7 @@ export class MailboxPoller {
     const key = this.keyOf(m);
     const tag = tagOf(m.rcpt ?? '');
     if (tag && tag !== MAIN_SESSION_TAG && !this.redirected.has(key)) {
-      this.redirected.set(key, `the session ${tag} could not take it (${fails} tries)`);
-      this.failedTakes.delete(key);
+      this.redirectToMain(key, `the session ${tag} could not take it (${fails} tries)`);
       return false;
     }
     logger.warn('Mail could not start a turn; marked read', { id: m.id, attempts: fails });
@@ -364,6 +369,14 @@ export class MailboxPoller {
     }
   }
 
+  /** Session mail moves to the main session: the main session gets its own try budget and its own busy wait. */
+  private redirectToMain(key: string, note: string): string {
+    this.redirected.set(key, note);
+    this.failedTakes.delete(key);
+    this.firstSeen.delete(key);
+    return note;
+  }
+
   private waitedTooLong(key: string, limit: number): boolean {
     const seen = this.firstSeen.get(key) ?? this.now();
     this.firstSeen.set(key, seen);
@@ -378,18 +391,14 @@ export class MailboxPoller {
     if (target && !note) {
       const refusal = this.sessionRefusal(target, tag as string);
       if (refusal) {
-        note = refusal;
-        this.redirected.set(key, note);
+        note = this.redirectToMain(key, refusal);
       } else {
         const outcome = await this.toSession(m, target, busy, signal);
         if (outcome !== 'to-main') return outcome;
-        note = `the session ${tag} stayed busy`;
-        this.redirected.set(key, note);
-        this.failedTakes.delete(key); // the main session starts with a clean count
+        note = this.redirectToMain(key, `the session ${tag} stayed busy`);
       }
     } else if (tag && tag !== MAIN_SESSION_TAG && !target && !note) {
-      note = `no session of this instance is called ${tag}`;
-      this.redirected.set(key, note);
+      note = this.redirectToMain(key, `no session of this instance is called ${tag}`);
     }
     return this.toMain(
       m,
@@ -414,7 +423,7 @@ export class MailboxPoller {
     }
     // ready, or gone (asleep): a turn in its own thread wakes a sleeping session; a refusal counts a try
     busy.add(slot);
-    const taken = await this.startTurn(m, target, this.deps.owner, { role: 'session' }, signal);
+    const taken = await this.startTurn(m, target, { role: 'session' }, signal);
     return taken ? 'taken' : 'not-taken';
   }
 
@@ -434,18 +443,18 @@ export class MailboxPoller {
   ): Promise<Outcome> {
     if (busy.has('main')) return 'waiting';
     const found = this.deps.mainSession.get();
-    // Only a main session the mailbox owner owns — or a thread the poller opened and whose session is not registered
-    // yet — takes turns as the owner. Anything else is replaced by a fresh main session.
+    // Only a main session the mailbox owner owns — or a thread this poller opened in this process whose session is not
+    // registered yet — takes turns as the owner. Anything else is replaced by a fresh main session.
     const mainOwner = found ? this.deps.sessionOwner(found.channel, found.threadTs) : undefined;
+    const opened = found ? this.openedAt.get(`${found.channel}-${found.threadTs}`) : undefined;
     const main =
-      found && (mainOwner === this.deps.owner || (mainOwner === undefined && found.openedByPoller)) ? found : undefined;
+      found && (mainOwner === this.deps.owner || (mainOwner === undefined && opened !== undefined)) ? found : undefined;
     if (main) {
       const state = this.deps.sessionState(main.channel, main.threadTs);
-      const opened = this.openedAt.get(`${main.channel}-${main.threadTs}`);
       const ownFresh = opened !== undefined && this.now() - opened < BUSY_MAX_WAIT_MS;
       if (state === 'ready' || (state === 'gone' && ownFresh)) {
         busy.add('main');
-        return (await this.startTurn(m, main, this.deps.owner, { role: 'main', note }, signal)) ? 'taken' : 'not-taken';
+        return (await this.startTurn(m, main, { role: 'main', note }, signal)) ? 'taken' : 'not-taken';
       }
       if (state === 'busy') {
         if (!this.waitedTooLong(this.keyOf(m), this.deps.busyMaxWaitMs ?? BUSY_MAX_WAIT_MS)) return 'waiting';
@@ -455,7 +464,7 @@ export class MailboxPoller {
       // gone: try it in place once (wakes a sleeping main session); not taken → a new main session next try
       if (!this.failedTakes.get(this.keyOf(m))) {
         busy.add('main');
-        return (await this.startTurn(m, main, this.deps.owner, { role: 'main', note }, signal)) ? 'taken' : 'not-taken';
+        return (await this.startTurn(m, main, { role: 'main', note }, signal)) ? 'taken' : 'not-taken';
       }
     }
     busy.add('main');
@@ -478,13 +487,12 @@ export class MailboxPoller {
       this.openedAt.set(`${channel}-${threadTs}`, this.now());
       logger.info('Opened a new main mailbox session', { channel, threadTs });
     }
-    return (await this.startTurn(m, link, this.deps.owner, { role, note }, signal)) ? 'taken' : 'not-taken';
+    return (await this.startTurn(m, link, { role, note }, signal)) ? 'taken' : 'not-taken';
   }
 
   private async startTurn(
     m: MailMessage,
     link: ThreadLink,
-    user: string,
     where: { role: TurnRole; note?: string },
     signal?: AbortSignal,
   ): Promise<boolean> {
@@ -494,7 +502,7 @@ export class MailboxPoller {
     const sessionAddress = tag && this.address ? `${this.address}/${tag}` : undefined;
     try {
       const taken = await this.deps.inject({
-        user,
+        user: this.deps.owner,
         channel: link.channel,
         threadTs: link.threadTs,
         text: mailTurnText(this.address, m, this.deps.cli, { ...where, sessionAddress }),
