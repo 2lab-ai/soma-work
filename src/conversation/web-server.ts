@@ -35,6 +35,7 @@ import {
 import { dictationWhisperFromA2t, registerDictationRoutes } from './dictation-routes';
 import { registerDisplayLang } from './display-lang-web';
 import { removeHeartbeat, startHeartbeatLoop } from './instance-registry';
+import { registerMailboxRoutes } from './mailbox-routes';
 import { registerMemoryRoutes } from './memory-routes';
 import {
   type AuthContext,
@@ -767,6 +768,8 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   // Secrets — the settings page "비밀" tab (secret-access WU1, #1337): names only, an admin signed in with Slack.
   registerSecretsRoutes(server, authMiddleware, csrfMiddleware);
   registerServerToolsRoutes(server, authMiddleware, csrfMiddleware);
+  // Agent mailbox main session (대표 세션): an admin reads and re-points it (src/mailbox/main-session.ts).
+  registerMailboxRoutes(server, authMiddleware, csrfMiddleware);
 
   // Health check
   server.get('/health', async (_request, reply) => {

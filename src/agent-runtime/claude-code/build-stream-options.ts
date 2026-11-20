@@ -50,11 +50,11 @@ import {
 import { isEnvironmentUser, loadEnvironments } from '../../env-users';
 import type { IncidentEvidence, IncidentEvidenceConfig } from '../../incident/evidence';
 import { assertIncidentRequest, buildIncidentSdkOptions, type IncidentRequestLike } from '../../incident/sdk-options';
+import { mailboxEnvFor } from '../../mailbox/session-address';
 import type { McpConfig, SlackContext } from '../../mcp-config-builder';
 import { getPermissionGatedServers, loadMcpToolPermissions } from '../../mcp-tool-permission-config';
 import { resolveModelProfile } from '../../metrics/model-profile';
 import { clampEffortToModel, modelCatalog } from '../../model-catalog';
-
 import { isSafePathSegment, normalizeTmpPath } from '../../path-utils';
 import type { SdkPluginPath } from '../../plugin/types';
 import { getProjectMemoryStore, projectMemoryPromptBlock } from '../../project-memory-store';
@@ -311,6 +311,10 @@ export async function buildStreamOptions(
     );
     return attachStderrCapture(incidentOptions, logger);
   }
+
+  // agent-mailbox: the session's own address, so `mailbox send` from this session is from it and answers return here
+  // (src/mailbox/session-address.ts). Only the mailbox owner's sessions with a Slack thread; empty otherwise.
+  Object.assign(queryEnv, mailboxEnvFor(slackContext, session?.ownerId ?? slackContext?.user));
 
   const options: Options = {
     // Load settings from filesystem for backward compatibility (Agent SDK v0.1.0 breaking change)

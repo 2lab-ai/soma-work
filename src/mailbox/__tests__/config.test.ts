@@ -3,7 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { matchesAddressPattern, parseMailboxConfig, readClientSettings } from '../config';
-import { createMailboxClient, createThreadMap } from '../host';
+import { createMailboxClient } from '../host';
 
 describe('parseMailboxConfig', () => {
   it('absent or disabled = no poller', () => {
@@ -134,14 +134,5 @@ describe('createMailboxClient', () => {
     fs.writeFileSync(file, JSON.stringify({ url: 'http://127.0.0.1:7780', token: 'tok', address: 'a:b:c' }));
     const fake = (async () => new Response('{"error":"nope"}', { status: 401 })) as unknown as typeof fetch;
     await expect(createMailboxClient(file, fake).inbox(0)).rejects.toThrow(/401/);
-  });
-});
-
-describe('createThreadMap', () => {
-  it('keeps conversation → thread links across a restart', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mbx-threads-'));
-    createThreadMap(dir).set('conv', { channel: 'C0A', threadTs: '1.0' });
-    expect(createThreadMap(dir).get('conv')).toEqual({ channel: 'C0A', threadTs: '1.0' });
-    expect(createThreadMap(dir).get('other')).toBeUndefined();
   });
 });
