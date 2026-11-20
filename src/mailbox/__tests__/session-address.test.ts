@@ -34,16 +34,20 @@ describe('session tags', () => {
     expect(tagOf('a:b:c')).toBeUndefined();
   });
 
-  it('agent shells get the session address only when the instance reads mail and the turn has a thread', () => {
-    expect(mailboxEnvFor({ channel: 'C0AQ1DWLQSD', threadTs: '1.000001' })).toEqual({});
-    setMailboxIdentity({ address: 'soma-work:host-a:dev' });
-    expect(mailboxEnvFor({ channel: 'C0AQ1DWLQSD', threadTs: '1795101652.380729' })).toEqual({
+  it('agent shells get the session address only for the mailbox owner, when the instance reads mail and the turn has a thread', () => {
+    expect(mailboxEnvFor({ channel: 'C0AQ1DWLQSD', threadTs: '1.000001' }, 'U0OWNER')).toEqual({});
+    setMailboxIdentity({ address: 'soma-work:host-a:dev', owner: 'U0OWNER' });
+    expect(mailboxEnvFor({ channel: 'C0AQ1DWLQSD', threadTs: '1795101652.380729' }, 'U0OWNER')).toEqual({
       MAILBOX_ADDRESS: 'soma-work:host-a:dev/c0aq1dwlqsd-1795101652.380729',
     });
-    expect(mailboxEnvFor({ channel: '', threadTs: undefined })).toEqual({});
-    expect(mailboxEnvFor(undefined)).toEqual({});
-    setMailboxIdentity({ address: 'soma-work:host-a:dev', clientFile: '/srv/mbx/client.json' });
-    expect(mailboxEnvFor({ channel: 'C0X1', threadTs: '1795101652.1' })).toEqual({
+    // someone else's session, an environment user, or no owner: no address another agent could write to
+    expect(mailboxEnvFor({ channel: 'C0AQ1DWLQSD', threadTs: '1795101652.380729' }, 'U0OTHER')).toEqual({});
+    expect(mailboxEnvFor({ channel: 'C0AQ1DWLQSD', threadTs: '1795101652.380729' }, 'env:iq-dev2')).toEqual({});
+    expect(mailboxEnvFor({ channel: 'C0AQ1DWLQSD', threadTs: '1795101652.380729' }, undefined)).toEqual({});
+    expect(mailboxEnvFor({ channel: '', threadTs: undefined }, 'U0OWNER')).toEqual({});
+    expect(mailboxEnvFor(undefined, 'U0OWNER')).toEqual({});
+    setMailboxIdentity({ address: 'soma-work:host-a:dev', owner: 'U0OWNER', clientFile: '/srv/mbx/client.json' });
+    expect(mailboxEnvFor({ channel: 'C0X1', threadTs: '1795101652.1' }, 'U0OWNER')).toEqual({
       MAILBOX_ADDRESS: 'soma-work:host-a:dev/c0x1-1795101652.1',
       MAILBOX_CONFIG: '/srv/mbx/client.json',
     });

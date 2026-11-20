@@ -48,6 +48,8 @@ export function baseOf(address: string): string {
 interface MailboxIdentity {
   /** This instance's mailbox address, no tag. */
   address: string;
+  /** The Slack user whose sessions are mail addresses (config.json mailbox.owner). Nobody else's are. */
+  owner: string;
   /** The mailbox CLI settings file when it is not the CLI's default (the CLI must read the same one). */
   clientFile?: string;
 }
@@ -69,8 +71,16 @@ export function sessionMailAddress(channel: string | undefined, threadTs: string
   return identity && tag ? `${identity.address}/${tag}` : undefined;
 }
 
-/** Agent environment for one turn: the session's address (and the CLI settings file) so its mail is from it. */
-export function mailboxEnvFor(slack: { channel?: string; threadTs?: string } | undefined): Record<string, string> {
+/**
+ * Agent environment for one turn: the session's address (and the CLI settings file) so its mail is from it. Only a
+ * session of the mailbox owner gets one — mail to a session runs a turn as that session's owner, so no other user's
+ * (or environment user's) session is an address another agent could write to.
+ */
+export function mailboxEnvFor(
+  slack: { channel?: string; threadTs?: string } | undefined,
+  sessionOwner: string | undefined,
+): Record<string, string> {
+  if (!identity || !sessionOwner || sessionOwner !== identity.owner) return {};
   const address = sessionMailAddress(slack?.channel, slack?.threadTs);
   if (!address) return {};
   return { MAILBOX_ADDRESS: address, ...(identity?.clientFile ? { MAILBOX_CONFIG: identity.clientFile } : {}) };

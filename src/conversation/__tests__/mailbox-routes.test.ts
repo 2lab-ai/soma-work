@@ -18,11 +18,15 @@ describe('mailbox main-session routes', () => {
     routes = await import('../mailbox-routes');
     identity = await import('../../mailbox/session-address');
     routes.setMailboxRoutesDataDirForTests(dir);
-    identity.setMailboxIdentity({ address: 'soma-work:host-a:dev' });
+    identity.setMailboxIdentity({ address: 'soma-work:host-a:dev', owner: 'U_ADMIN' });
+    routes.setMailboxRoutesSessionOwner((channel) =>
+      channel === 'C0AQ1DWLQSD' ? 'U_ADMIN' : channel === 'C0SOMEONE' ? 'U_SOMEONE' : undefined,
+    );
   });
 
   afterEach(() => {
     routes.setMailboxRoutesDataDirForTests(null);
+    routes.setMailboxRoutesSessionOwner(null);
     identity.setMailboxIdentity(null);
   });
 
@@ -100,5 +104,19 @@ describe('mailbox main-session routes', () => {
       payload: { key: 'dashboard-task-1' },
     });
     expect(bad.statusCode).toBe(400);
+    const missing = await server.inject({
+      method: 'PUT',
+      url: '/api/mailbox/main-session',
+      headers: { 'x-test-user': 'U_ADMIN', 'x-admin-mode': 'on' },
+      payload: { key: 'C0GONE-1795101652.1' },
+    });
+    expect(missing.statusCode).toBe(404);
+    const someoneElse = await server.inject({
+      method: 'PUT',
+      url: '/api/mailbox/main-session',
+      headers: { 'x-test-user': 'U_ADMIN', 'x-admin-mode': 'on' },
+      payload: { key: 'C0SOMEONE-1795101652.1' },
+    });
+    expect(someoneElse.statusCode).toBe(403);
   });
 });

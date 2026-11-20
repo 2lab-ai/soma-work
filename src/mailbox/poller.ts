@@ -6,9 +6,11 @@
  * empty inbox. Where a mail goes is decided by its recipient (`rcpt`, the address with its session tag):
  *
  * - **a session tag** (`…/<channel>-<threadTs>`) → that session, as a host turn the moment it is free (busy: the
- *   mail waits and is tried again every `intervalMs`). A session that slept is tried in place, which wakes it. One
- *   that cannot take the turn after {@link MAX_TAKE_ATTEMPTS} tries, or stays busy past `sessionMaxWaitMs`, hands the
- *   mail to the main session with a line saying so.
+ *   mail waits and is tried again every `intervalMs`). A session that slept is tried in place, which wakes it. Only
+ *   the mailbox owner's own sessions take mail: a session that no longer exists or belongs to someone else (another
+ *   user, an environment user) never gets a turn from another agent's mail. Those, and a session that cannot take
+ *   the turn after {@link MAX_TAKE_ATTEMPTS} tries or stays busy past `sessionMaxWaitMs`, hand the mail to the main
+ *   session with a line saying why.
  * - **no tag, or `/main`** → the instance's **main session** (src/mailbox/main-session.ts). None set, or it can no
  *   longer take a turn → a new bot thread in the configured channel (default the owner's DM) becomes the main
  *   session. A main session busy past `busyMaxWaitMs` gets the mail in a one-off thread instead (the main session
@@ -62,7 +64,8 @@ export interface MailboxClient {
 export type ThreadLink = SessionTarget;
 
 export interface MainSessionAccess {
-  get(): ThreadLink | undefined;
+  /** `openedByPoller`: the poller opened this thread itself (it may run turns there as the mailbox owner). */
+  get(): (ThreadLink & { openedByPoller?: boolean }) | undefined;
   set(link: ThreadLink): void;
 }
 
@@ -70,7 +73,10 @@ export type SessionState = 'ready' | 'busy' | 'gone';
 
 export interface MailboxPollerDeps {
   client: MailboxClient;
-  /** Runs turns in threads the poller opens (the main session, one-off threads). */
+  /**
+   * The mailbox owner: turns run as this user, and only in this user's sessions or in threads the poller opened. Mail
+   * for another user's session goes to the main session — another agent's mail never runs a turn as someone else.
+   */
   owner: string;
   /** The channel new mail threads open in. */
   resolveChannel: () => Promise<string>;
@@ -370,10 +376,17 @@ export class MailboxPoller {
     const target = tag && tag !== MAIN_SESSION_TAG ? sessionFromTag(tag) : undefined;
     let note = this.redirected.get(key);
     if (target && !note) {
-      const outcome = await this.toSession(m, target, busy, signal);
-      if (outcome !== 'to-main') return outcome;
-      note = `the session ${tag} stayed busy`;
-      this.redirected.set(key, note);
+      const refusal = this.sessionRefusal(target, tag as string);
+      if (refusal) {
+        note = refusal;
+        this.redirected.set(key, note);
+      } else {
+        const outcome = await this.toSession(m, target, busy, signal);
+        if (outcome !== 'to-main') return outcome;
+        note = `the session ${tag} stayed busy`;
+        this.redirected.set(key, note);
+        this.failedTakes.delete(key); // the main session starts with a clean count
+      }
     } else if (tag && tag !== MAIN_SESSION_TAG && !target && !note) {
       note = `no session of this instance is called ${tag}`;
       this.redirected.set(key, note);
@@ -399,11 +412,18 @@ export class MailboxPoller {
       if (this.waitedTooLong(this.keyOf(m), this.deps.sessionMaxWaitMs ?? SESSION_MAX_WAIT_MS)) return 'to-main';
       return 'waiting';
     }
-    // ready, or gone (asleep / closed): a turn in its own thread wakes a sleeping session; a refusal counts a try
+    // ready, or gone (asleep): a turn in its own thread wakes a sleeping session; a refusal counts a try
     busy.add(slot);
-    const owner = this.deps.sessionOwner(target.channel, target.threadTs) ?? this.deps.owner;
-    const taken = await this.startTurn(m, target, owner, { role: 'session' }, signal);
+    const taken = await this.startTurn(m, target, this.deps.owner, { role: 'session' }, signal);
     return taken ? 'taken' : 'not-taken';
+  }
+
+  /** Why mail cannot go into this session (it goes to the main session instead), or undefined when it can. */
+  private sessionRefusal(target: SessionTarget, tag: string): string | undefined {
+    const owner = this.deps.sessionOwner(target.channel, target.threadTs);
+    if (owner === undefined) return `the session ${tag} no longer exists`;
+    if (owner !== this.deps.owner) return `the session ${tag} belongs to someone else`;
+    return undefined;
   }
 
   private async toMain(
@@ -413,15 +433,19 @@ export class MailboxPoller {
     signal?: AbortSignal,
   ): Promise<Outcome> {
     if (busy.has('main')) return 'waiting';
-    const main = this.deps.mainSession.get();
+    const found = this.deps.mainSession.get();
+    // Only a main session the mailbox owner owns — or a thread the poller opened and whose session is not registered
+    // yet — takes turns as the owner. Anything else is replaced by a fresh main session.
+    const mainOwner = found ? this.deps.sessionOwner(found.channel, found.threadTs) : undefined;
+    const main =
+      found && (mainOwner === this.deps.owner || (mainOwner === undefined && found.openedByPoller)) ? found : undefined;
     if (main) {
       const state = this.deps.sessionState(main.channel, main.threadTs);
       const opened = this.openedAt.get(`${main.channel}-${main.threadTs}`);
       const ownFresh = opened !== undefined && this.now() - opened < BUSY_MAX_WAIT_MS;
       if (state === 'ready' || (state === 'gone' && ownFresh)) {
         busy.add('main');
-        const owner = this.deps.sessionOwner(main.channel, main.threadTs) ?? this.deps.owner;
-        return (await this.startTurn(m, main, owner, { role: 'main', note }, signal)) ? 'taken' : 'not-taken';
+        return (await this.startTurn(m, main, this.deps.owner, { role: 'main', note }, signal)) ? 'taken' : 'not-taken';
       }
       if (state === 'busy') {
         if (!this.waitedTooLong(this.keyOf(m), this.deps.busyMaxWaitMs ?? BUSY_MAX_WAIT_MS)) return 'waiting';
@@ -431,8 +455,7 @@ export class MailboxPoller {
       // gone: try it in place once (wakes a sleeping main session); not taken → a new main session next try
       if (!this.failedTakes.get(this.keyOf(m))) {
         busy.add('main');
-        const owner = this.deps.sessionOwner(main.channel, main.threadTs) ?? this.deps.owner;
-        return (await this.startTurn(m, main, owner, { role: 'main', note }, signal)) ? 'taken' : 'not-taken';
+        return (await this.startTurn(m, main, this.deps.owner, { role: 'main', note }, signal)) ? 'taken' : 'not-taken';
       }
     }
     busy.add('main');

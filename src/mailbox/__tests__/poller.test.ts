@@ -44,7 +44,13 @@ function mail(name: string, over: Partial<MailMessage> & { thread?: string; inRe
 function setup(over: Partial<MailboxPollerDeps> = {}) {
   let unread: MailMessage[] = [];
   const acked: string[] = [];
-  let main: ThreadLink | undefined;
+  let main: (ThreadLink & { openedByPoller?: boolean }) | undefined;
+  const owners = new Map<string, string>([
+    ['C0OTHER', 'U0OWNER'],
+    ['C0MAIN', 'U0OWNER'],
+    ['C0OLD', 'U0OWNER'],
+    ['C0SOMEONE', 'U0SOMEONE'],
+  ]);
   const injected: { channel: string; threadTs: string; text: string; user: string }[] = [];
   const opened: { channel: string; text: string }[] = [];
   const notices: { channel: string; threadTs: string; text: string }[] = [];
@@ -74,11 +80,11 @@ function setup(over: Partial<MailboxPollerDeps> = {}) {
       notices.push({ channel, threadTs, text });
     },
     sessionState: (channel, threadTs) => states.get(`${channel}-${threadTs}`) ?? 'gone',
-    sessionOwner: (channel) => (channel === 'C0OTHER' ? 'U0OTHER' : undefined),
+    sessionOwner: (channel) => owners.get(channel),
     mainSession: {
       get: () => main,
       set: (link) => {
-        main = link;
+        main = { ...link, openedByPoller: true };
       },
     },
     allowFrom: ['*:*:*'],
@@ -95,7 +101,8 @@ function setup(over: Partial<MailboxPollerDeps> = {}) {
     notices,
     take,
     states,
-    getMain: () => main,
+    getMain: () => (main ? { channel: main.channel, threadTs: main.threadTs } : undefined),
+    owners,
     setMain: (l: ThreadLink) => {
       main = l;
     },
@@ -176,14 +183,14 @@ describe('MailboxPoller — routing', () => {
     expect(t.acked).toEqual(['g4']);
   });
 
-  it('session mail goes straight into that session, as its owner, the moment it is free', async () => {
+  it('session mail goes straight into that session, as the mailbox owner whose session it is, the moment it is free', async () => {
     const t = setup();
     t.states.set('C0OTHER-2222.000', 'busy');
     t.setUnread([mail('s1', { rcpt: `${BASE}/${OTHER_TAG}` })]);
     expect(await t.poller.tick()).toBe('waiting');
     t.states.set('C0OTHER-2222.000', 'ready');
     await t.poller.tick();
-    expect(t.injected[0]).toMatchObject({ user: 'U0OTHER', ...OTHER });
+    expect(t.injected[0]).toMatchObject({ user: 'U0OWNER', ...OTHER });
     expect(t.injected[0].text).toContain('This mail was addressed to this session.');
     expect(t.injected[0].text).toContain(`mail for ${BASE}/${OTHER_TAG}`);
     expect(t.opened).toHaveLength(0);
@@ -226,6 +233,60 @@ describe('MailboxPoller — routing', () => {
     await t.poller.tick();
     expect(t.injected[0]).toMatchObject({ channel: 'C0MAIN' });
     expect(t.injected[0].text).toContain('stayed busy');
+  });
+
+  it('a well-formed tag whose session no longer exists goes to the main session, never into that thread', async () => {
+    const t = setup();
+    t.setMain({ channel: 'C0MAIN', threadTs: '1111.000' });
+    t.states.set('C0MAIN-1111.000', 'ready');
+    t.setUnread([mail('s6', { rcpt: `${BASE}/c0gone-1795101652.1` })]);
+    await t.poller.tick();
+    expect(t.injected).toHaveLength(1);
+    expect(t.injected[0]).toMatchObject({ channel: 'C0MAIN', user: 'U0OWNER' });
+    expect(t.injected[0].text).toContain('the session c0gone-1795101652.1 no longer exists');
+  });
+
+  it("someone else's session never gets a turn from mail: it goes to the main session", async () => {
+    const t = setup();
+    t.setMain({ channel: 'C0MAIN', threadTs: '1111.000' });
+    t.states.set('C0MAIN-1111.000', 'ready');
+    t.states.set('C0SOMEONE-3333.000', 'ready');
+    t.setUnread([mail('s7', { rcpt: `${BASE}/c0someone-3333.000` })]);
+    await t.poller.tick();
+    expect(t.injected).toHaveLength(1);
+    expect(t.injected[0]).toMatchObject({ channel: 'C0MAIN', user: 'U0OWNER' });
+    expect(t.injected[0].text).toContain('belongs to someone else');
+  });
+
+  it("a main session record that is someone else's session is replaced by a fresh main session", async () => {
+    const t = setup();
+    t.setMain({ channel: 'C0SOMEONE', threadTs: '3333.000' });
+    t.states.set('C0SOMEONE-3333.000', 'ready');
+    t.setUnread([mail('g5')]);
+    await t.poller.tick();
+    expect(t.injected[0]).toMatchObject({ channel: 'D0DM', user: 'U0OWNER' });
+    expect(t.getMain()).toEqual({ channel: 'D0DM', threadTs: '100.000' });
+  });
+
+  it('refused, then busy too long: the main session gets a clean count and a sleeping main is tried in place', async () => {
+    const t = setup({ sessionMaxWaitMs: 60_000 });
+    t.setMain({ channel: 'C0OLD', threadTs: '1000.000' }); // owner's main, asleep (gone)
+    t.deps.inject = async (turn) => {
+      t.injected.push(turn);
+      return turn.channel !== 'C0OTHER';
+    };
+    t.setUnread([mail('s8', { rcpt: `${BASE}/${OTHER_TAG}` })]);
+    await t.poller.tick(); // refusal 1 (gone → tried in place)
+    await t.poller.tick(); // refusal 2
+    t.states.set('C0OTHER-2222.000', 'busy');
+    await t.poller.tick(); // busy: starts the wait
+    t.advance(61_000);
+    await t.poller.tick(); // waited too long → main
+    const last = t.injected[t.injected.length - 1];
+    expect(last).toMatchObject({ channel: 'C0OLD' });
+    expect(t.opened).toHaveLength(0);
+    expect(t.getMain()).toEqual({ channel: 'C0OLD', threadTs: '1000.000' });
+    expect(t.acked).toEqual(['s8']);
   });
 
   it('a tag that names no session goes to the main session', async () => {

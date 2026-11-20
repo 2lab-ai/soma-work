@@ -291,9 +291,6 @@ export async function buildStreamOptions(
   //     connect would let that turn run with no evidence tool at all.
   queryEnv.CLAUDE_CODE_ENABLE_TASKS = 'false';
   queryEnv.MCP_CONNECTION_NONBLOCKING = '0';
-  // agent-mailbox: the session's own address, so `mailbox send` from this session is from it and answers return here
-  // (src/mailbox/session-address.ts). Empty when the instance reads no mail or the turn has no Slack thread.
-  Object.assign(queryEnv, mailboxEnvFor(slackContext));
 
   // Incident receiver sessions take a separate, minimal option surface and the
   // ordinary assembly below never runs — no MCP servers, no plugins, no
@@ -314,6 +311,10 @@ export async function buildStreamOptions(
     );
     return attachStderrCapture(incidentOptions, logger);
   }
+
+  // agent-mailbox: the session's own address, so `mailbox send` from this session is from it and answers return here
+  // (src/mailbox/session-address.ts). Only the mailbox owner's sessions with a Slack thread; empty otherwise.
+  Object.assign(queryEnv, mailboxEnvFor(slackContext, session?.ownerId ?? slackContext?.user));
 
   const options: Options = {
     // Load settings from filesystem for backward compatibility (Agent SDK v0.1.0 breaking change)

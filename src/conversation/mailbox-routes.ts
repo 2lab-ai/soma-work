@@ -21,6 +21,14 @@ const REFUSAL = {
 };
 
 let _dataDir: string | null = null;
+/** Who owns a live session (src/index.ts sets it from the session registry); undefined = no such session. */
+let _sessionOwner: ((channel: string, threadTs: string) => string | undefined) | null = null;
+
+export function setMailboxRoutesSessionOwner(
+  fn: ((channel: string, threadTs: string) => string | undefined) | null,
+): void {
+  _sessionOwner = fn;
+}
 
 /** Tests: where the main-session record lives. */
 export function setMailboxRoutesDataDirForTests(dir: string | null): void {
@@ -64,6 +72,17 @@ export function registerMailboxRoutes(
     const target = targetFromSessionKey(key);
     if (!target) {
       reply.status(400).send({ error: '메인 세션은 Slack 스레드 세션이어야 합니다 (key = <channel>-<threadTs>)' });
+      return;
+    }
+    // General mail runs as the main session's owner: only a live session of the mailbox owner may be it.
+    const owner = _sessionOwner?.(target.channel, target.threadTs);
+    if (owner === undefined) {
+      reply.status(404).send({ error: '그런 세션이 없습니다' });
+      return;
+    }
+    const mailboxOwner = getMailboxIdentity()?.owner;
+    if (!mailboxOwner || owner !== mailboxOwner) {
+      reply.status(403).send({ error: '메일함 오너의 세션만 메인 세션이 될 수 있습니다' });
       return;
     }
     reply.send(view(store().set(target, admin)));

@@ -121,6 +121,7 @@ import {
 } from './conversation';
 import { getArtifactStore } from './conversation/artifacts';
 import { setCodeChangesRefresher } from './conversation/code-changes-routes';
+import { setMailboxRoutesSessionOwner } from './conversation/mailbox-routes';
 import type { NewTaskAttachment } from './conversation/new-task';
 import { createNewTaskProvider, createSlackSteerUploader } from './conversation/new-task-provider';
 import { setProjectRepoSource } from './conversation/project-memory-routes';
@@ -2343,6 +2344,7 @@ async function start() {
             }),
         });
         mailboxPoller.start();
+        setMailboxRoutesSessionOwner((channel, threadTs) => mailboxRegistry.getSession(channel, threadTs)?.ownerId);
         timing('Mailbox poller started');
       } catch (error) {
         logger.warn('Mailbox poller not started', { error: (error as Error)?.message });

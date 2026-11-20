@@ -66,6 +66,7 @@ export function createMailboxPoller(deps: MailboxHostDeps): MailboxPoller {
   const defaultClient = path.join(os.homedir(), DEFAULT_CLIENT_FILE.slice(2));
   setMailboxIdentity({
     address: settings.address,
+    owner: deps.config.owner,
     ...(deps.config.clientFile !== defaultClient ? { clientFile: deps.config.clientFile } : {}),
   });
   const mainStore = createMainSessionStore(deps.dataDir);
@@ -83,7 +84,10 @@ export function createMailboxPoller(deps: MailboxHostDeps): MailboxPoller {
     sessionState: deps.sessionState,
     sessionOwner: deps.sessionOwner,
     mainSession: {
-      get: () => mainStore.get(),
+      get: () => {
+        const r = mainStore.get();
+        return r ? { channel: r.channel, threadTs: r.threadTs, openedByPoller: r.setBy === 'poller' } : undefined;
+      },
       set: (link) => {
         mainStore.set(link, 'poller');
       },
