@@ -13603,6 +13603,10 @@ function viewCardOf(s, col) {
     delete c.since;
     delete c.elapsedMs;
     delete c.attention;
+  } else if (typeof cardWaveOf === 'function') {
+    // A change of status waves over the card (card-finish-client.ts cardWaveOf): Fable loudly, the rest quietly. Not a
+    // close on its way — its red tone is not a failure to announce.
+    c.wave = cardWaveOf(s.model);
   }
   return faceOf(c, s.model, viewSpec().face, cardAsks(s, col), eff, s.effortFromDefault ? '' : s.effort);
 }
