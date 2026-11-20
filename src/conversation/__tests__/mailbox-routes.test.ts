@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import Fastify from 'fastify';
+import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../admin-utils', () => ({ isAdminUser: (id: string) => id === 'U_ADMIN' }));
@@ -19,9 +19,13 @@ describe('mailbox main-session routes', () => {
     identity = await import('../../mailbox/session-address');
     routes.setMailboxRoutesDataDirForTests(dir);
     identity.setMailboxIdentity({ address: 'soma-work:host-a:dev', owner: 'U_ADMIN' });
-    routes.setMailboxRoutesSessionOwner((channel) =>
-      channel === 'C0AQ1DWLQSD' ? 'U_ADMIN' : channel === 'C0SOMEONE' ? 'U_SOMEONE' : undefined,
-    );
+    // A live session is a channel AND a thread: one shared channel holds the owner's, someone else's, and no session.
+    const live = new Map([
+      ['C0AQ1DWLQSD-1795101652.380729', 'U_ADMIN'],
+      ['C0SHARED-1795101652.1', 'U_ADMIN'],
+      ['C0SHARED-1795101652.2', 'U_SOMEONE'],
+    ]);
+    routes.setMailboxRoutesSessionOwner((channel, threadTs) => live.get(`${channel}-${threadTs}`));
   });
 
   afterEach(() => {
@@ -36,7 +40,10 @@ describe('mailbox main-session routes', () => {
       const user = request.headers['x-test-user'];
       request.authContext = user ? { mode: 'oauth_jwt', userId: user } : { mode: 'bearer_header' };
     };
-    routes.registerMailboxRoutes(server, auth);
+    const csrf = async (request: FastifyRequest, reply: FastifyReply) => {
+      if (request.headers['x-csrf-token'] !== 'good') reply.status(403).send({ error: 'csrf' });
+    };
+    routes.registerMailboxRoutes(server, auth, csrf);
     await server.ready();
     return server;
   }
@@ -54,7 +61,7 @@ describe('mailbox main-session routes', () => {
     const set = await server.inject({
       method: 'PUT',
       url: '/api/mailbox/main-session',
-      headers: { 'x-test-user': 'U_ADMIN', 'x-admin-mode': 'on' },
+      headers: { 'x-test-user': 'U_ADMIN', 'x-admin-mode': 'on', 'x-csrf-token': 'good' },
       payload: { key: 'C0AQ1DWLQSD-1795101652.380729' },
     });
     expect(set.statusCode).toBe(200);
@@ -73,7 +80,7 @@ describe('mailbox main-session routes', () => {
     const cleared = await server.inject({
       method: 'DELETE',
       url: '/api/mailbox/main-session',
-      headers: { 'x-test-user': 'U_ADMIN', 'x-admin-mode': 'on' },
+      headers: { 'x-test-user': 'U_ADMIN', 'x-admin-mode': 'on', 'x-csrf-token': 'good' },
     });
     expect(cleared.json().main).toBeNull();
   });
@@ -93,30 +100,60 @@ describe('mailbox main-session routes', () => {
     const noMode = await server.inject({
       method: 'PUT',
       url: '/api/mailbox/main-session',
-      headers: { 'x-test-user': 'U_ADMIN' },
+      headers: { 'x-test-user': 'U_ADMIN', 'x-csrf-token': 'good' },
       payload: { key: 'C0AQ1DWLQSD-1795101652.380729' },
     });
     expect(noMode.statusCode).toBe(403);
     const bad = await server.inject({
       method: 'PUT',
       url: '/api/mailbox/main-session',
-      headers: { 'x-test-user': 'U_ADMIN', 'x-admin-mode': 'on' },
+      headers: { 'x-test-user': 'U_ADMIN', 'x-admin-mode': 'on', 'x-csrf-token': 'good' },
       payload: { key: 'dashboard-task-1' },
     });
     expect(bad.statusCode).toBe(400);
     const missing = await server.inject({
       method: 'PUT',
       url: '/api/mailbox/main-session',
-      headers: { 'x-test-user': 'U_ADMIN', 'x-admin-mode': 'on' },
-      payload: { key: 'C0GONE-1795101652.1' },
+      headers: { 'x-test-user': 'U_ADMIN', 'x-admin-mode': 'on', 'x-csrf-token': 'good' },
+      payload: { key: 'C0SHARED-1795101652.3' },
     });
     expect(missing.statusCode).toBe(404);
     const someoneElse = await server.inject({
       method: 'PUT',
       url: '/api/mailbox/main-session',
-      headers: { 'x-test-user': 'U_ADMIN', 'x-admin-mode': 'on' },
-      payload: { key: 'C0SOMEONE-1795101652.1' },
+      headers: { 'x-test-user': 'U_ADMIN', 'x-admin-mode': 'on', 'x-csrf-token': 'good' },
+      payload: { key: 'C0SHARED-1795101652.2' },
     });
     expect(someoneElse.statusCode).toBe(403);
+    const ownInShared = await server.inject({
+      method: 'PUT',
+      url: '/api/mailbox/main-session',
+      headers: { 'x-test-user': 'U_ADMIN', 'x-admin-mode': 'on', 'x-csrf-token': 'good' },
+      payload: { key: 'C0SHARED-1795101652.1' },
+    });
+    expect(ownInShared.statusCode).toBe(200);
+  });
+
+  it('a change without a valid CSRF token is refused and leaves the main session as it was', async () => {
+    const server = await app();
+    const admin = { 'x-test-user': 'U_ADMIN', 'x-admin-mode': 'on' };
+    const set = (token?: string) =>
+      server.inject({
+        method: 'PUT',
+        url: '/api/mailbox/main-session',
+        headers: token ? { ...admin, 'x-csrf-token': token } : admin,
+        payload: { key: 'C0AQ1DWLQSD-1795101652.380729' },
+      });
+    expect((await set()).statusCode).toBe(403);
+    expect((await set('bad')).statusCode).toBe(403);
+    const read = async () =>
+      (
+        await server.inject({ method: 'GET', url: '/api/mailbox/main-session', headers: { 'x-test-user': 'U_ADMIN' } })
+      ).json().main;
+    expect(await read()).toBeNull();
+    expect((await set('good')).statusCode).toBe(200);
+    const del = await server.inject({ method: 'DELETE', url: '/api/mailbox/main-session', headers: admin });
+    expect(del.statusCode).toBe(403);
+    expect((await read())?.channel).toBe('C0AQ1DWLQSD');
   });
 });

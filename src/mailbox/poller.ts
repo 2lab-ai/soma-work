@@ -203,6 +203,10 @@ export function mailRootText(m: MailMessage, role: TurnRole): string {
   return `${head} — from \`${slackEscape(m.from)}\` — ${slackEscape(first)}`;
 }
 
+const slotOf = (link: ThreadLink) => `${link.channel}-${link.threadTs}`;
+const sameLink = (a: ThreadLink | undefined, b: ThreadLink | undefined) =>
+  a === undefined || b === undefined ? a === b : slotOf(a) === slotOf(b);
+
 export class MailboxPoller {
   private deps: MailboxPollerDeps;
   private now: () => number;
@@ -220,6 +224,8 @@ export class MailboxPoller {
    * restart (or an owner change) an unregistered thread is replaced, never trusted on a record alone.
    */
   private openedAt = new Map<string, number>();
+  /** A thread opened for one copy (the main session was busy, or an admin moved it meanwhile): its retries go there. */
+  private oneOff = new Map<string, ThreadLink>();
   private capNoticed = new Set<string>();
   private abort?: AbortController;
   private loop?: Promise<void>;
@@ -274,6 +280,7 @@ export class MailboxPoller {
     this.firstSeen.delete(key);
     this.failedTakes.delete(key);
     this.redirected.delete(key);
+    this.oneOff.delete(key);
   }
 
   /** One pass over the unread mail. Exposed for tests. */
@@ -350,15 +357,19 @@ export class MailboxPoller {
     return true;
   }
 
+  /** Said once per conversation, in the main session — or, before there is one, in the owner's session it addressed. */
   private async capNotice(m: MailMessage): Promise<void> {
     if (this.capNoticed.has(m.thread)) return;
+    const tag = tagOf(m.rcpt ?? '');
+    const target = tag && tag !== MAIN_SESSION_TAG ? sessionFromTag(tag) : undefined;
+    const where =
+      this.deps.mainSession.get() ?? (target && !this.sessionRefusal(target, tag ?? '') ? target : undefined);
+    if (!where) return; // nowhere to say it yet: the next mail of this conversation tries again
     this.capNoticed.add(m.thread);
-    const main = this.deps.mainSession.get();
-    if (main)
-      await this.safeNotify(
-        main,
-        `⏸️ mail conversation \`${m.thread}\` started ${MAX_TURNS_PER_CONVERSATION} turns; later mail of it is marked read and not handled — \`${this.deps.cli ?? 'mailbox'} thread ${m.thread}\``,
-      );
+    await this.safeNotify(
+      where,
+      `⏸️ mail conversation \`${m.thread}\` started ${MAX_TURNS_PER_CONVERSATION} turns; later mail of it is marked read and not handled — \`${this.deps.cli ?? 'mailbox'} thread ${m.thread}\``,
+    );
   }
 
   private async safeNotify(link: ThreadLink, text: string): Promise<void> {
@@ -414,7 +425,7 @@ export class MailboxPoller {
     busy: Set<string>,
     signal?: AbortSignal,
   ): Promise<Outcome> {
-    const slot = `${target.channel}-${target.threadTs}`;
+    const slot = slotOf(target);
     if (busy.has(slot)) return 'waiting';
     const state = this.deps.sessionState(target.channel, target.threadTs);
     if (state === 'busy') {
@@ -441,53 +452,68 @@ export class MailboxPoller {
     note: string | undefined,
     signal?: AbortSignal,
   ): Promise<Outcome> {
+    const key = this.keyOf(m);
+    const own = this.oneOff.get(key);
+    if (own) {
+      // A thread was opened for this copy already: retry there, never a second Slack root for the same mail.
+      if (busy.has(slotOf(own))) return 'waiting';
+      busy.add(slotOf(own));
+      return (await this.startTurn(m, own, { role: 'one-off', note }, signal)) ? 'taken' : 'not-taken';
+    }
     if (busy.has('main')) return 'waiting';
     const found = this.deps.mainSession.get();
     // Only a main session the mailbox owner owns — or a thread this poller opened in this process whose session is not
     // registered yet — takes turns as the owner. Anything else is replaced by a fresh main session.
     const mainOwner = found ? this.deps.sessionOwner(found.channel, found.threadTs) : undefined;
-    const opened = found ? this.openedAt.get(`${found.channel}-${found.threadTs}`) : undefined;
+    const opened = found ? this.openedAt.get(slotOf(found)) : undefined;
     const main =
       found && (mainOwner === this.deps.owner || (mainOwner === undefined && opened !== undefined)) ? found : undefined;
     if (main) {
+      // The main session's thread is one slot whichever address reached it (general mail or its session tag).
+      if (busy.has(slotOf(main))) return 'waiting';
       const state = this.deps.sessionState(main.channel, main.threadTs);
       const ownFresh = opened !== undefined && this.now() - opened < BUSY_MAX_WAIT_MS;
-      if (state === 'ready' || (state === 'gone' && ownFresh)) {
+      // ready; or gone (asleep) — a fresh thread of ours, or the first try in place, which wakes a sleeping main
+      if (state === 'ready' || (state === 'gone' && (ownFresh || !this.failedTakes.get(key)))) {
         busy.add('main');
+        busy.add(slotOf(main));
         return (await this.startTurn(m, main, { role: 'main', note }, signal)) ? 'taken' : 'not-taken';
       }
       if (state === 'busy') {
-        if (!this.waitedTooLong(this.keyOf(m), this.deps.busyMaxWaitMs ?? BUSY_MAX_WAIT_MS)) return 'waiting';
+        if (!this.waitedTooLong(key, this.deps.busyMaxWaitMs ?? BUSY_MAX_WAIT_MS)) return 'waiting';
         logger.info('The main session stayed busy; this mail gets a thread of its own', { id: m.id });
         return this.toNewThread(m, 'one-off', note, signal);
       }
-      // gone: try it in place once (wakes a sleeping main session); not taken → a new main session next try
-      if (!this.failedTakes.get(this.keyOf(m))) {
-        busy.add('main');
-        return (await this.startTurn(m, main, { role: 'main', note }, signal)) ? 'taken' : 'not-taken';
-      }
     }
     busy.add('main');
-    return this.toNewThread(m, 'main', note, signal);
+    return this.toNewThread(m, 'main', note, signal, found);
   }
 
+  /** `replacing`: the main-session record this new main thread replaces (undefined: there was none). */
   private async toNewThread(
     m: MailMessage,
     role: TurnRole,
     note: string | undefined,
     signal?: AbortSignal,
+    replacing?: ThreadLink,
   ): Promise<Outcome> {
     if (signal?.aborted) return 'not-taken';
     const channel = await this.deps.resolveChannel();
     const threadTs = await this.deps.openThread(channel, mailRootText(m, role));
     if (!threadTs) throw new Error('Slack returned no ts for the mail thread');
     const link = { channel, threadTs };
+    let as = role;
     if (role === 'main') {
-      this.deps.mainSession.set(link);
-      this.openedAt.set(`${channel}-${threadTs}`, this.now());
-      logger.info('Opened a new main mailbox session', { channel, threadTs });
+      // An admin may have picked a main session while Slack opened this thread: their choice stays, this mail gets the
+      // new thread to itself.
+      if (sameLink(this.deps.mainSession.get(), replacing)) {
+        this.deps.mainSession.set(link);
+        this.openedAt.set(slotOf(link), this.now());
+        logger.info('Opened a new main mailbox session', { channel, threadTs });
+      } else as = 'one-off';
     }
-    return (await this.startTurn(m, link, { role, note }, signal)) ? 'taken' : 'not-taken';
+    if (as === 'one-off') this.oneOff.set(this.keyOf(m), link);
+    return (await this.startTurn(m, link, { role: as, note }, signal)) ? 'taken' : 'not-taken';
   }
 
   private async startTurn(

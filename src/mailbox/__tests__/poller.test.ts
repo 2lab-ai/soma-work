@@ -357,6 +357,91 @@ describe('MailboxPoller — routing', () => {
     expect(t.getMain()).toEqual({ channel: 'D0DM', threadTs: '101.000' });
   });
 
+  it('a one-off thread whose first turn is refused is retried in place: one Slack root per mail', async () => {
+    const t = setup({ busyMaxWaitMs: 60_000 });
+    t.setMain({ channel: 'C0MAIN', threadTs: '1111.000' });
+    t.states.set('C0MAIN-1111.000', 'busy');
+    t.setUnread([mail('g7')]);
+    await t.poller.tick();
+    t.advance(61_000);
+    t.take.value = false;
+    await t.poller.tick(); // one-off thread opened, its turn refused
+    t.take.value = true;
+    await t.poller.tick();
+    expect(t.opened).toHaveLength(1);
+    expect(t.injected.map((x) => `${x.channel}-${x.threadTs}`)).toEqual(['D0DM-100.000', 'D0DM-100.000']);
+    expect(t.acked).toEqual(['g7']);
+    expect(t.getMain()).toEqual({ channel: 'C0MAIN', threadTs: '1111.000' });
+  });
+
+  it('an admin who picks a main session while Slack opens a new one keeps their choice; the mail gets that thread alone', async () => {
+    const t = setup();
+    t.deps.openThread = async (channel, text) => {
+      t.opened.push({ channel, text });
+      t.setMain({ channel: 'C0MAIN', threadTs: '1111.000' }); // the admin's PUT lands meanwhile
+      return '100.000';
+    };
+    t.setUnread([mail('g8')]);
+    await t.poller.tick();
+    expect(t.getMain()).toEqual({ channel: 'C0MAIN', threadTs: '1111.000' });
+    expect(t.injected[0]).toMatchObject({ channel: 'D0DM', threadTs: '100.000' });
+    expect(t.injected[0].text).toContain('This thread was opened for this mail');
+  });
+
+  it('general mail and mail tagged with the main session in one pass: one turn in that thread, the other waits', async () => {
+    for (const order of ['general-first', 'tagged-first'] as const) {
+      const t = setup();
+      t.setMain({ channel: 'C0MAIN', threadTs: '1111.000' });
+      t.states.set('C0MAIN-1111.000', 'ready');
+      const general = mail(`mg${order === 'general-first' ? 1 : 2}`);
+      const tagged = mail(`mt${order === 'general-first' ? 1 : 2}`, { rcpt: `${BASE}/c0main-1111.000` });
+      t.setUnread(order === 'general-first' ? [general, tagged] : [tagged, general]);
+      await t.poller.tick();
+      expect(t.injected).toHaveLength(1);
+      await t.poller.tick();
+      expect(t.injected).toHaveLength(2);
+    }
+  });
+
+  it('two copies of one mail for two sessions: each is acked by its own key, only when its own turn is taken', async () => {
+    const t = setup();
+    const raw: string[] = [];
+    const ack = t.deps.client.ack;
+    t.deps.client.ack = async (keys) => {
+      raw.push(...keys);
+      await ack(keys);
+    };
+    t.setMain({ channel: 'C0MAIN', threadTs: '1111.000' });
+    t.states.set('C0MAIN-1111.000', 'ready');
+    t.states.set('C0OTHER-2222.000', 'busy');
+    const toSession = mail('dup', { rcpt: `${BASE}/${OTHER_TAG}` });
+    const toMain = mail('dup');
+    t.setUnread([toSession, toMain]);
+    await t.poller.tick();
+    expect(raw).toEqual([`${mid('dup')}|${BASE}`]);
+    await t.poller.tick(); // the session is still busy: the main copy is not delivered again
+    expect(t.injected.filter((x) => x.channel === 'C0MAIN')).toHaveLength(1);
+    expect(raw).toEqual([`${mid('dup')}|${BASE}`]);
+    t.states.set('C0OTHER-2222.000', 'ready');
+    await t.poller.tick();
+    expect(raw).toEqual([`${mid('dup')}|${BASE}`, `${mid('dup')}|${BASE}/${OTHER_TAG}`]);
+  });
+
+  it(`general mail the main session refuses ${MAX_TAKE_ATTEMPTS} times is marked read once, with a warning there`, async () => {
+    const t = setup();
+    t.setMain({ channel: 'C0MAIN', threadTs: '1111.000' });
+    t.states.set('C0MAIN-1111.000', 'ready');
+    t.take.value = false;
+    t.setUnread([mail('g9')]);
+    for (let i = 0; i < MAX_TAKE_ATTEMPTS - 1; i++) await t.poller.tick();
+    expect(t.acked).toEqual([]);
+    await t.poller.tick();
+    expect(t.acked).toEqual(['g9']);
+    expect(t.notices).toEqual([
+      { channel: 'C0MAIN', threadTs: '1111.000', text: expect.stringContaining('could not start a turn') },
+    ]);
+  });
+
   it('tells the host the mailbox address the server answered with, once per change', async () => {
     const seen: string[] = [];
     const t = setup({ onAddress: (a) => seen.push(a) });
@@ -431,6 +516,18 @@ describe('MailboxPoller — safety', () => {
     expect(t.acked).toHaveLength(MAX_TURNS_PER_CONVERSATION + 2);
     expect(t.notices).toHaveLength(1);
     expect(t.notices[0]).toMatchObject({ channel: 'C0MAIN' });
+  });
+
+  it('a session-only conversation at the limit is told in the session it addressed, since there is no main session yet', async () => {
+    const t = setup();
+    t.states.set('C0OTHER-2222.000', 'ready');
+    for (let i = 0; i < MAX_TURNS_PER_CONVERSATION + 2; i++) {
+      t.setUnread([mail(`q${i}`, { thread: 'loop2', rcpt: `${BASE}/${OTHER_TAG}` })]);
+      await t.poller.tick();
+    }
+    expect(t.injected).toHaveLength(MAX_TURNS_PER_CONVERSATION);
+    expect(t.getMain()).toBeUndefined();
+    expect(t.notices).toEqual([{ ...OTHER, text: expect.stringContaining('marked read and not handled') }]);
   });
 
   it('a failed ack never starts the same mail twice', async () => {

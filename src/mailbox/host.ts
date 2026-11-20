@@ -85,10 +85,7 @@ export function createMailboxPoller(deps: MailboxHostDeps): MailboxPoller {
         ...(deps.config.clientFile !== defaultClient ? { clientFile: deps.config.clientFile } : {}),
       }),
     mainSession: {
-      get: () => {
-        const r = mainStore.get();
-        return r ? { channel: r.channel, threadTs: r.threadTs } : undefined;
-      },
+      get: () => mainStore.get(),
       set: (link) => {
         mainStore.set(link, 'poller');
       },
