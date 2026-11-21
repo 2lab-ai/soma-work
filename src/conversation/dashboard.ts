@@ -6221,6 +6221,8 @@ export function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/context-window.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/approval-card.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/agent-inbox.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/bot-avatar.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/gooey.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/toaster.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/compact-breakdown.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/model-picker.js?v=${UI_LIB_VERSION}"></script>
@@ -7121,6 +7123,9 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
    glide across (placePanel). A press on the grip, or ←/→ on it, moves it without a drag. Locked: no grip, the bar does
    not drag. Below 840px the card is a full-screen sheet: nothing to move. ── */
 .panel-header { position: relative; }
+/* The card's face (renderPanelAvatar): before the title, centred on the title row. */
+.panel-avatar { flex: none; align-self: flex-start; margin: 1px 10px 0 0; width: 28px; height: 28px; }
+.panel-avatar[hidden] { display: none; }
 .panel-grip {
   position: absolute; top: 0; left: 50%; z-index: 2; width: 96px; height: 16px; margin-left: -48px; padding: 0;
   display: flex; align-items: center; justify-content: center; border: 0; border-radius: 0 0 10px 10px;
@@ -7860,6 +7865,15 @@ body.nt-open .new-task-fab { display: none !important; }
 .card-body .na-cmd { flex-basis: 100%; max-width: 100%; }
 .panel-next-bar { padding: 8px 12px; margin-bottom: 8px; border-radius: 10px; background: var(--ib-col); border: 1px solid var(--ib-card-border); }
 .panel-next-bar[hidden] { display: none; }
+/* Libraries.dev gooey (0.44.0): the bar's steps are drops of one liquid (naGooRow). Each item is the flex item; its
+   button fills it, so a long step still ends in an ellipsis. 8px apart > the 4px blur: at rest no two drops bridge. */
+.na-goo { gap: 8px; }
+.na-goo > ui-gooey-item { display: flex; min-width: 0; max-width: 100%; }
+.na-goo .na-btn { flex: 0 1 auto; }
+/* An outline step's body IS the liquid (fill + ring on the silhouette), so a drop that splits off or runs back reads as
+   the button itself; the ink primary keeps its own body over its drop. Hover and focus still paint on the button. Only
+   once <ui-gooey> is defined: a module that did not load leaves plain outline buttons. */
+.na-goo:defined .na-btn:not(.is-primary):not(:hover) { background: transparent; border-color: transparent; }
 </style>
 <!-- The first screen (#965, boot-screen.ts): over the page until what the viewport shows is drawn. -->
 <style id="boot-screen">${bootScreenCss()}</style>
@@ -8089,6 +8103,10 @@ ${CARD_FINISH_CSS}
       <!-- 디테일 카드 위치 (SSOT 2026-11-19): the grip at the top of the title bar — drag it (or the bar's own surface) to
            the other side; a press or ←/→ moves it without a drag. Hidden while locked (설정 › 대시보드 화면) and on a sheet. -->
       <button type="button" class="panel-grip" id="panel-grip" hidden aria-label="디테일 카드 옮기기" title="끌어서 왼쪽·오른쪽으로 옮기기"><span class="panel-grip-bar" aria-hidden="true"></span></button>
+      <!-- The card's face (Z 2026-11-21, Libraries.dev effects): @2lab.ai/ui <ui-bot-avatar> — one face per model family,
+           working while the turn runs, asleep when the session sleeps. Decorative: the status bar says the state.
+           renderPanelAvatar fills it from the open card; hidden until then. -->
+      <ui-bot-avatar id="panel-avatar" class="panel-avatar" size="28" decorative lang="ko" hidden></ui-bot-avatar>
       <div style="flex:1;min-width:0">
         <!-- The title's actions (SSOT 2026-11-04): small, right after the title text — 퍼머링크 (the card's deep link; a
              press copies it, a modified press opens it) · 전체 문맥 복사 (every instruction and answer, as markdown).
@@ -14767,7 +14785,8 @@ function agentConvTurns(agentId, a, io, prompt, answer, ad) {
     turns.push(r);
     return { turns: turns, pending: false };
   }
-  if (a && agentStatusOf(a) === 'running') return { turns: turns, pending: true };
+  if (a && agentStatusOf(a) === 'running')
+    return { turns: turns, pending: typeof convPendingOf === 'function' ? convPendingOf(a.lastTool) : true };
   r.markdown = '';
   if (!r.summary) r.summary = { text: '작업 로그에 결과가 없습니다' };
   turns.push(r);
@@ -15616,6 +15635,7 @@ function renderPanelHead() {
   }
   var col = s ? sessionColOf(key) : '';
   renderPanelStar(s, col);
+  if (typeof renderPanelAvatar === 'function') renderPanelAvatar(s);
   writePanelPart(el, s ? panelHeadNoteHtml(s, col) : '');
   var data = s ? panelHeadData(s, col) : null;
   var sig = JSON.stringify(data);
@@ -15632,6 +15652,44 @@ function renderPanelHead() {
   if (el._sig === sig) return;
   el._sig = sig;
   el.data = data;
+}
+// The card's face (Z 2026-11-21: Libraries.dev's bot avatars) — @2lab.ai/ui <ui-bot-avatar> before the title: the model
+// family picks the face (panelAvatarOf, the same whole-word match as the card finish), the session its state — working
+// while the turn holds, asleep when it sleeps or was closed, at rest otherwise. Painted with the head; no open card:
+// hidden. Attributes only change when they differ, so a repaint never restarts its animation.
+var PANEL_AVATAR_SHAPES = [
+  [/(?:^|[^a-z0-9])fable(?![a-z0-9])/, 'star'],
+  [/(?:^|[^a-z0-9])opus(?![a-z0-9])/, 'droid'],
+  [/(?:^|[^a-z0-9])sonnet(?![a-z0-9])/, 'cloud'],
+  [/(?:^|[^a-z0-9])haiku(?![a-z0-9])/, 'drop'],
+  [/(?:^|[^a-z0-9])astra(?![a-z0-9])/, 'alien'],
+  [/(?:^|[^a-z0-9])sol(?![a-z0-9])/, 'circle'],
+  [/(?:^|[^a-z0-9])grok(?![a-z0-9])/, 'mech'],
+  [/(?:^|[^a-z0-9])gemini(?![a-z0-9])/, 'clover'],
+];
+function panelAvatarOf(s) {
+  var m = String((s && s.model) || '').toLowerCase();
+  var shape = 'blob';
+  for (var i = 0; i < PANEL_AVATAR_SHAPES.length; i++) {
+    if (PANEL_AVATAR_SHAPES[i][0].test(m)) {
+      shape = PANEL_AVATAR_SHAPES[i][1];
+      break;
+    }
+  }
+  var state = s && (s.sessionState === 'SLEEPING' || s.terminated) ? 'sleeping' : turnHolds(s) ? 'working' : 'default';
+  return { shape: shape, state: state };
+}
+function renderPanelAvatar(s) {
+  var el = document.getElementById('panel-avatar');
+  if (!el) return;
+  if (!s) {
+    el.hidden = true;
+    return;
+  }
+  var a = panelAvatarOf(s);
+  el.hidden = false;
+  if (el.getAttribute('shape') !== a.shape) el.setAttribute('shape', a.shape);
+  if (el.getAttribute('state') !== a.state) el.setAttribute('state', a.state);
 }
 // The detail card's star (SSOT 2026-11-10 T2: "즐겨 찾기 레이블 필요 없음 이름 오른쪽에 작업 카드 처럼"): the board card's
 // face toggle right after the title text — the same data (cardStarOf): pressed and the filled amber star when on, no
@@ -17219,22 +17277,114 @@ function nextActionsHtml(s, na, where) {
   var busy = isBusy(s.key, 'next');
   var key = escAttr(s.key);
   var turn = escAttr(na.turnId || '');
+  // The detail card's bar is liquid (naGooRow); the open card's stack stays plain.
+  var goo = where === 'panel' && typeof naGooRow === 'function';
   var buttons = '';
   for (var i = 0; i < na.list.length; i++) {
     var a = na.list[i] || {};
     var cmd = String(a.command || '');
     if (!cmd) continue;
     var label = String(a.label || '');
-    buttons += '<button type="button" class="ui-btn na-btn' + (a.recommended ? ' is-primary' : '') + '"'
+    var btn = '<button type="button" class="ui-btn na-btn' + (a.recommended ? ' is-primary' : '') + '"'
       + (busy ? ' disabled aria-busy="true"' : '')
       + ' title="' + escAttr(cmd) + '" data-na-key="' + key + '" data-na-turn="' + turn + '" data-na-cmd="' + escAttr(cmd) + '"'
       + ' onclick="event.stopPropagation();nextActionButton(this)">'
       + '<span class="na-label">' + esc(label || cmd) + '</span>'
       + (label ? '<code class="na-cmd">' + esc(cmd.split('\\n')[0]) + '</code>' : '')
       + '</button>';
+    buttons += goo ? '<ui-gooey-item>' + btn + '</ui-gooey-item>' : btn;
   }
   if (!buttons) return '';
-  return '<div class="next-actions is-' + where + '" role="group" aria-label="' + escAttr(NEXT_ACTIONS_LABEL) + '"><span class="na-kicker">' + esc(NEXT_ACTIONS_LABEL) + '</span><div class="na-row">' + buttons + '</div></div>';
+  var row = goo ? naGooRow(buttons) : '<div class="na-row">' + buttons + '</div>';
+  return '<div class="next-actions is-' + where + '" role="group" aria-label="' + escAttr(NEXT_ACTIONS_LABEL) + '"><span class="na-kicker">' + esc(NEXT_ACTIONS_LABEL) + '</span>' + row + '</div>';
+}
+// Libraries.dev gooey (@2lab.ai/ui 0.44.0 <ui-gooey>, Z 2026-11-21): the detail card's next steps are drops of one
+// liquid. A new answer's steps split out of one drop (naSplitIn); the step pressed swallows the others as it is sent
+// (naMergeInto). The goo is a silhouette in the outline buttons' colour and border behind them: it is their body, while
+// the buttons stay real buttons (focus, hit target, title); at rest the liquid is exactly their boxes — the gap is wider
+// than the blur, so nothing bridges.
+var NA_GOO_BLUR = 4;
+var NA_GOO_RING = '0 0 0 1px var(--ui-ib-card-border)'; // the buttons' border, drawn round the merged liquid
+var NA_SPLIT_MS = 520;
+var NA_MERGE_MS = 300;
+var _naSplitSeen = Object.create(null); // card key → the answer whose steps already split in (once per answer)
+function naGooRow(buttons) {
+  return '<ui-gooey class="na-row na-goo" fill="var(--ui-ib-card)" shadow="' + NA_GOO_RING + '" blur="' + NA_GOO_BLUR + '">' + buttons + '</ui-gooey>';
+}
+function naGooItems(bar) {
+  return bar && bar.querySelectorAll ? Array.prototype.slice.call(bar.querySelectorAll('ui-gooey-item')) : [];
+}
+function naGooLive() {
+  return typeof customElements !== 'undefined' && !!customElements.get('ui-gooey-item')
+    && !(typeof reduceMotion === 'function' && reduceMotion());
+}
+// Opening the card again, or a repaint, does not replay an answer's split.
+function naSplitOnce(bar, key, na) {
+  var turn = na && na.turnId ? String(na.turnId) : '';
+  if (!turn || _naSplitSeen[key] === turn) return false;
+  _naSplitSeen[key] = turn;
+  return naSplitIn(bar);
+}
+// A new set: every step but the first starts inside the first (no time), then runs out to its place on a bouncy
+// curve, 40ms apart; each button's words fade in as its drop lands. Reduced motion / no element: they are just there.
+function naSplitIn(bar) {
+  var items = naGooItems(bar);
+  if (items.length < 2 || !naGooLive()) return false;
+  // Fresh from innerHTML the group and its items have not rendered their slots yet (a microtask away), so the buttons
+  // have no size: render them now, then measure.
+  var row = items[0].closest ? items[0].closest('ui-gooey') : null;
+  if (row && typeof row.renderNow === 'function') row.renderNow();
+  for (var n = 0; n < items.length; n++) if (typeof items[n].renderNow === 'function') items[n].renderNow();
+  var r0 = items[0].getBoundingClientRect();
+  for (var i = 1; i < items.length; i++) {
+    var r = items[i].getBoundingClientRect();
+    items[i].data = { x: r0.left - r.left, y: r0.top - r.top, scale: 0.7, transition: { duration: 0 } };
+    if (items[i].firstElementChild) items[i].firstElementChild.style.opacity = '0';
+  }
+  requestAnimationFrame(function () {
+    requestAnimationFrame(function () {
+      for (var j = 1; j < items.length; j++) {
+        var it = items[j];
+        it.data = { x: 0, y: 0, scale: 1, transition: { duration: NA_SPLIT_MS, ease: 'cubic-bezier(0.34, 1.56, 0.64, 1)' }, delay: (j - 1) * 40 };
+        var b = it.firstElementChild;
+        if (b) { b.style.transition = 'opacity 200ms ease ' + (140 + (j - 1) * 40) + 'ms'; b.style.opacity = ''; }
+      }
+      setTimeout(function () {
+        for (var k = 1; k < items.length; k++) if (items[k].firstElementChild) items[k].firstElementChild.style.transition = '';
+      }, NA_SPLIT_MS + items.length * 40 + 200);
+    });
+  });
+  return true;
+}
+// Sent from the detail card: the other steps run into the pressed one (their words fade, their drops are swallowed),
+// and the bar keeps its buttons until that is over (renderPanelNext waits for _naMergeUntil). The send itself is not
+// held a moment: a failed send repaints its buttons back at once.
+function naMergeInto(bar, command) {
+  var items = naGooItems(bar);
+  if (!bar || bar.hidden || items.length < 2 || !naGooLive()) return false;
+  var hit = null;
+  for (var i = 0; i < items.length; i++) {
+    var b = items[i].firstElementChild;
+    if (b && b.getAttribute('data-na-cmd') === command) hit = items[i];
+  }
+  if (!hit) return false;
+  var r0 = hit.getBoundingClientRect();
+  for (var j = 0; j < items.length; j++) {
+    if (items[j] === hit) continue;
+    var r = items[j].getBoundingClientRect();
+    items[j].data = {
+      x: r0.left + r0.width / 2 - (r.left + r.width / 2), y: r0.top + r0.height / 2 - (r.top + r.height / 2), scale: 0.4,
+      transition: { duration: NA_MERGE_MS, ease: 'cubic-bezier(0.22, 1, 0.36, 1)' },
+    };
+    var w = items[j].firstElementChild;
+    if (w) { w.style.transition = 'opacity 140ms ease'; w.style.opacity = '0'; }
+  }
+  bar._naMergeUntil = Date.now() + NA_MERGE_MS + 40;
+  setTimeout(function () {
+    bar._naMergeUntil = 0;
+    if (typeof renderPanelNext === 'function') renderPanelNext();
+  }, NA_MERGE_MS + 60);
+  return true;
 }
 // The open task card's steps: the latest answer the card's 지시/응답 fetch read (fetchCardIo) — only from a fetch
 // that is current: while it refetches, or after it failed, the steps it held may belong to an answer a newer
@@ -17256,10 +17406,15 @@ function renderPanelNext() {
   var fresh = !!s && (viewerOwns(s) || _viewerIsAdmin || _panelTurnsAct === String(s.lastActivity || ''));
   var na = s && fresh && _panelTurnsCid && _panelTurnsCid === s.conversationId ? nextActionsOfTurns(_panelTurnsList) : null;
   var html = s ? nextActionsHtml(s, na, 'panel') : '';
+  // The step just sent is still swallowing the others (naMergeInto): the bar goes when that is over.
+  if (!html && bar._naMergeUntil && Date.now() < bar._naMergeUntil) return;
+  var was = bar._html || '';
   bar.hidden = !html;
   if (bar._html !== html) {
     bar.innerHTML = html;
     bar._html = html;
+    // A set that appears in an empty bar splits in, once per answer (naSplitOnce).
+    if (html && !was && typeof naSplitOnce === 'function') naSplitOnce(bar, s.key, na);
   }
 }
 function nextActionsRepaint(key) {
@@ -17268,7 +17423,13 @@ function nextActionsRepaint(key) {
 }
 function nextActionButton(btn) {
   if (!btn || btn.disabled) return;
-  sendNextAction(btn.getAttribute('data-na-key'), btn.getAttribute('data-na-turn'), btn.getAttribute('data-na-cmd'));
+  var key = btn.getAttribute('data-na-key');
+  var cmd = btn.getAttribute('data-na-cmd');
+  var inBar = !!(btn.closest && btn.closest('#panel-next-bar'));
+  sendNextAction(key, btn.getAttribute('data-na-turn'), cmd);
+  // sendNextAction has repainted the bar busy by now (its first await comes after): the pressed step swallows the
+  // others there.
+  if (inBar && typeof naMergeInto === 'function') naMergeInto(document.getElementById('panel-next-bar'), cmd);
 }
 // One press, one send. The detail card open on this task: the composer's own send (its pending turn in the chat, the
 // queue, the toasts). Otherwise the same route from here, its outcome in a toast. Sent: the answer's buttons go.
@@ -22592,7 +22753,13 @@ function convPaint() {
     loading: msg === 'loading' || !!_panelTurnsLoading,
     // D12 — the writing row: the session works and the latest turn is the instruction. Not while 입력 필요 is the
     // last turn: the agent waits on the reader, and the ask stays the chat's last message (SSOT 2026-11-13).
-    pending: !needs && ansPendingShow(s, panelConvId, last ? last.role : ''),
+    // The writing row's orb follows the agent's last tool (convPendingOf, 2026-11-21).
+    pending:
+      !needs && ansPendingShow(s, panelConvId, last ? last.role : '')
+        ? typeof convPendingOf === 'function'
+          ? convPendingOf(s && s.agentRoot && s.agentRoot.lastTool)
+          : true
+        : false,
     assistantName: botNameOf(s),
     // T1.3 — a long instruction folds to 12 lines; 자세히 shows it whole.
     clampLines: _panelDetail ? 200 : 12,
@@ -22789,6 +22956,28 @@ function convRetry(id) {
 }
 // D12 — the same rule the card's 응답 row uses (renderCardIo): the session is
 // working and the latest turn is the instruction.
+// The writing row's thinking orb (Z 2026-11-21, Libraries.dev effects — @2lab.ai/ui 0.44.0 <ui-ai-answer> activity):
+// what the agent did last picks the orb's state — reading or searching, writing code, running a command, handing work
+// to subagents, planning, calling a tool server; else it thinks. The same table as the library's ORB_TOOL_STATES
+// (orbStateForTool), kept here because the page is not a module.
+var ORB_TOOL_STATE = {
+  read: 'searching', grep: 'searching', glob: 'searching', ls: 'searching', notebookread: 'searching',
+  websearch: 'searching', webfetch: 'searching',
+  edit: 'composing', write: 'composing', multiedit: 'composing', notebookedit: 'composing',
+  bash: 'working', bashoutput: 'working', killshell: 'working',
+  task: 'weaving', agent: 'weaving',
+  todowrite: 'shaping',
+};
+function orbActivityOf(tool) {
+  var t = String(tool || '').trim().toLowerCase();
+  if (!t) return 'breathing';
+  if (t.indexOf('mcp__') === 0) return 'connecting';
+  return Object.prototype.hasOwnProperty.call(ORB_TOOL_STATE, t) ? ORB_TOOL_STATE[t] : 'breathing';
+}
+// The pending turn's data for <ui-conversation>: the writing row with the orb for the agent's last tool.
+function convPendingOf(lastTool) {
+  return { activity: orbActivityOf(lastTool) };
+}
 function ansPendingShow(s, convId, lastRole) {
   return !!(s && convId && s.conversationId === convId && s.activityState === 'working' && lastRole === 'user');
 }
@@ -23126,7 +23315,7 @@ function closePanel() {
   _panelTurnsList = [];
   _panelTurnsMsg = '';
   var nextBar = document.getElementById('panel-next-bar');
-  if (nextBar) { nextBar.innerHTML = ''; nextBar._html = ''; nextBar.hidden = true; }
+  if (nextBar) { nextBar.innerHTML = ''; nextBar._html = ''; nextBar._naMergeUntil = 0; nextBar.hidden = true; }
   resetWorkLog(null);
   // A closed panel holds no section nodes.
   for (var si = 0; si < PSEC_ORDER.length; si++) psecClear(PSEC_ORDER[si]);
@@ -27995,6 +28184,9 @@ function ntPendingCardOf(launch, channelName) {
     statusText: '시작 중',
     since: launch.at,
     bodyMode: 'slot',
+    // On its way (Z 2026-11-21, Libraries.dev effects): a border beam rides the card until its session's own card
+    // arrives (@2lab.ai/ui 0.44.0 card.beam) — at a glance, anywhere on the board. A failed launch has its own cue.
+    beam: true,
   };
 }
 

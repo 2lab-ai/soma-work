@@ -343,7 +343,7 @@ describe('T1 — the 시작 중 card (ntPendingCardOf)', () => {
     _ntCtx: CTX,
   });
 
-  it('RUNNING, its status 시작 중, the clock from the press; titled by the instruction’s first line', () => {
+  it('RUNNING, its status 시작 중, the clock from the press, a border beam while on its way; titled by the instruction’s first line', () => {
     const launch = {
       id: 'nt-launch:r1',
       at: 1_000,
@@ -359,6 +359,7 @@ describe('T1 — the 시작 중 card (ntPendingCardOf)', () => {
       statusText: '시작 중',
       since: 1_000,
       bodyMode: 'slot',
+      beam: true,
     });
   });
 
