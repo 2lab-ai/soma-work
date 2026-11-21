@@ -141,7 +141,10 @@ function clientObj(name: string): string {
 describe('E4 — the writing row’s orb follows the agent’s last tool', () => {
   const { orbActivityOf, convPendingOf } = new Function(
     `${clientObj('ORB_TOOL_STATE')}\n${clientFn('orbActivityOf')}\n${clientFn('convPendingOf')}\nreturn { orbActivityOf, convPendingOf };`,
-  )() as { orbActivityOf(t: unknown): string; convPendingOf(t: unknown, at?: number, since?: number): { activity: string } };
+  )() as {
+    orbActivityOf(t: unknown): string;
+    convPendingOf(t: unknown, at?: number, since?: number): { activity: string };
+  };
 
   it.each([
     ['Read', 'searching'],
