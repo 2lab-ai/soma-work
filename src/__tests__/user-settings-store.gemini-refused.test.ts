@@ -1,12 +1,13 @@
 /**
- * Locks the gemini REFUSAL (2026-11-21).
+ * Locks the gemini REFUSAL (2026-11-21) at the settings store.
  *
  * soma-work reaches llmux as Claude Code (Agent SDK), and llmux answers every
  * Claude Code request routed to its gemini group with a local 400 (since
  * 2026-10-15): Google's Antigravity backend refuses them. So a gemini model
  * can only fail here:
- *   - typed input (an id, or a llmux alias such as `argon` / `neon`) is
- *     REFUSED with the reason and the opus default as the suggestion;
+ *   - typed input (an id, or a name llmux routes to gemini such as `argon` /
+ *     `neon`) is REFUSED with the reason and the opus default as the
+ *     suggestion — with or without a catalog;
  *   - a stored default or session model on a gemini id coerces to
  *     DEFAULT_MODEL, even while the llmux catalog still advertises the row;
  *   - non-gemini catalog aliases (`grok` → grok-4.7) keep resolving.
@@ -14,7 +15,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LlmuxModelEntry } from '../auth/llmux-client';
 import { modelCatalog } from '../model-catalog';
 import { AVAILABLE_MODELS, coerceToAvailableModel, DEFAULT_MODEL, UserSettingsStore } from '../user-settings-store';
@@ -38,12 +39,17 @@ const GEMINI_ROWS: LlmuxModelEntry[] = [
 ];
 const GROK_4_7 = row('grok-4.7', 'grok', 'Grok 4.7', 500_000, 'grok');
 
+const tempDirs: string[] = [];
+
 function makeDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'gemini-refused-test-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gemini-refused-test-'));
+  tempDirs.push(dir);
+  return dir;
 }
 
 afterEach(() => {
   modelCatalog.__testReset();
+  for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
 describe('gemini models — refused for Claude Code sessions (2026-11-21)', () => {
@@ -84,13 +90,30 @@ describe('gemini models — refused for Claude Code sessions (2026-11-21)', () =
     expect(store.resolveModelInputDetailed('grok')).toEqual({ status: 'accepted', modelId: 'grok-4.7' });
   });
 
-  it('a stale snapshot does not let a new gemini alias through: the forced re-fetch finds it and refuses it', async () => {
-    // The snapshot predates `neon`; the first pass says "unknown", the forced
-    // llmux re-fetch brings the gemini row, and the retry must refuse it.
+  it('refuses the names llmux routes to gemini on a cold start, without a catalog refresh', async () => {
+    const refresh = vi.spyOn(modelCatalog, 'refresh');
+    try {
+      const store = new UserSettingsStore(makeDir());
+      for (const input of ['neon', 'argon', 'carbon', 'hydrogen', 'gemini']) {
+        expect((await store.resolveModelInputDetailedWithRefresh(input)).status, input).toBe('rejected');
+      }
+      expect(refresh).not.toHaveBeenCalled();
+    } finally {
+      refresh.mockRestore();
+    }
+  });
+
+  it('a stale snapshot does not let a new catalog-only gemini alias through: the forced re-fetch finds it and refuses it', async () => {
+    // `helium` is no llmux routing name, so only the catalog row's gemini
+    // group can tell. The snapshot predates it; the first pass says
+    // "unknown", the forced llmux re-fetch brings the row, and the retry must
+    // refuse it.
+    const HELIUM = row('gemini-4-helium', 'helium', 'Gemini 4 Helium', 1_048_576, 'gemini');
     modelCatalog.__testSeed([GROK_4_7]);
-    modelCatalog.setFetcher(async () => [...GEMINI_ROWS, GROK_4_7]);
+    modelCatalog.setFetcher(async () => [...GEMINI_ROWS, HELIUM, GROK_4_7]);
     const store = new UserSettingsStore(makeDir());
-    const resolution = await store.resolveModelInputDetailedWithRefresh('neon');
+    expect(store.resolveModelInputDetailed('helium').status).toBe('unknown');
+    const resolution = await store.resolveModelInputDetailedWithRefresh('helium');
     expect(resolution.status).toBe('rejected');
   });
 

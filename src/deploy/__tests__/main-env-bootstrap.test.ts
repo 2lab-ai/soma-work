@@ -3,7 +3,12 @@ import os from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { AVAILABLE_MODELS, DEFAULT_MODEL as STORE_DEFAULT_MODEL } from '../../user-settings-store';
+import { modelCatalog } from '../../model-catalog';
+import {
+  AVAILABLE_MODELS,
+  coerceToAvailableModel,
+  DEFAULT_MODEL as STORE_DEFAULT_MODEL,
+} from '../../user-settings-store';
 import {
   __TEST_ONLY_coerceModel,
   __TEST_ONLY_VALID_MODELS,
@@ -508,6 +513,54 @@ describe('main-env-bootstrap', () => {
       expect(__TEST_ONLY_coerceModel('gemini-3.8-flash-high', dataDir)).toBe(STORE_DEFAULT_MODEL);
       expect(__TEST_ONLY_coerceModel('hydrogen-preview', dataDir)).toBe(STORE_DEFAULT_MODEL);
       expect(__TEST_ONLY_coerceModel('grok-4.5', dataDir)).toBe('grok-4.5');
+    });
+
+    it('agrees with the runtime coerceToAvailableModel over the same catalog (refusal-rule drift guard)', () => {
+      // Both sides refuse through metrics/model-refusal-rules.ts; this runs
+      // them side by side so any other divergence shows up too.
+      const rows = [
+        { id: 'gemini-4-argon[1m]', aliases: ['argon'], name: 'Gemini 4 Argon', efforts: [], group: 'gemini' },
+        { id: 'gemini-4-neon', aliases: ['neon'], name: 'Gemini 4 Neon', efforts: [], group: 'gemini' },
+        { id: 'hydrogen-preview', aliases: ['hx'], name: 'Hydrogen', efforts: [], group: 'gemini' },
+        { id: 'grok-4.5', aliases: ['grok'], name: 'Grok 4.5', efforts: [], max_context: 500_000, group: 'grok' },
+        { id: 'grok-4.6[1m]', aliases: [], name: 'Grok 4.6 1M', efforts: [], group: 'grok' },
+        { id: 'gpt-5.5', aliases: ['gpt5.5'], name: 'GPT 5.5', efforts: [], group: 'codex' },
+        { id: 'claude-fable-5[1m]', aliases: [], name: 'Claude Fable 5', efforts: [], group: 'claude' },
+      ];
+      const dataDir = makeTempDir('bootstrap-parity-');
+      writeJson(path.join(dataDir, 'model-catalog.json'), { fetchedAt: 1, models: rows });
+      modelCatalog.__testSeed(rows);
+      try {
+        for (const id of [
+          'gemini-4-argon[1m]',
+          'gemini-4-neon',
+          'GEMINI3-PRO',
+          'argon',
+          'neon',
+          'carbon',
+          'hydrogen-preview',
+          'hx',
+          'grok-4.5',
+          'grok',
+          'grok-4.6[1m]',
+          'gpt-5.5',
+          'gpt5.5',
+          'claude-fable-5[1m]',
+          'claude-opus-5-5[1m]',
+          'gpt-6.2-sol[1m]',
+          'totally-unknown',
+        ]) {
+          expect(__TEST_ONLY_coerceModel(id, dataDir), id).toBe(coerceToAvailableModel(id));
+        }
+      } finally {
+        modelCatalog.__testReset();
+      }
+    });
+
+    it('ships the refusal rules it loads: the deploy-bundle smoke check requires them', () => {
+      const smoke = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'scripts/smoke/deploy-bundle.js'), 'utf8');
+      expect(smoke).toContain("'dist/deploy/main-env-bootstrap.js'");
+      expect(smoke).toContain("'dist/metrics/model-refusal-rules.js'");
     });
 
     it('preserves the literal fable [1m] id (the 2026-08-26 filter removal)', () => {

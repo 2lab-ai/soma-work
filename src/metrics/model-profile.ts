@@ -26,11 +26,14 @@
  * Layering (must stay acyclic):
  *   model-catalog  ←  metrics/model-profile  ←  metrics/model-registry
  *                                           ←  build-stream-options
+ *   metrics/model-refusal-rules (no imports)  ←  metrics/model-profile
+ *                                            ←  deploy/main-env-bootstrap
  * This module must NOT import `user-settings-store` (which imports the
  * `[1m]` helpers below, via model-registry) nor `model-registry` itself.
  */
 
 import { modelCatalog } from '../model-catalog';
+import { type CatalogRow, findModelRefusal, ONE_M_SUFFIX_RE } from './model-refusal-rules';
 
 /**
  * Everything a session needs to know about its model's context budget.
@@ -121,8 +124,10 @@ const GPT_ONE_M_AUTO_COMPACT_TOKENS = 600_000;
  * The Claude Agent SDK (≥ 0.2.111) detects this suffix, strips it before the
  * API call, and injects the `context-1m-2025-08-07` beta header uniformly
  * across API-key and OAuth auth — so no runtime beta-header injection is needed.
+ * Defined in `model-refusal-rules.ts` (which imports nothing, so the deploy
+ * bootstrap can share it) and re-exported here for existing importers.
  */
-export const ONE_M_SUFFIX_RE = /\[1m\]$/i;
+export { ONE_M_SUFFIX_RE };
 
 /** Returns true when `model` ends with the 1M suffix (case-insensitive). */
 export function hasOneMSuffix(model: string): boolean {
@@ -467,9 +472,9 @@ export const CANONICAL_MODEL_IDS: readonly string[] = Object.freeze(POLICY_PROFI
  *
  * There is no `normalizedFrom` / rewrite channel: the only compatibility cases
  * this module has — grok `[1m]`, retired ids and gemini models — are REFUSED
- * rather than rewritten (see {@link GROK_ID_RE}, `RETIRED_MODEL_INPUTS` and
- * `isGeminiModelInput`). A field that is always `undefined` would just invite
- * callers to build a "we quietly changed your model" path.
+ * rather than rewritten (the rules live in `model-refusal-rules.ts`). A field
+ * that is always `undefined` would just invite callers to build a "we quietly
+ * changed your model" path.
  */
 export interface ModelInputAccepted {
   /** The canonical model id to store in session/user state. */
@@ -491,81 +496,10 @@ export function isRejectedModelInput(result: ModelInputCompatibility): result is
   return 'rejectedReason' in result;
 }
 
-/**
- * `[1m]` is meaningless — and actively harmful — on a grok id.
- *
- * Claude and codex ids survive the suffix because the layer below strips it
- * (the Agent SDK for claude, llmux for codex). llmux's grok provider does not:
- * it forwards any `grok-*` id VERBATIM upstream (llmux
- * `src/provider/grok.rs:226-244`), so `grok-4.6[1m]` would reach xAI as a
- * model name that does not exist. Silently normalizing it to `grok-4.6` would
- * also mean the harness quietly served a different model than the one asked
- * for, so the input is refused instead of rewritten.
- */
-const GROK_ID_RE = /^grok-/i;
-
-/** Why and when a model id left the selectable set, and what to use instead. */
-interface RetiredModel {
-  /** Date the id was retired from selection (YYYY-MM-DD). */
-  readonly retiredOn: string;
-  /** User-facing reason, without a trailing "use X" (callers append the suggestion). */
-  readonly why: string;
-  /** Selectable id offered instead. */
-  readonly suggestedModel: string;
-}
-
-/**
- * gpt-5.5 — retired from selection on 2026-11-19 (owner instruction). The
- * ChatGPT-account Codex backend has rejected it since 2026-10-14: a llmux
- * probe on 2026-11-18 got 400 "The 'gpt-5.5' model is not supported when
- * using Codex with a ChatGPT account." (2lab-ai/llmux#309). The suggestion is
- * gpt-5.6-sol — the next generation and the `gpt` alias target (a literal,
- * because this module must not import the settings store). The price row
- * stays in model-registry.ts so past gpt-5.5 usage keeps its cost.
- */
-const GPT_5_5_RETIREMENT: RetiredModel = Object.freeze({
-  retiredOn: '2026-11-19',
-  why: 'the Codex backend no longer serves it to ChatGPT accounts',
-  suggestedModel: 'gpt-5.6-sol',
-});
-
-/**
- * Retired model inputs, keyed by every spelling a user may still type — the
- * canonical id and any removed alias — compared after trimming, lowercasing
- * and stripping `[1m]`. They are REFUSED, never rewritten: typed input gets
- * the reason and a suggestion, and `coerceToAvailableModel` sends a stored
- * value to DEFAULT_MODEL before the llmux catalog overlay could keep it.
- */
-const RETIRED_MODEL_INPUTS: ReadonlyMap<string, RetiredModel> = new Map([
-  ['gpt-5.5', GPT_5_5_RETIREMENT],
-  ['gpt5.5', GPT_5_5_RETIREMENT],
-]);
-
-/**
- * Gemini models are refused outright (2026-11-21). soma-work reaches llmux as
- * Claude Code (Agent SDK), and llmux answers every Claude Code request routed
- * to its gemini group with a local 400 (since 2026-10-15): Google's
- * Antigravity backend refuses them. A gemini selection can therefore only
- * fail. Two ways in, both refused:
- *   • a `gemini-*` id, with or without `[1m]` — matched without a catalog, so
- *     a cold start or a stored id is refused too;
- *   • anything the llmux catalog resolves (id or alias — `argon`, `neon`,
- *     `carbon`, `hydrogen`, `gemini`) to a row in group `gemini`.
- * The suggestion is the opus default, a literal because this module must not
- * import the settings store (`DEFAULT_MODEL` there follows the same `opus`
- * alias).
- */
-const GEMINI_ID_RE = /^gemini-/i;
-const GEMINI_GROUP = 'gemini';
-const GEMINI_SUGGESTED_MODEL = 'claude-opus-5-5[1m]';
-
-/** True when `key` (trimmed, lowercased) names a gemini model by id or through the llmux catalog. */
-function isGeminiModelInput(key: string): boolean {
-  const base = stripOneMSuffix(key);
-  if (GEMINI_ID_RE.test(base)) return true;
-  const resolved = modelCatalog.resolveInput(key) ?? modelCatalog.resolveInput(base);
-  if (!resolved) return false;
-  return GEMINI_ID_RE.test(resolved) || modelCatalog.getGroupFor(resolved) === GEMINI_GROUP;
+/** The live llmux catalog overlay, as the shared refusal rules see it (id or alias → row). */
+function resolveCatalogRow(key: string): CatalogRow | null {
+  const id = modelCatalog.resolveInput(key);
+  return id ? { id, group: modelCatalog.getGroupFor(id) } : null;
 }
 
 /**
@@ -585,30 +519,8 @@ export function resolveModelInputCompatibility(input: string): ModelInputCompati
   if (trimmed.length === 0) return null;
   const key = trimmed.toLowerCase();
 
-  const retired = RETIRED_MODEL_INPUTS.get(stripOneMSuffix(key));
-  if (retired) {
-    return {
-      rejectedReason: `\`${trimmed}\` was retired on ${retired.retiredOn} — ${retired.why}.`,
-      suggestedModel: retired.suggestedModel,
-    };
-  }
-
-  if (isGeminiModelInput(key)) {
-    return {
-      rejectedReason: `\`${trimmed}\` is a Gemini model — llmux does not forward Claude Code requests to Google's Antigravity backend, which refuses them.`,
-      suggestedModel: GEMINI_SUGGESTED_MODEL,
-    };
-  }
-
-  if (hasOneMSuffix(key)) {
-    const base = stripOneMSuffix(key);
-    if (GROK_ID_RE.test(base)) {
-      return {
-        rejectedReason: `\`${trimmed}\` is not a real model id — grok has no 1M variant and llmux forwards grok ids verbatim upstream. Use \`${base}\`.`,
-        suggestedModel: base,
-      };
-    }
-  }
+  const refusal = findModelRefusal(trimmed, resolveCatalogRow);
+  if (refusal) return { rejectedReason: refusal.rejectedReason, suggestedModel: refusal.suggestedModel };
 
   const canonical = POLICY_BY_ID.get(key);
   if (canonical) return { modelId: canonical.modelId };

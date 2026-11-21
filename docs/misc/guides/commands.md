@@ -292,10 +292,13 @@ falls back to the default model. Past `gpt-5.5` usage keeps its price.
 
 Gemini models are not selectable (2026-11-21): soma-work runs as Claude Code,
 and llmux does not forward Claude Code requests to Google's Antigravity
-backend, which refuses them. A `gemini-*` id or a llmux gemini alias
-(`gemini`, `argon`, `neon`, `carbon`, `hydrogen`) is refused with a
-`use claude-opus-5-5[1m]` message, the model card lists no gemini rows, and a
-stored gemini default or session model falls back to the default model.
+backend, which refuses them. Every name llmux routes to its gemini group is
+refused with a `use claude-opus-5-5[1m]` message, even before the llmux
+catalog has loaded: anything starting with `gemini` (`gemini`,
+`gemini-3.8-flash-high`, …) and `argon`, `neon`, `carbon`, `hydrogen`, with
+or without `[1m]`. Any other name the llmux catalog maps to a gemini row is
+refused too. The model card lists no gemini rows, and a stored gemini default
+or session model falls back to the default model.
 
 `/compact-threshold <percent>` is a **deprecated** compatibility adapter, not a
 second setting: it converts `<percent>` against the *current* model's context

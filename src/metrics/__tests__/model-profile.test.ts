@@ -497,9 +497,19 @@ describe('resolveModelInputCompatibility — gemini models are REFUSED (2026-11-
     expect(resolveModelInputCompatibility('opus')).toBeNull();
   });
 
-  it('has no opinion on a bare element name the catalog does not know', () => {
-    // Without a catalog row `neon` is just an unknown word, not a gemini model.
-    expect(resolveModelInputCompatibility('neon')).toBeNull();
+  it('refuses what llmux routes to gemini on a cold start, with no catalog loaded', () => {
+    // llmux routes these to its gemini group by name alone (src/routing.rs
+    // builtin_gemini_rules: prefix `gemini`, exact `argon` / `neon` / `carbon`
+    // / `hydrogen`), so no catalog row is needed to know they will fail.
+    for (const input of ['neon', 'argon', 'carbon', 'hydrogen', 'Neon[1M]', 'gemini', 'gemini3-pro']) {
+      expectGeminiRefusal(input);
+    }
+  });
+
+  it('matches the element names exactly — a longer word is not a gemini route', () => {
+    expect(resolveModelInputCompatibility('neonx')).toBeNull();
+    expect(resolveModelInputCompatibility('argonaut')).toBeNull();
+    expect(resolveModelInputCompatibility('my-gemini')).toBeNull();
   });
 });
 
