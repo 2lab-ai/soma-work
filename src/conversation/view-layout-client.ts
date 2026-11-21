@@ -96,7 +96,8 @@ function layoutsFor(doc, builtins, mode, plan) {
 // asks: the card asks the user something now (a permission, a goal decision, the question, a retry's error) —
 // a summary row set to "물을 때만" shows only then.
 // attention (SSOT 2026-11-05): the viewer's own NEEDS YOU card — the cue is not a row; every layout keeps it.
-var FACE_KEEP = ['id', 'title', 'status', 'statusText', 'bodyMode', 'since', 'elapsedMs', 'lead', 'badge', 'star', 'titles', 'attention'];
+// wave (2026-11-21, @2lab.ai/ui 0.44.0): how a change of status waves over the card — not a row; every layout keeps it.
+var FACE_KEEP = ['id', 'title', 'status', 'statusText', 'bodyMode', 'since', 'elapsedMs', 'lead', 'badge', 'star', 'titles', 'attention', 'wave'];
 var FACE_ROW_KEYS = { summary: ['summary'], task: ['task'], links: ['links'], agents: ['agents'], usage: ['tokens', 'costUsd'], arts: ['artifacts', 'artifactsCount'] };
 var FACE_ROW_NAME = { summary: 'summary', task: 'task', links: 'links', agents: 'agents', usage: 'usage', arts: 'artifacts' };
 function faceOf(card, model, face, asks, effort, asked) {

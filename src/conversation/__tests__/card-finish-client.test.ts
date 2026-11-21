@@ -12,9 +12,10 @@ import { CARD_FINISH_CLIENT_JS, CARD_FINISH_CSS } from '../card-finish-client';
 
 type Card = { key: unknown; model?: unknown; queued?: unknown };
 const client = new Function(
-  `${CARD_FINISH_CLIENT_JS}\nreturn { cardFinishOf, cardFinishSheet, cardFinishPlan };`,
+  `${CARD_FINISH_CLIENT_JS}\nreturn { cardFinishOf, cardFinishSheet, cardFinishPlan, cardWaveOf };`,
 )() as {
   cardFinishOf(model: unknown): '' | 'bright' | 'foil';
+  cardWaveOf(model: unknown): 'loud' | 'quiet';
   cardFinishSheet(cards: Card[]): string;
   cardFinishPlan(cards: Card[]): { bright: string[]; foil: string[]; queue: string[]; sig: string };
 };
@@ -34,6 +35,31 @@ function fnBody(name: string): string {
 function keysOf(sel: string): string[] {
   return Array.from(sel.matchAll(/\[data-card="((?:[^"\\]|\\.)*)"\]/g), (m) => m[1]);
 }
+
+describe('cardWaveOf — a change of status waves loudly for Fable, quietly for every other model (Z 2026-11-21)', () => {
+  it.each([
+    ['claude-fable-5-2[1m]', 'loud'],
+    ['claude-fable-5-1', 'loud'],
+    ['fable', 'loud'],
+    ['Claude-Fable-5[1M]', 'loud'],
+    ['gpt-6-astra[1m]', 'quiet'],
+    ['claude-opus-5-5[1m]', 'quiet'],
+    ['claude-sonnet-4-6', 'quiet'],
+    ['grok-4.7', 'quiet'],
+    ['unknown', 'quiet'],
+    ['', 'quiet'],
+    [undefined, 'quiet'],
+    ['fabled-1', 'quiet'],
+  ])('%s → %s', (model, wave) => {
+    expect(client.cardWaveOf(model)).toBe(wave);
+  });
+
+  it('the board card carries it, except a card whose close is on its way (its red is not a failure)', () => {
+    const body = fnBody('viewCardOf');
+    expect(body).toContain("isBusy(s.key, 'closing')");
+    expect(body).toMatch(/\} else if \(typeof cardWaveOf === 'function'\) \{[\s\S]*c\.wave = cardWaveOf\(s\.model\);/);
+  });
+});
 
 describe('cardFinishOf — which models get which finish', () => {
   it.each([

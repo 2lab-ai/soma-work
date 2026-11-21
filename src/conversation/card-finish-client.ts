@@ -34,6 +34,13 @@ function cardFinishOf(model) {
   if (CARD_FINISH_BRIGHT_RE.test(m)) return 'bright';
   return '';
 }
+// How the card's change of status waves (<ui-agent-inbox> card.wave, @2lab.ai/ui 0.44.0, Z 2026-11-21: Fable 요란하게,
+// the rest 살짝): a Fable session's card waves loudly — the lens, dots, the edge lit as it glides — every other model's
+// quietly, in the status colour alone. Fable only: astra shares the foil finish but not the loud wave.
+var CARD_WAVE_LOUD_RE = /(?:^|[^a-z0-9])fable(?![a-z0-9])/;
+function cardWaveOf(model) {
+  return CARD_WAVE_LOUD_RE.test(String(model || '').toLowerCase()) ? 'loud' : 'quiet';
+}
 // What a finished card reads, on every card so each resolves against its own state: an idle card (the element dims a
 // parked card with colour) keeps its dimmed surface and a fainter sheen. The theme's inputs come from :root
 // (CARD_FINISH_CSS), their one source.

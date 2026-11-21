@@ -58,7 +58,7 @@ describe('auth pages — a host of @2lab.ai/ui <ui-auth-card>, rendered by the l
       const html = renderLoginPage({ googleEnabled: true, microsoftEnabled: true, session: null });
       const data = expectLibraryCard(html);
       expect(data).toEqual({
-        brand: { label: 'soma-work', mark: true },
+        brand: { label: 'soma-work', mark: true, metal: true },
         title: 'Sign in',
         text: 'Sign in to your dashboard.',
         providers: [
@@ -189,7 +189,7 @@ describe('auth pages — a host of @2lab.ai/ui <ui-auth-card>, rendered by the l
       );
       const data = expectLibraryCard(html);
       expect(data).toEqual({
-        brand: { label: 'soma-work', mark: true },
+        brand: { label: 'soma-work', mark: true, metal: true },
         title: 'Switch accounts?',
         text: 'You are about to replace your current dashboard session. The account signed in now will be signed out.',
         confirm: {
@@ -240,6 +240,13 @@ describe('auth pages — a host of @2lab.ai/ui <ui-auth-card>, rendered by the l
       expect(html).toMatch(/<ui-auth-card lang="en" page><template shadowrootmode="open">/);
       expect(html).toContain(
         `<script type="module" src="/dashboard/ui/auth-card.js?v=${uiLib.UI_LIB_VERSION}"></script>`,
+      );
+      // The wordmark is liquid metal (0.44.0): the library draws it as <ui-metal-text>, the page loads its module.
+      expect(markup(html)).toContain(
+        '<ui-metal-text class="ac-brand-metal" preset="chromatic">soma-work</ui-metal-text>',
+      );
+      expect(html).toContain(
+        `<script type="module" src="/dashboard/ui/metal-text.js?v=${uiLib.UI_LIB_VERSION}"></script>`,
       );
       // The card is English (its strings); the page is Korean (the hint) and breaks its prose between words.
       expect(html).toContain('html:lang(ko) { word-break: keep-all; }');

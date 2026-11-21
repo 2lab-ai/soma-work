@@ -347,7 +347,8 @@ describe('agent registry — the main agent is the root node (recursive UI)', ()
     stampWorkLogAgent(h, { kind: 'narration', text: 'thinking' }, T0 + 2);
     stampWorkLogAgent(h, { kind: 'tool_result', tool: 'Read', text: 'ok' }, T0 + 3);
     stampWorkLogAgent(h, { kind: 'tool', tool: 'Grep', text: 'Grep x', agentId: 'toolu_a' }, T0 + 4);
-    expect(h.agents?.root).toEqual({ toolCalls: 2, lastTool: 'Read' });
+    // When it made its last call too (the dashboard's orb ignores a tool from before the latest instruction).
+    expect(h.agents?.root).toEqual({ toolCalls: 2, lastTool: 'Read', lastToolAt: T0 + 1 });
     expect(agentById(h.agents, 'toolu_a')).toMatchObject({ toolCalls: 1, lastTool: 'Grep' });
   });
 
@@ -362,10 +363,13 @@ describe('agent registry — the main agent is the root node (recursive UI)', ()
     stampWorkLogAgent(h, { kind: 'tool', tool: 'Bash', text: 'Bash ls' }, T0);
     applyAgentEvent(h, { kind: 'spawn', agentId: 'toolu_a', ts: T0 });
     const restored = sanitizeAgentRegistry(JSON.parse(JSON.stringify(h.agents)));
-    expect(restored?.root).toEqual({ toolCalls: 1, lastTool: 'Bash' });
-    expect(loseRunningAgents(restored, T0 + 5)?.root).toEqual({ toolCalls: 1, lastTool: 'Bash' });
+    expect(restored?.root).toEqual({ toolCalls: 1, lastTool: 'Bash', lastToolAt: T0 });
+    expect(loseRunningAgents(restored, T0 + 5)?.root).toEqual({ toolCalls: 1, lastTool: 'Bash', lastToolAt: T0 });
     // Junk root data is dropped, never trusted.
     expect(sanitizeAgentRegistry({ nextN: 1, agents: [], root: { toolCalls: 'x' } })?.root).toBeUndefined();
+    expect(
+      sanitizeAgentRegistry({ nextN: 1, agents: [], root: { toolCalls: 1, lastTool: 'Bash', lastToolAt: 'x' } })?.root,
+    ).toEqual({ toolCalls: 1, lastTool: 'Bash' });
     // A registry that only has root stats is still a registry.
     expect(sanitizeAgentRegistry({ nextN: 1, agents: [], root: { toolCalls: 3 } })?.root).toEqual({ toolCalls: 3 });
   });
