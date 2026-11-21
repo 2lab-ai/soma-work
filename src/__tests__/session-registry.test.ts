@@ -5,6 +5,7 @@ vi.mock('../env-paths', () => ({
   DATA_DIR: '/tmp/soma-work-session-registry-test',
 }));
 
+import { modelCatalog } from '../model-catalog';
 import { SessionRegistry } from '../session-registry';
 import { DEFAULT_MODEL } from '../user-settings-store';
 
@@ -1214,6 +1215,38 @@ describe('SessionRegistry deserialize — model coerce', () => {
     const reader = new SessionRegistry();
     reader.loadSessions();
     expect(reader.getSession('C1', 't6')?.model).toBe(DEFAULT_MODEL);
+  });
+
+  it('coerces a session on a gemini model to DEFAULT_MODEL even while the catalog lists it (2026-11-21)', () => {
+    // llmux refuses every Claude Code request routed to its gemini group, so a
+    // restored gemini session could only fail its next turn.
+    modelCatalog.__testSeed([
+      { id: 'gemini-4-argon[1m]', aliases: ['argon'], name: 'Gemini 4 Argon', efforts: [], group: 'gemini' },
+    ]);
+    try {
+      const now = new Date().toISOString();
+      writeSessionsFile([
+        {
+          key: 'C1-t7',
+          ownerId: 'U1',
+          userId: 'U1',
+          channelId: 'C1',
+          threadTs: 't7',
+          sessionId: 's7',
+          isActive: true,
+          lastActivity: now,
+          model: 'gemini-4-argon[1m]',
+          state: 'MAIN',
+          workflow: 'default',
+        },
+      ]);
+
+      const reader = new SessionRegistry();
+      reader.loadSessions();
+      expect(reader.getSession('C1', 't7')?.model).toBe(DEFAULT_MODEL);
+    } finally {
+      modelCatalog.__testReset();
+    }
   });
 
   it('preserves undefined when session was saved without a model', () => {

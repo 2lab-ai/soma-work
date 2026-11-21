@@ -73,6 +73,29 @@ describe('renderModelCard — catalog models', () => {
     expect(ids).not.toContain('z_setting_model_set_gpt-5.5');
   });
 
+  it('renders no button for a gemini catalog row (llmux refuses Claude Code → gemini, 2026-11-21)', async () => {
+    // soma-work reaches llmux as Claude Code and llmux refuses every Claude
+    // Code request routed to its gemini group, so these buttons could only fail.
+    modelCatalog.__testSeed([
+      GROK,
+      {
+        id: 'gemini-3.8-flash-high[1m]',
+        aliases: ['gemini'],
+        name: 'Gemini 3.8 Flash',
+        efforts: [],
+        max_context: 1_048_576,
+        group: 'gemini',
+      },
+      { id: 'gemini-4-argon[1m]', aliases: ['argon'], name: 'Gemini 4 Argon', efforts: [], group: 'gemini' },
+      { id: 'gemini-4-neon', aliases: ['neon'], name: 'Gemini 4 Neon', efforts: [], group: 'gemini' },
+      { id: 'hydrogen-preview', aliases: ['hydrogen'], name: 'Hydrogen', efforts: [], group: 'gemini' },
+    ]);
+    const { blocks } = await renderModelCard({ userId: 'UCAT1', issuedAt: 1 });
+    const ids = collectButtons(blocks).map((b) => b.action_id);
+    expect(ids).toContain('z_setting_model_set_grok-4.5');
+    expect(ids.filter((id) => /gemini|argon|neon|hydrogen/.test(id))).toEqual([]);
+  });
+
   it('renders the fable `[1m]` id exactly once — static entry, no catalog duplicate', async () => {
     // Superseded 2026-08-26: this used to assert the id was EXCLUDED, back
     // when `isCatalogIdSelectable` filtered it out. It is now a static

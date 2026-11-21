@@ -53,8 +53,9 @@ export async function renderModelCard(args: { userId: string; issuedAt: number }
   }
   // llmux model-catalog overlay — catalog models not already in the static
   // allow-list (e.g. grok-4.5), deduped by id. An id the store REFUSES (a
-  // retired id such as gpt-5.5, or a fake grok `[1m]`) is skipped even when
-  // the catalog still advertises it — its button could only fail.
+  // retired id such as gpt-5.5, a fake grok `[1m]`, or any gemini row — llmux
+  // refuses Claude Code → gemini) is skipped even when the catalog still
+  // advertises it — its button could only fail.
   for (const model of modelCatalog.getModels()) {
     if (seen.has(model.id)) continue;
     const compatibility = resolveModelInputCompatibility(model.id);

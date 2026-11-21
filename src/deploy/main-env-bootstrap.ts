@@ -1,5 +1,8 @@
 import fs from 'fs';
 import path from 'path';
+// The one import outside node builtins: the shared refusal rules, which import
+// nothing themselves, so the bootstrap stays import-lean.
+import { type CatalogResolver, type CatalogRow, findModelRefusal } from '../metrics/model-refusal-rules';
 
 const DEFAULT_DEV_SOURCE_DIR = '/opt/soma-work/dev';
 const DEFAULT_LEGACY_ROOT_DIR = '/Users/dd/app.claude-code-slack-bot';
@@ -65,15 +68,24 @@ const VALID_MODELS = new Set([
 /** Exposed for drift tests only — asserts exact-set equality with AVAILABLE_MODELS. */
 export const __TEST_ONLY_VALID_MODELS: ReadonlySet<string> = VALID_MODELS;
 
+/** The llmux catalog snapshot, as far as the bootstrap needs it. */
+interface CatalogSnapshot {
+  /** Row ids, trimmed and lowercased. */
+  readonly ids: ReadonlySet<string>;
+  /** Id, then alias → row — the same lookup order as `modelCatalog.resolveInput`. */
+  readonly resolve: CatalogResolver;
+}
+
+const EMPTY_SNAPSHOT: CatalogSnapshot = { ids: new Set(), resolve: () => null };
+
 /**
- * Read the llmux model-catalog snapshot ids from `${dataDir}/model-catalog.json`
+ * Read the llmux model-catalog snapshot from `${dataDir}/model-catalog.json`
  * (written by `src/model-catalog.ts`). Fail-soft: any fs/parse problem →
- * empty set (static VALID_MODELS behavior). Import-lean by design — the
+ * empty snapshot (static VALID_MODELS behavior). Import-lean by design — the
  * bootstrap must not pull in the runtime catalog module.
  */
-function readCatalogSnapshotIds(dataDir: string | undefined): Set<string> {
-  const ids = new Set<string>();
-  if (!dataDir) return ids;
+function readCatalogSnapshot(dataDir: string | undefined): CatalogSnapshot {
+  if (!dataDir) return EMPTY_SNAPSHOT;
   const file = path.join(dataDir, 'model-catalog.json');
   // Mirror modelCatalog.loadSnapshotSync: try the live snapshot, then the
   // `.bak` kept by the atomic writer — a corrupt live file must not coerce
@@ -82,30 +94,29 @@ function readCatalogSnapshotIds(dataDir: string | undefined): Set<string> {
   for (const candidate of [file, `${file}.bak`]) {
     try {
       const raw = fs.readFileSync(candidate, 'utf8');
-      const parsed = JSON.parse(raw) as { models?: Array<{ id?: unknown }> };
+      const parsed = JSON.parse(raw) as { models?: Array<{ id?: unknown; aliases?: unknown; group?: unknown }> };
       if (!Array.isArray(parsed?.models)) continue;
+      const byId = new Map<string, CatalogRow>();
+      const byAlias = new Map<string, CatalogRow>();
       for (const entry of parsed.models) {
-        if (entry && typeof entry.id === 'string' && entry.id.trim().length > 0) {
-          const id = entry.id.trim().toLowerCase();
-          // Keep the runtime store's refusal contract import-lean: llmux's
-          // grok provider forwards `grok-*` ids verbatim, so a fake `[1m]`
-          // spelling must never survive deploy-time normalization even if a
-          // stale or malformed catalog snapshot advertises it. Fable `[1m]`
-          // remains a valid first-class id.
-          if (/^grok-.*\[1m\]$/i.test(id)) continue;
-          // Same for retired ids (gpt-5.5, retired 2026-11-19): the runtime
-          // store refuses them (model-profile.ts RETIRED_MODEL_INPUTS), so a
-          // catalog that still advertises one must not keep it alive here.
-          if (/^gpt-?5\.5(\[1m\])?$/i.test(id)) continue;
-          ids.add(id);
+        if (!entry || typeof entry.id !== 'string' || entry.id.trim().length === 0) continue;
+        const id = entry.id.trim().toLowerCase();
+        if (byId.has(id)) continue;
+        const group = typeof entry.group === 'string' ? entry.group.trim().toLowerCase() : '';
+        const row: CatalogRow = { id, group: group.length > 0 ? group : null };
+        byId.set(id, row);
+        if (!Array.isArray(entry.aliases)) continue;
+        for (const alias of entry.aliases) {
+          const key = typeof alias === 'string' ? alias.trim().toLowerCase() : '';
+          if (key.length > 0 && !byAlias.has(key)) byAlias.set(key, row);
         }
       }
-      return ids;
+      return { ids: new Set(byId.keys()), resolve: (key) => byId.get(key) ?? byAlias.get(key) ?? null };
     } catch {
       // fail-soft: missing/corrupt candidate → try the next one
     }
   }
-  return ids;
+  return EMPTY_SNAPSHOT;
 }
 
 /**
@@ -113,16 +124,21 @@ function readCatalogSnapshotIds(dataDir: string | undefined): Set<string> {
  * DEFAULT_MODEL. Trims + lowercases so hand-edited JSON with stray whitespace
  * or `[1M]` uppercase round-trips cleanly.
  *
- * When `dataDir` is given, ids present in the llmux model-catalog snapshot
- * (`${dataDir}/model-catalog.json`, e.g. `grok-4.5`) are also preserved —
- * mirroring user-settings-store's catalog-aware `coerceToAvailableModel`.
+ * Same order as user-settings-store's `coerceToAvailableModel`: a refused
+ * spelling goes to DEFAULT_MODEL first, through the very rules the runtime
+ * store applies (`metrics/model-refusal-rules.ts` — retired ids, fake grok
+ * `[1m]`, gemini models), with the snapshot as the catalog view; then the
+ * static list; then, when `dataDir` is given, ids the llmux model-catalog
+ * snapshot (`${dataDir}/model-catalog.json`, e.g. `grok-4.5`) lists.
  */
 function coerceModel(raw: unknown, dataDir?: string): string {
   if (typeof raw !== 'string') return DEFAULT_MODEL;
   const normalized = raw.trim().toLowerCase();
   if (normalized.length === 0) return DEFAULT_MODEL;
+  const snapshot = readCatalogSnapshot(dataDir);
+  if (findModelRefusal(normalized, snapshot.resolve)) return DEFAULT_MODEL;
   if (VALID_MODELS.has(normalized)) return normalized;
-  if (readCatalogSnapshotIds(dataDir).has(normalized)) return normalized;
+  if (snapshot.ids.has(normalized)) return normalized;
   return DEFAULT_MODEL;
 }
 

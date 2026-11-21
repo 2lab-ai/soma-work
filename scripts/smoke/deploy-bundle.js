@@ -21,6 +21,9 @@ const requiredRootFiles = [
   // service that cannot start, so fail the smoke check loudly.
   'dist/run-with-rotating-logs.js',
   'dist/deploy/main-env-bootstrap.js',
+  // The model refusal rules the bootstrap loads at runtime (its only import
+  // besides node builtins) — without them it cannot start.
+  'dist/metrics/model-refusal-rules.js',
   // The Deploy step runs it twice (--check before the stop, the merge before
   // install-target.sh); a bundle without it fails that check, before the stop.
   'dist/deploy/apply-env-plugins.js',
