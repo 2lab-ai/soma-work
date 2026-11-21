@@ -7678,6 +7678,11 @@ body.nt-open .new-task-fab { display: none !important; }
 .phone-dialog { width: min(720px, 94vw); max-height: 86vh; padding: 0; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); color: var(--text); }
 .phone-dialog::backdrop { background: rgba(0, 0, 0, .45); }
 .phone-dialog-inner { display: flex; flex-direction: column; max-height: 86vh; }
+/* The view's content (renderPhoneDialog) shrinks under the ring so the transcript keeps scrolling inside 86vh. */
+.ph-dcontent { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.ph-ringbox { display: flex; justify-content: center; padding: 18px 16px 0; flex: none; }
+.ph-ringbox[hidden] { display: none; }
+.ph-ring { width: 88px; height: 88px; }
 .ph-dhead { display: flex; align-items: center; gap: 10px; padding: 14px 16px 8px; }
 .ph-dttl { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
 .ph-dttl b { font-size: 16px; font-weight: 600; }
@@ -8316,8 +8321,12 @@ ${CARD_FINISH_CSS}
 <ui-artifact-viewer id="fu-viewer" tiles="none" lang="ko"></ui-artifact-viewer>
 <!-- Phone call view (.prd/30-phone-calls-spec.md §3.3): a call card's click opens the call as a chat (통화) and the
      call agent's work log (작업). Filled by renderPhoneDialog. -->
-<dialog id="phone-call-dialog" class="phone-dialog" aria-labelledby="phone-dialog-title" onclose="_phoneView=null"
-  onclick="if(event.target===this)closePhoneCall()"><div class="phone-dialog-inner" id="phone-dialog-body"></div></dialog>
+<!-- Libraries.dev voice ring (0.44.0): while the call is live a <ui-voice-ring> above the view says who has the line
+     (phoneRingSync). Its box sits outside the content renderPhoneDialog rewrites, so the ring and its WebGL lens live
+     as long as the live call, not one update. -->
+<dialog id="phone-call-dialog" class="phone-dialog" aria-labelledby="phone-dialog-title"
+  onclose="_phoneView=null;if(typeof phoneRingSync==='function')phoneRingSync(null)"
+  onclick="if(event.target===this)closePhoneCall()"><div class="phone-dialog-inner"><div class="ph-ringbox" id="phone-ring-box" hidden></div><div class="ph-dcontent" id="phone-dialog-body"></div></div></dialog>
 
 <script>
 const INIT_USER = ${initUser};
@@ -25307,6 +25316,7 @@ var PH_STATUS = { dialing: '거는 중', active: '통화 중', ended: '통화 �
 var PH_ENDED = { completed: '통화 끝', 'no-answer': '안 받음', busy: '통화 중이라 못 받음', rejected: '거절됨', canceled: '취소됨', failed: '실패' };
 var PH_WORK = { instruction: '통화 지시', stt: '받아쓰기', reply: '모델 응답', tool: '도구', tts: '음성 합성', event: '이벤트', error: '오류' };
 var PH_WAVE = '<span class="ph-wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>';
+var PH_RING_SRC = '/dashboard/ui/voice-ring.js?v=${UI_LIB_VERSION}';
 
 function phoneNum(n) {
   var d = String(n || '').replace(/[^0-9]/g, '');
@@ -25455,6 +25465,7 @@ function loadPhoneCall() {
 function closePhoneCall() {
   var dlg = phoneDialogEl();
   _phoneView = null;
+  if (typeof phoneRingSync === 'function') phoneRingSync(null);
   if (dlg && dlg.open) dlg.close();
 }
 function phoneTab(tab) {
@@ -25527,6 +25538,7 @@ function renderPhoneDialog() {
   var inner = document.getElementById('phone-dialog-body');
   var v = _phoneView;
   if (!inner || !v) return;
+  if (typeof phoneRingSync === 'function') phoneRingSync(v);
   var html = phoneDialogHtml(v);
   if (inner._html === html) return;
   var key = v.id + ':' + v.tab;
@@ -25542,6 +25554,88 @@ function renderPhoneDialog() {
   // A new view, or a reader at the bottom, follows the newest line; a reader who scrolled up stays put.
   if (fresh || atEnd) sc.scrollTop = sc.scrollHeight;
   else sc.scrollTop = top;
+}
+// ── The live call's voice ring (Libraries.dev Voice ring, @2lab.ai/ui 0.44.0 — Z 2026-11-21) ──
+// The call runs on the server: the page hears nothing, so the ring follows the call record. Dialing → processing; the
+// voice agent's speech (a synthesis from its start until its audio has played) → speaking, with a level that moves
+// like speech; a line from the other party that the agent has not answered yet → processing; else listening. Ended,
+// closed or not loaded: no ring at all (the element goes, and with it its loop and WebGL lens). Decorative: the head's
+// status (통화 중 …) is the words.
+var PH_RING_TICK_MS = 50; // a re-check is never sooner than this
+// Pure: the ring's state for a call at a time, and when that changes by itself (the end of the speech playing now).
+function phoneRingOf(call, now) {
+  if (!call || call.status === 'ended') return null;
+  if (call.status === 'dialing') return { state: 'processing', until: 0 };
+  var work = Array.isArray(call.work) ? call.work : [];
+  var speakingUntil = 0;
+  var lastReply = 0;
+  var lastTts = 0;
+  for (var i = 0; i < work.length; i++) {
+    var w = work[i];
+    if (!w) continue;
+    var at = toNum(w.at);
+    if (w.kind === 'tts') {
+      lastTts = Math.max(lastTts, at);
+      speakingUntil = Math.max(speakingUntil, at + toNum(w.firstByteMs) + toNum(w.audioMs));
+    } else if (w.kind === 'reply') lastReply = Math.max(lastReply, at);
+  }
+  // A reply with no synthesis after it yet: its speech is on the way.
+  if (lastReply && lastReply > lastTts) return { state: 'speaking', until: 0 };
+  if (now < speakingUntil) return { state: 'speaking', until: speakingUntil };
+  var lines = Array.isArray(call.transcript) ? call.transcript : [];
+  var peer = 0;
+  var agent = 0;
+  for (var j = 0; j < lines.length; j++) {
+    var l = lines[j];
+    if (!l) continue;
+    if (l.role === 'peer') peer = Math.max(peer, toNum(l.at));
+    else if (l.role === 'agent') agent = Math.max(agent, toNum(l.at));
+  }
+  if (peer && peer > agent && peer > lastReply) return { state: 'processing', until: 0 };
+  return { state: 'listening', until: 0 };
+}
+// The agent's speech as a level: no audio reaches the page, so a voice-like swell (syllables over a slower phrase).
+function phoneRingVoice() {
+  var t = (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
+  var v = 0.34 + 0.2 * Math.sin(t * 9.1) * Math.sin(t * 2.3 + 0.7) + 0.08 * Math.sin(t * 17.3);
+  return v < 0 ? 0 : v > 1 ? 1 : v;
+}
+var _phRingLoad = null;
+function phoneRingLoad() {
+  if (_phRingLoad || (typeof customElements !== 'undefined' && customElements.get('ui-voice-ring'))) return;
+  _phRingLoad = import(PH_RING_SRC).catch(function() { _phRingLoad = null; }); // a failed load tries again next time
+}
+var _phRingTimer = null;
+function phoneRingSync(v) {
+  var box = document.getElementById('phone-ring-box');
+  if (!box) return;
+  if (_phRingTimer) { clearTimeout(_phRingTimer); _phRingTimer = null; }
+  var ring = v ? phoneRingOf(v.call, Date.now()) : null;
+  if (!ring) {
+    if (box.firstChild) box.textContent = '';
+    box.hidden = true;
+    return;
+  }
+  phoneRingLoad();
+  var el = box.firstElementChild;
+  if (!el) {
+    var light = document.documentElement.getAttribute('data-theme') === 'light';
+    box.innerHTML = '<ui-voice-ring class="ph-ring" type="ring" size="88" decorative lang="ko" theme="' + (light ? 'light' : 'dark') + '"></ui-voice-ring>';
+    el = box.firstElementChild;
+  }
+  box.hidden = false;
+  if (el.getAttribute('state') !== ring.state) el.setAttribute('state', ring.state);
+  var speaking = ring.state === 'speaking';
+  if (el._phSpeaking !== speaking) {
+    el._phSpeaking = speaking;
+    el.data = { level: speaking ? phoneRingVoice : 0 };
+  }
+  if (ring.until) {
+    _phRingTimer = setTimeout(function() {
+      _phRingTimer = null;
+      if (_phoneView === v) phoneRingSync(v);
+    }, Math.max(PH_RING_TICK_MS, ring.until - Date.now()));
+  }
 }
 // Deep link: /dashboard?phoneCall=<id> (the owner's notice of an inbound call) opens the call view.
 var _deepLinkPhoneCall = (function() {

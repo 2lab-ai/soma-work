@@ -5,7 +5,7 @@
  * server never runs element code): a declarative shadow root holding the card, so the provider buttons (real
  * links) and the confirm (a real `<form>`) work before, and without, the script — in a page that carries only
  * the library's tokens.css (the dashboard's single colour source) and loads `/dashboard/ui/auth-card.js` to
- * take the card over in place.
+ * take the card over in place, and `/dashboard/ui/metal-text.js` for the brand's liquid-metal wordmark.
  */
 
 import { type AuthCardData, type AuthProvider, authCardHtml, esc } from '@2lab.ai/ui/server';
@@ -49,11 +49,15 @@ ${opts.card}
 document.querySelectorAll('ui-auth-card').forEach(function (c) { c.setAttribute('theme', document.documentElement.getAttribute('data-theme') || 'dark'); });
 </script>
 <script type="module" src="/dashboard/ui/auth-card.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/metal-text.js?v=${UI_LIB_VERSION}"></script>
 </body>
 </html>`;
 }
 
-const BRAND = { label: 'soma-work', mark: true } as const;
+// The wordmark is liquid metal (Libraries.dev Liquid Metal, @2lab.ai/ui 0.44.0 — Z 2026-11-21): the one effect on a
+// page that is otherwise still. `<ui-metal-text>` is inert until the page loads /dashboard/ui/metal-text.js: with
+// JavaScript off, no WebGL2 or reduced motion the word is plain text (or the element's still gradient).
+const BRAND = { label: 'soma-work', mark: true, metal: true } as const;
 
 // Provider logos: multi-colour marks the card takes in `slot="logo-<id>"` (its own glyphs are one colour).
 const GOOGLE_LOGO =

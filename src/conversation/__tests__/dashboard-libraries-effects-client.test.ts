@@ -14,6 +14,8 @@
  *   E5  the detail card's next steps are drops of one liquid (<ui-gooey>): a new answer's steps split out of one drop
  *       once, the pressed step swallows the others as it is sent, the bar waits for that before it goes; the open
  *       card's stack stays plain; reduced motion / no element: no motion at all
+ *   E6  a live phone call's view wears <ui-voice-ring>: its state from the call record (phoneRingOf), the module loaded
+ *       on the first live call, the element gone (loop and WebGL lens with it) once the call ends or the view closes
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -363,5 +365,158 @@ describe('E5 — the next steps split out of one drop and merge into the one pre
     calls.length = 0;
     press({ disabled: false, getAttribute: (n: string) => attrs[n], closest: () => null });
     expect(calls).toEqual(['send k t9 $user:dev']);
+  });
+});
+
+describe('E6 — the live call’s voice ring (ui-voice-ring in the phone dialog)', () => {
+  const ringFns = (inject: Record<string, unknown>) =>
+    new Function(
+      ...Object.keys(inject),
+      `var PH_RING_TICK_MS = 50; var PH_RING_SRC = '/dashboard/ui/voice-ring.js?v=t';
+      var _phRingLoad = null; var _phRingTimer = null;
+      function toNum(v) { var n = Number(v); return isFinite(n) ? n : 0; }
+      ${['phoneRingOf', 'phoneRingVoice', 'phoneRingLoad', 'phoneRingSync'].map(clientFn).join('\n')}
+      return { phoneRingOf, phoneRingVoice, phoneRingLoad, phoneRingSync };`,
+    )(...Object.values(inject)) as {
+      phoneRingOf(call: unknown, now: number): { state: string; until: number } | null;
+      phoneRingVoice(): number;
+      phoneRingSync(v: unknown): void;
+    };
+
+  it('the dialog holds a ring box above the content renderPhoneDialog rewrites; the module source is versioned', () => {
+    expect(TEMPLATE).toContain(
+      '<div class="phone-dialog-inner"><div class="ph-ringbox" id="phone-ring-box" hidden></div><div class="ph-dcontent" id="phone-dialog-body"></div></div>',
+    );
+    expect(TEMPLATE).toContain("onclose=\"_phoneView=null;if(typeof phoneRingSync==='function')phoneRingSync(null)\"");
+    expect(DASHBOARD_TS).toContain("var PH_RING_SRC = '/dashboard/ui/voice-ring.js?v=${UI_LIB_VERSION}';");
+    expect(clientFn('renderPhoneDialog')).toMatch(/phoneRingSync\(v\);\n {2}var html = phoneDialogHtml\(v\);/);
+    expect(clientFn('closePhoneCall')).toContain("if (typeof phoneRingSync === 'function') phoneRingSync(null);");
+    expect(DASHBOARD_TS).toContain('.ph-dcontent { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }');
+  });
+
+  it('phoneRingOf: dialing thinks, the agent’s speech speaks until its audio has played, an unanswered line thinks', () => {
+    const { phoneRingOf } = ringFns({});
+    expect(phoneRingOf(null, 0)).toBeNull();
+    expect(phoneRingOf({ status: 'ended', transcript: [], work: [] }, 0)).toBeNull();
+    expect(phoneRingOf({ status: 'dialing' }, 0)).toEqual({ state: 'processing', until: 0 });
+    expect(phoneRingOf({ status: 'active', transcript: [], work: [] }, 0)).toEqual({ state: 'listening', until: 0 });
+    // The other party spoke; nothing answered it yet.
+    const heard = { status: 'active', transcript: [{ role: 'peer', at: 1000, text: '여보세요' }], work: [] };
+    expect(phoneRingOf(heard, 1500)).toEqual({ state: 'processing', until: 0 });
+    // A reply, its speech not synthesised yet.
+    const replied = { ...heard, work: [{ kind: 'reply', at: 1800, text: '네', ms: 300 }] };
+    expect(phoneRingOf(replied, 2000)).toEqual({ state: 'speaking', until: 0 });
+    // Synthesised at 2100 (first byte 200ms, 1.5s of audio): speaking until 3800, then listening.
+    const spoke = {
+      ...replied,
+      transcript: [...heard.transcript, { role: 'agent', at: 2100, text: '네' }],
+      work: [...replied.work, { kind: 'tts', at: 2100, text: '네', firstByteMs: 200, audioMs: 1500 }],
+    };
+    expect(phoneRingOf(spoke, 3000)).toEqual({ state: 'speaking', until: 3800 });
+    expect(phoneRingOf(spoke, 3800)).toEqual({ state: 'listening', until: 0 });
+    // The other party again, after the agent: processing.
+    const again = { ...spoke, transcript: [...spoke.transcript, { role: 'peer', at: 5000, text: '그리고요' }] };
+    expect(phoneRingOf(again, 5200)).toEqual({ state: 'processing', until: 0 });
+  });
+
+  it('phoneRingVoice moves like speech and stays in 0…1', () => {
+    const { phoneRingVoice } = ringFns({});
+    const seen = new Set<number>();
+    for (let i = 0; i < 40; i++) {
+      const v = phoneRingVoice();
+      expect(v).toBeGreaterThanOrEqual(0);
+      expect(v).toBeLessThanOrEqual(1);
+      seen.add(Math.round(v * 100));
+      const until = performance.now() + 3;
+      while (performance.now() < until) {
+        /* let time move */
+      }
+    }
+    expect(seen.size).toBeGreaterThan(3);
+  });
+
+  it('phoneRingSync: a live call gets one ring (module loaded once), its state and speech level; the end takes it away', () => {
+    type El = { attrs: Record<string, string>; data?: { level: unknown }; _phSpeaking?: boolean };
+    let made = 0;
+    const box: Record<string, unknown> & { firstElementChild: (El & Record<string, unknown>) | null } = {
+      hidden: true,
+      firstChild: null,
+      firstElementChild: null,
+      set innerHTML(html: string) {
+        made++;
+        const attrs: Record<string, string> = {};
+        for (const m of html.matchAll(/ ([a-z-]+)(?:="([^"]*)")?/g)) attrs[m[1]] = m[2] ?? '';
+        const el = {
+          attrs,
+          getAttribute: (k: string) => attrs[k] ?? null,
+          setAttribute: (k: string, v: string) => {
+            attrs[k] = v;
+          },
+        };
+        box.firstElementChild = el;
+        box.firstChild = el;
+      },
+      set textContent(_v: string) {
+        box.firstElementChild = null;
+        box.firstChild = null;
+      },
+    };
+    const timers: { f: () => void; ms: number }[] = [];
+    const imports: string[] = [];
+    let defined = false;
+    const view = { call: { status: 'dialing' } as Record<string, unknown> };
+    const fns = new Function(
+      'document',
+      'customElements',
+      'setTimeout',
+      'clearTimeout',
+      'Date',
+      'importer',
+      `var _phoneView = null; function setView(v) { _phoneView = v; }
+      var PH_RING_TICK_MS = 50; var PH_RING_SRC = '/dashboard/ui/voice-ring.js?v=t';
+      var _phRingLoad = null; var _phRingTimer = null;
+      function toNum(v) { var n = Number(v); return isFinite(n) ? n : 0; }
+      ${['phoneRingOf', 'phoneRingVoice', 'phoneRingSync'].map(clientFn).join('\n')}
+      ${clientFn('phoneRingLoad').replace('import(PH_RING_SRC)', 'importer(PH_RING_SRC)')}
+      return { phoneRingSync, phoneRingVoice, setView };`,
+    )(
+      {
+        getElementById: (id: string) => (id === 'phone-ring-box' ? box : null),
+        documentElement: { getAttribute: () => 'light' },
+      },
+      { get: () => (defined ? class {} : undefined) },
+      (f: () => void, ms: number) => (timers.push({ f, ms }), timers.length),
+      () => {},
+      { now: () => 3000 },
+      (src: string) => (imports.push(src), Promise.resolve()),
+    ) as { phoneRingSync(v: unknown): void; phoneRingVoice(): number; setView(v: unknown): void };
+    fns.setView(view);
+    fns.phoneRingSync(view);
+    expect(box.hidden).toBe(false);
+    const el = box.firstElementChild as El;
+    expect(el.attrs).toMatchObject({ class: 'ph-ring', type: 'ring', size: '88', decorative: '', lang: 'ko', theme: 'light' });
+    expect(el.attrs.state).toBe('processing');
+    expect(el.data).toEqual({ level: 0 });
+    expect(imports).toEqual(['/dashboard/ui/voice-ring.js?v=t']);
+    // Speaking until 3800: the level is the speech getter, and a re-check is set for the end of the audio.
+    view.call = {
+      status: 'active',
+      transcript: [{ role: 'agent', at: 2100, text: '네' }],
+      work: [{ kind: 'tts', at: 2100, firstByteMs: 200, audioMs: 1500 }],
+    };
+    defined = true;
+    fns.phoneRingSync(view);
+    expect(made).toBe(1); // the same element
+    expect(el.attrs.state).toBe('speaking');
+    expect(typeof el.data?.level).toBe('function');
+    expect(timers.at(-1)?.ms).toBe(800);
+    expect(imports.length).toBe(1);
+    // The call ends: the ring goes.
+    view.call = { status: 'ended', transcript: [], work: [] };
+    fns.phoneRingSync(view);
+    expect(box.firstElementChild).toBeNull();
+    expect(box.hidden).toBe(true);
+    fns.phoneRingSync(null);
+    expect(box.hidden).toBe(true);
   });
 });
