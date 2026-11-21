@@ -466,10 +466,10 @@ export const CANONICAL_MODEL_IDS: readonly string[] = Object.freeze(POLICY_PROFI
  * An input this module recognizes as a canonical model id.
  *
  * There is no `normalizedFrom` / rewrite channel: the only compatibility cases
- * this module has — grok `[1m]` and retired ids — are REFUSED rather than
- * rewritten (see {@link GROK_ID_RE} and `RETIRED_MODEL_INPUTS`). A field that
- * is always `undefined` would just invite callers to build a "we quietly
- * changed your model" path.
+ * this module has — grok `[1m]`, retired ids and gemini models — are REFUSED
+ * rather than rewritten (see {@link GROK_ID_RE}, `RETIRED_MODEL_INPUTS` and
+ * `isGeminiModelInput`). A field that is always `undefined` would just invite
+ * callers to build a "we quietly changed your model" path.
  */
 export interface ModelInputAccepted {
   /** The canonical model id to store in session/user state. */
@@ -542,6 +542,33 @@ const RETIRED_MODEL_INPUTS: ReadonlyMap<string, RetiredModel> = new Map([
 ]);
 
 /**
+ * Gemini models are refused outright (2026-11-21). soma-work reaches llmux as
+ * Claude Code (Agent SDK), and llmux answers every Claude Code request routed
+ * to its gemini group with a local 400 (since 2026-10-15): Google's
+ * Antigravity backend refuses them. A gemini selection can therefore only
+ * fail. Two ways in, both refused:
+ *   • a `gemini-*` id, with or without `[1m]` — matched without a catalog, so
+ *     a cold start or a stored id is refused too;
+ *   • anything the llmux catalog resolves (id or alias — `argon`, `neon`,
+ *     `carbon`, `hydrogen`, `gemini`) to a row in group `gemini`.
+ * The suggestion is the opus default, a literal because this module must not
+ * import the settings store (`DEFAULT_MODEL` there follows the same `opus`
+ * alias).
+ */
+const GEMINI_ID_RE = /^gemini-/i;
+const GEMINI_GROUP = 'gemini';
+const GEMINI_SUGGESTED_MODEL = 'claude-opus-5-5[1m]';
+
+/** True when `key` (trimmed, lowercased) names a gemini model by id or through the llmux catalog. */
+function isGeminiModelInput(key: string): boolean {
+  const base = stripOneMSuffix(key);
+  if (GEMINI_ID_RE.test(base)) return true;
+  const resolved = modelCatalog.resolveInput(key) ?? modelCatalog.resolveInput(base);
+  if (!resolved) return false;
+  return GEMINI_ID_RE.test(resolved) || modelCatalog.getGroupFor(resolved) === GEMINI_GROUP;
+}
+
+/**
  * Resolve a raw model input against the canonical set.
  *
  * Three outcomes:
@@ -563,6 +590,13 @@ export function resolveModelInputCompatibility(input: string): ModelInputCompati
     return {
       rejectedReason: `\`${trimmed}\` was retired on ${retired.retiredOn} — ${retired.why}.`,
       suggestedModel: retired.suggestedModel,
+    };
+  }
+
+  if (isGeminiModelInput(key)) {
+    return {
+      rejectedReason: `\`${trimmed}\` is a Gemini model — llmux does not forward Claude Code requests to Google's Antigravity backend, which refuses them.`,
+      suggestedModel: GEMINI_SUGGESTED_MODEL,
     };
   }
 

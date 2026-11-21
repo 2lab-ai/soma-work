@@ -7,7 +7,8 @@
  * — exactly once.
  */
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { modelCatalog } from '../../../model-catalog';
 import { ModelHandler } from '../model-handler';
 import type { CommandContext, CommandDependencies } from '../types';
 
@@ -40,6 +41,31 @@ describe('ModelHandler `model set` — refusals keep their reason', () => {
     expect(text).toContain('grok has no 1M variant');
     expect(text).toMatch(/use `grok-4\.6`/i);
     expect(text).not.toContain('Available aliases');
+  });
+
+  describe('gemini models (llmux refuses Claude Code → gemini, 2026-11-21)', () => {
+    afterEach(() => {
+      modelCatalog.__testReset();
+    });
+
+    it.each([
+      'model neon',
+      'model set neon',
+      'model argon',
+      'model set gemini-4-neon[1m]',
+      'model gemini-3.8-flash-high',
+    ])('`%s` says why and suggests the opus default', async (command) => {
+      modelCatalog.__testSeed([
+        { id: 'gemini-4-argon[1m]', aliases: ['argon'], name: 'Gemini 4 Argon', efforts: [], group: 'gemini' },
+        { id: 'gemini-4-neon', aliases: ['neon'], name: 'Gemini 4 Neon', efforts: [], group: 'gemini' },
+      ]);
+      const text = await replyTo(command);
+      expect(text).toContain('is a Gemini model');
+      expect(text).toContain("does not forward Claude Code requests to Google's Antigravity backend");
+      expect(text).toContain('`claude-opus-5-5[1m]`');
+      expect(text).not.toContain('Unknown');
+      expect(text).not.toContain('Available aliases');
+    });
   });
 
   it('a typo still gets "Unknown model" and the alias list — once, not twice', async () => {

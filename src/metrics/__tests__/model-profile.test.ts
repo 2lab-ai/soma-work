@@ -404,6 +404,105 @@ describe('resolveModelInputCompatibility — grok `[1m]` is REJECTED, not normal
   });
 });
 
+describe('resolveModelInputCompatibility — gemini models are REFUSED (2026-11-21)', () => {
+  /**
+   * soma-work reaches llmux as Claude Code, and llmux answers every Claude Code
+   * request routed to its gemini group with a local 400 (since 2026-10-15):
+   * Google's Antigravity backend refuses them. A gemini id or a catalog alias
+   * of a gemini row can therefore only fail — it is refused up front, with the
+   * reason, and the opus default is offered instead.
+   */
+  const GEMINI_ROWS = [
+    {
+      id: 'gemini-3.8-flash-high[1m]',
+      aliases: ['gemini', 'gemini-3.8-flash'],
+      name: 'Gemini 3.8 Flash',
+      efforts: [],
+      max_context: 1_048_576,
+      group: 'gemini',
+    },
+    {
+      id: 'gemini-4-argon[1m]',
+      aliases: ['argon'],
+      name: 'Gemini 4 Argon',
+      efforts: ['low', 'medium', 'high'],
+      max_context: 1_048_576,
+      group: 'gemini',
+    },
+    {
+      id: 'gemini-4-neon',
+      aliases: ['neon'],
+      name: 'Gemini 4 Neon',
+      efforts: ['low', 'medium', 'high', 'xhigh'],
+      max_context: 524_288,
+      group: 'gemini',
+    },
+  ];
+  const GROK_4_7 = {
+    id: 'grok-4.7',
+    aliases: ['grok'],
+    name: 'Grok 4.7',
+    efforts: ['low', 'medium', 'high'],
+    max_context: 500_000,
+    group: 'grok',
+  };
+
+  function expectGeminiRefusal(input: string): ModelInputRejected {
+    const result = resolveModelInputCompatibility(input);
+    expect(result).not.toBeNull();
+    expect(isRejectedModelInput(result as ModelInputCompatibility)).toBe(true);
+    expect(result).not.toHaveProperty('modelId');
+    const rejected = result as ModelInputRejected;
+    expect(rejected.suggestedModel).toBe('claude-opus-5-5[1m]');
+    expect(rejected.rejectedReason).toContain('is a Gemini model');
+    expect(rejected.rejectedReason).toContain('Antigravity');
+    return rejected;
+  }
+
+  it('refuses gemini-3.8-flash-high with no catalog loaded', () => {
+    const rejected = expectGeminiRefusal('gemini-3.8-flash-high');
+    expect(rejected.rejectedReason).toContain('`gemini-3.8-flash-high`');
+  });
+
+  it('refuses gemini-4-neon[1m] — with or without the suffix, any case', () => {
+    expectGeminiRefusal('gemini-4-neon[1m]');
+    expectGeminiRefusal('gemini-4-neon');
+    expectGeminiRefusal('  GEMINI-4-NEON[1M]  ');
+  });
+
+  it('refuses the llmux aliases argon / neon / gemini once the catalog maps them to a gemini row', () => {
+    modelCatalog.__testSeed([...GEMINI_ROWS, GROK_4_7]);
+    expect(expectGeminiRefusal('argon').rejectedReason).toBe(
+      "`argon` is a Gemini model — llmux does not forward Claude Code requests to Google's Antigravity backend, which refuses them.",
+    );
+    expect(expectGeminiRefusal('neon').rejectedReason).toContain('`neon`');
+    expectGeminiRefusal('NEON');
+    expectGeminiRefusal('neon[1m]');
+    expectGeminiRefusal('gemini');
+  });
+
+  it('refuses a catalog row by its gemini GROUP, whatever its id looks like', () => {
+    modelCatalog.__testSeed([
+      { id: 'hydrogen-preview', aliases: ['hydrogen'], name: 'Hydrogen', efforts: [], group: 'gemini' },
+    ]);
+    expectGeminiRefusal('hydrogen-preview');
+    expectGeminiRefusal('hydrogen');
+  });
+
+  it('a non-gemini catalog alias is not refused (grok → grok-4.7)', () => {
+    modelCatalog.__testSeed([...GEMINI_ROWS, GROK_4_7]);
+    // No opinion on the alias — the store resolves it through the catalog.
+    expect(resolveModelInputCompatibility('grok')).toBeNull();
+    expect(resolveModelInputCompatibility('grok-4.7')).toEqual({ modelId: 'grok-4.7' });
+    expect(resolveModelInputCompatibility('opus')).toBeNull();
+  });
+
+  it('has no opinion on a bare element name the catalog does not know', () => {
+    // Without a catalog row `neon` is just an unknown word, not a gemini model.
+    expect(resolveModelInputCompatibility('neon')).toBeNull();
+  });
+});
+
 describe('model-registry delegates to the profile resolver', () => {
   it('resolveContextWindow matches the profile for every canonical id', () => {
     for (const row of POLICY_TABLE) {

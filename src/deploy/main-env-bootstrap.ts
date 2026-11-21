@@ -82,7 +82,7 @@ function readCatalogSnapshotIds(dataDir: string | undefined): Set<string> {
   for (const candidate of [file, `${file}.bak`]) {
     try {
       const raw = fs.readFileSync(candidate, 'utf8');
-      const parsed = JSON.parse(raw) as { models?: Array<{ id?: unknown }> };
+      const parsed = JSON.parse(raw) as { models?: Array<{ id?: unknown; group?: unknown }> };
       if (!Array.isArray(parsed?.models)) continue;
       for (const entry of parsed.models) {
         if (entry && typeof entry.id === 'string' && entry.id.trim().length > 0) {
@@ -97,6 +97,11 @@ function readCatalogSnapshotIds(dataDir: string | undefined): Set<string> {
           // store refuses them (model-profile.ts RETIRED_MODEL_INPUTS), so a
           // catalog that still advertises one must not keep it alive here.
           if (/^gpt-?5\.5(\[1m\])?$/i.test(id)) continue;
+          // Same for gemini models (2026-11-21): llmux refuses Claude Code →
+          // gemini, and the runtime store refuses a `gemini-*` id or a row in
+          // group `gemini` (model-profile.ts isGeminiModelInput).
+          if (/^gemini-/i.test(id)) continue;
+          if (typeof entry.group === 'string' && entry.group.trim().toLowerCase() === 'gemini') continue;
           ids.add(id);
         }
       }

@@ -290,6 +290,13 @@ backend no longer serves it to ChatGPT accounts. Typing it is refused with a
 `use gpt-5.6-sol` message, and a stored `gpt-5.5` default or session model
 falls back to the default model. Past `gpt-5.5` usage keeps its price.
 
+Gemini models are not selectable (2026-11-21): soma-work runs as Claude Code,
+and llmux does not forward Claude Code requests to Google's Antigravity
+backend, which refuses them. A `gemini-*` id or a llmux gemini alias
+(`gemini`, `argon`, `neon`, `carbon`, `hydrogen`) is refused with a
+`use claude-opus-5-5[1m]` message, the model card lists no gemini rows, and a
+stored gemini default or session model falls back to the default model.
+
 `/compact-threshold <percent>` is a **deprecated** compatibility adapter, not a
 second setting: it converts `<percent>` against the *current* model's context
 window, writes the result into the same session token slot `/autocompact`

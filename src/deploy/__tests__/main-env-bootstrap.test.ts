@@ -489,6 +489,27 @@ describe('main-env-bootstrap', () => {
       expect(__TEST_ONLY_coerceModel('grok-4.5', dataDir)).toBe('grok-4.5');
     });
 
+    it('drops gemini rows even when the catalog snapshot advertises them (2026-11-21)', () => {
+      // Mirrors the runtime store's gemini refusal (model-profile.ts): llmux
+      // refuses Claude Code → gemini, so a deploy-time normalize must not keep
+      // a gemini default or session model alive via the catalog — by id or by
+      // the row's gemini group.
+      const dataDir = makeTempDir('bootstrap-catalog-');
+      writeJson(path.join(dataDir, 'model-catalog.json'), {
+        fetchedAt: 1,
+        models: [
+          { id: 'gemini-4-argon[1m]', aliases: ['argon'], group: 'gemini' },
+          { id: 'GEMINI-3.8-FLASH-HIGH' },
+          { id: 'hydrogen-preview', aliases: ['hydrogen'], group: 'Gemini' },
+          ...GROK_SNAPSHOT.models,
+        ],
+      });
+      expect(__TEST_ONLY_coerceModel('gemini-4-argon[1m]', dataDir)).toBe(STORE_DEFAULT_MODEL);
+      expect(__TEST_ONLY_coerceModel('gemini-3.8-flash-high', dataDir)).toBe(STORE_DEFAULT_MODEL);
+      expect(__TEST_ONLY_coerceModel('hydrogen-preview', dataDir)).toBe(STORE_DEFAULT_MODEL);
+      expect(__TEST_ONLY_coerceModel('grok-4.5', dataDir)).toBe('grok-4.5');
+    });
+
     it('preserves the literal fable [1m] id (the 2026-08-26 filter removal)', () => {
       // The import-lean duplicate of `isCatalogIdSelectable` used to drop
       // `claude-fable-5[1m]` here, so a deploy-time normalize downgraded any
