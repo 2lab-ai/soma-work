@@ -546,6 +546,37 @@ describe('safeguards — review round 6', () => {
     expect(deps.requestCoordinator.removeController).toHaveBeenCalledWith('C777:thread777', params.abortController);
   });
 
+  // C-5: every temp-file cleanup is bounded — a hung file handler cannot hold the refused turn either.
+  it('a refused turn on a halted session returns within 3s even when the temp-file cleanup never settles', async () => {
+    vi.useFakeTimers();
+    try {
+      const deps = createDeps(safeguardAsContentStream);
+      deps.fileHandler.cleanupTempFiles.mockImplementation(() => new Promise(() => {}));
+      const executor = new StreamExecutor(deps);
+      const session = createSession();
+      session.safeguardHalt = { atMs: 1 };
+      const params = {
+        ...createParams(vi.fn().mockResolvedValue({ ts: 'msg_ts' }), session),
+        processedFiles: [{ path: '/tmp/test/a.png', name: 'a.png', mimetype: 'image/png' }],
+      };
+      let settled = false;
+      const done = executor.execute(params).finally(() => {
+        settled = true;
+      });
+
+      await vi.advanceTimersByTimeAsync(2_900);
+      expect(deps.fileHandler.cleanupTempFiles).toHaveBeenCalledTimes(1);
+      expect(deps.claudeHandler.streamAgentEvents).not.toHaveBeenCalled();
+      expect(settled).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(200);
+      await done;
+      expect(settled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // astra-zhuge P1: the post-turn summary is another Claude query.
   it('the summary timer runs no summary on a halted session', async () => {
     const deps = createDeps(safeguardAsContentStream);

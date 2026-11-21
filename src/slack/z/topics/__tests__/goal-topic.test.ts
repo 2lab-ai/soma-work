@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyGoal, createGoalTopicBinding, renderGoalCard } from '../goal-topic';
+import { applyGoal, renderGoalCard } from '../goal-topic';
 
 describe('goal-topic.renderGoalCard', () => {
   it('documents the goal command family without set buttons', async () => {
@@ -18,15 +18,5 @@ describe('goal-topic.applyGoal', () => {
 
     expect(result.ok).toBe(false);
     expect(result.summary).toContain('goal');
-  });
-});
-
-describe('goal-topic binding', () => {
-  it('exposes topic + apply + renderCard', () => {
-    const binding = createGoalTopicBinding();
-
-    expect(binding.topic).toBe('goal');
-    expect(typeof binding.apply).toBe('function');
-    expect(typeof binding.renderCard).toBe('function');
   });
 });

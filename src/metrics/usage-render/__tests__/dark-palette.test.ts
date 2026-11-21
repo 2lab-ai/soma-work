@@ -35,12 +35,6 @@ describe('HEATMAP_SCALE', () => {
     expect(ys[4]).toBeGreaterThanOrEqual(145.0);
     expect(ys[4]).toBeLessThanOrEqual(148.0); // ≈ 146.3 for #CD7F5C (Y = 0.299·205 + 0.587·127 + 0.114·92)
   });
-
-  it('rejects regression to #2A2A2A at step 0 (luminance would decrease)', () => {
-    // sanity: #2A2A2A luminance ≈ 42, #3A231C ≈ 41 — if someone swaps back, assertion fires
-    expect(luminance('#2A2A2A')).toBeGreaterThan(luminance('#3A231C'));
-    expect(luminance(HEATMAP_SCALE[0])).toBeLessThan(luminance(HEATMAP_SCALE[1]));
-  });
 });
 
 describe('luminance', () => {

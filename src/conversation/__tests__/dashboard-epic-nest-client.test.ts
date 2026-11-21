@@ -468,26 +468,8 @@ describe('L7 — the epic’s own card', () => {
   });
 });
 
-describe('N4 — the page: no lane; renderBoard places the children', () => {
+describe('N4 — the page: renderBoard places the children', () => {
   const fn = (name: string) => clientFn(name);
-  it('no lane is left: not in the markup, the CSS, the code or the layout hosts', () => {
-    for (const gone of [
-      'id="epic-lane"',
-      '.epic-lane',
-      'ui-agent-inbox.epic-inbox',
-      'epic-group',
-      'epic-head',
-      'renderEpicLane',
-      'syncEpicLane',
-      'planEpicLane',
-      'paintEpicLaneCards',
-      'epicLaneKeeps',
-      '_epicGroupEls',
-    ]) {
-      expect(DASHBOARD_TS, gone).not.toContain(gone);
-    }
-    expect(fn('boardHosts')).not.toContain('epic');
-  });
 
   it('renderBoard places every list through withEpicChildren and records each epic’s children', () => {
     const rb = fn('renderBoard');

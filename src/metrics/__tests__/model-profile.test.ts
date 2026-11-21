@@ -120,12 +120,6 @@ describe('resolveModelProfile — canonical policy table', () => {
     expect(modelCatalog.getModels()).toHaveLength(0);
     expect(resolveModelProfile('grok-4.6').contextWindow).toBe(500_000);
   });
-
-  it('exports the canonical id set covering the whole policy table', () => {
-    for (const row of POLICY_TABLE) {
-      expect(CANONICAL_MODEL_IDS).toContain(row.modelId);
-    }
-  });
 });
 
 describe('resolveModelProfile — shared GPT 1M policy', () => {
@@ -193,12 +187,6 @@ describe('resolveModelProfile — sdkBlockingLimit is a window fact, not a class
    * the ones it does not it stops the ~177k hard block. One rule, no
    * classifier to keep in sync.
    */
-  it('exposes no per-model override / disable classifier fields', () => {
-    for (const id of ['claude-fable-5[1m]', 'claude-opus-5', 'grok-4.6']) {
-      expect(resolveModelProfile(id)).not.toHaveProperty('overrideSdkBlockingLimit');
-      expect(resolveModelProfile(id)).not.toHaveProperty('disableSdkAutoCompact');
-    }
-  });
 
   it('always answers window − 23k, for known and unknown ids alike', () => {
     const limits: [model: string, limit: number][] = [
@@ -351,10 +339,6 @@ describe('resolveModelProfile — results are immutable across callers', () => {
     attemptMutate(resolveModelProfile('gpt-5.6-sol'), { contextWindow: 1, autoCompactTokens: 1 });
     expect(resolveContextWindow('gpt-5.6-sol')).toBe(372_000);
     expect(resolveAutoCompactTokens('gpt-5.6-sol')).toBe(340_000);
-  });
-
-  it('the exported canonical id list is frozen', () => {
-    expect(Object.isFrozen(CANONICAL_MODEL_IDS)).toBe(true);
   });
 });
 

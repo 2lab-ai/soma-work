@@ -24,10 +24,6 @@ function parseFrontmatter(md: string): Record<string, string> {
 }
 
 describe('local:apple-design skill — RED contract', () => {
-  it('SKILL.md exists', () => {
-    expect(existsSync(SKILL_MD)).toBe(true);
-  });
-
   it('frontmatter has name: apple-design and a fluid-interface description', () => {
     const fm = parseFrontmatter(readFileSync(SKILL_MD, 'utf8'));
     expect(fm.name).toBe('apple-design');

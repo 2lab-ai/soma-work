@@ -7,7 +7,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 const repoRoot = path.resolve(__dirname, '..', '..');
 
 /**
- * The todo-guard is gone — permanently.
+ * The todo-guard is gone — permanently (fix 5b318898, #174).
  *
  * It was a PreToolUse hook that hard-blocked the 5th task-less tool call with
  * "Detected 5 or more tool calls without TodoWrite/TaskCreate/TaskUpdate".
@@ -47,9 +47,9 @@ describe('todo-guard is fully removed', () => {
 
     expect(offenders, `todo-guard references found in: ${offenders.join(', ')}`).toEqual([]);
   });
+});
 
-  // ── Behavioral: the standalone plugin hook never blocks ──
-
+describe('the standalone plugin hook never blocks task-less tool calls (#174)', () => {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'no-todo-guard-'));
 
   afterAll(() => {

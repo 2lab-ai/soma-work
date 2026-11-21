@@ -5,7 +5,7 @@
  * Additional scopes (`user:inference`, etc.) may be present but are not enforced here.
  */
 
-export const REQUIRED_OAUTH_SCOPES: readonly string[] = ['user:profile'];
+const REQUIRED_OAUTH_SCOPES: readonly string[] = ['user:profile'];
 
 /** Returns `true` when every entry in {@link REQUIRED_OAUTH_SCOPES} is present in `scopes`. */
 export function hasRequiredScopes(scopes: string[]): boolean {

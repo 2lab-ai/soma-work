@@ -345,9 +345,7 @@ describe('the dashboard', () => {
   const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
   const HEAD = TEMPLATE.slice(0, TEMPLATE.indexOf('</head>'));
 
-  it("the speaker is <ui-app-bar>'s own (before its theme toggle): the page hands it the choice, no button of its own", () => {
-    expect(TEMPLATE).not.toContain('id="sound-toggle"');
-    expect(TEMPLATE).not.toContain('#sound-toggle');
+  it("the speaker is <ui-app-bar>'s own (before its theme toggle): the page hands it the choice", () => {
     const paint = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function paintAppBar()'));
     expect(paint.slice(0, paint.indexOf('\n}\n'))).toContain("sound: typeof _somaOn !== 'undefined' && !!_somaOn,");
   });

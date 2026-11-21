@@ -72,15 +72,6 @@ describe('FEATURED_ALIASES constant', () => {
     // The literal Grok id remains resolvable on a catalog-less cold start.
     expect([...FEATURED_ALIASES]).toEqual(['fable', 'sonnet', 'opus', 'opus[1m]', 'haiku', 'grok-4.7']);
   });
-
-  it('renders the featured grok-4.6 button without a catalog snapshot', async () => {
-    const { blocks } = await renderModelCard({ userId: 'U1', issuedAt: 1 });
-    const ids: string[] = [];
-    for (const b of blocks as any[]) {
-      if (b.type === 'actions') for (const e of b.elements) ids.push(e.action_id);
-    }
-    expect(ids).toContain('z_setting_model_set_grok-4.6');
-  });
 });
 
 describe('model-topic.applyModel', () => {

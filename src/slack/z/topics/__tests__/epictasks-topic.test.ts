@@ -21,7 +21,7 @@ vi.mock('../../../../user-settings-store', () => ({
 }));
 
 import { EpicTasksHandler } from '../../../commands/epictasks-handler';
-import { applyEpicTasks, createEpicTasksTopicBinding, renderEpicTasksCard } from '../epictasks-topic';
+import { applyEpicTasks, renderEpicTasksCard } from '../epictasks-topic';
 
 const actionIds = (blocks: any[]) =>
   blocks.filter((b) => b.type === 'actions').flatMap((b) => b.elements.map((e: any) => e.action_id));
@@ -62,10 +62,6 @@ describe('epictasks topic (E4 ④a-2)', () => {
     } finally {
       store.fail = false;
     }
-  });
-
-  it('the binding is the epictasks topic', () => {
-    expect(createEpicTasksTopicBinding().topic).toBe('epictasks');
   });
 });
 

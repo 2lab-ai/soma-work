@@ -24,20 +24,4 @@ describe('agent-runtime stream-types boundary (epic #1023 P2)', () => {
     const withoutComments = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
     expect(withoutComments).not.toContain(SDK_PKG);
   });
-
-  it('the union is importable as a pure type module (no runtime SDK dependency)', async () => {
-    const mod = await import('../stream-types');
-    // Type-only module → no runtime exports. The import itself succeeding with
-    // no SDK on the require graph is the assertion; this just pins that the
-    // module evaluates without throwing.
-    expect(mod).toBeDefined();
-  });
-
-  it('is re-exported from the port public surface', async () => {
-    // Compile-time check: these type names must resolve through the index.
-    // (Pure types erase at runtime, so we assert the source wiring instead.)
-    const indexSrc = fs.readFileSync(path.join(__dirname, '..', 'index.ts'), 'utf8');
-    expect(indexSrc).toContain('stream-types');
-    expect(indexSrc).toContain('AgentStreamEvent');
-  });
 });

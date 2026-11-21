@@ -169,11 +169,13 @@ describe('T2 — every live time is the element in Korean; the settled ones say 
     // The page's own 0초 where a settled time is empty; no English unit left in a time word.
     expect(TEMPLATE).toContain("formatDuration(completed - started) || '0초'");
     expect(TEMPLATE).not.toMatch(/\+ '(s|m |h |d )'/);
-    expect(TEMPLATE).not.toContain('capCountdown');
   });
   it('the viewer page writes its <ui-elapsed> in Korean too', () => {
     const VIEWER_TS = readFileSync(join(__dirname, '..', 'viewer.ts'), 'utf-8');
-    for (const tag of VIEWER_TS.match(/<ui-elapsed [^>]*>/g) ?? []) expect(tag, tag).toContain('lang="ko"');
+    const tags = VIEWER_TS.match(/<ui-elapsed [^>]*>/g) ?? [];
+    // The viewer writes one today: a tag this pattern no longer finds would check nothing.
+    expect(tags.length).toBeGreaterThan(0);
+    for (const tag of tags) expect(tag, tag).toContain('lang="ko"');
   });
 });
 
@@ -223,7 +225,6 @@ describe('T3 — the chrome is Korean', () => {
       "taskElData(el, { items: [{ label: 'soma-work', href: home }, { label: '에이전트 인박스' }] });",
     );
     expect(clientFn('selectUser')).toContain('paintTrail();');
-    expect(TEMPLATE).not.toContain('crumb-cur');
     expect(TEMPLATE).toContain('aria-label="작업" tabindex="-1"></div>');
     expect(TEMPLATE).toContain('aria-label="목표" style="display:none"></div>');
     expect(TEMPLATE).toContain("label: n ? '목표 #' + n[1] + '/' + n[2] : '목표'");

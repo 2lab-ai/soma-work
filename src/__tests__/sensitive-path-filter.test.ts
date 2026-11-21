@@ -434,11 +434,6 @@ describe('with a relative HOME', () => {
 });
 
 describe('getSensitiveReadDenyPaths', () => {
-  it('returns non-empty list', () => {
-    const paths = getSensitiveReadDenyPaths();
-    expect(paths.length).toBeGreaterThan(0);
-  });
-
   it('includes .ssh directory', () => {
     const paths = getSensitiveReadDenyPaths();
     expect(paths).toContain(path.join(MODULE_HOME, '.ssh'));

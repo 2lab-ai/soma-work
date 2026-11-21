@@ -30,10 +30,6 @@ function collectLineGroups(surfaceConfig: {
 }
 
 describe('config.default.json', () => {
-  it('exists at the repo root', () => {
-    expect(fs.existsSync(CONFIG_DEFAULT_PATH)).toBe(true);
-  });
-
   it('ui section deep-equals DEFAULT_UI_SURFACES (regenerate on drift)', () => {
     const parsed = JSON.parse(fs.readFileSync(CONFIG_DEFAULT_PATH, 'utf-8'));
     expect(parsed).toEqual({ ui: DEFAULT_UI_SURFACES });

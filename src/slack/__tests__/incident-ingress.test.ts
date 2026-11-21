@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * Eagle incident ingress — the `app_mention` entry point for
@@ -632,12 +632,10 @@ describe('adapter provider wiring', () => {
     }
   });
 
-  it('registers the incident providers on the package module', async () => {
-    const providers = await loadAdapterProviders();
-    expect(typeof providers.getIncidentSource).toBe('function');
-    expect(typeof providers.isIncidentRuntimeReady).toBe('function');
-    expect(typeof providers.isIncidentUserAccepted).toBe('function');
-  });
+  // The first re-import of the adapter is cold (several seconds); pay it here, not inside a test's 5 s budget.
+  beforeAll(async () => {
+    await loadAdapterProviders();
+  }, 30_000);
 
   it('reports the runtime as not ready while no evidence endpoint is configured', async () => {
     const providers = await loadAdapterProviders();

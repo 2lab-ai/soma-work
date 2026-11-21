@@ -51,11 +51,12 @@ describe('McpConfigBuilder filesystem restriction', () => {
   it('keeps default filesystem config without slackContext', async () => {
     const config = await builder.buildConfig();
 
-    if (config.mcpServers?.filesystem) {
-      const fsArgs = (config.mcpServers?.filesystem as any)?.args;
-      // Without slack context, should retain original '/tmp'
-      expect(fsArgs[fsArgs.length - 1]).toBe('/tmp');
-    }
+    // Without slack context, the configured server is kept as it is, '/tmp' root included.
+    expect((config.mcpServers?.filesystem as any).args).toEqual([
+      '-y',
+      '@modelcontextprotocol/server-filesystem',
+      '/tmp',
+    ]);
   });
 
   // Fix: multiple /tmp args should ALL be replaced (not just first)
@@ -72,12 +73,13 @@ describe('McpConfigBuilder filesystem restriction', () => {
       user: 'U094E5L4A15',
     });
 
-    const fsArgs = (config.mcpServers?.filesystem as any)?.args;
-    // Both /tmp and /tmp/shared should be replaced with user-scoped path
-    const tmpArgs = fsArgs.filter((a: string) => a.startsWith('/tmp'));
-    for (const arg of tmpArgs) {
-      expect(arg).toBe('/tmp/U094E5L4A15');
-    }
+    // Both /tmp and /tmp/shared are replaced with the user-scoped path: no root is dropped or widened.
+    expect((config.mcpServers?.filesystem as any).args).toEqual([
+      '-y',
+      '@modelcontextprotocol/server-filesystem',
+      '/tmp/U094E5L4A15',
+      '/tmp/U094E5L4A15',
+    ]);
   });
 
   // Trace: Scenario 2, Section 3a → 6 — path is normalized (no /private/tmp)
@@ -91,11 +93,9 @@ describe('McpConfigBuilder filesystem restriction', () => {
       user: 'U094E5L4A15',
     });
 
-    const fsArgs = (config.mcpServers?.filesystem as any)?.args;
-    if (fsArgs) {
-      const lastArg = fsArgs[fsArgs.length - 1];
-      expect(lastArg).not.toContain('/private/tmp');
-      expect(lastArg).toMatch(/^\/tmp\//);
-    }
+    const fsArgs = (config.mcpServers?.filesystem as any).args;
+    const lastArg = fsArgs[fsArgs.length - 1];
+    expect(lastArg).not.toContain('/private/tmp');
+    expect(lastArg).toMatch(/^\/tmp\//);
   });
 });

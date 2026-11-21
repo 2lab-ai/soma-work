@@ -335,15 +335,13 @@ describe('the board’s wording (lang="ko" + data.strings, D2 group 6)', () => {
     expect(TEMPLATE).toContain(
       "el.setAttribute('lang', document.documentElement && document.documentElement.lang === 'en' ? 'en' : 'ko');",
     );
-    // What the ko table already says is not repeated; the English age (timeAgo) is gone.
-    // The clock too: the ko table's duration is Korean since 0.10.0 (D2-GAPS G6-1 — the page's fmtRunKo is gone).
+    // What the ko table already says is not repeated (the age and the clock included: Korean since 0.10.0).
     for (const k of ['agents', 'agentsRunning', 'agentsFailed', 'arts', 'announce', 'ago', 'status', 'duration']) {
       expect(strings[k], k).toBeUndefined();
     }
     expect(strings.artOpen('a.png', 'image')).toBe('이미지 a.png — 크게 보기');
     expect(strings.artOpen('x.bin', 'file')).toBe('파일 x.bin — 크게 보기');
     expect(strings.changed('Deploy', '실행 중')).toBe('');
-    expect(TEMPLATE).not.toContain('function fmtRunKo(');
   });
 });
 

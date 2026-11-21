@@ -1,5 +1,5 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 /**
@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
  *        이걸 종합해서 하나의 스킬로 만들어줘. using-zwriting 정도로 … 계층적 추상화로 여러 단계로
  *        항상 설명해주도록" + "using-govuk 수정 — 시간 표기(콜론)·문장 시작 숫자·원문 빈틈 표시 규칙".
  *
- *  - T1 registration: the skill ships in the zworkflow plugin; the four old skills are gone.
+ *  - T1 registration: the skill ships in the zworkflow plugin.
  *  - T2 layered explanation: always a ladder, top first, each rung closes in its own words.
  *  - T3 research fixes: colon times, sentence-start numbers, visible source gaps, no added facts.
  *  - T4 structure engine: structurize's lossless engine and renderers survive as references.
@@ -23,7 +23,6 @@ const SKILL_MD = resolve(SKILL_ROOT, 'SKILL.md');
 const PLAIN_MD = resolve(SKILL_ROOT, 'references', 'plain-language.md');
 const ENGINE_MD = resolve(SKILL_ROOT, 'references', 'structure-engine.md');
 const RENDERERS_MD = resolve(SKILL_ROOT, 'references', 'renderers.md');
-const RETIRED = ['using-govuk', 'using-eli5', 'using-ha-thinking', 'structurize'];
 
 const read = (p: string) => readFileSync(p, 'utf8');
 
@@ -37,16 +36,6 @@ function frontmatter(md: string): Record<string, string> {
       .slice(i + 1)
       .trim()
       .replace(/^"(.*)"$/, '$1');
-  }
-  return out;
-}
-
-function walk(dir: string): string[] {
-  const out: string[] = [];
-  for (const name of readdirSync(dir)) {
-    const p = join(dir, name);
-    if (statSync(p).isDirectory()) out.push(...walk(p));
-    else out.push(p);
   }
   return out;
 }
@@ -65,17 +54,6 @@ describe('local:using-zwriting — registration (T1)', () => {
     expect(desc).toMatch(/eli5/);
     expect(desc).toMatch(/쉽게 설명해줘/);
     expect(desc).toMatch(/구조화해줘/);
-  });
-
-  it('the four skills it replaces are gone from the plugin', () => {
-    for (const name of RETIRED) expect(existsSync(resolve(SKILLS_DIR, name))).toBe(false);
-  });
-
-  it('no other plugin file still points at a retired skill', () => {
-    const offenders = walk(PLUGIN_ROOT)
-      .filter((p) => /\.(md|ts|json)$/.test(p) && !p.startsWith(SKILL_ROOT))
-      .filter((p) => RETIRED.some((name) => new RegExp(`\\b${name}\\b`).test(read(p))));
-    expect(offenders).toEqual([]);
   });
 
   it('SKILL.md stays lean — detail lives in references', () => {

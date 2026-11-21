@@ -40,10 +40,6 @@ function parseFrontmatter(md: string): Record<string, string> {
 }
 
 describe('local:animation-vocabulary skill — RED contract', () => {
-  it('SKILL.md exists', () => {
-    expect(existsSync(SKILL_MD)).toBe(true);
-  });
-
   it('frontmatter has name: animation-vocabulary and a reverse-lookup description', () => {
     const fm = parseFrontmatter(readFileSync(SKILL_MD, 'utf8'));
     expect(fm.name).toBe('animation-vocabulary');

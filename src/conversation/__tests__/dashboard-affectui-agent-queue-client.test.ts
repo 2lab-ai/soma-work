@@ -182,47 +182,8 @@ describe('slot — two <ui-agent-queue>, each in a token wrapper', () => {
     expect(dir && existsSync(join(dir, 'agent-queue.js'))).toBe(true);
   });
 
-  it('no inline copy is left: renderers, grammar, toggles, live region and their styles are gone', () => {
-    for (const name of [
-      'renderCapacity',
-      'renderCapacitySummary',
-      'renderCapacityGroup',
-      'capWorkers',
-      'capAccountCard',
-      'capTimeline',
-      'capSelectionAfter',
-      'capAnnounceDiff',
-      'renderCronTileHead',
-      'renderCronLaneHead',
-      'renderCronStrip',
-      'cronStats',
-      'cronQueue',
-      'cronRunChart',
-      'cronAnnounceDiff',
-      'aqPill',
-      'aqAnnounce',
-      'aqRove',
-      'aqWrite',
-      'aqToggleCard',
-    ])
-      expect(TEMPLATE, name).not.toMatch(new RegExp(`function ${name}\\(`));
-    for (const id of ['aq-live', 'capacity-view', 'capacity-toggle', 'cron-toggle', 'cron-lane-head', 'cron-groups'])
-      expect(TEMPLATE, id).not.toContain(`id="${id}"`);
-    for (const sel of [
-      '.sec-toggle',
-      '.cap-chip',
-      '.cap-prov',
-      '.aq-mark',
-      '.aq-pop',
-      '.aq-stats',
-      '.cron-tile',
-      '.cr-tick',
-    ])
-      expect(TEMPLATE, sel).not.toContain(`${sel} {`);
-    expect(TEMPLATE).not.toContain('data-sec-toggle');
-    expect(TEMPLATE).not.toContain('data-cron-group');
+  it('the CRON drawer stays the page’s; its head’s CRON badge is a kit chip (D7 C-06)', () => {
     // The drawer stays the page's; its head's CRON badge is a kit chip (D7 C-06), the board cards' the element's.
-    expect(TEMPLATE).not.toContain('.cron-badge {');
     expect(TEMPLATE).toContain('<span class="ui-chip" id="cron-drawer-badge" aria-hidden="true"></span>');
     expect(TEMPLATE).toContain('id="cron-drawer"');
   });
@@ -265,6 +226,8 @@ describe('capData — the capacity view as the element’s providers', () => {
 
   it('events become refills: same time (seconds), cause and account; dWeek → weekly (no 5-hour gain)', () => {
     const [claude] = capFns().capData(MAIN).providers;
+    // The fixture's Claude pool has refills: an empty list would check no mapping at all.
+    expect(CLAUDE.events.length).toBeGreaterThan(0);
     expect(claude.refills).toHaveLength(CLAUDE.events.length);
     CLAUDE.events.forEach((e: any, i: number) => {
       expect(claude.refills[i]).toEqual({
@@ -927,17 +890,6 @@ describe('wiring — the lane’s job boxes, the paint, the fold, the drawer', (
     expect(TEMPLATE).toContain(
       "if (d) d.addEventListener('ui-end', function(e) { if (e.target && e.target.localName === 'ui-elapsed') loadCronJobs(); });",
     );
-    expect(TEMPLATE).not.toContain('_cronDueReloaded');
-    for (const gone of [
-      'aqTick',
-      'aqTime',
-      'aqLeft',
-      'aq-left',
-      'data-aq-at',
-      'function updateTimers',
-      'setInterval(updateTimers',
-    ])
-      expect(TEMPLATE, gone).not.toContain(gone);
   });
 });
 

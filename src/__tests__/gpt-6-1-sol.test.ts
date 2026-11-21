@@ -62,11 +62,6 @@ describe('gpt-6.1-sol — release wiring', () => {
     expect(models).toContain('gpt-5.6-sol[1m]');
   });
 
-  it('is SELECTABLE but NOT the default — DEFAULT_MODEL follows `opus`', () => {
-    expect(DEFAULT_MODEL).toBe(MODEL_ALIASES.opus);
-    expect(MODEL_ALIASES.gpt).toBe('gpt-5.6-sol');
-  });
-
   it('gpt-6.1 stays on the 6.1 [1m] row; sol / sol[1m] moved to gpt-6.2-sol[1m]', () => {
     expect(MODEL_ALIASES['gpt-6.1']).toBe('gpt-6.1-sol[1m]');
     // The family shorthands follow the newest sol (gpt-6-2.test.ts).

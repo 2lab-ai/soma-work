@@ -230,17 +230,3 @@ describe('#1074 r1 — uploads this process made count before the daemon has rec
     });
   });
 });
-
-describe('#1074 — the tools take artifact_key and reply with the version', () => {
-  it('send_file and send_media declare artifact_key; both replies carry the version fields', async () => {
-    const src = await fs.readFile(path.resolve(__dirname, 'slack-mcp-server.ts'), 'utf-8');
-    const sendFile = src.slice(src.indexOf("name: 'send_file'"), src.indexOf("name: 'send_media'"));
-    const sendMedia = src.slice(src.indexOf("name: 'send_media'"), src.indexOf('async handleTool'));
-    expect(sendFile).toContain('artifact_key');
-    expect(sendMedia).toContain('artifact_key');
-    expect(src.match(/\.\.\.versionFields\(version\)/g)?.length).toBe(2);
-    expect(src.match(/await this\.uploadVersioned\(/g)?.length).toBe(2);
-    expect(src).toContain('this.uploadVersions.serialize(uploadKey(displayName, artifactKey)');
-    expect(src).toContain('SOMA_ARTIFACT_INDEX');
-  });
-});

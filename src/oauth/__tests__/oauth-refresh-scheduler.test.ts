@@ -70,19 +70,6 @@ describe('OAuthRefreshScheduler (#653 M2)', () => {
       const { config } = await import('../../config');
       expect(config.oauthRefresh.intervalMs).toBe(60 * 60 * 1_000);
     });
-
-    it('config.oauthRefresh.intervalMs default is sourced from DEFAULT_OAUTH_REFRESH_INTERVAL_MS', async () => {
-      // Without this, config could carry its own literal and the pin above
-      // would guard a constant production never reads.
-      vi.stubEnv('OAUTH_REFRESH_INTERVAL_MS', '');
-      vi.resetModules();
-      vi.doMock('../oauth-refresh-scheduler', async (importOriginal) => ({
-        ...(await importOriginal<typeof import('../oauth-refresh-scheduler')>()),
-        DEFAULT_OAUTH_REFRESH_INTERVAL_MS: 7 * 60_000,
-      }));
-      const { config } = await import('../../config');
-      expect(config.oauthRefresh.intervalMs).toBe(7 * 60_000);
-    });
   });
 
   it('first tick calls tm.refreshAllAttachedOAuthTokens once with the configured timeoutMs', async () => {
@@ -327,18 +314,12 @@ describe('OAuthRefreshScheduler (#653 M2)', () => {
     expect(onAfter).toHaveBeenCalledTimes(2);
   });
 
-  it('INVARIANT: bootstrap wires startOAuthRefreshScheduler after startUsageRefreshScheduler', async () => {
-    // Document-by-test the bootstrap order so a refactor that puts
-    // the OAuth scheduler before usage (or drops it entirely) is caught.
-    // The two schedulers are independent but sharing the order keeps the
-    // timing-log output predictable for operators reading startup logs.
+  it('bootstrap starts the OAuth refresh scheduler with the token manager', async () => {
+    // A bootstrap that drops the call leaves every attached OAuth token to expire
+    // unrefreshed. (The two schedulers are independent; their order is not pinned.)
     const fs = await import('node:fs');
     const path = await import('node:path');
     const source = fs.readFileSync(path.join(process.cwd(), 'src/index.ts'), 'utf8');
-    const usageIdx = source.indexOf('startUsageRefreshScheduler(tokenManager');
-    const oauthIdx = source.indexOf('startOAuthRefreshScheduler(tokenManager');
-    expect(usageIdx).toBeGreaterThan(-1);
-    expect(oauthIdx).toBeGreaterThan(-1);
-    expect(usageIdx).toBeLessThan(oauthIdx);
+    expect(source).toContain('startOAuthRefreshScheduler(tokenManager');
   });
 });

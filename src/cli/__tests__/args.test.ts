@@ -128,6 +128,7 @@ describe('parseCli', () => {
         parseCli(argv);
         throw new Error('expected a CliArgError');
       } catch (error) {
+        expect(error).toBeInstanceOf(CliArgError);
         expect((error as Error).message).not.toContain('_capture');
         expect((error as Error).message).not.toContain('_print');
       }

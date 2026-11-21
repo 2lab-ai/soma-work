@@ -155,13 +155,10 @@ describe('D5 — the slot: <ui-context-window> first in the open 세션 정보, 
     expect(cw().cwData(sess({ contextParts: undefined }), NOW)).toBeNull();
   });
 
-  it('panelInfoHtml opens the body with the slot from one call; the old bar line is gone (D18)', () => {
+  it('panelInfoHtml opens the body with the slot from one call', () => {
     const src = clientFn('panelInfoHtml');
     expect(src).toContain(`'<div class="pi-body" id="panel-info-body">' + cwSlotHtml(s) + body`);
     expect(src.split('cwSlotHtml(').length - 1).toBe(1);
-    expect(src).not.toContain('context-bar');
-    expect(src).not.toContain('pi-ctx');
-    expect(CSS).not.toContain('.pi-ctx');
   });
 
   it('renderPanelInfo observes the session, writes 세션 정보, then hands the element its data', () => {
@@ -192,34 +189,7 @@ describe('D5 — the slot: <ui-context-window> first in the open 세션 정보, 
     }
   });
 
-  it('the inline renderer, its CSS and its hover/arming code are gone (the element owns them)', () => {
-    for (const gone of [
-      'contextBlockHtml',
-      'cwShort',
-      'cwParts',
-      'cwCells',
-      'cwMarkIndex',
-      'cwSay',
-      'cwCompactHtml',
-      'cwRoll',
-      'cwApply',
-      'cwBind',
-    ])
-      expect(declarationCount(gone), gone).toBe(0);
-    for (const gone of [
-      'CW_CELLS',
-      'CW_ROLL_MS',
-      'CW_ARM_MS',
-      'CW_LEAVE_MS',
-      'CW_PARTS',
-      'CW_ANNOUNCE',
-      '_cwHot',
-      '_cwRoll',
-    ])
-      expect(TEMPLATE, gone).not.toContain(gone);
-    for (const gone of ['.cw {', '.cw-field', '.cw-cell', '.cw-compact', '.cw-say', '@keyframes cw-'])
-      expect(CSS, gone).not.toContain(gone);
-    // The panel's measure: the element sits at most 560px wide.
+  it('the panel’s measure: the element sits at most 560px wide', () => {
     expect(CSS).toContain('.cw-slot > ui-context-window { display: block; max-width: 560px; }');
   });
 });
@@ -299,7 +269,7 @@ describe('D10/D12 — compactState: one state, the most urgent first', () => {
     expect(data({ lastCompact }, { savedAt: NOW - 3_300 })).not.toHaveProperty('lastCompact');
   });
 
-  it('phase: sending, sent, done for 1.5s — arming is the element’s (no host state for it)', () => {
+  it('phase: sending, sent, done for 1.5s', () => {
     const c = cw();
     const s = sess();
     expect(c.cwPhase(s, NOW)).toBe('idle');
@@ -311,7 +281,6 @@ describe('D10/D12 — compactState: one state, the most urgent first', () => {
     expect(c.cwPhase(s, NOW)).toBe('done');
     c.cwTestSet(freshState('inst::C1:t1', { doneAt: NOW - 1_500 }));
     expect(c.cwPhase(s, NOW)).toBe('idle');
-    expect(TEMPLATE).not.toContain('armedAt');
   });
 });
 
@@ -327,7 +296,6 @@ describe('D12 — 지금 압축: owner-gated (canCompact), confirmed by the elem
     // The question card's lock says the same through the same constant (no second copy of the words).
     expect(clientFn('acQuestionLock')).toContain(': READ_ONLY_MSG;');
     expect(TEMPLATE.split('읽기 전용 — 내 세션이 아닙니다').length - 1).toBe(1);
-    expect(TEMPLATE).not.toContain('Read-only — not your session');
   });
 
   it('disabled with the reason: not the owner (fails closed), another instance, a switch waiting on a compact, a compact already scheduled', () => {
@@ -370,7 +338,6 @@ describe('D12 — 지금 압축: owner-gated (canCompact), confirmed by the elem
   it('after the ✓ (1.5s) the action goes — the element plays its 400ms exit (library: "lets the done button leave")', () => {
     const st = { doneAt: NOW - 1_600, observedAt: NOW - 1_600, savedWait: NOW - 1_600 };
     expect(data({}, st)).toMatchObject({ compactState: 'observed', canCompact: false });
-    expect(clientFn('cwObserve')).not.toContain('CW_DONE_MS + ');
   });
 
   type Flow = {

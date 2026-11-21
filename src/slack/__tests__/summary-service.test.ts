@@ -227,17 +227,6 @@ describe('SummaryService', () => {
       expect(result).toBeNull();
     });
 
-    // Trace: S3, Section 3c
-    it('displayOnThread() sets summaryBlocks on actionPanel', () => {
-      const service = new SummaryService();
-      const session = makeSession();
-      service.displayOnThread(session, 'Test summary text');
-
-      expect(session.actionPanel!.summaryBlocks).toBeDefined();
-      expect(Array.isArray(session.actionPanel!.summaryBlocks)).toBe(true);
-      expect(session.actionPanel!.summaryBlocks!.length).toBeGreaterThan(0);
-    });
-
     it('displayOnThread() produces valid Block Kit structure with divider + section', () => {
       const service = new SummaryService();
       const session = makeSession();

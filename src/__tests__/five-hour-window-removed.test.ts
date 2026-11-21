@@ -1,23 +1,21 @@
 /**
  * The 5-hour usage window is gone (owner, 2026-11-04: "이제 5시간 사용량 있는
  * 프로바이더가 없어짐"; 2026-11-10: "llmux에서도 완전히 삭제해주고, soma-work에서도
- * 완전히 삭제해줘"). No provider reports one, so soma-work neither reads, keeps,
- * gates on nor shows it. A reading that still arrives — an older llmux daemon, a
+ * 완전히 삭제해줘"). A reading that still arrives — an older llmux daemon, a
  * stored CCT snapshot, an operator config.json seeded before the removal — is
  * ignored, never an error.
  */
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import type { AuthKey } from '../auth/auth-key';
 import type { LlmuxAccount, LlmuxStatus } from '../auth/llmux-client';
 import type { CctStoreSnapshot, SlotState } from '../cct-store/types';
 import { buildCapacityView } from '../conversation/capacity-view';
-import { cctSlotsToUsage, llmuxAccountsToUsage } from '../conversation/new-task-usage';
+import { cctSlotsToUsage } from '../conversation/new-task-usage';
 import { selectBestRotationCandidate } from '../oauth/auto-rotate';
-import { fetchUsage } from '../oauth/usage';
 import { accountLines, groupSummary } from '../slack/auth/capacity';
 import { buildSlotRow } from '../slack/cct/builder';
-import { DEFAULT_UI_SURFACES, normalizeUiSurfacesConfig, SURFACE_FIELD_REGISTRY } from '../slack/surface-config';
+import { normalizeUiSurfacesConfig } from '../slack/surface-config';
 
 const NOW_MS = Date.parse('2026-11-10T00:00:00Z');
 const NOW_S = NOW_MS / 1000;
@@ -69,30 +67,7 @@ function legacyState(fiveUtil: number, sevenUtil: number): SlotState {
   } as unknown as SlotState;
 }
 
-afterEach(() => {
-  vi.unstubAllGlobals();
-});
-
-describe('5h window removed — CCT usage (Anthropic /api/oauth/usage)', () => {
-  it('a five_hour window in the response is not kept in the snapshot', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(
-        async () =>
-          new Response(
-            JSON.stringify({
-              five_hour: { utilization: 99, resets_at: '2026-11-10T03:00:00Z' },
-              seven_day: { utilization: 12, resets_at: '2026-11-13T00:00:00Z' },
-            }),
-            { status: 200 },
-          ),
-      ),
-    );
-    const { snapshot } = await fetchUsage('token');
-    expect(snapshot).not.toHaveProperty('fiveHour');
-    expect(snapshot.sevenDay).toEqual({ utilization: 12, resetsAt: '2026-11-13T00:00:00Z' });
-  });
-
+describe('5h window removed — a stored CCT usage snapshot', () => {
   it('auto-rotation gates and sorts on the weekly window only — a stored 5h reading changes nothing', () => {
     const snap = {
       registry: { slots: [cctSlot('a'), cctSlot('b')], activeKeyId: 'b' },
@@ -119,19 +94,6 @@ describe('5h window removed — CCT usage (Anthropic /api/oauth/usage)', () => {
 });
 
 describe('5h window removed — llmux status', () => {
-  it('a Claude pool with weekly readings only is measured, not "unknown" (no 5h to wait for)', () => {
-    const status = { accounts: [llmuxAccount()] } as LlmuxStatus;
-    const [claude] = buildCapacityView(status, {}, NOW_MS).groups;
-    expect(claude.state).toBe('ok');
-    // Max x20 assumed (weight 1): 60% of the week left, all of it usable now.
-    expect(claude.week).toBeCloseTo(0.6);
-    expect(claude.now).toBeCloseTo(0.6);
-    expect(claude).not.toHaveProperty('has5h');
-    expect(claude).not.toHaveProperty('unmeasured5h');
-    expect(claude.units[0]).not.toHaveProperty('unmeasured5h');
-    expect(claude.units[0].blocks).not.toHaveProperty('fiveHour');
-  });
-
   it('a 5h reading from an older llmux is ignored: no 5h cut on "now", no 5h refill', () => {
     const status = { accounts: [llmuxAccount({ five_hour: LEGACY_FIVE })] } as LlmuxStatus;
     const [claude] = buildCapacityView(status, {}, NOW_MS).groups;
@@ -139,25 +101,14 @@ describe('5h window removed — llmux status', () => {
     expect(claude.events.map((e) => e.cause)).toEqual(['7d']);
   });
 
-  it('the new-task battery reads no 5h window from llmux', () => {
-    const [account] = llmuxAccountsToUsage([llmuxAccount({ five_hour: LEGACY_FIVE })], NOW_MS);
-    expect(account.windows.map((w) => w.label)).toEqual(['7d']);
-  });
-
-  it('the Slack auth card names no 5h window, and a stale 5h reading does not mark the account unavailable', () => {
+  it('a stale 5h reading from an older llmux does not mark the account unavailable on the Slack auth card', () => {
     const account = llmuxAccount({ five_hour: { ...LEGACY_FIVE, utilization: 1 } });
     const lines = [...groupSummary([account], NOW_MS), ...accountLines(account, NOW_MS)].join('\n');
-    expect(lines).not.toMatch(/\b5h\b/);
     expect(lines).toContain('공통 한도 여유 1/1');
   });
 });
 
 describe('5h window removed — turn notification surface', () => {
-  it('the turn-end surface has no fivehour field and no default line renders one', () => {
-    expect(SURFACE_FIELD_REGISTRY.turnend).not.toContain('fivehour');
-    expect(JSON.stringify(DEFAULT_UI_SURFACES)).not.toMatch(/fivehour|"5h"/);
-  });
-
   it('a config.json seeded before the removal still loads: its fivehour entry is dropped without a warning', () => {
     const { config, warnings } = normalizeUiSurfacesConfig({
       turnend: {

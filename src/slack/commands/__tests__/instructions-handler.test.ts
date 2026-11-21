@@ -54,11 +54,6 @@ describe('InstructionsHandler', () => {
       expect(handler.canHandle('/show instructions')).toBe(true);
     });
 
-    it('does not match underscore form "show_instructions" (removed in #506)', () => {
-      // /z refactor (#506): canonical form is `show instructions` (space-separated).
-      expect(handler.canHandle('show_instructions')).toBe(false);
-    });
-
     it('does not match random text', () => {
       expect(handler.canHandle('show me the money')).toBe(false);
     });

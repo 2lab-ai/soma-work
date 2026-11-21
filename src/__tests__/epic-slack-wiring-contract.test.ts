@@ -64,7 +64,6 @@ describe('index.ts — epics as Slack sessions (#854)', () => {
 
   it('W3 — an event wakes the epic (the Slack path, the only one since #855); the boot scan wakes a Slack epic', () => {
     expect(source).toMatch(/setEpicEventListener\(\(key\) => slackEpicWaker\.wake\(key\)\)/);
-    expect(source).not.toMatch(/createEpicWaker\(/);
     expect(source).toMatch(/if \(session\.kind === 'epic' && !session\.parentTaskId\) slackEpicWaker\.wake\(key\);/);
   });
 

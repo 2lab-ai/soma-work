@@ -292,9 +292,7 @@ describe('T1 — a page fetched while the instruction was out drops the optimist
     expect(merged.map((t) => t.userName)).toEqual(['Z', '나']);
   });
 
-  it('the old 10 s window and byte-equal match are gone from the page', () => {
-    expect(TEMPLATE).not.toContain('_lastSentContent');
-    expect(TEMPLATE).not.toContain('(Date.now() - _lastSentTime) < 10000');
+  it('the page merges live turns through onConversationTurn and fetched pages through ptMergeFetched; a user turn carries its sender', () => {
     expect(TEMPLATE).toContain('onConversationTurn(msg.conversationId, msg.turn)');
     expect(TEMPLATE).toContain('_panelTurnsList = ptMergeFetched(turns, _panelTurnsList)');
     // The page carries who sent a user turn, so the page path can check the sender too.

@@ -282,16 +282,6 @@ describe('auth_view_mode (viewer toggle) — authorization recheck', () => {
 });
 
 describe('auth_page (pagination) — authorization recheck', () => {
-  it('registers a handler for the new AUTH_ACTION_IDS.page id', () => {
-    const { app, actionEntries } = makeApp();
-    registerAuthActions(app);
-    const entry = actionEntries.find((e) =>
-      typeof e.pattern === 'string' ? e.pattern === 'auth_page' : e.pattern.test('auth_page'),
-    );
-    expect(AUTH_ACTION_IDS.page).toBe('auth_page');
-    expect(entry).toBeDefined();
-  });
-
   it('admin paging an admin card → admin re-render at target page', async () => {
     const { app, click } = makeApp();
     registerAuthActions(app);

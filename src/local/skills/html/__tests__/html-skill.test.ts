@@ -4,7 +4,6 @@ import { describe, expect, it } from 'vitest';
 
 const SKILL_ROOT = resolve(__dirname, '..');
 const SKILL_MD = resolve(SKILL_ROOT, 'SKILL.md');
-const RENDERER = resolve(SKILL_ROOT, 'renderer', 'render.mjs');
 const INDEX_JSON = resolve(SKILL_ROOT, 'templates', 'index.json');
 const TEMPLATES_DIR = resolve(SKILL_ROOT, 'templates', 'skills');
 const LICENSES_DIR = resolve(SKILL_ROOT, 'LICENSES');
@@ -56,10 +55,6 @@ function parseFrontmatter(md: string): Record<string, string> {
 }
 
 describe('local:html skill — RED contract', () => {
-  it('SKILL.md exists', () => {
-    expect(existsSync(SKILL_MD)).toBe(true);
-  });
-
   it('SKILL.md frontmatter has name: html and description covering HTML + Slack upload (the HTML only)', () => {
     const md = readFileSync(SKILL_MD, 'utf8');
     const fm = parseFrontmatter(md);
@@ -132,27 +127,12 @@ describe('local:html skill — RED contract', () => {
     expect(existsSync(resolve(SKILL_ROOT, '..', 'apple-design', 'SKILL.md'))).toBe(true);
   });
 
-  it('renderer/render.mjs exists and uses Playwright Chromium', () => {
-    expect(existsSync(RENDERER)).toBe(true);
-    const src = readFileSync(RENDERER, 'utf8');
-    expect(src).toMatch(/playwright/);
-    expect(src).toMatch(/chromium/);
-  });
-
-  it('templates/index.json exists', () => {
-    expect(existsSync(INDEX_JSON)).toBe(true);
-  });
-
   it('templates/index.json has exactly the 8 curated v1 templates', () => {
     const raw = readFileSync(INDEX_JSON, 'utf8');
     const parsed = JSON.parse(raw) as { templates: TemplateIndexEntry[] };
     expect(Array.isArray(parsed.templates)).toBe(true);
     const names = parsed.templates.map((t) => t.name).sort();
     expect(names).toEqual([...REQUIRED_TEMPLATES].sort());
-  });
-
-  it.each(REQUIRED_TEMPLATES)('templates/skills/%s/SKILL.md exists', (name) => {
-    expect(existsSync(resolve(TEMPLATES_DIR, name, 'SKILL.md'))).toBe(true);
   });
 
   it('every index entry points to an existing template SKILL.md', () => {

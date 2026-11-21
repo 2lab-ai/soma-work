@@ -367,58 +367,6 @@ describe('the open card’s tree is <ui-agent-tree> (affectUI review batch 2) �
   ];
   const nodeOf = (d: TreeData | null, id: string) => d?.nodes.find((n) => n.id === id);
 
-  it('replaces the inline renderer: its functions, its state and its CSS are gone', () => {
-    for (const gone of [
-      'agentNodeRow',
-      'renderAgentNode',
-      'renderAgentNodes',
-      'anTreeHtml',
-      'anIsOpen',
-      'anCompactLine',
-      'anIdPart',
-      'anTimeId',
-      'anClick',
-      'anKeyAction',
-      'anOnKey',
-      'anActivate',
-      'anSetStop',
-      'anMoveStop',
-      'anFocusCapture',
-      'anFocusRestore',
-      'anItemId',
-      'anItemKey',
-      'toggleAgentNode',
-      'showAllAgentChildren',
-      'anRepaint',
-      'openPanelAgent',
-      'agentSpanAxis',
-      'agentSpanStyle',
-      'AGENT_TREE_ROWS',
-      'AN_CHEV_SVG',
-      'AN_LIVE_LINE',
-      '_anAll',
-      '_anActive',
-      '_anReturnFocus',
-      '_anScopeChange',
-    ])
-      expect(declarationCount(gone), gone).toBe(0);
-    const CSS = TEMPLATE.slice(TEMPLATE.indexOf('<style>'), TEMPLATE.indexOf('</style>', TEMPLATE.indexOf('<style>')));
-    for (const rule of [
-      '.an-row',
-      '.an-kids',
-      '.an-chev',
-      '.an-all',
-      '.ag-span',
-      '.ag-head',
-      '.pa-kids-head',
-      'agSweep',
-    ])
-      expect(CSS, rule).not.toContain(rule);
-    // No tree markup or tree key handling is left in the page script.
-    expect(TEMPLATE).not.toContain('data-agent-open');
-    expect(TEMPLATE).not.toContain('.an-tree');
-  });
-
   it('the page loads the element as a module script; the installed @2lab.ai/ui carries it and its chunks', async () => {
     // The first import of the dashboard module transforms 21k lines — seconds on a loaded runner, so this test gets 60 s.
     const HEAD = TEMPLATE.slice(0, TEMPLATE.indexOf('<style>'));
@@ -426,7 +374,10 @@ describe('the open card’s tree is <ui-agent-tree> (affectUI review batch 2) �
     const { UI_LIB_FILE, uiLibDistDir } = await import('../dashboard');
     const dir = uiLibDistDir() as string;
     expect(existsSync(join(dir, 'agent-tree.js'))).toBe(true);
-    for (const imp of readFileSync(join(dir, 'agent-tree.js'), 'utf-8').match(/from\s*"\.\/([^"]+)"/g) ?? []) {
+    const imports = readFileSync(join(dir, 'agent-tree.js'), 'utf-8').match(/from\s*"\.\/([^"]+)"/g) ?? [];
+    // The element ships in chunks: a build whose imports this pattern no longer finds would check nothing.
+    expect(imports.length).toBeGreaterThan(0);
+    for (const imp of imports) {
       const file = /"\.\/([^"]+)"/.exec(imp)?.[1] as string;
       expect(UI_LIB_FILE.test(file), file).toBe(true);
       expect(existsSync(join(dir, file)), file).toBe(true);
@@ -1494,6 +1445,7 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
       sets: 0,
       data: null as TreeData | null,
       upserts: 0,
+      upsertOpts: [] as unknown[],
       cleared: 0,
       scroller: [] as unknown[],
       prepends: [] as unknown[],
@@ -1517,8 +1469,9 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     let item: unknown = null;
     const host: Record<string, unknown> = {
       querySelector: (sel: string) => (sel === 'ui-agent-tree' ? item : null),
-      upsertItem: (key: string, node: unknown) => {
+      upsertItem: (key: string, node: unknown, opts?: unknown) => {
         out.upserts++;
+        out.upsertOpts.push(opts);
         if (key !== 'tree') throw new Error(key);
         item = node;
       },
@@ -1645,11 +1598,9 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     expect(body).toContain("bar.addEventListener('ui-select', function(e) {");
     expect(body).toContain("if (!el || el.localName !== 'ui-breadcrumbs' || !e.detail) return;");
     expect(body).toContain("selectPanelAgent(String(e.detail.id || ''));");
-    expect(TEMPLATE).not.toContain('.pa-crumb');
-    expect(TEMPLATE).not.toContain('data-agent-select');
   });
 
-  it('an agent the tree does not know (log only) is the last crumb by its id; the path folds in the element, not in page CSS', () => {
+  it('an agent the tree does not know (log only) is the last crumb by its id', () => {
     const { m, out } = panel('toolu_zzz999', card());
     m.renderPanelAgents();
     expect(out.path).toEqual({
@@ -1659,9 +1610,6 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     // No chip: nothing is known of it; the unknown header is the keyboard landing (tabindex).
     expect(out.html).toContain('<ui-breadcrumbs class="pa-path" size="sm" lang="ko"></ui-breadcrumbs>');
     expect(out.html).toContain('<div class="pa-focus is-unknown" tabindex="-1">');
-    // The phone's "‹ parent › here" rule is the element's "…" fold now.
-    expect(TEMPLATE).not.toContain('is-far');
-    expect(TEMPLATE).not.toContain('.pa-sep');
   });
 
   it('the 에이전트 트리 tab is a rich <ui-agent-tree>: the main agent at its root, every agent below it, the focused one selected', () => {
@@ -1676,6 +1624,8 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     m.paintTreeTab();
     // The element itself is the scroller's item (its rows carry data-anchor in its shadow root — the scroller reads them).
     expect(out.upserts).toBe(1);
+    // Put in place without the scroller's entrance motion: the tree is the box's one item, not a new arrival.
+    expect(out.upsertOpts).toEqual([{ animate: false }]);
     expect(tree.attrs).toEqual({ lang: 'ko', 'data-item': 'tree', 'data-at-ns': 'p|k' });
     expect(tree.className).toBe('pa-tree');
     expect(tree.innerHTML).toBe('<span class="at-fallback">에이전트 트리</span>');
@@ -1807,7 +1757,7 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     expect(r.m.showMoreTree()).toBe(false);
   });
 
-  it('the tree box is <ui-log-scroller> (D6b): its ui-load-older asks for the older agents; the page keeps no scroll box, anchor or pill of its own', () => {
+  it('the tree box is <ui-log-scroller> (D6b): its ui-load-older asks for the older agents', () => {
     const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initPanelSections() {'));
     const body = init.slice(0, init.indexOf('\n})();'));
     expect(body).toContain("tree.addEventListener('ui-load-older', function(e) {");
@@ -1816,20 +1766,6 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     // The page uses the scroller on its own (not only inside <ui-conversation>): its module is loaded by name.
     const HEAD = TEMPLATE.slice(0, TEMPLATE.indexOf('<style>'));
     expect(HEAD).toContain(`<script type="module" src="/dashboard/ui/log-scroller.js?v=\${UI_LIB_VERSION}"></script>`);
-    for (const gone of [
-      'psecViewAnchor',
-      'psecRestoreAnchor',
-      'psecPageDue',
-      'psecMaybeFill',
-      'psecAfterRender',
-      'psecOnAppended',
-      'psec-pill',
-      'psec-older',
-      'psec-empty',
-      '_psecPin',
-    ]) {
-      expect(TEMPLATE, gone).not.toContain(gone);
-    }
   });
 
   // RED (SSOT T2/T3) — what a subagent spent (its own API calls: tokens and
@@ -2249,7 +2185,6 @@ describe('keyboard (review B r2) — 서브에이전트 열기 is a stop on the 
     const body = init.slice(0, init.indexOf('\n})();'));
     expect(body).toContain('selectPanelAgent(String(id));');
     expect(body).toContain('if (!id || !panelAgentOpenable(String(id))) { e.preventDefault(); return; }');
-    expect(TEMPLATE).not.toMatch(/^var WL_STOP_SEL/m);
   });
   it('choosing an agent by keyboard leaves focus on the agent now shown, not on <body> (review B r3)', () => {
     const body = fnBody('selectPanelAgent');
@@ -2347,9 +2282,8 @@ describe('keyboard (review B r2) — 서브에이전트 열기 is a stop on the 
     // Each switch repaints the card as it starts (busy, spec 13) and as it settles.
     expect(refreshed).toBe(4);
   });
-  it('a work-log group head is <ui-work-log>’s: patched in place when its data changed, left alone when not', () => {
+  it('a work-log group head is <ui-work-log>’s: the page only hands it the data (the element patches the head)', () => {
     // The element compares the head's markup itself (patchGroup); the page only hands it the data.
-    expect(TEMPLATE).not.toMatch(/\nfunction wlRefreshGroupHead\(/);
     expect(fnBody('wlPaint')).toContain('el.data = d;');
   });
   it('a changed card body is morphed into place, not rewritten', () => {

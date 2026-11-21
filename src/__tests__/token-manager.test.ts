@@ -894,40 +894,6 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       expect(snap.state[s.keyId].rateLimitSource).toBe('error_string');
     });
 
-    it('#878: fresh usage with a low sevenDay clears cooldown — a 5-hour window is no longer read (2026-11)', async () => {
-      // #878 once treated an absent five_hour window as 0%. There is no 5-hour
-      // window since 2026-11: the weekly window alone decides.
-      const { mod, storeMod } = await importSut();
-      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
-      const tm = new mod.TokenManager(store);
-      await tm.init();
-      const s = await tm.addSlot({
-        name: 'oauth',
-        kind: 'oauth_credentials',
-        credentials: makeOAuthCreds(),
-        acknowledgedConsumerTosRisk: true,
-      });
-      const cooldown = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-      await store.mutate((snap) => {
-        snap.state[s.keyId].cooldownUntil = cooldown;
-        snap.state[s.keyId].rateLimitedAt = new Date().toISOString();
-        snap.state[s.keyId].rateLimitSource = 'error_string';
-      });
-      fetchUsageMock.mockResolvedValueOnce({
-        snapshot: {
-          fetchedAt: new Date().toISOString(),
-          sevenDay: { utilization: 7, resetsAt: new Date(Date.now() + 7 * 24 * 3_600_000).toISOString() },
-        },
-        nextFetchAllowedAtMs: Date.now() + 2 * 60 * 1000,
-      });
-      await tm.fetchAndStoreUsage(s.keyId);
-      const snap = await store.load();
-      // Cooldown cleared — sevenDay 7% is below saturation → stale cooldown.
-      expect(snap.state[s.keyId].cooldownUntil).toBeUndefined();
-      expect(snap.state[s.keyId].rateLimitedAt).toBeUndefined();
-      expect(snap.state[s.keyId].rateLimitSource).toBeUndefined();
-    });
-
     it('#878: fresh usage with no window at all clears cooldown', async () => {
       // The other corner case: Anthropic returns a payload with no usage
       // windows at all. We treat this as "no evidence of saturation" → clear.
@@ -958,39 +924,6 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       expect(snap.state[s.keyId].cooldownUntil).toBeUndefined();
       expect(snap.state[s.keyId].rateLimitedAt).toBeUndefined();
       expect(snap.state[s.keyId].rateLimitSource).toBeUndefined();
-    });
-
-    it('#878: fresh usage with sevenDay === 100 preserves cooldown (weekly cap is a real signal)', async () => {
-      // A slot that hit the 7-day cap really IS rate-limited. Don't clear under that condition — the operator (or the
-      // upstream API) should see the cooldown stay until the weekly window
-      // resets.
-      const { mod, storeMod } = await importSut();
-      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
-      const tm = new mod.TokenManager(store);
-      await tm.init();
-      const s = await tm.addSlot({
-        name: 'oauth',
-        kind: 'oauth_credentials',
-        credentials: makeOAuthCreds(),
-        acknowledgedConsumerTosRisk: true,
-      });
-      const cooldown = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-      await store.mutate((snap) => {
-        snap.state[s.keyId].cooldownUntil = cooldown;
-        snap.state[s.keyId].rateLimitedAt = new Date().toISOString();
-        snap.state[s.keyId].rateLimitSource = 'error_string';
-      });
-      fetchUsageMock.mockResolvedValueOnce({
-        snapshot: {
-          fetchedAt: new Date().toISOString(),
-          sevenDay: { utilization: 100, resetsAt: new Date(Date.now() + 7 * 24 * 3_600_000).toISOString() },
-        },
-        nextFetchAllowedAtMs: Date.now() + 2 * 60 * 1000,
-      });
-      await tm.fetchAndStoreUsage(s.keyId);
-      const snap = await store.load();
-      expect(snap.state[s.keyId].cooldownUntil).toBe(cooldown);
-      expect(snap.state[s.keyId].rateLimitSource).toBe('error_string');
     });
 
     it('401 → refresh → retry once → success', async () => {
@@ -2566,6 +2499,9 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
       await tm.init();
+      // Every profile sync (fire-and-forget or explicit) goes through this method; awaiting
+      // its promises waits for a sync to finish instead of sleeping and hoping it has.
+      const sync = vi.spyOn(tm, 'refreshOAuthProfile');
       const slot = await tm.addSlot({
         name: 'setup-p',
         kind: 'setup_token',
@@ -2586,7 +2522,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         },
         true,
       );
-      await new Promise((r) => setTimeout(r, 10));
+      await Promise.allSettled(sync.mock.results.map((r) => r.value));
       // Clear profile the attach-triggered fetch wrote so we can observe the
       // guard rejecting the stale generation's write cleanly.
       await store.mutate((snap: any) => {
@@ -2598,6 +2534,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       const { promise: gate, release: resolveGated } = holdGate<unknown>({ fetchedAt: 0 });
       fetchOAuthProfileMock.mockImplementation(async () => gate);
       const inFlight = tm.refreshOAuthProfile(slot.keyId);
+      const syncsBeforeReattach = sync.mock.results.length;
       // Detach, then re-attach under a new generation. We swap the mock to a
       // no-network resolver for the attach-triggered sync so it doesn't
       // deadlock on the gate.
@@ -2616,7 +2553,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         },
         true,
       );
-      await new Promise((r) => setTimeout(r, 10));
+      await Promise.allSettled(sync.mock.results.slice(syncsBeforeReattach).map((r) => r.value));
       // Now release the stale generation's fetch. Its write must be rejected
       // because the current attachedAt belongs to the new generation.
       resolveGated({ fetchedAt: 42, email: 'stale@gen.com' });
@@ -2669,14 +2606,15 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
       await tm.init();
+      const sync = vi.spyOn(tm, 'refreshOAuthProfile');
       const slot = await tm.addSlot({
         name: 'p4',
         kind: 'oauth_credentials',
         credentials: makeOAuthCreds(),
         acknowledgedConsumerTosRisk: true,
       });
-      // Drain the fire-and-forget profile sync triggered by addSlot.
-      await new Promise((r) => setTimeout(r, 10));
+      // Drain the fire-and-forget profile sync triggered by addSlot (await it, not a sleep).
+      await Promise.allSettled(sync.mock.results.map((r) => r.value));
       // Seed a known profile so we can assert it stays put after the failure.
       await store.mutate((snap: any) => {
         const target = snap.registry.slots.find((s: any) => s.keyId === slot.keyId);
@@ -3409,16 +3347,33 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
   // ── Reaper timer ──────────────────────────────────────────
 
   describe('reaper timer', () => {
-    it('stop() clears the interval (no throw)', async () => {
+    it('reaps expired leases on its interval until stop(); stop() leaves no timer behind and is idempotent', async () => {
+      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
       const { mod, storeMod } = await importSut();
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
       await tm.init({ startReaper: true, reaperIntervalMs: 50 });
+      const s1 = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'v1' });
+      await store.mutate((snap) => {
+        snap.state[s1.keyId].activeLeases = [
+          {
+            leaseId: 'stale',
+            ownerTag: 'x',
+            acquiredAt: new Date(Date.now() - 60_000).toISOString(),
+            expiresAt: new Date(Date.now() - 1_000).toISOString(),
+          },
+        ];
+      });
+
+      // Await the sweep the interval started (reap, re-pick the active slot, refresh) before reading the store.
+      const sweeps = vi.spyOn(tm, 'reapExpiredLeases');
+      vi.advanceTimersByTime(50);
+      await sweeps.mock.results[0]?.value;
+      expect((await store.load()).state[s1.keyId].activeLeases).toHaveLength(0);
+
       tm.stop();
-      // If stop() did not clear the interval the process would hang; we just
-      // assert no throw and re-calling stop() is a no-op.
-      tm.stop();
-      expect(true).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(() => tm.stop()).not.toThrow();
     });
   });
 

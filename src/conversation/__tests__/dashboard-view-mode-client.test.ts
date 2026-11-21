@@ -69,14 +69,7 @@ const CSS = cook(
 );
 const T0 = 1_700_000_000_000;
 
-describe('T1 — the detail card has no 자세히 chip; the view mode is the one switch', () => {
-  it('no chip, no per-device detail key, no toggle function', () => {
-    expect(PAGE).not.toContain('panel-detail-toggle');
-    expect(TEMPLATE).not.toContain('soma-panel-detail');
-    expect(declarationCount('togglePanelDetail')).toBe(0);
-    expect(declarationCount('readPanelDetail')).toBe(0);
-  });
-
+describe('T1 — the view mode is the one switch for the detail card', () => {
   it('the detail sections follow the mode’s plan: advanced 1안 · 2안 are the old 자세히 on (.prd/20)', () => {
     const fn = clientFn('applyViewMode');
     expect(fn).toContain('_panelDetail = !!spec.detail.open;');
@@ -807,9 +800,8 @@ describe('T9 — the star on every card face is a toggle (SSOT 2026-11-01, "별 
     });
   });
 
-  it('cardOf puts the toggle on the face (no ★ in the lead any more), and the board answers ui-star with doStar', () => {
+  it('cardOf puts the toggle on the face, and the board answers ui-star with doStar', () => {
     expect(clientFn('viewCardOf')).toContain('c.star = cardStarOf(s, col);');
-    expect(clientFn('cardOf')).not.toContain("'\\u2605 ' + card.lead.text");
     const wire = clientFn('wireInbox');
     expect(wire).toContain("host.addEventListener('ui-star', function(e) {");
     expect(wire).toContain('doStar(String(e.detail.cardId), !!e.detail.starred);');

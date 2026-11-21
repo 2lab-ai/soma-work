@@ -32,14 +32,12 @@ vi.mock('../../config', () => ({ config: mockConfig }));
 describe('OAuth module', () => {
   let verifyDashboardToken: typeof import('../oauth').verifyDashboardToken;
   let getDashboardUser: typeof import('../oauth').getDashboardUser;
-  let setOAuthUserLookup: typeof import('../oauth').setOAuthUserLookup;
 
   beforeEach(async () => {
     vi.resetModules();
     const oauth = await import('../oauth');
     verifyDashboardToken = oauth.verifyDashboardToken;
     getDashboardUser = oauth.getDashboardUser;
-    setOAuthUserLookup = oauth.setOAuthUserLookup;
   });
 
   describe('verifyDashboardToken', () => {
@@ -117,18 +115,6 @@ describe('OAuth module', () => {
         headers: { cookie: 'soma_dash_token=bad-jwt-token' },
       } as any;
       expect(getDashboardUser(mockRequest)).toBeNull();
-    });
-  });
-
-  describe('setOAuthUserLookup', () => {
-    it('should register and use lookup function', () => {
-      // This tests the lookup registration — actual matching is done in index.ts
-      // Just verify the function can be called without error
-      setOAuthUserLookup((email: string) => {
-        if (email === 'alice@test.com') return { kind: 'match', userId: 'U123', name: 'Alice' };
-        return { kind: 'none' };
-      });
-      // No assertion needed — just verifying no throw
     });
   });
 

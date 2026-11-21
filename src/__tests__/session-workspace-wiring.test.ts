@@ -73,21 +73,6 @@ describe('Session Workspace Wiring', () => {
   // === Scenario W2: Pipeline Wiring ===
 
   describe('pipeline wiring (SessionInitializer integration)', () => {
-    // Trace W2 — new session gets sessionWorkingDir
-    it('new session should use createSessionBaseDir result as cwd', () => {
-      const sessionDir = manager.createSessionBaseDir('U094E5L4A15');
-      expect(sessionDir).toBeDefined();
-
-      // Simulate what SessionInitializer should do:
-      const session = registry.createSession('U094E5L4A15', 'Tester', 'C001', '100.001');
-      session.sessionWorkingDir = sessionDir;
-
-      // The session's effective working dir should be the session-unique path
-      const effectiveDir = session.sessionWorkingDir || '/tmp/U094E5L4A15';
-      expect(effectiveDir).toBe(sessionDir);
-      expect(effectiveDir).toMatch(/session_\d+_[a-f0-9]+/);
-    });
-
     // Trace W2 — sourceWorkingDirs registration
     it('session base dir should be registerable in sourceWorkingDirs', () => {
       const sessionDir = manager.createSessionBaseDir('U094E5L4A15');
@@ -99,20 +84,6 @@ describe('Session Workspace Wiring', () => {
 
       const added = registry.addSourceWorkingDir('C001', '200.001', sessionDir!);
       expect(added).toBe(true);
-    });
-  });
-
-  // === Scenario W3: Backward Compatibility ===
-
-  describe('backward compatibility', () => {
-    // Trace W3 — existing session without sessionWorkingDir uses base dir
-    it('session without sessionWorkingDir falls back to base dir', () => {
-      const session = registry.createSession('U094E5L4A15', 'Tester', 'C001', '300.001');
-      // Don't set sessionWorkingDir (simulates pre-wiring session)
-
-      const baseDir = '/tmp/U094E5L4A15';
-      const effectiveDir = session.sessionWorkingDir || baseDir;
-      expect(effectiveDir).toBe(baseDir);
     });
   });
 

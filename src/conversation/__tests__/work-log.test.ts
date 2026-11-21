@@ -538,7 +538,9 @@ describe('work log store', () => {
           const page = await wl.readWorkLog('conv-junk', { beforeSeq: 996, limit: 10 });
           // The junk after the entries gives the search no end: the scan from the end stops at its budget.
           expect(page.hasMore).toBe(true);
-          expect(page.entries.every((e) => e.seq < 996)).toBe(true);
+          // Nothing found within the budget: an empty page, and where the next read goes on from.
+          expect(page.entries).toEqual([]);
+          expect(typeof page.nextBeforeOffset).toBe('number');
           expect(counter.bytes).toBeLessThanOrEqual(wl.WORK_LOG_SCAN_BUDGET_BYTES);
         });
 

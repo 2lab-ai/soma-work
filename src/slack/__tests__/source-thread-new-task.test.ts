@@ -222,17 +222,23 @@ describe('buildNewTaskOfferMessage', () => {
       { ...REQUEST, text: 'x'.repeat(10_000), linked: [] },
       'https://slack.test/p',
     );
-    for (const block of message.blocks as any[]) {
-      if (block.type === 'section') expect(block.text.text.length).toBeLessThanOrEqual(3000);
-    }
+    // With no linked work threads the instruction is the only section.
+    const sections = (message.blocks as any[]).filter((block) => block.type === 'section');
+    expect(sections).toHaveLength(1);
+    expect(sections[0].text.text).toContain(`> ${'x'.repeat(100)}`);
+    expect(sections[0].text.text.length).toBeLessThanOrEqual(3000);
   });
 
   it('stays inside the limit when escaping grows the text (& → &amp;) or every line is quoted', () => {
-    for (const text of ['&'.repeat(2_000), 'a\n'.repeat(2_000)]) {
+    for (const [text, rendered] of [
+      ['&'.repeat(2_000), `> ${'&amp;'.repeat(20)}`],
+      ['a\n'.repeat(2_000), '> a\n> a\n> a'],
+    ]) {
       const message = buildNewTaskOfferMessage({ ...REQUEST, text, linked: [] }, 'https://slack.test/p');
-      for (const block of message.blocks as any[]) {
-        if (block.type === 'section') expect(block.text.text.length).toBeLessThanOrEqual(3000);
-      }
+      const sections = (message.blocks as any[]).filter((block) => block.type === 'section');
+      expect(sections).toHaveLength(1);
+      expect(sections[0].text.text).toContain(rendered);
+      expect(sections[0].text.text.length).toBeLessThanOrEqual(3000);
     }
   });
 });

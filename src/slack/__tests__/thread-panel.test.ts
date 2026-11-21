@@ -584,11 +584,7 @@ describe('ThreadPanel — P3 (PHASE>=3) B3 choice facade', () => {
       'C1:t1',
     );
 
-    expect(result.ok).toBe(false);
-    if (!result.ok && result.reason === 'post-failed') {
-      expect(result.postedTs).toEqual(['chunk-0']);
-      expect(result.failedIndex).toBe(1);
-    }
+    expect(result).toMatchObject({ ok: false, reason: 'post-failed', postedTs: ['chunk-0'], failedIndex: 1 });
     // Rollback: updateMessage called for chunk-0 with the failure marker.
     expect(slackApi.updateMessage).toHaveBeenCalledWith(
       'C1',

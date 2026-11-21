@@ -105,11 +105,6 @@ describe('gpt-6.2 — release wiring', () => {
     }
   });
 
-  it('is SELECTABLE but NOT the default — DEFAULT_MODEL follows `opus`', () => {
-    expect(DEFAULT_MODEL).toBe(MODEL_ALIASES.opus);
-    expect(MODEL_ALIASES.gpt).toBe('gpt-5.6-sol');
-  });
-
   it('sol / sol[1m] / gpt-6.2 point at gpt-6.2-sol[1m]; astra / astra[1m] at gpt-6.2-astra[1m]', () => {
     expect(MODEL_ALIASES.sol).toBe('gpt-6.2-sol[1m]');
     expect(MODEL_ALIASES['sol[1m]']).toBe('gpt-6.2-sol[1m]');

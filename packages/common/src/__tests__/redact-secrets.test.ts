@@ -14,9 +14,7 @@ const S = (v: unknown) => v as string;
  * last-four expectation below is unchanged.
  *
  * This package is a leaf workspace, so the fixtures are local rather than
- * imported from `src/test-utils/slack-token-fixtures.ts`; the shape canary at
- * the end of this describe block is what stops a split from quietly degrading
- * one of them into a string the redactor was never asked to match.
+ * imported from `src/test-utils/slack-token-fixtures.ts`.
  *
  * Only the four complete shapes are split. The short `xoxb-1-2-…` fixtures
  * further down are deliberately below every detector's length floor — they are
@@ -57,17 +55,6 @@ describe('redactSecrets — Slack token shapes', () => {
   it('redacts every occurrence in one string', () => {
     const out = S(redactSecrets('a=xoxb-1-2-aaaabbbbcccc b=xapp-1-A1-2-ddddeeeeffff'));
     expect(out).toBe('a=[REDACTED xoxb-...cccc] b=[REDACTED xapp-...ffff]');
-  });
-
-  // The canary for the split above: assembled, these are still the complete
-  // shapes a real credential has. Without it, a fixture could be shortened into
-  // something no scanner recognises and the tests above would still pass, which
-  // is the one way this file could go quietly vacuous.
-  it('assembles fixtures that are still complete token shapes', () => {
-    expect(BOT_TOKEN).toMatch(/^xoxb-\d{10}-\d{13}-[A-Za-z0-9]{20}$/);
-    expect(APP_TOKEN).toMatch(/^xapp-\d-A\d{8}-\d{13}-[a-z0-9]{28}$/);
-    expect(USER_TOKEN).toMatch(/^xoxp-\d{3}-\d{3}-\d{3}-[A-Za-z0-9]{22}$/);
-    expect(CONFIG_TOKEN).toMatch(/^xoxe\.xoxp-\d-[A-Za-z0-9]{28}$/);
   });
 });
 

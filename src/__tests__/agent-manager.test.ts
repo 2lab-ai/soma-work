@@ -213,13 +213,6 @@ describe('S6 — Agent Prompt Loading', () => {
 // ─── S7: Agent Graceful Shutdown ────────────────────────────────────────────
 
 describe('S7 — Agent Graceful Shutdown', () => {
-  // Trace: S7, Section 3a — stops all agents
-  it('AgentShutdown_StopsAll — stops all agent instances', async () => {
-    const { AgentManager } = await import('../agent-manager');
-    const manager = new AgentManager({}, {} as unknown as McpManager);
-    await expect(manager.stopAll()).resolves.not.toThrow();
-  });
-
   // Trace: S7, Section 5 — partial failure continues
   it('AgentShutdown_PartialFailure_Continues — continues stopping on failure', async () => {
     const { AgentManager } = await import('../agent-manager');

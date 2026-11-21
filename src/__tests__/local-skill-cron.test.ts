@@ -11,10 +11,6 @@ import { describe, expect, it } from 'vitest';
 const SKILL_PATH = path.join(__dirname, '..', 'local', 'skills', 'cron', 'SKILL.md');
 
 describe('local cron skill', () => {
-  it('exists', () => {
-    expect(fs.existsSync(SKILL_PATH)).toBe(true);
-  });
-
   it('triggers on cron/schedule keywords (en+ko) in frontmatter description', () => {
     const raw = fs.readFileSync(SKILL_PATH, 'utf-8');
     const fm = raw.split('---')[1] ?? '';

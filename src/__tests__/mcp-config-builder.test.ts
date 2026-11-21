@@ -10,7 +10,7 @@ vi.mock('../env-paths', async (importOriginal) => {
   };
 });
 
-import { isMidThreadMention, type McpConfig, McpConfigBuilder } from '../mcp-config-builder';
+import { isMidThreadMention, McpConfigBuilder } from '../mcp-config-builder';
 
 describe('McpConfigBuilder disallowedTools', () => {
   function createMockMcpManager() {
@@ -19,16 +19,6 @@ describe('McpConfigBuilder disallowedTools', () => {
       getDefaultAllowedTools: vi.fn().mockReturnValue([]),
     } as any;
   }
-
-  it('McpConfig type includes disallowedTools field', () => {
-    const config: McpConfig = {
-      permissionMode: 'default',
-      userBypass: false,
-      somaPermissionMode: 'legacy',
-      disallowedTools: ['AskUserQuestion'],
-    };
-    expect(config.disallowedTools).toEqual(['AskUserQuestion']);
-  });
 
   it('populates disallowedTools with AskUserQuestion when slackContext is provided', async () => {
     const builder = new McpConfigBuilder(createMockMcpManager());

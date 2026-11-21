@@ -937,20 +937,20 @@ describe('EventRouter', () => {
   });
 
   describe('cleanup', () => {
-    it('should clear session cleanup interval', () => {
-      router.setup();
+    it('stops the 5-minute inactive-session sweep; a second cleanup is a no-op', async () => {
+      vi.useFakeTimers();
+      try {
+        router.setup();
+        await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+        expect(mockClaudeHandler.cleanupInactiveSessions).toHaveBeenCalledTimes(1);
 
-      // cleanup is called, should not throw
-      expect(() => router.cleanup()).not.toThrow();
-    });
-
-    it('should be safe to call cleanup multiple times', () => {
-      router.setup();
-
-      router.cleanup();
-      router.cleanup();
-
-      // Should not throw
+        router.cleanup();
+        router.cleanup();
+        await vi.advanceTimersByTimeAsync(15 * 60 * 1000);
+        expect(mockClaudeHandler.cleanupInactiveSessions).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('should be safe to call cleanup without setup', () => {

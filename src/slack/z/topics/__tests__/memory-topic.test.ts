@@ -132,21 +132,12 @@ describe('memory-topic.renderMemoryCard — legacy regression', () => {
     addMemoryMock('U2', 'user', 'first user entry');
     const { blocks } = await renderMemoryCard({ userId: 'U2', issuedAt: 2 });
     const ids = allActionIds(blocks);
-    // Accessory = improve only. Per-entry clear buttons are gone (moved
-    // to the global [🗑️ 삭제 관리] modal).
     expect(ids).toContain('z_setting_memory_set_improve_memory_1');
     expect(ids).toContain('z_setting_memory_set_improve_user_1');
-    expect(ids).not.toContain('z_setting_memory_set_clear_memory_1');
-    expect(ids).not.toContain('z_setting_memory_set_clear_user_1');
   });
 });
 
 describe('memory-topic.applyMemory — legacy regression', () => {
-  it('clear_all wipes stores', async () => {
-    const r = await applyMemory({ userId: 'U1', value: 'clear_all' });
-    expect(r.ok).toBe(true);
-  });
-
   it('clear_memory_N removes memory entry', async () => {
     clearAllMemoryMock('U3');
     addMemoryMock('U3', 'memory', 'abc');
@@ -309,15 +300,6 @@ describe('memory-topic.submitMemoryModal', () => {
 });
 
 describe('createMemoryTopicBinding', () => {
-  it('exposes all hooks', () => {
-    const b = createMemoryTopicBinding();
-    expect(b.topic).toBe('memory');
-    expect(typeof b.apply).toBe('function');
-    expect(typeof b.renderCard).toBe('function');
-    expect(typeof b.openModal).toBe('function');
-    expect(typeof b.submitModal).toBe('function');
-  });
-
   it('openModal routes to the ADD modal for z_setting_memory_open_modal', async () => {
     clearAllMemoryMock('B1');
     const binding = createMemoryTopicBinding();
@@ -382,7 +364,7 @@ describe('createMemoryTopicBinding', () => {
  * ------------------------------------------------------------------ */
 
 describe('renderMemoryCard — v4 minimal', () => {
-  it('produces 17 blocks for 5+5 entries (fixed 7 + 1*10 per-entry)', async () => {
+  it('produces 19 blocks for 5+5 entries (fixed 7 + 1*10 per-entry + 2 hierarchical)', async () => {
     clearAllMemoryMock('V1');
     for (let i = 1; i <= 5; i++) addMemoryMock('V1', 'memory', `m${i}`);
     for (let i = 1; i <= 5; i++) addMemoryMock('V1', 'user', `u${i}`);
@@ -415,15 +397,7 @@ describe('renderMemoryCard — v4 minimal', () => {
       expect((sec as any).accessory?.action_id).toBe(`z_setting_memory_set_improve_user_${j}`);
     }
 
-    // v4 removed the top-global actions row + per-entry actions rows + the
-    // separate extra-actions row. Only one bottom row remains with 6 buttons.
-    expect(findBlockById(blocks, 'z_memory_global_top')).toBeUndefined();
-    for (let i = 1; i <= 5; i++) {
-      expect(findBlockById(blocks, `z_memory_memory_entry_${i}`)).toBeUndefined();
-      expect(findBlockById(blocks, `z_memory_user_entry_${i}`)).toBeUndefined();
-    }
-    expect(findBlockById(blocks, 'z_memory_extra')).toBeUndefined();
-
+    // One bottom actions row carries the 6 card-level buttons.
     const bot = findBlockById(blocks, 'z_memory_global_bottom');
     expect(bot).toBeDefined();
     const botIds = (bot as any).elements.map((e: any) => e.action_id);

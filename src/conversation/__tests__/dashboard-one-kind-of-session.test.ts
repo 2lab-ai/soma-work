@@ -47,7 +47,6 @@ describe('Dashboard — one kind of work session (#854)', () => {
   let injectWebServer: any;
   let stopWebServer: any;
   let dashboard: any;
-  let launcher: ReturnType<typeof vi.fn>;
   let epicTasks: ReturnType<typeof vi.fn>;
   let slackProvider: { context: ReturnType<typeof vi.fn>; start: ReturnType<typeof vi.fn> };
   const context = {
@@ -70,7 +69,6 @@ describe('Dashboard — one kind of work session (#854)', () => {
       start: vi.fn(async () => ({ channel: 'C1', threadTs: '1.0', sessionKey: 'C1-1.0', status: 'running' })),
     };
     dashboard.setDashboardNewTaskProvider(slackProvider);
-    launcher = vi.fn();
     epicTasks = vi.fn((userId: string) => userId === 'U_EPIC');
     // #855 — the epic flag's own provider (the dashboard-task launcher is gone).
     dashboard.setDashboardEpicTasks(epicTasks);
@@ -117,7 +115,6 @@ describe('Dashboard — one kind of work session (#854)', () => {
     const res = await post(await signIn(), { requestId: 'req-task-0123456', destination: 'task', prompt: 'x' });
     expect(res.statusCode).toBe(410);
     expect(JSON.parse(res.body).error).toMatch(/Slack 채널/);
-    expect(launcher).not.toHaveBeenCalled();
     expect(slackProvider.start).not.toHaveBeenCalled();
   });
 

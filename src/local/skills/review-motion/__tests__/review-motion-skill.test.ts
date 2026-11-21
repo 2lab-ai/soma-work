@@ -27,10 +27,6 @@ function parseFrontmatter(md: string): Record<string, string> {
 }
 
 describe('local:review-motion skill — RED contract', () => {
-  it('SKILL.md exists', () => {
-    expect(existsSync(SKILL_MD)).toBe(true);
-  });
-
   it('frontmatter has name: review-motion and stays opt-in (disable-model-invocation)', () => {
     const md = readFileSync(SKILL_MD, 'utf8');
     const fm = parseFrontmatter(md);

@@ -128,7 +128,8 @@ describe('스킬 tab — 내 스킬', () => {
     const edit = view({ sk: snapshot(), open: { section: 'mine', id: 'deploy' }, detail });
     expect(edit).toMatch(/<textarea[^>]*>\n\nintro<\/textarea>/);
     const sys = view({ sk: snapshot(), open: { section: 'system', id: 'stv:debug', source: 'stv' }, detail });
-    if (sys.includes('<pre')) expect(sys).toMatch(/<pre[^>]*>\n\nintro<\/pre>/);
+    // A system skill is read-only: its text is a <pre>, which keeps the blank line the same way.
+    expect(sys).toMatch(/<pre[^>]*>\n\nintro<\/pre>/);
   });
 
   it('a viewer-token session has no 내 스킬: it says why', () => {

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RequestCoordinator } from '../request-coordinator';
 
 describe('RequestCoordinator', () => {
@@ -125,17 +125,18 @@ describe('RequestCoordinator', () => {
       expect(lastAt!).toBeLessThanOrEqual(after);
     });
 
-    it('updates last activity timestamp via touchSession', async () => {
-      const sessionKey = 'C123:T456';
-      coordinator.setController(sessionKey, new AbortController());
-      const initial = coordinator.getLastActivityAt(sessionKey);
-      expect(initial).toBeDefined();
-      // Wait long enough that Date.now() advances reliably across hosts.
-      await new Promise((r) => setTimeout(r, 5));
-      coordinator.touchSession(sessionKey);
-      const updated = coordinator.getLastActivityAt(sessionKey);
-      expect(updated).toBeDefined();
-      expect(updated!).toBeGreaterThan(initial!);
+    it('updates last activity timestamp via touchSession', () => {
+      vi.useFakeTimers({ now: 1_000 });
+      try {
+        const sessionKey = 'C123:T456';
+        coordinator.setController(sessionKey, new AbortController());
+        expect(coordinator.getLastActivityAt(sessionKey)).toBe(1_000);
+        vi.setSystemTime(6_000);
+        coordinator.touchSession(sessionKey);
+        expect(coordinator.getLastActivityAt(sessionKey)).toBe(6_000);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('touchSession is a no-op for sessions without an active controller', () => {

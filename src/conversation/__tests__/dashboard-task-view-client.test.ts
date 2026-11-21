@@ -560,22 +560,16 @@ describe('T1 · the panel: a common surface, agent tabs, three sections per tab'
     expect(at('id="psec-tree"')).toBeGreaterThan(at('id="panel-sections-body"'));
     expect(at('id="worklog-list"')).toBeGreaterThan(at('id="psec-log"'));
     expect(at('id="panel-conv"')).toBeGreaterThan(at('id="psec-conv"'));
-    expect(panel).not.toContain('id="panel-turns"');
     // Chat (지시와 답변) is the default tab (the element selects it, shows its panel and hides the others).
     expect(TEMPLATE).toMatch(/^var _psec = 'conv';/m);
     expect(panel).toMatch(/id="psec-conv" slot="conv">\s*<ui-conversation /);
-    // The page draws no tab of its own any more; the strip's choice arrives as ui-change.
-    expect(panel).not.toMatch(/role="tab"|role="tablist"|role="tabpanel"|class="psec-tab/);
+    // The strip's choice arrives as ui-change.
     const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initPanelSections() {'));
     expect(init.slice(0, init.indexOf('\n})();'))).toContain("strip.addEventListener('ui-change', function(e) {");
-    expect(TEMPLATE).not.toMatch(/function psecKeyTarget\(|function panelTabsKey\(/);
-    // No disclosure heads for these sections any more.
-    expect(panel).not.toMatch(/id="(conv|worklog)-toggle"/);
   });
 
   it('T1.2 · the tab list sticks while the conversation scrolls, Main sticks at its left (the element’s pinned tab)', () => {
     expect(CSS).toMatch(/\.panel-tabs::part\(list\) \{[^}]*position: sticky;[^}]*top: 0;/);
-    expect(CSS).not.toMatch(/\.panel-tab\.is-main/);
     expect(clientFn('panelTabsData')).toContain(
       "var tabs = [tab(PT_MAIN, st0, '메인', model ? modelLabelOf(model) : '', true, model, '')];",
     );
@@ -723,40 +717,15 @@ describe('T1.4 · an assistant turn reads as its answer; Raw sits at the bottom 
     // Raw (요약 · 원문) is the element's, at the turn's foot: the summary and the source it is handed.
     expect(src).toContain('if (sum.title || sum.text || sum.error) a.summary = sum;');
     expect(clientFn('convSummaryOf')).toContain('t.summaryBody');
-    expect(TEMPLATE).not.toContain('답변 전문');
   });
 });
 
 // ── T1.5 — the composer ──
 describe('T1.5 · the steering composer: multiline, images, files, voice', () => {
-  const cmd = PAGE.slice(PAGE.indexOf('<div class="panel-command" id="panel-command">'), PAGE.indexOf('<!-- New task'));
-
-  // D4 E-30 (@2lab.ai/ui 0.10.0): the field is a <ui-composer slot="composer"> inside <ui-agent-steering> — attach,
-  // image, voice, their chips, the recorder, the limits and the error line are the composer's (library:
-  // agent-steering.test.ts 'the composer is the field: the built-in one, attachments and tools step aside').
-  it('is <ui-agent-steering> with a <ui-composer slot="composer"> as its field', () => {
-    expect(cmd).toContain(
-      '<ui-agent-steering id="cmd-steer" lang="ko"><ui-composer id="pc-composer" slot="composer" lang="ko"><div class="panel-controls" id="panel-controls" slot="end" aria-label="이 세션의 모델과 추론 강도"></div></ui-composer></ui-agent-steering>',
-    );
-    expect(cmd).not.toMatch(/<textarea|id="cmd-input"|id="cmd-send"|slot="tools"|slot="attachments"|type="file"/);
-    for (const id of ['pc-attach', 'pc-image', 'pc-mic', 'pc-attachments', 'pc-recorder', 'pc-error'])
-      expect(cmd, id).not.toContain(`id="${id}"`);
-    // Model · effort sit on the composer's own row (its slot="end", #918).
-    expect(cmd.indexOf('id="panel-controls"')).toBeGreaterThan(cmd.indexOf('id="pc-composer"'));
-  });
-
   const pc = load<{
     pcCommandBody(message: string, files: Array<Record<string, unknown>>): unknown;
     pcCanSend(message: string, files: unknown[]): boolean;
   }>(['pcCommandBody', 'pcCanSend'], []);
-
-  // Enter sends, Shift+Enter breaks the line, an IME composition (한글, keyCode 229) never sends, a phone's Enter is a
-  // line break: the element's own keys now — @2lab.ai/ui agent-steering.test.ts "steerEnterAction: IME-safe, Shift
-  // and touch make a new line, ⌘/Ctrl steers only while running" and "Shift+Enter, IME composition and keyCode 229
-  // never send". The page keeps no key handler of its own.
-  it('the page has no key handler of its own on the composer', () => {
-    expect(TEMPLATE).not.toMatch(/function pcKeydown\(|function pcEnterAction\(|function pcAutosize\(/);
-  });
 
   it('the body carries the files as base64 attachments; a files-only send is allowed', () => {
     expect(
@@ -888,9 +857,8 @@ describe('review r1 · one send at a time; a failed multiline send retries witho
     );
     expect(send.indexOf('_pcSending = true')).toBeLessThan(send.indexOf('await '));
   });
-  it("a failed send retries through the element (its row's Retry re-emits ui-submit), never an inline handler", () => {
+  it("a failed send retries through the element (its row's Retry re-emits ui-submit)", () => {
     expect(send).toContain("el.setItemState(ref, 'failed', why.trim());");
-    expect(TEMPLATE).not.toMatch(/function sendRetry\(|class="cmd-retry"/);
   });
 });
 
@@ -984,8 +952,6 @@ describe('#488 · every landing scroll starts a new panel scroll generation', ()
     const calls = land.split('scrollEl.scrollTo(');
     expect(calls.length - 1).toBe(3); // the section landing, the question, the section tabs
     for (let i = 0; i < calls.length - 1; i++) expect(calls[i].slice(-200)).toContain('_panelScrollGen++');
-    // 작업 로그 has no landing of its own: it is the section tab the opening selects.
-    expect(TEMPLATE).not.toContain('function scrollPanelToWorkLog(');
   });
 });
 
@@ -1078,7 +1044,6 @@ describe('T1.1 / T1.6 · an opening lands with the section tabs in view: the top
       TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction landPanel(')),
     );
     expect(land).not.toContain('scrollEl.scrollHeight');
-    expect(TEMPLATE).not.toContain('_panelStickBottom');
     const m = load<{ psecLandingTop(secTop: number, boxBottom: number, view: number, under: number): number }>(
       ['psecLandingTop'],
       [],
@@ -1101,13 +1066,10 @@ describe('T1.3 / SSOT 2026-10-29 · 지시와 답변 opens on its latest turns; 
     expect(paint).toContain("startText: askOnly ? '' : '대화의 시작',");
   });
 
-  it('the markup: the element in the conv box, no page-drawn control or marker there; no turn hidden by CSS', () => {
+  it('the markup: the element alone in the conv box', () => {
     expect(PAGE).toMatch(
       /<div class="psec psec-el ui-tok" id="psec-conv"[^>]*>\s*<ui-conversation class="panel-conv" id="panel-conv" lang="ko"><\/ui-conversation>\s*<\/div>/,
     );
-    expect(PAGE).not.toContain('data-sec="conv" hidden>이전 대화 불러오기');
-    expect(CSS).not.toContain('#panel-turns:not(.is-all)');
-    expect(CSS).not.toContain('.conv-earlier');
     expect(CSS).toMatch(/\.psec\.psec-el \{ overflow: hidden;/);
   });
 
@@ -1144,27 +1106,13 @@ describe('T1.3 / SSOT 2026-10-29 · 지시와 답변 opens on its latest turns; 
     expect(more).not.toContain('insertAdjacentHTML');
   });
 
-  it("the reader's rows are the element's to hold (D6b): every section is a <ui-log-scroller>; the page keeps no scroll handler, anchor, pill or page-due rule of its own", () => {
+  it("the reader's rows are the element's to hold (D6b): every section is a <ui-log-scroller>; the page keeps no scroll handler of its own", () => {
     // 0.12.0 reads [data-anchor] rows through an element item's open shadow root (D3-GAPS G1-1): the tree's rows.
     expect(CSS).toMatch(/\n\.psec \{ position: relative; height: var\(--psec-h, 60vh\); min-height: 160px; \}/);
     expect(CSS).not.toContain('overflow-anchor');
     const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initPanelSections() {'));
     const body = init.slice(0, init.indexOf('\n})();'));
     expect(body).not.toContain("addEventListener('scroll'");
-    expect(body).not.toContain('_anchor');
-    for (const gone of [
-      'psecViewAnchor',
-      'psecRestoreAnchor',
-      'psecPageDue',
-      'psecMaybeFill',
-      'psecOlderState',
-      'psecSetTop',
-      '_psecPin',
-      'psec-pill',
-    ]) {
-      expect(TEMPLATE, gone).not.toContain(gone);
-    }
-    expect(TEMPLATE).not.toContain('_anchorUntil');
   });
 });
 
@@ -1182,16 +1130,11 @@ describe('browser receipt · a section landing cut short by a short body lands o
 });
 
 describe('T1.6 · HIG: outside a list the view-mode toggle is a button that behaves like a toggle, not a switch', () => {
-  it('a pressed-state button whose background changes — no switch knob in the top bar', () => {
+  it('a pressed-state button (the kit chip with aria-pressed) in the top bar', () => {
+    // Tone pass P2 / D7 (E-06): "pressed" is the kit chip's raised neutral "on" (ui-kit.css .ui-chip[aria-pressed="true"]).
     expect(PAGE).toMatch(
       /<button type="button" class="ui-chip view-mode-toggle" id="view-mode-toggle" slot="actions" aria-pressed="false"[^>]*><i data-ui-icon="list"><\/i>/,
     );
-    expect(PAGE).not.toContain('pdt-switch');
-    // Tone pass P2 / D7 (E-06): "pressed" is the kit chip's raised neutral "on" (ui-kit.css
-    // .ui-chip[aria-pressed="true"]), not an accent fill — the page keeps no look of its own for it.
-    expect(CSS).not.toMatch(/\.view-mode-toggle\[aria-pressed="true"\]/);
-    expect(CSS).not.toMatch(/^\.view-mode-toggle \{/m);
-    expect(CSS).not.toContain('.pdt-icon');
   });
 });
 
@@ -1445,8 +1388,6 @@ describe('T1.5 · the session model sits on the composer’s own row, left of Se
   it('narrow: the composer takes its own line; model · effort ride its row (no line of their own)', () => {
     expect(CSS).not.toContain('.panel-command .panel-controls {');
     expect(CSS).toContain('.panel-command .pc-steer-wrap { flex-basis: 100%; }');
-    expect(CSS).not.toContain('.panel-command .panel-controls { padding: 0; flex: 0 1 auto; max-width: 42%; }');
-    expect(CSS).not.toMatch(/\.btn-send|\.panel-command textarea|\.panel-command-row|\.cmd-hint/);
   });
 });
 

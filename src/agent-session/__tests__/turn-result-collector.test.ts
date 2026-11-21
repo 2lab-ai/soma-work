@@ -216,16 +216,6 @@ describe('TurnResultCollector', () => {
     expect(result.usage).toBeUndefined();
   });
 
-  // Trace: S5, Section 3a — AgentTurnResult has usage and durationMs fields
-  it('AgentTurnResult shape includes optional usage and durationMs', () => {
-    collector.setUsage({ inputTokens: 10, outputTokens: 5 });
-    const result = collector.getResult();
-    // usage is set
-    expect(result.usage).toBeDefined();
-    // durationMs is NOT set by collector (set by V1QueryAdapter)
-    expect(result.durationMs).toBeUndefined();
-  });
-
   // ─── 결과 불변성 ───────────────────────────────────
 
   it('getResult should return a snapshot (not live reference)', () => {

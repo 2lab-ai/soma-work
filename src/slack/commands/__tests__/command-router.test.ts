@@ -439,11 +439,11 @@ describe('CommandRouter — effort/rate regression guard (already canonical)', (
 });
 
 /**
- * Issue #530: retired / non-canonical bare forms must fall through as
- * `handled: false` — NO tombstone hint ("더 이상 사용되지 않습니다") is ever
- * emitted from the router.
+ * Issue #530: a bare word that only resembles a command (not the canonical
+ * form a handler accepts) is not swallowed by the router — it falls through as
+ * `handled: false` with no reply, so the message reaches the model.
  */
-describe('CommandRouter — non-canonical bare input falls through (no tombstone #530)', () => {
+describe('CommandRouter — non-canonical bare input falls through to the model (#530)', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
   });
@@ -462,37 +462,13 @@ describe('CommandRouter — non-canonical bare input falls through (no tombstone
 
     const result = await router.route(ctx);
 
-    // 1. Handled must be false (no tombstone short-circuit).
     expect(result.handled).toBe(false);
-    // 2. `say` must NOT emit the tombstone hint text.
-    for (const call of say.mock.calls) {
-      const payload = call[0] as { text?: string };
-      expect(payload?.text ?? '').not.toContain('더 이상 사용되지 않습니다');
-    }
+    expect(say).not.toHaveBeenCalled();
+    expect(deps.slackApi.postSystemMessage).not.toHaveBeenCalled();
   }
-
-  it('bare "commands" (retired) falls through', async () => {
-    await assertFallsThrough('commands');
-  });
 
   it('bare "prompt" (non-canonical) falls through', async () => {
     await assertFallsThrough('prompt');
-  });
-
-  it('bare "플러그인 업데이트" (Korean retired alias) falls through', async () => {
-    await assertFallsThrough('플러그인 업데이트');
-  });
-
-  it('bare "nextcct" (retired) falls through', async () => {
-    await assertFallsThrough('nextcct');
-  });
-
-  it('bare "servers" (retired) falls through', async () => {
-    await assertFallsThrough('servers');
-  });
-
-  it('bare "credentials" (retired) falls through', async () => {
-    await assertFallsThrough('credentials');
   });
 
   it('bare "persona clear" (not parser-supported) falls through', async () => {
@@ -501,6 +477,64 @@ describe('CommandRouter — non-canonical bare input falls through (no tombstone
 
   it('bare "verbosity set detail" (not parser-supported) falls through', async () => {
     await assertFallsThrough('verbosity set detail');
+  });
+
+  // Aliases retired in #506 read like chat. If one came back, the router would swallow the user's
+  // message — and for the session and plugin ones, act on it. One row per input the old parsers
+  // accepted (4b852a12 removed them from command-parser.ts).
+  it.each([
+    'commands',
+    'command',
+    'help?',
+    'servers',
+    'server',
+    'mcp?',
+    'server reload',
+    'credentials',
+    'credential',
+    'credentials status',
+    'end session',
+    'kill session-123',
+    'terminate_session C123:T456',
+    'nextcct',
+    'set_cct cct2',
+    '플러그인 업데이트',
+    '/플러그인 업데이트',
+  ])('retired alias "%s" (#506) falls through to the model', async (text) => {
+    await assertFallsThrough(text);
+  });
+
+  // #855 removed the dashboard-task entry switch (the `taskentry` command and the `/z taskentry` topic);
+  // the same words typed now are chat.
+  it.each([
+    'taskentry on',
+    '/taskentry off',
+    '/z taskentry',
+  ])('retired command "%s" (#855) falls through to the model', async (text) => {
+    await assertFallsThrough(text);
+  });
+
+  // The underscore forms of the admin `show prompt` / `show instructions` are still known keywords
+  // (COMMAND_KEYWORDS joins two words), so they are refused with the unknown-command hint — never run.
+  it.each([
+    ['show_prompt', 'show_prompt'],
+    ['/show_prompt', 'show_prompt'],
+    ['show_instructions', 'show_instructions'],
+    ['/show_instructions', 'show_instructions'],
+  ])('retired alias "%s" (#506) is refused with the unknown-command hint, not run', async (text, keyword) => {
+    const say = vi.fn().mockResolvedValue(undefined);
+    const deps = buildDeps();
+    const router = new CommandRouter(deps);
+
+    const result = await router.route({ text, user: 'U1', channel: 'C1', threadTs: 'T1', say } as any);
+
+    expect(result.handled).toBe(true);
+    expect(say).toHaveBeenCalledTimes(1);
+    // The hint names the refused keyword in the thread; its wording is not the contract.
+    expect(say).toHaveBeenCalledWith(
+      expect.objectContaining({ text: expect.stringContaining(`\`${keyword}\``), thread_ts: 'T1' }),
+    );
+    expect(deps.slackApi.postSystemMessage).not.toHaveBeenCalled();
   });
 });
 

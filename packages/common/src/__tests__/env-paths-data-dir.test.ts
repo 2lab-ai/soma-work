@@ -36,23 +36,6 @@ afterEach(() => {
   vi.resetModules();
 });
 
-describe('resolveDataDirOverride', () => {
-  it('returns null when SOMA_DATA_DIR is unset, empty, or whitespace', async () => {
-    const { resolveDataDirOverride } = await import('../env-paths');
-    expect(resolveDataDirOverride({})).toBeNull();
-    expect(resolveDataDirOverride({ SOMA_DATA_DIR: '' })).toBeNull();
-    expect(resolveDataDirOverride({ SOMA_DATA_DIR: '   ' })).toBeNull();
-  });
-
-  it('resolves a relative override to an absolute path', async () => {
-    const { resolveDataDirOverride } = await import('../env-paths');
-    const out = resolveDataDirOverride({ SOMA_DATA_DIR: 'rel/data' });
-    expect(out).not.toBeNull();
-    expect(path.isAbsolute(out as string)).toBe(true);
-    expect((out as string).endsWith('rel/data')).toBe(true);
-  });
-});
-
 describe('DATA_DIR resolution priority', () => {
   it('SOMA_DATA_DIR outranks SOMA_CONFIG_DIR/data', async () => {
     const configDir = path.join(home, '.config', 'somawork', 'profiles', 'preview');

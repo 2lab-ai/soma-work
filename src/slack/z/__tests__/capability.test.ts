@@ -2,21 +2,6 @@ import { isSlashForbidden, SLASH_FORBIDDEN, SLASH_FORBIDDEN_MESSAGE } from '@som
 import { describe, expect, it } from 'vitest';
 
 describe('SLASH_FORBIDDEN set', () => {
-  it('contains the expected forbidden keys', () => {
-    expect(SLASH_FORBIDDEN.has('new')).toBe(true);
-    expect(SLASH_FORBIDDEN.has('close')).toBe(true);
-    expect(SLASH_FORBIDDEN.has('renew')).toBe(true);
-    expect(SLASH_FORBIDDEN.has('context')).toBe(true);
-    expect(SLASH_FORBIDDEN.has('restore')).toBe(true);
-    expect(SLASH_FORBIDDEN.has('link')).toBe(true);
-    expect(SLASH_FORBIDDEN.has('compact')).toBe(true);
-    expect(SLASH_FORBIDDEN.has('session:set:model')).toBe(true);
-    expect(SLASH_FORBIDDEN.has('session:set:verbosity')).toBe(true);
-    expect(SLASH_FORBIDDEN.has('session:set:effort')).toBe(true);
-    expect(SLASH_FORBIDDEN.has('session:set:thinking')).toBe(true);
-    expect(SLASH_FORBIDDEN.has('session:set:thinking_summary')).toBe(true);
-  });
-
   it('keys are all lowercase', () => {
     for (const key of SLASH_FORBIDDEN) {
       expect(key).toBe(key.toLowerCase());

@@ -338,14 +338,6 @@ describe('PluginsHandler', () => {
       expect(handler.canHandle('/plugins update')).toBe(true);
     });
 
-    it('should NOT handle Korean alias "플러그인 업데이트" (#506)', () => {
-      expect(handler.canHandle('플러그인 업데이트')).toBe(false);
-    });
-
-    it('should NOT handle Korean alias "/플러그인 업데이트" (#506)', () => {
-      expect(handler.canHandle('/플러그인 업데이트')).toBe(false);
-    });
-
     it('should handle singular "plugin update" (/z plugin update native)', () => {
       expect(handler.canHandle('plugin update')).toBe(true);
     });
@@ -563,17 +555,15 @@ describe('PluginsHandler', () => {
         await handler.execute(ctx);
 
         const sentBlocks = say.mock.calls[1][0].blocks;
-        for (const block of sentBlocks) {
-          if (block.type !== 'actions') continue;
-          for (const el of block.elements ?? []) {
-            if (el.confirm) {
-              expect(el.confirm.text.text.length).toBeLessThanOrEqual(300);
-              expect(el.confirm.title.text.length).toBeLessThanOrEqual(100);
-              expect(el.confirm.confirm.text.length).toBeLessThanOrEqual(30);
-              expect(el.confirm.deny.text.length).toBeLessThanOrEqual(30);
-            }
-          }
-        }
+        const elements = sentBlocks.filter((b: any) => b.type === 'actions').flatMap((b: any) => b.elements ?? []);
+        // The security-bypass (force) button of the blocked plugin must ask first — and its dialog fits Slack.
+        const force = elements.filter((el: any) => String(el.action_id).startsWith('plugin_update_force_'));
+        expect(force).toHaveLength(1);
+        const { confirm } = force[0];
+        expect(confirm.text.text.length).toBeLessThanOrEqual(300);
+        expect(confirm.title.text.length).toBeLessThanOrEqual(100);
+        expect(confirm.confirm.text.length).toBeLessThanOrEqual(30);
+        expect(confirm.deny.text.length).toBeLessThanOrEqual(30);
       });
 
       it('should keep total blocks at or below 50 even with many failed plugins', async () => {
@@ -605,6 +595,35 @@ describe('PluginsHandler', () => {
         expect(sentBlocks.length).toBeLessThanOrEqual(50);
       });
 
+      it('a failure that is not a security block offers Ignore only — never the security bypass', async () => {
+        vi.mocked(isAdminUser).mockReturnValue(true);
+        mockPluginManager.forceRefresh.mockResolvedValue({
+          total: 1,
+          updated: 0,
+          unchanged: 0,
+          errors: [],
+          details: [
+            {
+              name: 'p@m',
+              status: 'error',
+              oldSha: null,
+              oldDate: null,
+              newSha: null,
+              newDate: null,
+              error: 'Failed to download',
+              failureCode: 'DOWNLOAD_FAILED',
+            },
+          ],
+        });
+
+        const { ctx, say } = createContext('plugins update');
+        await handler.execute(ctx);
+
+        const sentBlocks = say.mock.calls[1][0].blocks;
+        const buttons = sentBlocks.filter((b: any) => b.type === 'actions').flatMap((b: any) => b.elements ?? []);
+        expect(buttons.map((el: any) => el.action_id)).toEqual(['plugin_update_ignore_p@m']);
+      });
+
       it('should keep button text under 75 chars', async () => {
         vi.mocked(isAdminUser).mockReturnValue(true);
 
@@ -633,14 +652,10 @@ describe('PluginsHandler', () => {
         await handler.execute(ctx);
 
         const sentBlocks = say.mock.calls[1][0].blocks;
-        for (const block of sentBlocks) {
-          if (block.type !== 'actions') continue;
-          for (const el of block.elements ?? []) {
-            if (el.text?.text) {
-              expect(el.text.text.length).toBeLessThanOrEqual(75);
-            }
-          }
-        }
+        const buttons = sentBlocks.filter((b: any) => b.type === 'actions').flatMap((b: any) => b.elements ?? []);
+        // A security-blocked plugin offers Ignore and Force Update.
+        expect(buttons.map((el: any) => el.action_id)).toEqual(['plugin_update_ignore_p@m', 'plugin_update_force_p@m']);
+        for (const el of buttons) expect(el.text.text.length).toBeLessThanOrEqual(75);
       });
     });
   });

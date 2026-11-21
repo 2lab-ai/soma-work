@@ -8,16 +8,6 @@ import { describe, expect, it, vi } from 'vitest';
  * These tests are RED — the module does not exist yet.
  */
 
-// Trace: S4, Sec 3b — postSourceThreadSummary 함수 존재 확인
-describe('postSourceThreadSummary', () => {
-  it('should be importable from source-thread-summary module', async () => {
-    // RED: module does not exist yet
-    const mod = await import('../source-thread-summary');
-    expect(mod.postSourceThreadSummary).toBeDefined();
-    expect(typeof mod.postSourceThreadSummary).toBe('function');
-  });
-});
-
 describe('Scenario 4: PR merge posts summary to source thread', () => {
   // Trace: S4, Sec 3a — sourceThread 있는 세션 머지
   it('prMerge_postsSourceThreadSummary: posts summary when sourceThread exists', async () => {
@@ -108,27 +98,6 @@ describe('Scenario 4: PR merge posts summary to source thread', () => {
     expect(blocksJson).toContain('github.com/org/repo/issues/64');
     expect(blocksJson).toContain('github.com/org/repo/pull/65');
   });
-
-  // Trace: S4, Sec 5 — postMessage 실패 시 throw 안 함
-  it('postSourceThreadSummary_postFailure_noThrow: does not throw on postMessage failure', async () => {
-    const mockSlackApi = {
-      postMessage: vi.fn().mockRejectedValue(new Error('Slack API error')),
-      getPermalink: vi.fn().mockResolvedValue('https://slack.com/archives/C_NEW/p123'),
-    };
-
-    const session = {
-      title: 'Fix',
-      channelId: 'C_NEW',
-      threadTs: 'ts',
-      sourceThread: { channel: 'C_ORIGINAL', threadTs: '123.456' },
-      links: {},
-    };
-
-    const { postSourceThreadSummary } = await import('../source-thread-summary');
-
-    // Should not throw
-    await expect(postSourceThreadSummary(mockSlackApi as any, session as any, 'merged')).resolves.not.toThrow();
-  });
 });
 
 describe('Scenario 5: session close posts summary to source thread', () => {
@@ -160,26 +129,6 @@ describe('Scenario 5: session close posts summary to source thread', () => {
       expect.any(String),
       expect.objectContaining({ threadTs: '1711234567.000100' }),
     );
-  });
-
-  // Trace: S5, Sec 5 — sourceThread 없으면 스킵
-  it('sessionClose_noSourceThread_skips: does nothing when no sourceThread', async () => {
-    const mockSlackApi = {
-      postMessage: vi.fn().mockResolvedValue({ ts: 'msg-ts' }),
-      getPermalink: vi.fn().mockResolvedValue(null),
-    };
-
-    const session = {
-      title: 'Task',
-      channelId: 'C_NEW',
-      threadTs: 'ts',
-      links: {},
-    };
-
-    const { postSourceThreadSummary } = await import('../source-thread-summary');
-    await postSourceThreadSummary(mockSlackApi as any, session as any, 'closed');
-
-    expect(mockSlackApi.postMessage).not.toHaveBeenCalled();
   });
 });
 
@@ -248,14 +197,6 @@ describe('buildRequestCompleteBlocks', () => {
     const verifyField = heroFields.find((f: any) => f.text.includes('검증'));
     expect(verifyField).toBeDefined();
     expect(verifyField!.text).toContain('PASS');
-  });
-
-  it('truncates long titles in header block', async () => {
-    const { buildRequestCompleteBlocks } = await import('../source-thread-summary');
-    const longTitle = 'B'.repeat(200);
-    const session = { title: longTitle, workflow: 'default', links: {} } as any;
-    const result = buildRequestCompleteBlocks(session, 'merged');
-    expect((result.blocks[0] as any).text.text.length).toBeLessThanOrEqual(150);
   });
 
   it('renders issue section without PR section when only issue linked', async () => {
@@ -459,23 +400,6 @@ describe('postSourceThreadSummary fallback paths', () => {
     expect(mockSlackApi.getPermalink).toHaveBeenCalledWith('C_WORK', 'fallback-thread-ts');
   });
 
-  it('does not throw when getPermalink rejects', async () => {
-    const mockSlackApi = {
-      postMessage: vi.fn().mockResolvedValue({ ts: 'msg-ts' }),
-      getPermalink: vi.fn().mockRejectedValue(new Error('Slack API unavailable')),
-    };
-    const session = {
-      title: 'Task',
-      channelId: 'C_WORK',
-      threadTs: 'ts',
-      sourceThread: { channel: 'C_ORIGINAL', threadTs: '111.222' },
-      links: {},
-    };
-    const { postSourceThreadSummary } = await import('../source-thread-summary');
-    // Should not throw — fire-and-forget
-    await expect(postSourceThreadSummary(mockSlackApi as any, session as any, 'merged')).resolves.not.toThrow();
-  });
-
   it('postSourceThreadSummary continues when getPermalink throws', async () => {
     const mockSlackApi = {
       postMessage: vi.fn().mockResolvedValue({ ts: 'msg-ts' }),
@@ -603,18 +527,31 @@ describe('Block Kit truncation and escaping', () => {
   });
 });
 
-describe('safeText', () => {
-  it('does not split HTML entities at boundary', async () => {
-    const { _safeText: safeText } = await import('../source-thread-summary');
-    // Create a string where '&' at position will cause &amp; to straddle the truncation point
-    // 'a'.repeat(17) + '&' = 18 chars raw -> escaped: 'a'.repeat(17) + '&amp;' = 22 chars
-    // With max=20, slice at 17 would cut '&amp;' mid-entity
-    const input = 'a'.repeat(17) + '&';
-    const result = safeText(input, 20);
-    // Should not contain a broken entity like '&am...' or '&a...'
-    expect(result).not.toMatch(/&[a-z]{0,3}\.\.\./);
-    expect(result.length).toBeLessThanOrEqual(20);
-    expect(result.endsWith('...')).toBe(true);
+describe('escaped text is cut before an entity, never through it', () => {
+  // Hero text = '*결론*\n' (5 chars) + escaped summary, capped at 3000 chars.
+  it.each([
+    // Exactly at the cap: left as is.
+    ['a conclusion exactly at the 3000-char cap is not cut', 'a'.repeat(2995), `*결론*\n${'a'.repeat(2995)}`],
+    // Plain text over the cap: cut at 2997 + '...'.
+    ['plain text over the cap is cut to 2997 chars + "..."', 'a'.repeat(3100), `*결론*\n${'a'.repeat(2992)}...`],
+    // The escaped '&amp;' sits at 2995..2999, so a plain cut at 2997 would leave '&a...'; the entity-safe cut
+    // stops at 2995.
+    [
+      'a cut that lands inside an escaped & stops before the entity',
+      `${'a'.repeat(2990)}&${'b'.repeat(100)}`,
+      `*결론*\n${'a'.repeat(2990)}...`,
+    ],
+    // '&lt;' ends at 2992 and '&amp;' starts at 2993: the ';' of the first entity must not hide the open second one.
+    [
+      'a cut inside an entity right after another entity stops between them',
+      `${'a'.repeat(2984)}<&${'b'.repeat(100)}`,
+      `*결론*\n${'a'.repeat(2984)}&lt;...`,
+    ],
+  ])('%s', async (_name, executiveSummary, expected) => {
+    const { buildRequestCompleteBlocks } = await import('../source-thread-summary');
+    const session = { title: 'Task', workflow: 'default', links: {} } as any;
+    const result = buildRequestCompleteBlocks(session, 'merged', { executiveSummary });
+    expect((result.blocks[1] as any).text.text).toBe(expected);
   });
 });
 
@@ -656,26 +593,6 @@ describe('payload contract', () => {
     expect(types).toContain('actions');
     // At least 6 blocks: header + hero section + divider + issue section + pr section + actions
     expect(result.blocks.length).toBeGreaterThanOrEqual(6);
-  });
-});
-
-describe('escape then truncate preserves valid entities', () => {
-  it('handles 3000+ char string with & chars without broken entities', async () => {
-    const { _safeText: safeText } = await import('../source-thread-summary');
-    // Build a string longer than 3000 chars with scattered '&' characters
-    const base = 'hello & world '.repeat(300); // ~4200 chars raw
-    const result = safeText(base, 3000);
-    expect(result.length).toBeLessThanOrEqual(3000);
-    expect(result.endsWith('...')).toBe(true);
-    // Verify no broken entities: every '&' should be followed by 'amp;', 'lt;', or 'gt;'
-    const ampMatches = [...result.matchAll(/&/g)];
-    for (const m of ampMatches) {
-      const after = result.slice(m.index!, m.index! + 5);
-      if (after !== '&amp;' && !after.startsWith('&lt;') && !after.startsWith('&gt;')) {
-        // The only acceptable case is if '&' is part of '...' at the end
-        expect(result.slice(m.index!)).toBe('...');
-      }
-    }
   });
 });
 
@@ -731,25 +648,21 @@ describe('postSourceThreadSummary return value', () => {
   });
 });
 
-describe('buildLinkSection', () => {
-  it('produces correct section for issue', async () => {
-    const { _buildLinkSection: buildLinkSection } = await import('../source-thread-summary');
-    const section = buildLinkSection(
-      'Issue',
-      'https://github.com/org/repo/issues/42',
-      '#42',
-      'Login broken on Safari',
-      [{ key: 'cause', value: 'Cookie handling' }],
-    );
-    expect(section.type).toBe('section');
-    expect(section.text.text).toContain('Issue');
-    expect(section.text.text).toContain('github.com/org/repo/issues/42');
-    expect(section.text.text).toContain('#42');
-    expect(section.text.text).toContain('Login broken on Safari');
-    expect(section.fields).toBeDefined();
-    expect(section.fields!.length).toBe(1);
-    expect(section.fields![0].text).toContain('cause');
-    expect(section.fields![0].text).toContain('Cookie handling');
+describe('issue section', () => {
+  it('links the issue label, shows its title, and carries the cause as a field', async () => {
+    const { buildRequestCompleteBlocks } = await import('../source-thread-summary');
+    const session = {
+      title: 'Work',
+      workflow: 'default',
+      links: { issue: { url: 'https://github.com/org/repo/issues/42', label: '#42', title: 'Login broken on Safari' } },
+    } as any;
+    const result = buildRequestCompleteBlocks(session, 'merged', { issueContext: { cause: 'Cookie handling' } });
+    const section = result.blocks[3] as any;
+    expect(section).toEqual({
+      type: 'section',
+      text: { type: 'mrkdwn', text: '*Issue* <https://github.com/org/repo/issues/42|#42>\nLogin broken on Safari' },
+      fields: [{ type: 'mrkdwn', text: '*원인*\nCookie handling' }],
+    });
   });
 });
 

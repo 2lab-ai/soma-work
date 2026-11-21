@@ -23,7 +23,7 @@ vi.mock('../../../../user-settings-store', () => ({
 }));
 
 import { LangHandler } from '../../../commands/lang-handler';
-import { applyLang, createLangTopicBinding, renderLangCard } from '../lang-topic';
+import { applyLang, renderLangCard } from '../lang-topic';
 
 function actionIds(blocks: any[]): string[] {
   const out: string[] = [];
@@ -80,10 +80,6 @@ describe('lang topic', () => {
     } finally {
       store.fail = false;
     }
-  });
-
-  it('the binding is the lang topic', () => {
-    expect(createLangTopicBinding().topic).toBe('lang');
   });
 });
 

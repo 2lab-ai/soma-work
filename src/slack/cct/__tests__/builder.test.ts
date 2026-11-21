@@ -280,27 +280,15 @@ describe('buildCctCardBlocks', () => {
     const anyBlock = blocks.find((b: any) => b.type === 'section') as any;
     expect(anyBlock.text.text).toMatch(/No CCT slots/);
     // Card-level action row (Next + Add) is always present. Remove lives on
-    // each slot row now, so it is absent when no slots exist. Per-slot
-    // Rename was removed entirely in the card v2 follow-up.
+    // each slot row, so it is absent when no slots exist.
     const cardActions = blocks.find((b: any) => b.type === 'actions') as any;
     const actionIds = cardActions.elements.map((e: any) => e.action_id);
     expect(actionIds).toContain('cct_next');
     expect(actionIds).toContain('cct_open_add');
     expect(actionIds).not.toContain('cct_open_remove');
-    expect(actionIds).not.toContain('cct_open_rename');
   });
 
-  it('no set-active fallback dropdown is rendered regardless of slot count (card v2 follow-up)', () => {
-    const slot = setupSlot();
-    const slot2 = { ...setupSlot('cct2', 'slot-2') };
-    const blocks = buildCctCardBlocks({ slots: [slot, slot2], states: {}, activeKeyId: 'slot-1' });
-    const selectors = blocks.filter(
-      (b: any) => b.type === 'actions' && b.elements.some((e: any) => e.type === 'static_select'),
-    );
-    expect(selectors.length).toBe(0);
-  });
-
-  it('each slot row carries a per-slot Remove button whose value is that keyId (no Rename; removed in card v2 follow-up)', () => {
+  it('each slot row carries a per-slot Remove button whose value is that keyId', () => {
     const slot1 = setupSlot('cct1', 'slot-1');
     const slot2 = setupSlot('cct2', 'slot-2');
     const blocks = buildCctCardBlocks({ slots: [slot1, slot2], states: {}, activeKeyId: 'slot-1' });
@@ -315,11 +303,6 @@ describe('buildCctCardBlocks', () => {
     });
     // #803 — button values are now `cm:admin|<keyId>`.
     expect(removeValues).toEqual(expect.arrayContaining(['cm:admin|slot-1', 'cm:admin|slot-2']));
-    // No rename buttons anywhere on the card.
-    const renameRows = blocks.filter(
-      (b: any) => b.type === 'actions' && b.elements.some((e: any) => e.action_id === 'cct_open_rename'),
-    );
-    expect(renameRows).toHaveLength(0);
   });
 
   // ────────────────────────────────────────────────────────────────────
@@ -714,22 +697,6 @@ describe('buildSlotRow — usage panel (M1-S2)', () => {
     // No progress-bar glyphs if usage is absent.
     expect(flat).not.toMatch(/█/);
     expect(flat).not.toContain('(no data)');
-  });
-
-  it('buildSlotRow never emits the old single-line `usage 5h X% 7d Y%` literal', () => {
-    const slot = slotWithAttachment();
-    const state: SlotState = {
-      authState: 'healthy',
-      activeLeases: [],
-      usage: {
-        fetchedAt: new Date(now).toISOString(),
-        sevenDay: { utilization: 20, resetsAt: new Date(now + 86_400_000).toISOString() },
-      },
-    };
-    const blocks = buildSlotRow(slot, state, true, now);
-    const flat = JSON.stringify(blocks);
-    // The spec explicitly deletes the compact `usage 5h X% 7d Y%` line.
-    expect(flat).not.toMatch(/usage 5h \d+% 7d \d+%/);
   });
 });
 
@@ -2053,15 +2020,6 @@ describe('buildSlotRow — 7d-sonnet 0% hide (#668 follow-up)', () => {
 
 describe('formatUsageBar — second gauge bar (card v2 follow-up)', () => {
   const now = Date.parse('2026-04-22T00:00:00Z');
-
-  it('drops the legacy ` · expires in <dur>` suffix from the output', () => {
-    // The duplicated `expires in` hint was replaced by a second
-    // progress bar that visualises the remaining portion of the window.
-    const iso = new Date(now + 3 * 3_600_000).toISOString();
-    const out = formatUsageBar(0.5, iso, now, '7d');
-    expect(out).not.toMatch(/expires in/);
-    expect(out).toMatch(/resets in 3h 0m$/);
-  });
 
   it('mid-window 7d with 3.5d remaining → remaining bar roughly half-filled (5/10 cells)', () => {
     const iso = new Date(now + 3.5 * 86_400_000).toISOString();

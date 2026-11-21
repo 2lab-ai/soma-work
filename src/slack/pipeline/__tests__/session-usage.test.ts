@@ -21,88 +21,32 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { FALLBACK_CONTEXT_WINDOW, resolveContextWindow } from '../../../metrics/model-registry';
+import { FALLBACK_CONTEXT_WINDOW } from '../../../metrics/model-registry';
 import type { SessionUsage } from '../../../types';
+// Imported through the src wrapper: it installs the providers (model registry) the real update reads.
+import { StreamExecutor } from '../stream-executor';
+
+type UsageSample = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  totalCostUsd: number;
+  contextWindow?: number;
+  modelName?: string;
+  lastTurnInputTokens?: number;
+  lastTurnOutputTokens?: number;
+  lastTurnCacheReadTokens?: number;
+  lastTurnCacheCreateTokens?: number;
+};
 
 /**
- * Simulates the updateSessionUsage logic from stream-executor.ts
- * This is extracted for testing purposes.
+ * Feeds one turn's usage sample through the REAL `StreamExecutor.updateSessionUsage`
+ * (the turn-end usage update). The sessions here have no SDK session id, so each sample
+ * is that turn's own spend.
  */
-function updateSessionUsage(
-  session: { usage?: SessionUsage; model?: string },
-  usageData: {
-    inputTokens: number;
-    outputTokens: number;
-    cacheReadInputTokens: number;
-    cacheCreationInputTokens: number;
-    totalCostUsd: number;
-    contextWindow?: number;
-    modelName?: string;
-    // Per-turn usage from last assistant message (context window state)
-    lastTurnInputTokens?: number;
-    lastTurnOutputTokens?: number;
-    lastTurnCacheReadTokens?: number;
-    lastTurnCacheCreateTokens?: number;
-  },
-): void {
-  if (!session.usage) {
-    session.usage = {
-      currentInputTokens: 0,
-      currentOutputTokens: 0,
-      currentCacheReadTokens: 0,
-      currentCacheCreateTokens: 0,
-      contextWindow: FALLBACK_CONTEXT_WINDOW,
-      totalInputTokens: 0,
-      totalOutputTokens: 0,
-      totalCacheReadTokens: 0,
-      totalCacheCreateTokens: 0,
-      totalCostUsd: 0,
-      lastUpdated: Date.now(),
-    };
-  }
-
-  // Dynamically update context window: max(SDK, model lookup).
-  // Precedence: session.model first (keeps `[1m]` suffix), then usage.modelName
-  // as fallback. Mirrors stream-executor.ts after Issue #656.
-  const sdkWindow = usageData.contextWindow && usageData.contextWindow > 0 ? usageData.contextWindow : 0;
-  const lookupWindow = resolveContextWindow(session.model ?? usageData.modelName);
-  const resolvedWindow = Math.max(sdkWindow, lookupWindow);
-  if (resolvedWindow > 0) {
-    session.usage.contextWindow = resolvedWindow;
-  }
-
-  // Update model name on session
-  if (usageData.modelName && !session.model) {
-    session.model = usageData.modelName;
-  }
-
-  // CURRENT values: prefer per-turn (actual context state) over aggregate (billing)
-  // Mirrors `selectCurrentContextTokens` (@soma/slack/session-usage-math):
-  // per-turn wins only when present AND non-zero — llmux/codex assistant
-  // messages carry all-zero usage, which must fall back to the aggregate
-  // instead of blanking the context display.
-  const perTurnSum =
-    (usageData.lastTurnInputTokens ?? 0) +
-    (usageData.lastTurnOutputTokens ?? 0) +
-    (usageData.lastTurnCacheReadTokens ?? 0) +
-    (usageData.lastTurnCacheCreateTokens ?? 0);
-  const hasPerTurn = usageData.lastTurnInputTokens !== undefined && perTurnSum > 0;
-  session.usage.currentInputTokens = hasPerTurn ? usageData.lastTurnInputTokens! : usageData.inputTokens;
-  session.usage.currentOutputTokens = hasPerTurn ? usageData.lastTurnOutputTokens! : usageData.outputTokens;
-  session.usage.currentCacheReadTokens = hasPerTurn
-    ? usageData.lastTurnCacheReadTokens!
-    : usageData.cacheReadInputTokens;
-  session.usage.currentCacheCreateTokens = hasPerTurn
-    ? usageData.lastTurnCacheCreateTokens!
-    : usageData.cacheCreationInputTokens;
-
-  // TOTAL values are ACCUMULATED (billing: use aggregate values)
-  session.usage.totalInputTokens += usageData.inputTokens;
-  session.usage.totalOutputTokens += usageData.outputTokens;
-  session.usage.totalCacheReadTokens += usageData.cacheReadInputTokens;
-  session.usage.totalCacheCreateTokens += usageData.cacheCreationInputTokens;
-  session.usage.totalCostUsd += usageData.totalCostUsd;
-  session.usage.lastUpdated = Date.now();
+function updateSessionUsage(session: { usage?: SessionUsage; model?: string }, usageData: UsageSample): void {
+  (new StreamExecutor({} as any) as any).updateSessionUsage(session, 'C1:t1', usageData);
 }
 
 describe('Session Usage Tracking', () => {
@@ -275,27 +219,6 @@ describe('Dynamic Context Window from SDK', () => {
 
     expect(session.usage!.contextWindow).toBe(1_000_000);
     expect(session.model).toBe('claude-opus-4-6-20250414');
-  });
-
-  it('should calculate correct remaining percent with 1M context', () => {
-    const session: { usage?: SessionUsage; model?: string } = {};
-
-    updateSessionUsage(session, {
-      inputTokens: 100_000,
-      outputTokens: 50_000,
-      cacheReadInputTokens: 0,
-      cacheCreationInputTokens: 0,
-      totalCostUsd: 0.5,
-      contextWindow: 1_000_000,
-    });
-
-    // Used 150k of 1M = 15% used, 85% remaining
-    const used = session.usage!.currentInputTokens + session.usage!.currentOutputTokens;
-    const remaining = ((session.usage!.contextWindow - used) / session.usage!.contextWindow) * 100;
-    expect(used).toBe(150_000);
-    expect(remaining).toBe(85);
-
-    // With old hardcoded 200k: (200k-150k)/200k = 25% remaining (WRONG)
   });
 
   it('should preserve 1M contextWindow across turns via model lookup', () => {

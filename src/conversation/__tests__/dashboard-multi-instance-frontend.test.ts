@@ -28,10 +28,7 @@ describe('Dashboard multi-instance frontend (#814)', () => {
     expect(DASHBOARD_TS).toContain(
       `envHtml = '<span class="ui-chip is-toned is-sm" style="--ui-tone:' + envColor + '" title="' + escAttr(instName + ' (' + envHostPort + ')') + '">' + esc(instName) + '</span>';`,
     );
-    // The page's own chip rule is gone; the kit the page inlines (ui-lib.ts uiLibKitCss) has the toned chip.
-    for (const gone of ['.env-badge', '--env-tone', 'color-mix(in srgb, var(--env-tone'])
-      expect(DASHBOARD_TS, gone).not.toContain(gone);
-    expect(DASHBOARD_TS).not.toContain('#F4D03F');
+    // The kit the page inlines (ui-lib.ts uiLibKitCss) has the toned chip.
     const kit = readFileSync(
       join(__dirname, '..', '..', '..', 'node_modules', '@2lab.ai', 'ui', 'dist', 'ui-kit.css'),
       'utf-8',
@@ -59,16 +56,6 @@ describe('Dashboard multi-instance frontend (#814)', () => {
     expect(DASHBOARD_TS).toContain('if (_tokenBreakdown) tokens.breakdown = _tokenBreakdown;');
     // It repaints the strip only when the breakdown changed (it runs on every board render).
     expect(DASHBOARD_TS).toContain('if (JSON.stringify(next) === JSON.stringify(_tokenBreakdown)) return;');
-    // The old wrap / inline tooltip are gone.
-    expect(DASHBOARD_TS).not.toContain('stat-tokens-wrap');
-    expect(DASHBOARD_TS).not.toContain('stat-tokens-tooltip');
-  });
-
-  it('touch still reaches the breakdown: the strip figure is a button whose press toggles the card (D2 B-04)', () => {
-    // <ui-stat-strip> makes a figure with a breakdown a button; a press toggles its tooltip (touch too), and
-    // <ui-bar-chart> holds a tapped bar's tooltip itself — the page keeps no tap rule of its own.
-    expect(DASHBOARD_TS).not.toContain('initTooltipTap');
-    expect(DASHBOARD_TS).not.toContain('_tapTip');
   });
 
   it('updateTokenBreakdown suppresses the breakdown when fewer than 2 envs are present', () => {
@@ -76,13 +63,6 @@ describe('Dashboard multi-instance frontend (#814)', () => {
     // Fewer than two envs: no breakdown (a plain figure, no tooltip, no tab stop).
     expect(DASHBOARD_TS).toContain('var next = null;');
     expect(DASHBOARD_TS).toContain('if (envNames.length >= 2) {');
-  });
-
-  it('no CSS rule of the page’s own for the badge — the open card’s body (a light-DOM slot of <ui-agent-inbox>) takes the kit’s classes', () => {
-    expect(DASHBOARD_TS).not.toContain('.card-body .card-refs .env-badge');
-    expect(DASHBOARD_TS).toContain(
-      "/* ── ENV BADGE — multi-instance origin tag (#814): the kit's toned chip (.ui-chip.is-toned.is-sm, D8b D-15)",
-    );
   });
 
   // PR #815 review #1 — sibling cards must not invite action clicks.

@@ -60,10 +60,6 @@ describe('local:html — deterministic design driver (`design=` input)', () => {
     expect(existsSync(resolve(SKILLS_DIR, 'toss-design', 'SKILL.md'))).toBe(true);
   });
 
-  it('removes the unreachable design style-selector fallback (dead branch)', () => {
-    expect(md()).not.toMatch(/Only fall back to the `design`\s+skill's own style selector/);
-  });
-
   it('the audit comment records driver and reference', () => {
     expect(md()).toMatch(/<!-- ui-ux: driver=/);
   });

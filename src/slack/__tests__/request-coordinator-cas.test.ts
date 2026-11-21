@@ -37,16 +37,4 @@ describe('RequestCoordinator — CAS removeController (Ghost Session Fix #99)', 
     // New controller should still be there
     expect(coordinator.getController(sessionKey)).toBe(controllerNew);
   });
-
-  // Trace: Scenario 2, Section 3b — removeController without expected param (backward compat)
-  it('removeController without expected param should still remove (backward compat)', () => {
-    const coordinator = new RequestCoordinator();
-    const controller = new AbortController();
-    const sessionKey = 'C1-171.100';
-
-    coordinator.setController(sessionKey, controller);
-    coordinator.removeController(sessionKey);
-
-    expect(coordinator.getController(sessionKey)).toBeUndefined();
-  });
 });

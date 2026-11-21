@@ -115,16 +115,18 @@ describe('AssistantStatusManager', () => {
       expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(2);
     });
 
-    it('should reroute empty string to clearStatus (no empty-string heartbeat)', async () => {
-      const clearSpy = vi.spyOn(manager, 'clearStatus');
+    it("treats an empty status as a clear: one '' write, and a late write for the cleared turn is dropped", async () => {
+      await manager.setStatus('C123', '123.456', 'is thinking...');
+      mockSlackApi.setAssistantStatus.mockClear();
 
       await manager.setStatus('C123', '123.456', '');
 
-      expect(clearSpy).toHaveBeenCalledWith('C123', '123.456');
-      expect(clearSpy).toHaveBeenCalledTimes(1);
-      // clearStatus hits slackApi exactly once with ''
       expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(1);
       expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledWith('C123', '123.456', '');
+
+      // A write still scoped to the turn that was just cleared (epoch 0) must not resurrect the spinner.
+      await manager.setStatus('C123', '123.456', 'is thinking...', { expectedEpoch: 0 });
+      expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(1);
     });
 
     it('should evaluate resolver on initial call', async () => {

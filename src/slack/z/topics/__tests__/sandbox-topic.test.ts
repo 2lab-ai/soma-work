@@ -22,7 +22,7 @@ vi.mock('../../../../user-settings-store', () => {
 
 import { isAdminUser } from '../../../../admin-utils';
 import { userSettingsStore } from '../../../../user-settings-store';
-import { applySandbox, createSandboxTopicBinding, renderSandboxCard } from '../sandbox-topic';
+import { applySandbox, renderSandboxCard } from '../sandbox-topic';
 
 function actionIds(blocks: any[]): string[] {
   const out: string[] = [];
@@ -114,14 +114,5 @@ describe('sandbox-topic.applySandbox', () => {
     const r = await applySandbox({ userId: 'U1', value: 'maybe' });
     expect(r.ok).toBe(false);
     expect(r.summary).toContain('Unknown');
-  });
-});
-
-describe('createSandboxTopicBinding', () => {
-  it('exposes topic + apply + renderCard', () => {
-    const b = createSandboxTopicBinding();
-    expect(b.topic).toBe('sandbox');
-    expect(typeof b.apply).toBe('function');
-    expect(typeof b.renderCard).toBe('function');
   });
 });

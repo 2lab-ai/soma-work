@@ -1,12 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  config,
-  getBgKeepaliveMaxMs,
-  parseAuthMode,
-  parseBool,
-  parsePositiveIntEnv,
-  parseUnitIntervalEnv,
-} from '../config';
+import { getBgKeepaliveMaxMs, parseAuthMode, parseBool, parsePositiveIntEnv, parseUnitIntervalEnv } from '../config';
 
 // One shared spy for every Logger instance, so a getter's warn can be asserted.
 const { loggerWarn } = vi.hoisted(() => ({ loggerWarn: vi.fn() }));
@@ -168,25 +161,36 @@ describe('parseUnitIntervalEnv (#737)', () => {
 describe('config.autoRotate unit boundary (#781)', () => {
   const SEVEN_D = 'AUTO_ROTATE_SEVEND_THRESHOLD';
 
-  beforeEach(() => {
-    delete process.env[SEVEN_D];
-  });
+  /** `config` is computed at module load, so each case re-imports it under its own env. */
+  async function loadSevenDayMax(raw: string | undefined): Promise<number> {
+    vi.resetModules();
+    vi.stubEnv(SEVEN_D, raw);
+    const mod = await import('../config');
+    return mod.config.autoRotate.sevenDayMax;
+  }
+
   afterEach(() => {
-    delete process.env[SEVEN_D];
+    vi.unstubAllEnvs();
+    vi.resetModules();
   });
 
-  it('default (no env): sevenDayMax === 90 (percent form)', () => {
-    expect(parseUnitIntervalEnv(SEVEN_D, 0.9) * 100).toBe(90);
+  it('default (no env): sevenDayMax === 90 (percent form)', async () => {
+    await expect(loadSevenDayMax(undefined)).resolves.toBe(90);
   });
 
-  it('operator sets 0..1 env: stored as percent (0..100) — same legacy contract', () => {
-    process.env[SEVEN_D] = '0.85';
-    expect(parseUnitIntervalEnv(SEVEN_D, 0.9) * 100).toBeCloseTo(85, 9);
+  it('operator sets 0..1 env: stored as percent (0..100) — same legacy contract', async () => {
+    expect(await loadSevenDayMax('0.85')).toBeCloseTo(85, 9);
   });
 
-  it('the 5-hour knob is gone: config.autoRotate has no fiveHourMax (2026-11)', () => {
+  it('the 5-hour knob is gone: config.autoRotate has no fiveHourMax (2026-11)', async () => {
+    // An operator .env written before 2026-11 may still set the retired knob; it must not be read.
+    vi.stubEnv('AUTO_ROTATE_FIVEH_THRESHOLD', '0.37');
+    vi.resetModules();
+    const { config } = await import('../config');
     expect(config.autoRotate).not.toHaveProperty('fiveHourMax');
-    expect(Object.keys(config.autoRotate).sort()).toEqual(['dryRun', 'enabled', 'sevenDayMax']);
+    // Under any key, as a fraction or as a percent: other auto-rotate knobs may be added, this one must stay unread.
+    expect(Object.values(config.autoRotate)).not.toContain(0.37);
+    expect(Object.values(config.autoRotate)).not.toContain(37);
   });
 });
 

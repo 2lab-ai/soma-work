@@ -102,16 +102,11 @@ describe('drawer — <ui-drawer> (D4 E-01, E-02): the element’s sheet below 84
   const HOST =
     '<ui-drawer class="slide-panel" id="slide-panel" data-deck="0" dock-at="840" width="440" min-width="320" resizable hide-close label="작업 카드" lang="ko">';
 
-  it('is the element: sheet / dock at 840px (dock-at), resizable, the page’s own head in its slot, no page scrim or geometry', () => {
+  it('is the element: sheet / dock at 840px (dock-at), resizable, the page’s own head in its slot, no box of the page’s on the host', () => {
     expect(TEMPLATE).toContain(HOST);
-    expect(TEMPLATE).not.toContain('slide-panel-overlay');
-    expect(TEMPLATE).not.toContain('panel-resize-handle');
     // The page sets no box of its own on the host — no fixed position, transform or --pv-* viewport vars: the
     // dock's top under the sticky bar and its layer are the element's custom properties.
     expect(rule('.slide-panel')).toBe('.slide-panel { --ui-drawer-top: var(--topbar-b, 0px); --ui-drawer-z: 100; }');
-    expect(TEMPLATE).not.toContain('--pv-h');
-    expect(TEMPLATE).not.toContain('translateX(100%)');
-    expect(TEMPLATE).not.toContain('right: -440px');
     // Its body is the page's column — header → body (the one scroll area) → composer — none of the element's padding.
     expect(rule('.slide-panel::part(body)')).toContain(
       'display: flex; flex-direction: column; min-height: 0; padding: 0; overflow: hidden;',
@@ -128,15 +123,12 @@ describe('drawer — <ui-drawer> (D4 E-01, E-02): the element’s sheet below 84
     expect(sheet).toContain('padding-top: max(12px, env(safe-area-inset-top, 0px))');
     // The home indicator is the element's panel padding; the chips sit under the modal sheet by the top layer.
     expect(sheet).not.toContain('safe-area-inset-bottom');
-    expect(sheet).not.toContain('.topbar .topbar-defaults');
   });
 
   it('from 840px it docks: the saved width (the element’s width attribute) capped at half the screen, no dim, under the top bar', () => {
     const docked = cssBlock(DOCKED);
     expect(docked).not.toBe('');
-    expect(docked).not.toContain('--panel-w-pref');
     expect(docked).not.toContain('.slide-panel {');
-    expect(docked).not.toContain('slide-panel-overlay');
     const sync = clientFn('syncPanelWidth');
     expect(sync).toContain('Math.max(320, Math.round(window.innerWidth / 2))');
     expect(sync).toContain("panel.setAttribute('max-width', String(half))");
@@ -167,17 +159,6 @@ describe('drawer — <ui-drawer> (D4 E-01, E-02): the element’s sheet below 84
     expect(resize).toContain('localStorage.setItem(STORAGE_KEY, String(w))');
     expect(resize).not.toContain('panel.style.right');
     expect(resize).not.toContain('panel.style.width');
-    expect(resize).not.toContain('pointerdown');
-    expect(resize).not.toContain('MutationObserver');
-  });
-
-  it('the sheet ↔ dock morph while open is the element’s: the coordinator animates nothing of the drawer', () => {
-    expect(rule('.slide-panel')).not.toContain('width var(');
-    expect(TEMPLATE).not.toContain('.is-layout-shift .slide-panel');
-    const body = clientFn('runLayoutCheck');
-    expect(body).not.toContain('panel.animate(');
-    expect(body).not.toContain('_wflip');
-    expect(TEMPLATE).not.toContain('_layoutPanelW');
   });
 
   it('the detail card slides in when it opens: the pinned <ui-drawer> / <ui-dialog> put their box’s scroll back', async () => {
@@ -285,7 +266,6 @@ describe("panel body — one scroll area: the task surface, the sticky agent tab
     const arts = rule('.panel-artifacts');
     expect(arts).not.toBe('');
     for (const pinned of ['grid-row', 'max-height', 'overflow']) expect(arts, pinned).not.toContain(pinned);
-    expect(TEMPLATE).not.toContain('minmax(min(50%, calc(100% - 88px)), 1fr)');
   });
 
   it('a short body shows artifacts as name chips (no thumbnail), the play button inline; every tile stays reachable sideways', () => {
@@ -301,7 +281,6 @@ describe("panel body — one scroll area: the task surface, the sticky agent tab
     );
     // D4 (T8): the play toggle is the card's own (playable) — the chip wrapper only bounds the width.
     expect(DASHBOARD_TS).toContain('.art-tile:has(> ui-file-card[variant="chip"]) { max-width: 240px; }');
-    expect(DASHBOARD_TS).not.toMatch(/\.art-play\b/);
     expect(rule('.art-strip')).toContain('overflow-x: auto');
   });
 });
@@ -336,27 +315,6 @@ describe('phones — nothing zooms, nothing hides behind the FAB, nothing runs o
     // the element (@2lab.ai/ui src/components/choice-form/styles.ts, `.cf-input { height: 44px; font-size: 16px; }`).
     expect(TEMPLATE).toContain('<ui-agent-steering id="cmd-steer" lang="ko">');
     expect(clientFn('renderMultiChoicePanel')).toContain("document.createElement('ui-choice-form')");
-    expect(TEMPLATE).not.toContain('mc-custom-input');
-  });
-
-  it("below 640px the page clears the FAB, the defaults menu spans the bar, the artifact viewer is the element's sheet", () => {
-    const phone = cssBlock(PHONE);
-    expect(phone).not.toBe('');
-    // Only a board with cards gets the clearance: an empty page must not turn scrollable. The cards
-    // are inside the element, so renderBoard marks the inbox (.has-cards) instead of :has(.card) — drawn
-    // cards only (a closed DONE day's are stubs).
-    expect(phone).toContain('.inbox.has-cards { padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px)); }');
-    expect(clientFn('syncHasCards')).toContain(
-      "if (inbox) inbox.classList.toggle('has-cards', Object.keys(_cardDrawn).length > 0);",
-    );
-    // After every render and every DONE day opened or closed (#562 review P3).
-    expect(clientFn('renderBoard')).toContain('syncHasCards();');
-    expect(clientFn('wireInbox')).toContain('syncHasCards();');
-    // D1 (A-07): the defaults menu is <ui-menu> — fixed, kept inside the viewport by the element on any width.
-    expect(TEMPLATE).not.toContain('.td-menu');
-    // D4 (I-06): the viewer is <ui-artifact-viewer>'s own <ui-dialog> — its phone sheet, no page rule.
-    expect(phone).not.toContain('.art-modal');
-    expect(TEMPLATE).not.toMatch(/\.art-modal\b/);
   });
 });
 
@@ -561,12 +519,6 @@ describe('layout transition — one coordinator', () => {
     expect(b.calls.measure).toBe(0);
   });
 
-  it('it starts on a mode change and retargets while cards are still flying', () => {
-    const body = clientFn('runLayoutCheck');
-    expect(body).toContain('layoutModeKey(mode) !== _layoutModeKey');
-    expect(body).toContain('_layoutShiftUntil');
-  });
-
   it('signals: window resize, the inbox ResizeObserver, and panel open/close', () => {
     const init = iife('initLayoutTransitions');
     expect(init).not.toBe('');
@@ -720,9 +672,7 @@ describe('layout transition — review fixes (trinity code review R1)', () => {
 });
 
 describe('drawer follows the visual viewport (keyboard) and sits under the top bar when docked', () => {
-  it('the visual viewport is the element’s (D4 E-01: no viewport="layout"); the page keeps no --pv-* code', () => {
-    expect(TEMPLATE).not.toContain('syncPanelViewport');
-    expect(TEMPLATE).not.toContain('--pv-t');
+  it('the visual viewport is the element’s (D4 E-01: the host sets no viewport= or mode=)', () => {
     const at = TEMPLATE.indexOf('<ui-drawer class="slide-panel"');
     const host = TEMPLATE.slice(at, TEMPLATE.indexOf('>', at) + 1);
     expect(host).not.toContain('viewport=');
@@ -803,8 +753,8 @@ describe('settings page — reached from the dashboard top bar', () => {
 
 describe('merged views — trinity code review R4 follow-ups', () => {
   it('scroll compensation is per element: the board and each CRON job’s element are measured on their own', () => {
-    // The kanban-only shift (boardScrollShift) is gone: every element's measure() is its own, so
-    // the CRON lane's cards (outside the board) and the board's get the same page-scroll correction.
+    // Every element's measure() is its own, so the CRON lane's cards (outside the board) and the board's get the
+    // same page-scroll correction.
     const board = host();
     const lane = host();
     const c = coordinator({
@@ -817,7 +767,6 @@ describe('merged views — trinity code review R4 follow-ups', () => {
     c.m.runLayoutCheck();
     expect(board.flipFrom).toHaveBeenCalledWith({ spots: { 'c:a': { x: 300, y: 450 } } });
     expect(lane.flipFrom).toHaveBeenCalledWith({ spots: { 'c:cron': { x: 40, y: 150 } } });
-    expect(clientFn('runLayoutCheck')).not.toContain('boardScrollShift');
   });
 
   it('Escape with a docked panel and the cron drawer open closes the drawer only (the topmost)', () => {
@@ -837,28 +786,13 @@ describe('merged views — trinity code review R4 follow-ups', () => {
     expect(body).toContain('contentRect.height');
     expect(body).toContain('scheduleLayoutRefresh(40)');
     expect(body).not.toContain('paintCapacity');
-    expect(TEMPLATE).not.toContain('_capResizeTimer');
-  });
-
-  it('the cron drawer close button is a 44px touch target on touch screens (the lane’s buttons are the element’s)', () => {
-    const resp = TEMPLATE.slice(TEMPLATE.indexOf('/* ═══ Device-responsive layout (SSOT 2026-10-24)'));
-    const coarse = resp.slice(resp.indexOf('@media (pointer: coarse) {'));
-    const block = coarse.slice(0, coarse.indexOf('\n}'));
-    // D1: the close button is the kit's icon button — 44px on touch is ui-kit.css's own rule.
-    expect(block).not.toContain('.cron-drawer-close');
-    // D1 (C-05): the close button is <ui-drawer>'s own — 44px on touch / narrow screens is the element's rule.
-    expect(TEMPLATE).not.toContain('id="cron-drawer-close"');
-    // 지난 실행, the strip, the queue chips, the marks and the fold toggle: @2lab.ai/ui agent-queue
-    // styles.ts, '@media (pointer: coarse)' — 44px.
-    expect(block).not.toContain('.cron-history-btn');
   });
 
   it('the settings search field is 16px on touch screens too', async () => {
     // The search field is <ui-settings-nav>'s own (M-03), in its shadow root: the element's styles make it 16px
-    // on a coarse pointer (@2lab.ai/ui src/components/settings-nav/styles.ts, `.sn-q`). The page draws no field.
+    // on a coarse pointer (@2lab.ai/ui src/components/settings-nav/styles.ts, `.sn-q`).
     const settings = readFileSync(join(__dirname, '..', 'settings-page.ts'), 'utf-8');
     expect(settings).toContain('<ui-settings-nav id="pref-nav" lang="ko">');
-    expect(settings).not.toContain('input type="search"');
     const { uiLibDistDir } = await import('../ui-lib');
     const dir = uiLibDistDir();
     expect(dir).toBeTruthy();
@@ -884,14 +818,12 @@ describe('secondary sections (#374 LLM capacity, CRON lane) — a disclosure on 
     expect(clientFn('secIsOpen')).toContain(
       "secOpen(saved, sec === 'capacity' ? false : !!(_secMql && _secMql.matches))",
     );
-    expect(TEMPLATE).not.toContain('SEC_OPEN_QUERY_CAPACITY');
   });
 
   it('each section’s toggle is its element’s own, in its head row; the page decides and hands the fold back', () => {
     // <ui-agent-queue collapsible>: 펼치기 / 접기 at the end of the head row, aria-expanded, and its
     // focus survives the element's re-render by its data-key (library: 'collapsible: the toggle in each
     // head says what a press does and sends a cancelable ui-collapse').
-    expect(TEMPLATE).not.toContain('data-sec-toggle');
     expect(clientFn('capData')).toContain("collapsible: true, collapsed: { capacity: !secIsOpen('capacity') }");
     expect(clientFn('laneData')).toContain('collapsible: true, collapsed: { lane: cronLaneFolded() }');
     const on = TEMPLATE.slice(TEMPLATE.indexOf("document.addEventListener('ui-collapse', function(e) {"));

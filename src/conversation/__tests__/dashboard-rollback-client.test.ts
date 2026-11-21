@@ -73,7 +73,6 @@ describe('the panel head has 되돌리기 모드 and Redo; the board’s card ha
   });
   it('the card’s action bar leaves both out', () => {
     expect(clientFn('sessionActionHtml')).toContain("a.id !== 'rollback' && a.id !== 'redo'");
-    expect(TEMPLATE).not.toContain('openRollbackDialog(');
   });
   it('the head toggles the mode and runs Redo', () => {
     const head = clientFn('onPanelHeadAction');

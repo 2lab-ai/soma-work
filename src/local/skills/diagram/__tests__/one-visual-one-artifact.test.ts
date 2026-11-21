@@ -51,10 +51,4 @@ describe('one visual, one artifact', () => {
     expect(md).toContain('never a PNG of it (none is made)');
     expect(md).toContain('`mcp__slack-mcp__send_file` with its `url` set to the served URL');
   });
-
-  it('qa-report: one HTML, no PNG preview rendered or uploaded', () => {
-    const md = skill('qa-report');
-    expect(md).not.toMatch(/Render the PNG|png=<abs>|plus a PNG preview/);
-    expect(md).toContain('no PNG preview');
-  });
 });
