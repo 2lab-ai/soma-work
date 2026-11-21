@@ -192,11 +192,13 @@ async function panelRun(browser: Browser, theme: 'dark' | 'light') {
     `L1 ${theme} the detail card's face (Fable star)`,
     face,
   );
-  const head = await page.evaluate(() => {
-    const r = document.getElementById('panel-avatar')!.getBoundingClientRect();
-    return { x: Math.max(0, r.x - 16), y: Math.max(0, r.y - 16), width: 640, height: r.height + 56 };
+  // The whole page: the board, and the detail card with its face in the head and the liquid bar above the composer.
+  const rect = await page.evaluate(() => {
+    const r = document.getElementById('panel-avatar')?.getBoundingClientRect();
+    return r ? [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)] : null;
   });
-  await shot(page, `L1-avatar-${theme}`, head);
+  log(`      avatar rect ${JSON.stringify(rect)}`);
+  await shot(page, `L1-panel-${theme}`);
 
   // L2 — split in.
   const split = (await page.evaluate(() => (window as any).__naLog)) as [number, boolean, string][];
@@ -257,19 +259,11 @@ async function orbRun(browser: Browser) {
     'L3 the writing row’s orb follows Edit (composing)',
     orb,
   );
-  const box = await page.evaluate(() => {
+  await page.evaluate(() => {
     const c = Array.from(document.querySelectorAll<any>('ui-conversation')).find((x) => x.data?.pending);
-    const a = c.shadowRoot.querySelector('ui-ai-answer') as HTMLElement;
-    a.scrollIntoView({ block: 'center' });
-    const r = a.getBoundingClientRect();
-    return {
-      x: Math.max(0, r.x - 24),
-      y: Math.max(0, r.y - 60),
-      width: Math.min(r.width + 48, 900),
-      height: r.height + 100,
-    };
+    (c.shadowRoot.querySelector('ui-ai-answer') as HTMLElement).scrollIntoView({ block: 'center' });
   });
-  await shot(page, 'L3-orb-dark', box);
+  await shot(page, 'L3-orb-dark');
   await page.context().close();
 }
 
@@ -328,11 +322,7 @@ async function signInRun(browser: Browser, theme: 'dark' | 'light') {
     return t ? { text: t.textContent, preset: t.getAttribute('preset'), drawn: !!t.shadowRoot } : null;
   });
   check(!!m && m.text === 'soma-work' && m.drawn, `L5 ${theme} the sign-in wordmark is liquid metal`, m);
-  const brand = await page.evaluate(() => {
-    const r = document.querySelector('ui-auth-card')!.getBoundingClientRect();
-    return { x: Math.max(0, r.x), y: Math.max(0, r.y), width: Math.min(r.width, 900), height: Math.min(r.height, 400) };
-  });
-  await shot(page, `L5-metal-${theme}`, brand);
+  await shot(page, `L5-metal-${theme}`);
   await ctx.close();
 }
 

@@ -87,7 +87,7 @@ describe('E3 — the card’s face in the detail card’s head', () => {
     expect(shape('claude-fable-5-2[1m]')).toBe('star');
     expect(shape('claude-opus-5-5[1m]')).toBe('droid');
     expect(shape('claude-sonnet-4-6')).toBe('cloud');
-    expect(shape('claude-haiku-4-5')).toBe('drop');
+    expect(shape('claude-haiku-4-5')).toBe('pebble');
     expect(shape('gpt-6-astra[1m]')).toBe('alien');
     expect(shape('gpt-6.1-sol[1m]')).toBe('circle');
     expect(shape('grok-4.7')).toBe('mech');

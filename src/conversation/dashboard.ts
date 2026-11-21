@@ -15670,7 +15670,7 @@ var PANEL_AVATAR_SHAPES = [
   [/(?:^|[^a-z0-9])fable(?![a-z0-9])/, 'star'],
   [/(?:^|[^a-z0-9])opus(?![a-z0-9])/, 'droid'],
   [/(?:^|[^a-z0-9])sonnet(?![a-z0-9])/, 'cloud'],
-  [/(?:^|[^a-z0-9])haiku(?![a-z0-9])/, 'drop'],
+  [/(?:^|[^a-z0-9])haiku(?![a-z0-9])/, 'pebble'],
   [/(?:^|[^a-z0-9])astra(?![a-z0-9])/, 'alien'],
   [/(?:^|[^a-z0-9])sol(?![a-z0-9])/, 'circle'],
   [/(?:^|[^a-z0-9])grok(?![a-z0-9])/, 'mech'],
