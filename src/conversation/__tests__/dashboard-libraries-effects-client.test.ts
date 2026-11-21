@@ -314,7 +314,10 @@ describe('E5 — the next steps split out of one drop and merge into the one pre
     // The press repainted the bar busy a moment ago: its fresh items render before the merge measures them.
     const order: string[] = [];
     items.forEach((it, i) => {
-      Object.assign(it, { closest: () => ({ renderNow: () => order.push('row') }), renderNow: () => order.push(`item${i}`) });
+      Object.assign(it, {
+        closest: () => ({ renderNow: () => order.push('row') }),
+        renderNow: () => order.push(`item${i}`),
+      });
       const rect = it.rect;
       it.getBoundingClientRect = () => (order.push(`measure${i}`), rect);
     });
