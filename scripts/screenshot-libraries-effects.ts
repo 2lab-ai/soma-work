@@ -57,7 +57,7 @@ function session(key: string, title: string, channel: string, state: string, mod
 // An idle Fable task whose last answer names its next steps; a working Opus task whose agent is editing.
 const FABLE = session(KEY_F, 'Fable — 다음 행동 고르기', 'C701', 'idle', 'claude-fable-5-2[1m]');
 const WORKER = session(KEY_W, 'Opus — 문서 고치는 중', 'C702', 'working', 'claude-opus-5-5[1m]', {
-  agentRoot: { lastTool: 'Edit' },
+  agentRoot: { toolCalls: 4, lastTool: 'Edit', lastToolAt: NOW - 60_000 }, // after the instruction (NOW − 2 min)
 });
 const BOARD = { waiting: [], working: [WORKER], idle: [FABLE] };
 const STEPS = [

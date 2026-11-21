@@ -10,7 +10,8 @@
  *       loaded; panelAvatarOf picks the face by model family and the state by the session; renderPanelAvatar paints it
  *       (hidden with no open card, attributes untouched when unchanged)
  *   E4  the conversation's writing row carries the agent's last tool as the thinking orb's state (convPendingOf /
- *       orbActivityOf — the library's ORB_TOOL_STATES), for the main agent and a running subagent
+ *       orbActivityOf — the library's ORB_TOOL_STATES), for the main agent (a tool called since the latest
+ *       instruction only) and a running subagent
  *   E5  the detail card's next steps are drops of one liquid (<ui-gooey>): a new answer's steps split out of one drop
  *       once, the pressed step swallows the others as it is sent, the bar waits for that before it goes; the open
  *       card's stack stays plain; reduced motion / no element: no motion at all
@@ -140,7 +141,7 @@ function clientObj(name: string): string {
 describe('E4 — the writing row’s orb follows the agent’s last tool', () => {
   const { orbActivityOf, convPendingOf } = new Function(
     `${clientObj('ORB_TOOL_STATE')}\n${clientFn('orbActivityOf')}\n${clientFn('convPendingOf')}\nreturn { orbActivityOf, convPendingOf };`,
-  )() as { orbActivityOf(t: unknown): string; convPendingOf(t: unknown): { activity: string } };
+  )() as { orbActivityOf(t: unknown): string; convPendingOf(t: unknown, at?: number, since?: number): { activity: string } };
 
   it.each([
     ['Read', 'searching'],
@@ -164,7 +165,13 @@ describe('E4 — the writing row’s orb follows the agent’s last tool', () =>
 
   it('the pending turn carries it; convPaint and the subagent chat hand it to <ui-conversation>', () => {
     expect(convPendingOf('Edit')).toEqual({ activity: 'composing' });
-    expect(clientFn('convPaint')).toContain('convPendingOf(s && s.agentRoot && s.agentRoot.lastTool)');
+    // The main agent: only a tool called since the latest instruction is what it does now.
+    expect(convPendingOf('Edit', 2000, 1000)).toEqual({ activity: 'composing' });
+    expect(convPendingOf('mcp__github__create_pull_request', 900, 1000)).toEqual({ activity: 'breathing' });
+    expect(convPendingOf('Edit', undefined, 1000)).toEqual({ activity: 'breathing' });
+    expect(clientFn('convPaint')).toContain(
+      'convPendingOf(s && s.agentRoot && s.agentRoot.lastTool, s && s.agentRoot && s.agentRoot.lastToolAt, last && last.timestamp)',
+    );
     expect(TEMPLATE).toContain("pending: typeof convPendingOf === 'function' ? convPendingOf(a.lastTool) : true");
   });
 });
@@ -330,9 +337,19 @@ describe('E5 — the next steps split out of one drop and merge into the one pre
     expect(items[2].sets[0]).toMatchObject({ x: -83, y: 0, scale: 0.4 });
     expect(items[0].firstElementChild.style.opacity).toBe('0');
     expect(bar._naMergeUntil).toBeGreaterThan(Date.now());
-    timers.forEach((f) => f());
+    // A second press before the first merge's timer: that timer leaves the second hold alone.
+    const items2 = [item(10, 100, 120, 'a'), item(138, 100, 90, 'b')];
+    const bar2 = barOf(items2) as Record<string, unknown>;
+    expect(api.naMergeInto(bar2, 'a')).toBe(true);
+    const firstTimer = timers.length - 1;
+    expect(api.naMergeInto(bar2, 'b')).toBe(true);
+    timers[firstTimer]();
+    expect(bar2._naMergeUntil).toBeGreaterThan(Date.now());
+    timers[timers.length - 1]();
+    expect(bar2._naMergeUntil).toBe(0);
+    timers.slice(0, 1).forEach((f) => f());
     expect(bar._naMergeUntil).toBe(0);
-    expect(painted.length).toBe(1);
+    expect(painted.length).toBe(2);
     expect(api.naMergeInto(barOf(items), 'gone')).toBe(false);
     expect(api.naMergeInto({ ...barOf(items), hidden: true }, 'b')).toBe(false);
   });
@@ -355,9 +372,20 @@ describe('E5 — the next steps split out of one drop and merge into the one pre
       (_b: unknown, key: string, na: unknown) => split.push([key, na]),
     ) as () => void;
     bar._naMergeUntil = Date.now() + 10_000;
+    bar._naMergeKey = 'k';
     render();
     expect(bar.innerHTML).toBe('<b>old</b>');
     expect(bar.hidden).toBe(false);
+    // The hold is the sent card's only: another card's merge does not keep this card's bar.
+    bar._naMergeKey = 'other';
+    render();
+    expect(bar.innerHTML).toBe('');
+    bar.innerHTML = '<b>old</b>';
+    bar._html = '<b>old</b>';
+    bar.hidden = false;
+    bar._naMergeKey = 'k';
+    render();
+    expect(bar.innerHTML).toBe('<b>old</b>');
     bar._naMergeUntil = 0;
     render();
     expect(bar.hidden).toBe(true);
@@ -393,7 +421,7 @@ describe('E6 — the live call’s voice ring (ui-voice-ring in the phone dialog
   const ringFns = (inject: Record<string, unknown>) =>
     new Function(
       ...Object.keys(inject),
-      `var PH_RING_TICK_MS = 50; var PH_RING_SRC = '/dashboard/ui/voice-ring.js?v=t';
+      `var PH_RING_TICK_MS = 50; var PH_RING_CUT_RE = /말하기 멈춤/; var PH_RING_SRC = '/dashboard/ui/voice-ring.js?v=t';
       var _phRingLoad = null; var _phRingTimer = null;
       function toNum(v) { var n = Number(v); return isFinite(n) ? n : 0; }
       ${['phoneRingOf', 'phoneRingVoice', 'phoneRingLoad', 'phoneRingSync'].map(clientFn).join('\n')}
@@ -417,29 +445,68 @@ describe('E6 — the live call’s voice ring (ui-voice-ring in the phone dialog
     );
   });
 
-  it('phoneRingOf: dialing thinks, the agent’s speech speaks until its audio has played, an unanswered line thinks', () => {
+  it('phoneRingOf follows the server’s order: sentences play back to back, a cut ends them, a dropped reply never speaks', () => {
     const { phoneRingOf } = ringFns({});
+    const tts = (at: number, audioMs: number, firstByteMs = 200) => ({
+      kind: 'tts',
+      at,
+      text: 's',
+      firstByteMs,
+      audioMs,
+    });
     expect(phoneRingOf(null, 0)).toBeNull();
     expect(phoneRingOf({ status: 'ended', transcript: [], work: [] }, 0)).toBeNull();
     expect(phoneRingOf({ status: 'dialing' }, 0)).toEqual({ state: 'processing', until: 0 });
     expect(phoneRingOf({ status: 'active', transcript: [], work: [] }, 0)).toEqual({ state: 'listening', until: 0 });
-    // The other party spoke; nothing answered it yet.
-    const heard = { status: 'active', transcript: [{ role: 'peer', at: 1000, text: '여보세요' }], work: [] };
-    expect(phoneRingOf(heard, 1500)).toEqual({ state: 'processing', until: 0 });
-    // A reply, its speech not synthesised yet.
-    const replied = { ...heard, work: [{ kind: 'reply', at: 1800, text: '네', ms: 300 }] };
-    expect(phoneRingOf(replied, 2000)).toEqual({ state: 'speaking', until: 0 });
-    // Synthesised at 2100 (first byte 200ms, 1.5s of audio): speaking until 3800, then listening.
-    const spoke = {
-      ...replied,
-      transcript: [...heard.transcript, { role: 'agent', at: 2100, text: '네' }],
-      work: [...replied.work, { kind: 'tts', at: 2100, text: '네', firstByteMs: 200, audioMs: 1500 }],
+    // The other party spoke; nothing answers it yet: thinking.
+    const peer = { role: 'peer', at: 1000, text: '여보세요' };
+    expect(phoneRingOf({ status: 'active', transcript: [peer], work: [] }, 1500)).toEqual({
+      state: 'processing',
+      until: 0,
+    });
+    // The agent began its first sentence at 1800 (the line comes with the synthesis; its tts is logged when that ends).
+    const s1 = { role: 'agent', at: 1800, text: '네.' };
+    expect(phoneRingOf({ status: 'active', transcript: [peer, s1], work: [] }, 1900)).toEqual({
+      state: 'speaking',
+      until: 0,
+    });
+    // Three sentences of 3 s, each synthesised in ~0.8 s while the one before plays: they play back to back from
+    // 2000 (first byte) to 11000 — not until the last one's own start + length.
+    const three = {
+      status: 'active',
+      transcript: [
+        peer,
+        s1,
+        { role: 'agent', at: 2600, text: '두 번째.' },
+        { role: 'agent', at: 3400, text: '세 번째.' },
+      ],
+      work: [tts(1800, 3000), tts(2600, 3000), tts(3400, 3000), { kind: 'reply', at: 1100, text: '…', ms: 2600 }],
     };
-    expect(phoneRingOf(spoke, 3000)).toEqual({ state: 'speaking', until: 3800 });
-    expect(phoneRingOf(spoke, 3800)).toEqual({ state: 'listening', until: 0 });
-    // The other party again, after the agent: processing.
-    const again = { ...spoke, transcript: [...spoke.transcript, { role: 'peer', at: 5000, text: '그리고요' }] };
-    expect(phoneRingOf(again, 5200)).toEqual({ state: 'processing', until: 0 });
+    expect(phoneRingOf(three, 9000)).toEqual({ state: 'speaking', until: 11000 });
+    expect(phoneRingOf(three, 11000)).toEqual({ state: 'listening', until: 0 });
+    // A barge-in at 5000 cuts it: the line is marked interrupted and the speech ends there; the caller's words are
+    // still being heard (listening), then answered (processing).
+    const cut = {
+      ...three,
+      transcript: three.transcript.map((l) => (l.at === 3400 ? { ...l, interrupted: true } : l)),
+      work: [...three.work, { kind: 'event', at: 5000, text: '상대가 끼어듦 — 말하기 멈춤' }],
+    };
+    expect(phoneRingOf(cut, 5200)).toEqual({ state: 'listening', until: 0 });
+    const heard = { ...cut, transcript: [...cut.transcript, { role: 'peer', at: 6000, text: '잠깐만요' }] };
+    expect(phoneRingOf(heard, 6100)).toEqual({ state: 'processing', until: 0 });
+    // The caller went on talking before any sentence was spoken: the dropped reply is logged (at its turn's start)
+    // with no synthesis after it — the ring thinks about the newer words, it does not speak.
+    const dropped = {
+      status: 'active',
+      transcript: [peer, { role: 'peer', at: 1600, text: '그리고요' }],
+      work: [
+        { kind: 'reply', at: 1100, text: '…', ms: 700 },
+        { kind: 'event', at: 1600, text: '상대가 말을 이어감 — 말하기 멈춤' },
+      ],
+    };
+    expect(phoneRingOf(dropped, 2500)).toEqual({ state: 'processing', until: 0 });
+    // The record's own last change is the floor of "now" (a browser clock behind the server's).
+    expect(phoneRingOf({ ...three, updatedAt: 11500 }, 9000)).toEqual({ state: 'listening', until: 0 });
   });
 
   it('phoneRingVoice moves like speech and stays in 0…1', () => {
@@ -496,7 +563,7 @@ describe('E6 — the live call’s voice ring (ui-voice-ring in the phone dialog
       'Date',
       'importer',
       `var _phoneView = null; function setView(v) { _phoneView = v; }
-      var PH_RING_TICK_MS = 50; var PH_RING_SRC = '/dashboard/ui/voice-ring.js?v=t';
+      var PH_RING_TICK_MS = 50; var PH_RING_CUT_RE = /말하기 멈춤/; var PH_RING_SRC = '/dashboard/ui/voice-ring.js?v=t';
       var _phRingLoad = null; var _phRingTimer = null;
       function toNum(v) { var n = Number(v); return isFinite(n) ? n : 0; }
       ${['phoneRingOf', 'phoneRingVoice', 'phoneRingSync'].map(clientFn).join('\n')}

@@ -155,6 +155,8 @@ export interface AgentRecord {
 export interface AgentRootStats {
   toolCalls: number;
   lastTool?: string;
+  /** When it made that call (ms): a tool from a turn before the latest instruction is not what it does now. */
+  lastToolAt?: number;
 }
 
 export interface AgentRegistry {
@@ -404,7 +406,10 @@ export function stampWorkLogAgent<E extends { kind: string; tool?: string; agent
       const reg = ensureRegistry(h);
       const root: AgentRootStats = reg.root ?? { toolCalls: 0 };
       root.toolCalls += 1;
-      if (entry.tool) root.lastTool = clip(String(entry.tool), TYPE_MAX);
+      if (entry.tool) {
+        root.lastTool = clip(String(entry.tool), TYPE_MAX);
+        root.lastToolAt = now;
+      }
       reg.root = root;
     }
     return stampWorkLogTask(h.taskLedger, entry);
@@ -680,5 +685,7 @@ function sanitizeRootStats(raw: unknown): AgentRootStats | undefined {
   if (!toolCalls) return undefined;
   const out: AgentRootStats = { toolCalls: Math.floor(toolCalls) };
   if (typeof r.lastTool === 'string' && r.lastTool) out.lastTool = clip(r.lastTool, TYPE_MAX);
+  const at = finitePositive(r.lastToolAt);
+  if (at) out.lastToolAt = Math.floor(at);
   return out;
 }

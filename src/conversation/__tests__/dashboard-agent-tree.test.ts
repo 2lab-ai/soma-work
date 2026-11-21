@@ -147,9 +147,9 @@ describe('Dashboard — agent tree payload (spec 12 §3)', () => {
 
   it("a card carries the main agent's own tool count as agentRoot — with or without subagents", async () => {
     const reg = registry();
-    reg.root = { toolCalls: 7, lastTool: 'Edit' };
+    reg.root = { toolCalls: 7, lastTool: 'Edit', lastToolAt: T0 };
     const withSubs = (await board(new Map([['C1:t1', liveSession({ agents: reg })]]))).working[0];
-    expect(withSubs.agentRoot).toEqual({ toolCalls: 7, lastTool: 'Edit' });
+    expect(withSubs.agentRoot).toEqual({ toolCalls: 7, lastTool: 'Edit', lastToolAt: T0 });
     const mainOnly = (
       await board(new Map([['C1:t1', liveSession({ agents: { nextN: 1, agents: [], root: { toolCalls: 2 } } })]]))
     ).working[0];

@@ -446,7 +446,7 @@ export interface KanbanSession {
    * carries the same fields as a subagent's (tool calls counted by the same
    * rule). Absent until the main agent calls a tool.
    */
-  agentRoot?: { toolCalls: number; lastTool?: string };
+  agentRoot?: { toolCalls: number; lastTool?: string; lastToolAt?: number };
   /** Slack thread permalink */
   slackThreadUrl?: string;
   /** Dashboard v2.1 — live turn timer + counters (per session) */
@@ -720,7 +720,13 @@ export function agentsToKanban(
   const subSpend = subagentSpendOf(reg);
   const root = {
     ...(reg?.root
-      ? { agentRoot: { toolCalls: reg.root.toolCalls, ...(reg.root.lastTool ? { lastTool: reg.root.lastTool } : {}) } }
+      ? {
+          agentRoot: {
+            toolCalls: reg.root.toolCalls,
+            ...(reg.root.lastTool ? { lastTool: reg.root.lastTool } : {}),
+            ...(reg.root.lastToolAt ? { lastToolAt: reg.root.lastToolAt } : {}),
+          },
+        }
       : {}),
     ...(subSpend ? { subagentSpend: subSpend } : {}),
   };
@@ -17392,8 +17398,15 @@ function naMergeInto(bar, command) {
     var w = items[j].firstElementChild;
     if (w) { w.style.transition = 'opacity 140ms ease'; w.style.opacity = '0'; }
   }
+  // One hold per merge: a second press (a fast failure brought the buttons back) owns the bar from now; the first
+  // merge's timer leaves it alone (review on #1392).
+  var token = {};
+  bar._naMerge = token;
+  bar._naMergeKey = hit.firstElementChild ? hit.firstElementChild.getAttribute('data-na-key') : '';
   bar._naMergeUntil = Date.now() + NA_MERGE_MS + 40;
-  setTimeout(function () {
+  setTimeout(function() {
+    if (bar._naMerge !== token) return;
+    bar._naMerge = null;
     bar._naMergeUntil = 0;
     if (typeof renderPanelNext === 'function') renderPanelNext();
   }, NA_MERGE_MS + 60);
@@ -17419,16 +17432,20 @@ function renderPanelNext() {
   var fresh = !!s && (viewerOwns(s) || _viewerIsAdmin || _panelTurnsAct === String(s.lastActivity || ''));
   var na = s && fresh && _panelTurnsCid && _panelTurnsCid === s.conversationId ? nextActionsOfTurns(_panelTurnsList) : null;
   var html = s ? nextActionsHtml(s, na, 'panel') : '';
-  // The step just sent is still swallowing the others (naMergeInto): the bar goes when that is over.
-  if (!html && bar._naMergeUntil && Date.now() < bar._naMergeUntil) return;
-  var was = bar._html || '';
+  var key = s ? s.key : '';
+  // The step just sent is still swallowing the others (naMergeInto): on that card the bar goes when that is over;
+  // another card opened meanwhile is painted at once.
+  if (!html && bar._naMergeUntil && Date.now() < bar._naMergeUntil && bar._naMergeKey === key) return;
+  // What the bar held for this card (another card's steps are not "already shown" here).
+  var was = bar._naKey === key ? bar._html || '' : '';
   bar.hidden = !html;
   if (bar._html !== html) {
     bar.innerHTML = html;
     bar._html = html;
     // A set that appears in an empty bar splits in, once per answer (naSplitOnce).
-    if (html && !was && typeof naSplitOnce === 'function') naSplitOnce(bar, s.key, na);
+    if (html && !was && typeof naSplitOnce === 'function') naSplitOnce(bar, key, na);
   }
+  bar._naKey = key;
 }
 function nextActionsRepaint(key) {
   refreshCard(key);
@@ -22770,7 +22787,7 @@ function convPaint() {
     pending:
       !needs && ansPendingShow(s, panelConvId, last ? last.role : '')
         ? typeof convPendingOf === 'function'
-          ? convPendingOf(s && s.agentRoot && s.agentRoot.lastTool)
+          ? convPendingOf(s && s.agentRoot && s.agentRoot.lastTool, s && s.agentRoot && s.agentRoot.lastToolAt, last && last.timestamp)
           : true
         : false,
     assistantName: botNameOf(s),
@@ -22988,8 +23005,12 @@ function orbActivityOf(tool) {
   return Object.prototype.hasOwnProperty.call(ORB_TOOL_STATE, t) ? ORB_TOOL_STATE[t] : 'breathing';
 }
 // The pending turn's data for <ui-conversation>: the writing row with the orb for the agent's last tool.
-function convPendingOf(lastTool) {
-  return { activity: orbActivityOf(lastTool) };
+// since (the main agent): the latest instruction's time — a tool the agent called before it (lastToolAt older, or
+// unknown) belongs to the turn before, and the orb breathes until this turn calls one (review on #1392).
+function convPendingOf(lastTool, lastToolAt, since) {
+  var at = Number(lastToolAt) || 0;
+  var fresh = since === undefined || (at > 0 && at >= (Number(since) || 0));
+  return { activity: orbActivityOf(fresh ? lastTool : '') };
 }
 function ansPendingShow(s, convId, lastRole) {
   return !!(s && convId && s.conversationId === convId && s.activityState === 'working' && lastRole === 'user');
@@ -23328,7 +23349,7 @@ function closePanel() {
   _panelTurnsList = [];
   _panelTurnsMsg = '';
   var nextBar = document.getElementById('panel-next-bar');
-  if (nextBar) { nextBar.innerHTML = ''; nextBar._html = ''; nextBar._naMergeUntil = 0; nextBar.hidden = true; }
+  if (nextBar) { nextBar.innerHTML = ''; nextBar._html = ''; nextBar._naKey = ''; nextBar._naMerge = null; nextBar._naMergeUntil = 0; nextBar.hidden = true; }
   resetWorkLog(null);
   // A closed panel holds no section nodes.
   for (var si = 0; si < PSEC_ORDER.length; si++) psecClear(PSEC_ORDER[si]);
@@ -25560,19 +25581,26 @@ function renderPhoneDialog() {
   else sc.scrollTop = top;
 }
 // ── The live call's voice ring (Libraries.dev Voice ring, @2lab.ai/ui 0.44.0 — Z 2026-11-21) ──
-// The call runs on the server: the page hears nothing, so the ring follows the call record. Dialing → processing; the
-// voice agent's speech (a synthesis from its start until its audio has played) → speaking, with a level that moves
-// like speech; a line from the other party that the agent has not answered yet → processing; else listening. Ended,
-// closed or not loaded: no ring at all (the element goes, and with it its loop and WebGL lens). Decorative: the head's
-// status (통화 중 …) is the words.
+// The call runs on the server: the page hears nothing, so the ring follows the call record (src/phone/voice-session.ts).
+// Each sentence is synthesised while the one before plays, and logged when its synthesis ends (\`tts\`, \`at\` = when it
+// started, with its first byte and its length): the sentences play one after another, each from its first byte. A
+// cut (the other party barged in, or went on talking) is an \`event\` "… 말하기 멈춤" and ends the speech there. So:
+// dialing → processing; a line the agent began saying whose synthesis is not logged yet, or speech still playing →
+// speaking (with a level that moves like speech); a line from the other party the agent has not answered → processing
+// (a reply dropped for newer words never reaches speech); else listening. Ended, closed or not loaded: no ring at all
+// (the element goes, and with it its loop and WebGL lens). Decorative: the head's status (통화 중 …) is the words.
 var PH_RING_TICK_MS = 50; // a re-check is never sooner than this
-// Pure: the ring's state for a call at a time, and when that changes by itself (the end of the speech playing now).
+var PH_RING_CUT_RE = /말하기 멈춤/;
+// Pure: the ring's state for a call at a time (the browser's), and when that changes by itself (the end of the
+// speech playing now). The record's clock is the server's: never read it as older than its own last change.
 function phoneRingOf(call, now) {
   if (!call || call.status === 'ended') return null;
   if (call.status === 'dialing') return { state: 'processing', until: 0 };
-  var work = Array.isArray(call.work) ? call.work : [];
-  var speakingUntil = 0;
-  var lastReply = 0;
+  var t = Math.max(Number(now) || 0, toNum(call.updatedAt));
+  var work = (Array.isArray(call.work) ? call.work : []).slice().sort(function(a, b) {
+    return toNum(a && a.at) - toNum(b && b.at);
+  });
+  var playEnd = 0;
   var lastTts = 0;
   for (var i = 0; i < work.length; i++) {
     var w = work[i];
@@ -25580,22 +25608,23 @@ function phoneRingOf(call, now) {
     var at = toNum(w.at);
     if (w.kind === 'tts') {
       lastTts = Math.max(lastTts, at);
-      speakingUntil = Math.max(speakingUntil, at + toNum(w.firstByteMs) + toNum(w.audioMs));
-    } else if (w.kind === 'reply') lastReply = Math.max(lastReply, at);
+      playEnd = Math.max(playEnd, at + toNum(w.firstByteMs)) + toNum(w.audioMs);
+    } else if (w.kind === 'event' && PH_RING_CUT_RE.test(String(w.text || ''))) playEnd = Math.min(playEnd, at);
   }
-  // A reply with no synthesis after it yet: its speech is on the way.
-  if (lastReply && lastReply > lastTts) return { state: 'speaking', until: 0 };
-  if (now < speakingUntil) return { state: 'speaking', until: speakingUntil };
   var lines = Array.isArray(call.transcript) ? call.transcript : [];
   var peer = 0;
-  var agent = 0;
+  var agent = null;
   for (var j = 0; j < lines.length; j++) {
     var l = lines[j];
     if (!l) continue;
     if (l.role === 'peer') peer = Math.max(peer, toNum(l.at));
-    else if (l.role === 'agent') agent = Math.max(agent, toNum(l.at));
+    else if (l.role === 'agent' && (!agent || toNum(l.at) >= toNum(agent.at))) agent = l;
   }
-  if (peer && peer > agent && peer > lastReply) return { state: 'processing', until: 0 };
+  var agentAt = agent ? toNum(agent.at) : 0;
+  // Being said now: its synthesis started after the last one logged, nothing cut it, and it answers the latest words.
+  if (agent && !agent.interrupted && agentAt > lastTts && agentAt >= peer) return { state: 'speaking', until: 0 };
+  if (t < playEnd) return { state: 'speaking', until: playEnd };
+  if (peer && peer > agentAt) return { state: 'processing', until: 0 };
   return { state: 'listening', until: 0 };
 }
 // The agent's speech as a level: no audio reaches the page, so a voice-like swell (syllables over a slower phrase).
