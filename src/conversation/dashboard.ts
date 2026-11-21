@@ -17334,16 +17334,19 @@ function naSplitOnce(bar, key, na) {
   _naSplitSeen[key] = turn;
   return naSplitIn(bar);
 }
+// Fresh from innerHTML (a new set, or the busy repaint a press makes) the group and its items have not rendered their
+// slots yet — a microtask away — so the buttons have no size: render them now, before anything is measured.
+function naGooRender(items) {
+  var row = items.length && items[0].closest ? items[0].closest('ui-gooey') : null;
+  if (row && typeof row.renderNow === 'function') row.renderNow();
+  for (var n = 0; n < items.length; n++) if (typeof items[n].renderNow === 'function') items[n].renderNow();
+}
 // A new set: every step but the first starts inside the first (no time), then runs out to its place on a bouncy
 // curve, 40ms apart; each button's words fade in as its drop lands. Reduced motion / no element: they are just there.
 function naSplitIn(bar) {
   var items = naGooItems(bar);
   if (items.length < 2 || !naGooLive()) return false;
-  // Fresh from innerHTML the group and its items have not rendered their slots yet (a microtask away), so the buttons
-  // have no size: render them now, then measure.
-  var row = items[0].closest ? items[0].closest('ui-gooey') : null;
-  if (row && typeof row.renderNow === 'function') row.renderNow();
-  for (var n = 0; n < items.length; n++) if (typeof items[n].renderNow === 'function') items[n].renderNow();
+  naGooRender(items);
   var r0 = items[0].getBoundingClientRect();
   for (var i = 1; i < items.length; i++) {
     var r = items[i].getBoundingClientRect();
@@ -17377,6 +17380,7 @@ function naMergeInto(bar, command) {
     if (b && b.getAttribute('data-na-cmd') === command) hit = items[i];
   }
   if (!hit) return false;
+  naGooRender(items);
   var r0 = hit.getBoundingClientRect();
   for (var j = 0; j < items.length; j++) {
     if (items[j] === hit) continue;

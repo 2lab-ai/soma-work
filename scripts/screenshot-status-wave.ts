@@ -74,12 +74,16 @@ const PAGE_HELPERS = [
 async function installMocks(page: Page) {
   await page.addInitScript({ content: PAGE_HELPERS });
   await page.addInitScript({ content: 'localStorage.setItem("soma-board-view", "board");' });
-  await page.route('**/auth/me', (r) => r.fulfill({ json: { user: { name: 'Zhuge', slackUserId: 'U001' }, csrfToken: 'x' } }));
+  await page.route('**/auth/me', (r) =>
+    r.fulfill({ json: { user: { name: 'Zhuge', slackUserId: 'U001' }, csrfToken: 'x' } }),
+  );
   await page.route('**/api/dashboard/users', (r) => r.fulfill({ json: { users: [{ id: 'U001', name: 'Zhuge' }] } }));
   await page.route('**/api/dashboard/stats**', (r) => r.fulfill({ json: { stats: [], byDay: [] } }));
   await page.route('**/api/dashboard/usage**', (r) => r.fulfill({ json: { totals: {}, byUser: {}, byDay: [] } }));
   await page.route('**/api/dashboard/sessions**', (r) => r.fulfill({ json: { board: CURRENT } }));
-  await page.route(/\/api\/dashboard\/session\/.*/, (r) => r.fulfill({ json: { ok: true, turns: [], hasMore: false } }));
+  await page.route(/\/api\/dashboard\/session\/.*/, (r) =>
+    r.fulfill({ json: { ok: true, turns: [], hasMore: false } }),
+  );
 }
 
 const failures: string[] = [];
@@ -127,7 +131,11 @@ async function watch(page: Page, key: string, board: unknown, tag: string) {
       for (const r of recs) {
         const t = Math.round(performance.now() - w.__waveT0);
         if (r.type === 'attributes' && r.attributeName === 'data-status')
-          w.__waveLog.push({ t, status: (r.target as Element).getAttribute('data-status'), card: (r.target as Element).getAttribute('data-card') });
+          w.__waveLog.push({
+            t,
+            status: (r.target as Element).getAttribute('data-status'),
+            card: (r.target as Element).getAttribute('data-card'),
+          });
         for (const n of Array.from(r.addedNodes))
           if ((n as Element).localName === 'canvas')
             w.__waveLog.push({ t, on: true, card: (r.target as Element).getAttribute('data-card') });
@@ -187,7 +195,12 @@ async function motionRun(browser: import('playwright').Browser) {
     loud,
   );
   await sleep(31_000); // past the loud card's cool-down, so the next board's pushes are fresh
-  const quiet = await watch(page, KEY_O, { waiting: [waiting(FABLE), waiting(OPUS)], working: [], idle: [SONNET] }, 'quiet');
+  const quiet = await watch(
+    page,
+    KEY_O,
+    { waiting: [waiting(FABLE), waiting(OPUS)], working: [], idle: [SONNET] },
+    'quiet',
+  );
   check(
     quiet.first >= 0 && quiet.first < 400 && quiet.gone > quiet.first && quiet.others === 0,
     'W3 Opus → NEEDS YOU: its quiet wave runs at once and ends; no other card waves',
@@ -210,7 +223,11 @@ async function reducedRun(browser: import('playwright').Browser) {
   await sleep(200);
   const s = await page.evaluate((k) => {
     const c = (window as any).__card(k) as HTMLElement;
-    return { cue: c.classList.contains('is-cue'), canvas: !!c.querySelector('canvas'), border: getComputedStyle(c).borderTopColor };
+    return {
+      cue: c.classList.contains('is-cue'),
+      canvas: !!c.querySelector('canvas'),
+      border: getComputedStyle(c).borderTopColor,
+    };
   }, KEY_F);
   check(s.cue && !s.canvas, 'W4 reduced motion: no wave, the border cue instead', s);
   await page.screenshot({ path: path.join(OUT, 'reduced.png') });

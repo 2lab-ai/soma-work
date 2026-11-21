@@ -64,8 +64,12 @@ describe('E3 — the card’s face in the detail card’s head', () => {
     const avatar = head.indexOf('<ui-bot-avatar id="panel-avatar"');
     expect(avatar).toBeGreaterThan(0);
     expect(avatar).toBeLessThan(head.indexOf('id="panel-title"'));
-    expect(head).toContain('<ui-bot-avatar id="panel-avatar" class="panel-avatar" size="28" decorative lang="ko" hidden>');
-    expect(DASHBOARD_TS).toContain('<script type="module" src="/dashboard/ui/bot-avatar.js?v=${UI_LIB_VERSION}"></script>');
+    expect(head).toContain(
+      '<ui-bot-avatar id="panel-avatar" class="panel-avatar" size="28" decorative lang="ko" hidden>',
+    );
+    expect(DASHBOARD_TS).toContain(
+      '<script type="module" src="/dashboard/ui/bot-avatar.js?v=${UI_LIB_VERSION}"></script>',
+    );
     expect(clientFn('renderPanelHead')).toContain("if (typeof renderPanelAvatar === 'function') renderPanelAvatar(s);");
   });
 
@@ -219,8 +223,11 @@ describe('E5 — the next steps split out of one drop and merge into the one pre
     const it = {
       rect: { left, top, width, height: 32 },
       sets: [] as Record<string, unknown>[],
-      firstElementChild: { style: {} as Record<string, string>, getAttribute: (n: string) => (n === 'data-na-cmd' ? cmd : null) },
-      getBoundingClientRect() {
+      firstElementChild: {
+        style: {} as Record<string, string>,
+        getAttribute: (n: string) => (n === 'data-na-cmd' ? cmd : null),
+      },
+      getBoundingClientRect(this: { rect: Item['rect'] }) {
         return this.rect;
       },
     } as unknown as Item;
@@ -243,7 +250,7 @@ describe('E5 — the next steps split out of one drop and merge into the one pre
       'requestAnimationFrame',
       'setTimeout',
       'renderPanelNext',
-      `${VARS}\n${['naGooItems', 'naGooLive', 'naSplitOnce', 'naSplitIn', 'naMergeInto'].map(clientFn).join('\n')}
+      `${VARS}\n${['naGooItems', 'naGooLive', 'naGooRender', 'naSplitOnce', 'naSplitIn', 'naMergeInto'].map(clientFn).join('\n')}
       return { naSplitOnce, naSplitIn, naMergeInto };`,
     )(
       { get: (t: string) => (opts.defined === false ? undefined : t === 'ui-gooey-item' ? class {} : undefined) },
@@ -258,7 +265,10 @@ describe('E5 — the next steps split out of one drop and merge into the one pre
     };
     return { api, timers, painted };
   }
-  const barOf = (items: Item[]) => ({ hidden: false, querySelectorAll: (sel: string) => (sel === 'ui-gooey-item' ? items : []) });
+  const barOf = (items: Item[]) => ({
+    hidden: false,
+    querySelectorAll: (sel: string) => (sel === 'ui-gooey-item' ? items : []),
+  });
 
   it('split in: every step but the first starts inside the first (no time), then runs out 40ms apart, its words fading in', () => {
     const items = [item(10, 100, 120, 'a'), item(138, 100, 90, 'b'), item(10, 140, 80, 'c')];
@@ -301,9 +311,17 @@ describe('E5 — the next steps split out of one drop and merge into the one pre
 
   it('merge: the others run into the pressed step’s centre and shrink, words fading; the bar is held, then repainted', () => {
     const items = [item(10, 100, 120, 'a'), item(138, 100, 90, 'b'), item(236, 100, 60, 'c')];
+    // The press repainted the bar busy a moment ago: its fresh items render before the merge measures them.
+    const order: string[] = [];
+    items.forEach((it, i) => {
+      Object.assign(it, { closest: () => ({ renderNow: () => order.push('row') }), renderNow: () => order.push(`item${i}`) });
+      const rect = it.rect;
+      it.getBoundingClientRect = () => (order.push(`measure${i}`), rect);
+    });
     const bar = barOf(items) as Record<string, unknown>;
     const { api, timers, painted } = harness();
     expect(api.naMergeInto(bar, 'b')).toBe(true);
+    expect(order.slice(0, 5)).toEqual(['row', 'item0', 'item1', 'item2', 'measure1']);
     expect(items[1].sets).toEqual([]);
     expect(items[0].sets[0]).toMatchObject({ x: 113, y: 0, scale: 0.4, transition: { duration: 300 } });
     expect(items[2].sets[0]).toMatchObject({ x: -83, y: 0, scale: 0.4 });
@@ -387,11 +405,13 @@ describe('E6 — the live call’s voice ring (ui-voice-ring in the phone dialog
     expect(TEMPLATE).toContain(
       '<div class="phone-dialog-inner"><div class="ph-ringbox" id="phone-ring-box" hidden></div><div class="ph-dcontent" id="phone-dialog-body"></div></div>',
     );
-    expect(TEMPLATE).toContain("onclose=\"_phoneView=null;if(typeof phoneRingSync==='function')phoneRingSync(null)\"");
+    expect(TEMPLATE).toContain('onclose="_phoneView=null;if(typeof phoneRingSync===\'function\')phoneRingSync(null)"');
     expect(DASHBOARD_TS).toContain("var PH_RING_SRC = '/dashboard/ui/voice-ring.js?v=${UI_LIB_VERSION}';");
     expect(clientFn('renderPhoneDialog')).toMatch(/phoneRingSync\(v\);\n {2}var html = phoneDialogHtml\(v\);/);
     expect(clientFn('closePhoneCall')).toContain("if (typeof phoneRingSync === 'function') phoneRingSync(null);");
-    expect(DASHBOARD_TS).toContain('.ph-dcontent { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }');
+    expect(DASHBOARD_TS).toContain(
+      '.ph-dcontent { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }',
+    );
   });
 
   it('phoneRingOf: dialing thinks, the agent’s speech speaks until its audio has played, an unanswered line thinks', () => {
@@ -494,7 +514,14 @@ describe('E6 — the live call’s voice ring (ui-voice-ring in the phone dialog
     fns.phoneRingSync(view);
     expect(box.hidden).toBe(false);
     const el = box.firstElementChild as El;
-    expect(el.attrs).toMatchObject({ class: 'ph-ring', type: 'ring', size: '88', decorative: '', lang: 'ko', theme: 'light' });
+    expect(el.attrs).toMatchObject({
+      class: 'ph-ring',
+      type: 'ring',
+      size: '88',
+      decorative: '',
+      lang: 'ko',
+      theme: 'light',
+    });
     expect(el.attrs.state).toBe('processing');
     expect(el.data).toEqual({ level: 0 });
     expect(imports).toEqual(['/dashboard/ui/voice-ring.js?v=t']);
@@ -509,7 +536,7 @@ describe('E6 — the live call’s voice ring (ui-voice-ring in the phone dialog
     expect(made).toBe(1); // the same element
     expect(el.attrs.state).toBe('speaking');
     expect(typeof el.data?.level).toBe('function');
-    expect(timers.at(-1)?.ms).toBe(800);
+    expect(timers[timers.length - 1]?.ms).toBe(800);
     expect(imports.length).toBe(1);
     // The call ends: the ring goes.
     view.call = { status: 'ended', transcript: [], work: [] };
