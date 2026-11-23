@@ -130,150 +130,161 @@ async function main() {
       ]),
   );
 
-  // The stand-in tree: sh → (yes > /dev/null — burns a core), sleep, sh → sleep.
-  const spawn = createTrackedClaudeProcessSpawner(undefined, { sessionKey: KEY });
-  const root = spawn({
-    command: '/bin/sh',
-    args: ['-c', '(yes > /dev/null) & sleep 300 & sh -c "sleep 301" & wait'],
-    cwd: '/',
-    env: { PATH: '/bin:/usr/bin' },
-    signal: new AbortController().signal,
-  } as never) as unknown as import('node:child_process').ChildProcess;
-
-  const monitor = new LocalProcessMonitor({
-    nodeId: 'owner-mac',
-    roots: getClaudeChildProcessRegistry(),
-    runPs: (args) => runReadOnly('ps', args),
-    runCommand: runReadOnly,
-    intervalMs: 1_000,
-  });
-  monitor.start();
-  dashboard.setDashboardProcessSource(monitor);
-  // Two samples so CPU is a measured rate, not ps's own average.
-  await monitor.sample();
-  await sleep(1_200);
-  await monitor.sample();
-
-  await ws.startWebServer({ listen: true });
-  log(`server ${BASE_URL}`);
-  const browser = await chromium.launch({ headless: true, args: ['--single-process', '--no-zygote'] });
+  // Everything below runs inside one cleanup scope: a failed launch (no Chromium, a taken port) must still kill the
+  // stand-in tree — it burns a core — and stop what started.
+  let root: import('node:child_process').ChildProcess | null = null;
+  let monitor: InstanceType<typeof LocalProcessMonitor> | null = null;
+  let browser: import('playwright').Browser | null = null;
+  let serverStarted = false;
   try {
-    const ctx = await browser.newContext({
-      viewport: { width: 1440, height: 900 },
-      colorScheme: 'light',
-      deviceScaleFactor: 2,
-    });
-    const page = await ctx.newPage();
-    const errors: string[] = [];
-    page.on('pageerror', (e) => errors.push(String(e)));
-    const tok = process.env.CONVERSATION_VIEWER_TOKEN;
-    if (tok)
-      await ctx.addCookies([{ name: 'soma_dash_token', value: encodeURIComponent(`bearer:${tok}`), url: BASE_URL }]);
-    await installMocks(page);
-    await bearerPosts(page);
-    page.on('response', async (r) => {
-      if (process.env.PROCESSES_DEBUG && r.url().includes('/api/dashboard/sessions'))
-        log(`board ${r.status()} ${(await r.text()).slice(0, 400)}`);
-    });
-    if (process.env.PROCESSES_DEBUG) page.on('console', (m) => log(`console ${m.type()} ${m.text().slice(0, 200)}`));
-    await page.goto(`${BASE_URL}/dashboard/U001`);
-    // The board's key carries this instance's prefix (`<instance>::<key>`).
-    await page.waitForSelector(`li.ib-card[data-card$="::${KEY}"]`, { timeout: 20_000 });
-    const WIRE = await page.evaluate((k) => {
-      const host = document.getElementById('kanban') as any;
-      return (host.shadowRoot.querySelector(`li.ib-card[data-card$="::${k}"]`) as HTMLElement).getAttribute(
-        'data-card',
-      ) as string;
-    }, KEY);
-    await sleep(600);
+    // The stand-in tree: sh → (yes > /dev/null — burns a core), sleep, sh → sleep.
+    const spawn = createTrackedClaudeProcessSpawner(undefined, { sessionKey: KEY });
+    root = spawn({
+      command: '/bin/sh',
+      args: ['-c', '(yes > /dev/null) & sleep 300 & sh -c "sleep 301" & wait'],
+      cwd: '/',
+      env: { PATH: '/bin:/usr/bin' },
+      signal: new AbortController().signal,
+    } as never) as unknown as import('node:child_process').ChildProcess;
 
-    // R1
-    const foot = await page.evaluate((k) => {
-      const host = document.getElementById('kanban') as any;
-      const card = host.shadowRoot.querySelector(`li.ib-card[data-card="${k}"]`) as HTMLElement;
-      return Array.from(card.querySelectorAll('.ib-metric, [class*="metric"]')).map((m) =>
-        (m as HTMLElement).innerText.trim(),
+    monitor = new LocalProcessMonitor({
+      nodeId: 'owner-mac',
+      roots: getClaudeChildProcessRegistry(),
+      runPs: (args) => runReadOnly('ps', args),
+      runCommand: runReadOnly,
+      intervalMs: 1_000,
+    });
+    monitor.start();
+    dashboard.setDashboardProcessSource(monitor);
+    // Two samples so CPU is a measured rate, not ps's own average.
+    await monitor.sample();
+    await sleep(1_200);
+    await monitor.sample();
+
+    await ws.startWebServer({ listen: true });
+    serverStarted = true;
+    log(`server ${BASE_URL}`);
+    browser = await chromium.launch({ headless: true, args: ['--single-process', '--no-zygote'] });
+    {
+      const ctx = await browser.newContext({
+        viewport: { width: 1440, height: 900 },
+        colorScheme: 'light',
+        deviceScaleFactor: 2,
+      });
+      const page = await ctx.newPage();
+      const errors: string[] = [];
+      page.on('pageerror', (e) => errors.push(String(e)));
+      const tok = process.env.CONVERSATION_VIEWER_TOKEN;
+      if (tok)
+        await ctx.addCookies([{ name: 'soma_dash_token', value: encodeURIComponent(`bearer:${tok}`), url: BASE_URL }]);
+      await installMocks(page);
+      await bearerPosts(page);
+      page.on('response', async (r) => {
+        if (process.env.PROCESSES_DEBUG && r.url().includes('/api/dashboard/sessions'))
+          log(`board ${r.status()} ${(await r.text()).slice(0, 400)}`);
+      });
+      if (process.env.PROCESSES_DEBUG) page.on('console', (m) => log(`console ${m.type()} ${m.text().slice(0, 200)}`));
+      await page.goto(`${BASE_URL}/dashboard/U001`);
+      // The board's key carries this instance's prefix (`<instance>::<key>`).
+      await page.waitForSelector(`li.ib-card[data-card$="::${KEY}"]`, { timeout: 20_000 });
+      const WIRE = await page.evaluate((k) => {
+        const host = document.getElementById('kanban') as any;
+        return (host.shadowRoot.querySelector(`li.ib-card[data-card$="::${k}"]`) as HTMLElement).getAttribute(
+          'data-card',
+        ) as string;
+      }, KEY);
+      await sleep(600);
+
+      // R1
+      const foot = await page.evaluate((k) => {
+        const host = document.getElementById('kanban') as any;
+        const card = host.shadowRoot.querySelector(`li.ib-card[data-card="${k}"]`) as HTMLElement;
+        return Array.from(card.querySelectorAll('.ib-metric, [class*="metric"]')).map((m) =>
+          (m as HTMLElement).innerText.trim(),
+        );
+      }, WIRE);
+      const chip = foot.find((t) => /^CPU \S+ · \S+$/.test(t));
+      check(!!chip, 'R1 the card foot shows CPU · memory of the tree', { foot });
+      await page.screenshot({ path: path.join(OUT, '01-card-chip.png') });
+      const cardBox = await page.evaluate((k) => {
+        const host = document.getElementById('kanban') as any;
+        const r = (
+          host.shadowRoot.querySelector(`li.ib-card[data-card="${k}"]`) as HTMLElement
+        ).getBoundingClientRect();
+        return { x: r.x, y: r.y, width: r.width, height: r.height };
+      }, WIRE);
+      await page.screenshot({
+        path: path.join(OUT, '01b-card-chip-zoom.png'),
+        clip: {
+          x: Math.max(0, cardBox.x - 8),
+          y: Math.max(0, cardBox.y - 8),
+          width: cardBox.width + 16,
+          height: cardBox.height + 16,
+        },
+      });
+
+      // Open the detail card (title → ui-detail → openPanel).
+      await page.evaluate((k) => (window as any).openPanel(k), WIRE);
+      await page.waitForSelector('#panel-midbar .pm-tab[data-mid="procs"]', { timeout: 10_000 });
+      // R2
+      const tabs = await page.$$eval('#panel-midbar .pm-tab', (bs) =>
+        bs.map((b) => `${b.getAttribute('data-mid')}:${(b as HTMLElement).innerText.replace(/\s+/g, ' ').trim()}`),
       );
-    }, WIRE);
-    const chip = foot.find((t) => /^CPU \S+ · \S+$/.test(t));
-    check(!!chip, 'R1 the card foot shows CPU · memory of the tree', { foot });
-    await page.screenshot({ path: path.join(OUT, '01-card-chip.png') });
-    const cardBox = await page.evaluate((k) => {
-      const host = document.getElementById('kanban') as any;
-      const r = (host.shadowRoot.querySelector(`li.ib-card[data-card="${k}"]`) as HTMLElement).getBoundingClientRect();
-      return { x: r.x, y: r.y, width: r.width, height: r.height };
-    }, WIRE);
-    await page.screenshot({
-      path: path.join(OUT, '01b-card-chip-zoom.png'),
-      clip: {
-        x: Math.max(0, cardBox.x - 8),
-        y: Math.max(0, cardBox.y - 8),
-        width: cardBox.width + 16,
-        height: cardBox.height + 16,
-      },
-    });
+      const ids = tabs.map((t) => t.split(':')[0]);
+      check(
+        ids.indexOf('procs') === ids.indexOf('info') + 1 || (ids.indexOf('info') < 0 && ids.includes('procs')),
+        'R2 프로세스 sits right of 세부 with its count',
+        { tabs },
+      );
 
-    // Open the detail card (title → ui-detail → openPanel).
-    await page.evaluate((k) => (window as any).openPanel(k), WIRE);
-    await page.waitForSelector('#panel-midbar .pm-tab[data-mid="procs"]', { timeout: 10_000 });
-    // R2
-    const tabs = await page.$$eval('#panel-midbar .pm-tab', (bs) =>
-      bs.map((b) => `${b.getAttribute('data-mid')}:${(b as HTMLElement).innerText.replace(/\s+/g, ' ').trim()}`),
-    );
-    const ids = tabs.map((t) => t.split(':')[0]);
-    check(
-      ids.indexOf('procs') === ids.indexOf('info') + 1 || (ids.indexOf('info') < 0 && ids.includes('procs')),
-      'R2 프로세스 sits right of 세부 with its count',
-      { tabs },
-    );
+      // R3
+      await page.click('#panel-midbar .pm-tab[data-mid="procs"]');
+      await page.waitForSelector('#panel-procs .pp-table tbody tr.pp-row', { timeout: 10_000 });
+      const rows = await page.$$eval('#panel-procs .pp-table tbody tr.pp-row', (trs) =>
+        trs.map((tr) => Array.from(tr.querySelectorAll('td')).map((td) => (td as HTMLElement).innerText.trim())),
+      );
+      check(
+        rows.length >= 4 && rows[0][0].startsWith('sh') && rows[0][0].includes('Claude Code'),
+        'R3 every process in tree order, the root first',
+        { rows: rows.map((r) => r.slice(0, 5)) },
+      );
+      const nodeLine = await page.$eval('#panel-procs .pp-node', (e) => (e as HTMLElement).innerText);
+      check(/owner-mac/.test(nodeLine) && /코어/.test(nodeLine), 'R3 the node line', { nodeLine });
+      await page.screenshot({ path: path.join(OUT, '02-processes-tab.png') });
 
-    // R3
-    await page.click('#panel-midbar .pm-tab[data-mid="procs"]');
-    await page.waitForSelector('#panel-procs .pp-table tbody tr.pp-row', { timeout: 10_000 });
-    const rows = await page.$$eval('#panel-procs .pp-table tbody tr.pp-row', (trs) =>
-      trs.map((tr) => Array.from(tr.querySelectorAll('td')).map((td) => (td as HTMLElement).innerText.trim())),
-    );
-    check(
-      rows.length >= 4 && rows[0][0].startsWith('sh') && rows[0][0].includes('Claude Code'),
-      'R3 every process in tree order, the root first',
-      { rows: rows.map((r) => r.slice(0, 5)) },
-    );
-    const nodeLine = await page.$eval('#panel-procs .pp-node', (e) => (e as HTMLElement).innerText);
-    check(/owner-mac/.test(nodeLine) && /코어/.test(nodeLine), 'R3 the node line', { nodeLine });
-    await page.screenshot({ path: path.join(OUT, '02-processes-tab.png') });
+      // R4 — pause the busy child (yes).
+      const yesRow = rows.findIndex((r) => r[0].startsWith('yes'));
+      const yesPid = Number(rows[yesRow][1]);
+      await page.click(`#panel-procs [data-proc-op="pause"][data-pid="${yesPid}"]`);
+      await page.waitForSelector(`#panel-procs [data-proc-op="resume"][data-pid="${yesPid}"]`, { timeout: 10_000 });
+      check(psState(yesPid).startsWith('T'), 'R4 the real process is stopped (ps stat T)', {
+        pid: yesPid,
+        stat: psState(yesPid),
+      });
+      await sleep(400);
+      await page.screenshot({ path: path.join(OUT, '03-paused.png') });
 
-    // R4 — pause the busy child (yes).
-    const yesRow = rows.findIndex((r) => r[0].startsWith('yes'));
-    const yesPid = Number(rows[yesRow][1]);
-    await page.click(`#panel-procs [data-proc-op="pause"][data-pid="${yesPid}"]`);
-    await page.waitForSelector(`#panel-procs [data-proc-op="resume"][data-pid="${yesPid}"]`, { timeout: 10_000 });
-    check(psState(yesPid).startsWith('T'), 'R4 the real process is stopped (ps stat T)', {
-      pid: yesPid,
-      stat: psState(yesPid),
-    });
-    await sleep(400);
-    await page.screenshot({ path: path.join(OUT, '03-paused.png') });
-
-    // R5
-    await page.click(`#panel-procs [data-proc-op="resume"][data-pid="${yesPid}"]`);
-    await page.waitForSelector(`#panel-procs [data-proc-op="pause"][data-pid="${yesPid}"]`, { timeout: 10_000 });
-    check(!psState(yesPid).startsWith('T'), 'R5 resumed (ps stat not T)', { stat: psState(yesPid) });
-    check(errors.length === 0, 'no page errors', errors);
+      // R5
+      await page.click(`#panel-procs [data-proc-op="resume"][data-pid="${yesPid}"]`);
+      await page.waitForSelector(`#panel-procs [data-proc-op="pause"][data-pid="${yesPid}"]`, { timeout: 10_000 });
+      check(!psState(yesPid).startsWith('T'), 'R5 resumed (ps stat not T)', { stat: psState(yesPid) });
+      check(errors.length === 0, 'no page errors', errors);
+    }
   } finally {
-    await browser.close();
-    monitor.stop();
-    try {
-      process.kill(-root.pid!, 'SIGKILL');
-    } catch {
-      // not a group leader
+    await browser?.close().catch(() => {});
+    monitor?.dispose();
+    if (root?.pid) {
+      // The whole stand-in tree: continue anything left paused, kill the children, then the shell.
+      for (const sig of ['-CONT', '-KILL']) {
+        try {
+          execFileSync('pkill', [sig, '-P', String(root.pid)], { stdio: 'ignore' });
+        } catch {
+          // none left
+        }
+      }
+      root.kill('SIGKILL');
     }
-    try {
-      execFileSync('pkill', ['-KILL', '-P', String(root.pid)]);
-    } catch {
-      // gone
-    }
-    root.kill('SIGKILL');
-    await ws.stopWebServer();
+    if (serverStarted) await ws.stopWebServer();
   }
   fs.writeFileSync(path.join(OUT, 'report.txt'), `${report.join('\n')}\n`);
   log(

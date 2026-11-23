@@ -16157,8 +16157,12 @@ function selectPanelMid(id) {
 // the timer stops itself when the tab or the card closes. A pause names the pid AND its start time, so a pid the OS
 // reused is refused (409) instead of stopping another program.
 var PROCS_POLL_MS = 3000;
-var _procs = { key: '', status: 0, body: null, at: 0, inFlight: false, again: false, busy: {}, timer: 0 };
-var PROC_STATE_LABEL = { running: '실행', sleeping: '대기', stopped: '일시중지', zombie: '종료됨', other: '기타' };
+// A read or a pause that has not answered by then is given up (its button frees, the next poll reads again).
+var PROCS_READ_TIMEOUT_MS = 10000;
+var PROCS_CONTROL_TIMEOUT_MS = 15000;
+// pending: the read in flight — its card's key and its AbortController; a read for another card retires it.
+var _procs = { key: '', status: 0, body: null, pending: null, again: false, busy: {}, timer: 0 };
+var PROC_STATE_LABEL = { running: '실행', sleeping: '대기', stopped: '멈춤', zombie: '종료됨', other: '기타' };
 function renderPanelProcs() {
   var el = document.getElementById('panel-procs');
   if (!el) return;
@@ -16191,31 +16195,44 @@ function renderPanelProcs() {
     }, PROCS_POLL_MS);
   }
 }
-// again: read once more after a read already in flight (a pause's result must show, not the read sent before it).
+// again: read once more after a read already in flight for this card (a pause's result must show, not the read sent
+// before it). A read still pending for another card is aborted: it would only be thrown away.
 function procsFetch(key, again) {
-  if (_procs.inFlight) {
+  var pend = _procs.pending;
+  if (pend && pend.key === key) {
     if (again) _procs.again = true;
     return;
   }
-  _procs.inFlight = true;
-  fetch('/api/dashboard/session/' + encodeURIComponent(key) + '/processes')
+  if (pend) pend.ctrl.abort();
+  var ctrl = new AbortController();
+  var mine = { key: key, ctrl: ctrl };
+  _procs.pending = mine;
+  var timer = setTimeout(function() { ctrl.abort(); }, PROCS_READ_TIMEOUT_MS);
+  fetch('/api/dashboard/session/' + encodeURIComponent(key) + '/processes', { signal: ctrl.signal })
     .then(function(r) {
       return r.json().catch(function() { return null; }).then(function(j) { return { status: r.status, body: j }; });
     })
     .then(function(res) {
       if (_procs.key !== key) return;
-      _procs.status = res.status;
-      _procs.body = res.status === 200 ? res.body : null;
-      _procs.at = Date.now();
-      paintPanelProcs();
+      var ok = res.status === 200 && res.body && typeof res.body === 'object';
+      _procs.status = ok ? 200 : res.status === 200 ? -1 : res.status;
+      _procs.body = ok ? res.body : null;
     }, function() {
-      if (_procs.key !== key) return;
+      if (_procs.key !== key || _procs.pending !== mine) return;
       _procs.status = -1;
-      paintPanelProcs();
     })
     .then(function() {
-      _procs.inFlight = false;
-      if (_procs.again) {
+      clearTimeout(timer);
+      if (_procs.pending === mine) _procs.pending = null;
+      try {
+        if (_procs.key === key) paintPanelProcs();
+      } catch (_) {
+        // A body the table cannot draw: say the read failed, keep polling.
+        _procs.status = -1;
+        _procs.body = null;
+        try { paintPanelProcs(); } catch (_) {}
+      }
+      if (_procs.again && _procs.pending === null) {
         _procs.again = false;
         if (_procs.key === key) procsFetch(key);
       }
@@ -16228,13 +16245,16 @@ async function procsControl(op, pid, start) {
   paintPanelProcs();
   var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/processes/' + pid + '/' + (op === 'resume' ? 'resume' : 'pause');
   var body = JSON.stringify({ startToken: start });
+  var ctrl = new AbortController();
+  var timer = setTimeout(function() { ctrl.abort(); }, PROCS_CONTROL_TIMEOUT_MS);
   var send = function() {
     var headers = { 'Content-Type': 'application/json' };
     if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
-    return fetch(url, { method: 'POST', headers: headers, body: body });
+    return fetch(url, { method: 'POST', headers: headers, body: body, signal: ctrl.signal });
   };
   try {
     var res = await send();
+    // A stale CSRF token: refresh it and send once more — never more than once.
     if (res.status === 403) {
       await refreshCsrfToken();
       res = await send();
@@ -16244,10 +16264,16 @@ async function procsControl(op, pid, start) {
     if (res.ok) dashToast({ title: op === 'resume' ? '프로세스를 재개했어요' : '프로세스를 일시중지했어요', description: 'PID ' + pid, tone: 'success' });
     else dashToast({ title: op === 'resume' ? '재개하지 못했어요' : '일시중지하지 못했어요', description: procsFailText(res.status, j && j.code), tone: 'danger' });
   } catch (_) {
-    dashToast({ title: '요청을 보내지 못했어요', tone: 'danger' });
+    // No answer (or none in time): the outcome is unknown — the list is read again instead of repeating the request.
+    dashToast({ title: '요청을 보내지 못했어요', description: '목록을 다시 읽어 지금 상태를 보여 줘요', tone: 'danger' });
+  } finally {
+    clearTimeout(timer);
+    delete _procs.busy[pid];
+    if (_procs.key === key) {
+      try { paintPanelProcs(); } catch (_) {}
+      procsFetch(key, true);
+    }
   }
-  delete _procs.busy[pid];
-  if (_procs.key === key) procsFetch(key, true);
 }
 // Pure: why a pause or resume was refused, in the reader's words.
 function procsFailText(status, code) {

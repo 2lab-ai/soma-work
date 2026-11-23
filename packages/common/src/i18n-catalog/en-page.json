@@ -1828,7 +1828,7 @@
   "개 · CPU ": " · CPU ",
   " · 메모리 ": " · memory ",
   "살아 있는 프로세스 없음": "No live process",
-  "일시중지": "Paused",
+  "일시중지": "Pause",
   "종료됨": "Ended",
   "기타": "Other",
   "프로세스를 재개했어요": "Process resumed",
@@ -1864,5 +1864,6 @@
   " 일시중지": " pause",
   "재개": "Resume",
   "<div><b>프로세스 6개</b> CPU 38% · 메모리 1.2GB — claude · node · bash … 줄마다 일시중지 · 재개</div>": "<div><b>6 processes</b> CPU 38% · memory 1.2GB — claude · node · bash … pause · resume on each row</div>",
-  "<div class=\"pp-wrap\"><table class=\"pp-table\"><thead><tr><th scope=\"col\">프로세스</th><th scope=\"col\" class=\"pp-num\">PID</th><th scope=\"col\">상태</th><th scope=\"col\" class=\"pp-num\">CPU</th><th scope=\"col\" class=\"pp-num\">메모리</th>": "<div class=\"pp-wrap\"><table class=\"pp-table\"><thead><tr><th scope=\"col\">Process</th><th scope=\"col\" class=\"pp-num\">PID</th><th scope=\"col\">State</th><th scope=\"col\" class=\"pp-num\">CPU</th><th scope=\"col\" class=\"pp-num\">Memory</th>"
+  "<div class=\"pp-wrap\"><table class=\"pp-table\"><thead><tr><th scope=\"col\">프로세스</th><th scope=\"col\" class=\"pp-num\">PID</th><th scope=\"col\">상태</th><th scope=\"col\" class=\"pp-num\">CPU</th><th scope=\"col\" class=\"pp-num\">메모리</th>": "<div class=\"pp-wrap\"><table class=\"pp-table\"><thead><tr><th scope=\"col\">Process</th><th scope=\"col\" class=\"pp-num\">PID</th><th scope=\"col\">State</th><th scope=\"col\" class=\"pp-num\">CPU</th><th scope=\"col\" class=\"pp-num\">Memory</th>",
+  "목록을 다시 읽어 지금 상태를 보여 줘요": "Reading the list again to show where it stands"
 }

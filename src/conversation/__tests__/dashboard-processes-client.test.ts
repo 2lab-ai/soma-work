@@ -9,7 +9,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BUILTIN_PRESETS, DETAIL_TABS, resolveLayouts } from '../../view-layout';
 import { viewerScope } from '../__fixtures__/viewer-scope';
 import { VIEW_LAYOUT_CLIENT_JS } from '../view-layout-client';
@@ -22,7 +22,8 @@ function cook(fragment: string): string {
   return new Function(`return \`${fragment}\`;`)() as string;
 }
 function clientFn(name: string): string {
-  const start = TEMPLATE.indexOf(`\nfunction ${name}(`);
+  let start = TEMPLATE.indexOf(`\nfunction ${name}(`);
+  if (start < 0) start = TEMPLATE.indexOf(`\nasync function ${name}(`);
   if (start < 0) throw new Error(`client function ${name} not found`);
   const end = TEMPLATE.indexOf('\n}\n', start);
   return cook(TEMPLATE.slice(start + 1, end + 2));
@@ -36,7 +37,9 @@ function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> 
   ({ fns, inject } = viewerScope(fns, inject));
   const all: Record<string, unknown> = { VIEW_BUILTINS: BUILTIN_PRESETS, ...inject };
   const names = Object.keys(all);
-  const body = `${VIEW_LAYOUT_CLIENT_JS}\n${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')}, procChipOf: procChipOf, faceFootMetrics: faceFootMetrics };`;
+  const setter = '__set: function(n, v) { eval(n + " = v"); }';
+  const getter = '__get: function(n) { return eval(n); }';
+  const body = `${VIEW_LAYOUT_CLIENT_JS}\n${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')}, procChipOf: procChipOf, faceFootMetrics: faceFootMetrics, ${setter}, ${getter} };`;
   return new Function(...names, body)(...names.map((n) => all[n])) as T;
 }
 const PAGE = cook(TEMPLATE.slice(TEMPLATE.indexOf('<body'), TEMPLATE.indexOf('<script>', TEMPLATE.indexOf('<body'))));
@@ -243,5 +246,148 @@ describe('P4 — the page', () => {
     const render = clientFn('renderPanelProcs');
     expect(render).toContain("if (_panelMid !== 'procs' || !panelSessionKey) {");
     expect(render).toContain('clearInterval(_procs.timer);');
+  });
+});
+
+describe('P5 — executed: the tab polls while open and stops when closed; reads and pauses recover', () => {
+  type Env = {
+    renderPanelProcs(): void;
+    procsControl(op: string, pid: number, start: string): Promise<void>;
+    __set(n: string, v: unknown): void;
+    __get(n: string): any;
+  };
+  type Call = { url: string; init?: any };
+  const ok = (body: unknown, status = 200) => Promise.resolve({ status, ok: status < 300, json: async () => body });
+  const BODY = { node: { nodeId: 'n1', cpuCount: 8 }, session: null };
+
+  function env(answer: (c: Call) => Promise<unknown>) {
+    const calls: Call[] = [];
+    const toasts: Array<{ title: string }> = [];
+    const el = { _wired: false, addEventListener: () => {} };
+    const holder: { e?: Env } = {};
+    const e = load<Env>(
+      [
+        'toNum',
+        'esc',
+        'escAttr',
+        'panelProcsHtml',
+        'procsFailText',
+        'paintPanelProcs',
+        'procsFetch',
+        'procsControl',
+        'renderPanelProcs',
+      ],
+      ['PROCS_POLL_MS', 'PROCS_READ_TIMEOUT_MS', 'PROCS_CONTROL_TIMEOUT_MS', '_procs', 'PROC_STATE_LABEL'],
+      {
+        document: { getElementById: () => el, hidden: false },
+        fetch: (url: string, init?: any) => {
+          const c = { url, init };
+          calls.push(c);
+          return answer(c);
+        },
+        writePanelPart: () => {},
+        isSiblingSession: () => false,
+        dashToast: (t: { title: string }) => toasts.push(t),
+        refreshCsrfToken: async () => holder.e?.__set('_csrfToken', 'fresh'),
+        _panelMid: 'procs',
+        panelSessionKey: 'k1',
+        _sessionCache: { k1: { ownerId: 'U1' }, k2: { ownerId: 'U1' } },
+        _csrfToken: 'old',
+        currentUserId: 'U1',
+      },
+    );
+    holder.e = e;
+    return { e, calls, toasts };
+  }
+  const gets = (calls: Call[]) => calls.filter((c) => !c.init || !c.init.method);
+  afterEach(() => vi.useRealTimers());
+
+  it('reads on open, every 3 s while open; closing stops it; reopening starts exactly one poller', async () => {
+    vi.useFakeTimers();
+    const { e, calls } = env(() => ok(BODY));
+    e.renderPanelProcs();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(gets(calls)).toHaveLength(1);
+    expect(calls[0].url).toBe('/api/dashboard/session/k1/processes');
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(gets(calls)).toHaveLength(3);
+    e.__set('_panelMid', '');
+    await vi.advanceTimersByTimeAsync(9_000);
+    expect(gets(calls)).toHaveLength(3);
+    e.__set('_panelMid', 'procs');
+    e.renderPanelProcs();
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(gets(calls)).toHaveLength(5);
+  });
+
+  it('a read still pending for one card is aborted when the tab moves to another card, and does not block it', async () => {
+    vi.useFakeTimers();
+    const { e, calls } = env((c) =>
+      c.url.includes('/k1/')
+        ? new Promise((_r, reject) => c.init.signal.addEventListener('abort', () => reject(new Error('aborted'))))
+        : ok(BODY),
+    );
+    e.renderPanelProcs();
+    e.__set('panelSessionKey', 'k2');
+    e.renderPanelProcs();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls[0].init.signal.aborted).toBe(true);
+    expect(calls[1].url).toBe('/api/dashboard/session/k2/processes');
+    expect(e.__get('_procs').status).toBe(200);
+  });
+
+  it('a read that never answers is given up after 10 s; the next poll reads again', async () => {
+    vi.useFakeTimers();
+    let first = true;
+    const { e, calls } = env((c) => {
+      if (first) {
+        first = false;
+        return new Promise((_r, reject) => c.init.signal.addEventListener('abort', () => reject(new Error('aborted'))));
+      }
+      return ok(BODY);
+    });
+    e.renderPanelProcs();
+    await vi.advanceTimersByTimeAsync(9_000);
+    expect(gets(calls)).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(gets(calls).length).toBeGreaterThanOrEqual(2);
+    expect(e.__get('_procs').pending).toBeNull();
+  });
+
+  it('pause: the pid and start time go to the route; a stale CSRF token is refreshed and sent once more, only once', async () => {
+    const posts: Call[] = [];
+    const { e, toasts } = env((c) => {
+      if (!c.init?.method) return ok(BODY);
+      posts.push(c);
+      return ok({ ok: false }, 403);
+    });
+    e.__set('_procs', { key: 'k 1', status: 0, body: null, pending: null, again: false, busy: {}, timer: 0 });
+    await e.procsControl('pause', 300, 'Mon Nov 23 10:00:00 2026');
+    expect(posts).toHaveLength(2);
+    expect(posts[0].url).toBe('/api/dashboard/session/k%201/processes/300/pause');
+    expect(JSON.parse(posts[0].init.body)).toEqual({ startToken: 'Mon Nov 23 10:00:00 2026' });
+    expect(posts[0].init.headers['X-CSRF-Token']).toBe('old');
+    expect(posts[1].init.headers['X-CSRF-Token']).toBe('fresh');
+    expect(toasts[toasts.length - 1]?.title).toBe('일시중지하지 못했어요');
+    expect(e.__get('_procs').busy[300]).toBeUndefined();
+  });
+
+  it('a pause that never answers frees its button after 15 s and reads the list instead of sending it again', async () => {
+    vi.useFakeTimers();
+    const posts: Call[] = [];
+    const { e, calls, toasts } = env((c) => {
+      if (!c.init?.method) return ok(BODY);
+      posts.push(c);
+      return new Promise((_r, reject) => c.init.signal.addEventListener('abort', () => reject(new Error('aborted'))));
+    });
+    e.__set('_procs', { key: 'k1', status: 0, body: null, pending: null, again: false, busy: {}, timer: 0 });
+    const done = e.procsControl('resume', 300, 'Mon Nov 23 10:00:00 2026');
+    expect(e.__get('_procs').busy[300]).toBe(true);
+    await vi.advanceTimersByTimeAsync(15_000);
+    await done;
+    expect(posts).toHaveLength(1);
+    expect(e.__get('_procs').busy[300]).toBeUndefined();
+    expect(toasts[toasts.length - 1]?.title).toBe('요청을 보내지 못했어요');
+    expect(gets(calls)).toHaveLength(1);
   });
 });
