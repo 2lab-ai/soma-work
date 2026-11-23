@@ -100,12 +100,10 @@ export function commandPreview(argv: readonly string[]): string {
     const flag = arg.split('=')[0];
     const isFlag = arg.startsWith('-');
     if (isFlag && (SPAN_FLAG.test(flag) || SECRET_WORD.test(flag.replace(/^-+/, '')))) {
-      if (arg.includes('=')) parts.push(`${flag}=${CUT}`);
-      else {
-        // ps flattened argv: a quoted multiword value is several tokens now — cut all of them, up to the next flag.
-        parts.push(arg, CUT);
-        hide = 'span';
-      }
+      // ps flattened argv: a quoted multiword value — `--x value with spaces` or `--x={"a": "b c"}` — is several tokens
+      // now. Cut all of them, up to the next flag, in both forms.
+      parts.push(arg.includes('=') ? `${flag}=${CUT}` : `${arg} ${CUT}`);
+      hide = 'span';
       continue;
     }
     if (SHORT_SECRET_ATTACHED.test(arg)) {

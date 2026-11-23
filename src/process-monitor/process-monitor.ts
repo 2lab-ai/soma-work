@@ -105,6 +105,8 @@ export class LocalProcessMonitor implements ProcessHost {
   private readonly liveStartToken: (pid: number) => string | null;
   /** session → how many times its turn was aborted; a pause whose check spans an abort is refused. */
   private readonly abortGen = new Map<string, number>();
+  /** Set when the host starts shutting down: no pause is accepted after the final resume pass. */
+  private shuttingDown = false;
   private readonly listeners = new Set<Listener>();
   /** session → pid → start token, for every process this monitor paused and has not resumed. */
   private readonly paused = new Map<string, Map<number, string>>();
@@ -155,19 +157,25 @@ export class LocalProcessMonitor implements ProcessHost {
    * behind would hold its memory, ports and locks with nobody to resume it). Synchronous — it runs on exit paths.
    */
   resumeAllPaused(): void {
-    for (const mine of this.paused.values()) {
-      for (const [pid, startToken] of mine) this.continueIfSame(pid, startToken);
+    this.shuttingDown = true;
+    for (const [sessionKey, mine] of this.paused) {
+      for (const [pid, startToken] of mine) if (this.continueIfSame(pid, startToken)) mine.delete(pid);
+      if (mine.size === 0) this.paused.delete(sessionKey);
     }
-    this.paused.clear();
   }
 
-  /** SIGCONT only when the pid still names the process that was paused (its live start time), never a reused pid. */
-  private continueIfSame(pid: number, startToken: string): void {
-    if (this.liveStartToken(pid) !== startToken) return;
+  /**
+   * SIGCONT only when the pid still names the process that was paused (its live start time), never a reused pid.
+   * True when the entry is settled (continued, gone, or no longer that process); false when the OS refused the
+   * signal, so the entry is kept for the next attempt.
+   */
+  private continueIfSame(pid: number, startToken: string): boolean {
+    if (this.liveStartToken(pid) !== startToken) return true;
     try {
       this.kill(pid, 'SIGCONT');
-    } catch {
-      // Gone already.
+      return true;
+    } catch (err) {
+      return (err as NodeJS.ErrnoException)?.code === 'ESRCH';
     }
   }
 
@@ -234,10 +242,12 @@ export class LocalProcessMonitor implements ProcessHost {
    */
   async control(input: ProcessControlInput): Promise<ProcessControlResult> {
     if (this.platform === 'win32') return { ok: false, reason: 'unsupported' };
+    if (input.action === 'pause' && this.shuttingDown) return { ok: false, reason: 'not-found' };
     const gen = this.abortGen.get(input.sessionKey) ?? 0;
     const before = await this.fresh(0);
-    // The turn was aborted while this check sampled: its cleanup already ran, so a pause now would never be undone.
-    if (input.action === 'pause' && (this.abortGen.get(input.sessionKey) ?? 0) !== gen) {
+    // The turn was aborted, or the host started shutting down, while this check sampled: that cleanup already ran, so
+    // a pause now would never be undone.
+    if (input.action === 'pause' && (this.shuttingDown || (this.abortGen.get(input.sessionKey) ?? 0) !== gen)) {
       return { ok: false, reason: 'not-found' };
     }
     const proc = before.sessions
@@ -245,6 +255,9 @@ export class LocalProcessMonitor implements ProcessHost {
       ?.processes.find((p) => p.pid === input.pid);
     if (!proc) return { ok: false, reason: 'not-found' };
     if (proc.startToken !== input.startToken) return { ok: false, reason: 'stale' };
+    // The sample is a moment old: read the pid's live start time right before the signal (a pid reused since then is
+    // refused). Synchronous, so nothing runs between this check and the signal.
+    if (this.liveStartToken(input.pid) !== input.startToken) return { ok: false, reason: 'stale' };
 
     try {
       this.kill(input.pid, input.action === 'pause' ? 'SIGSTOP' : 'SIGCONT');
@@ -272,8 +285,9 @@ export class LocalProcessMonitor implements ProcessHost {
     this.abortGen.set(root.sessionKey, (this.abortGen.get(root.sessionKey) ?? 0) + 1);
     const mine = this.paused.get(root.sessionKey);
     if (!mine) return;
-    for (const [pid, startToken] of mine) this.continueIfSame(pid, startToken);
-    this.paused.delete(root.sessionKey);
+    // An entry the OS refused to continue stays tracked (the shutdown pass or the owner's 재개 can still reach it).
+    for (const [pid, startToken] of mine) if (this.continueIfSame(pid, startToken)) mine.delete(pid);
+    if (mine.size === 0) this.paused.delete(root.sessionKey);
     this.deps.logger?.info('resumed paused processes after abort', { sessionKey: root.sessionKey });
   }
 

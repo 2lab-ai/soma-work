@@ -27,8 +27,8 @@ describe('commandPreview — never shows a secret', () => {
   });
 
   it('hides an inline --flag=value secret and NAME=value secrets', () => {
-    expect(commandPreview(['curl', '--token=abc123', 'API_KEY=sk-live-1', 'MODE=fast'])).toBe(
-      'curl --token=… API_KEY=… MODE=fast',
+    expect(commandPreview(['curl', 'API_KEY=sk-live-1', 'MODE=fast', '--token=abc123'])).toBe(
+      'curl API_KEY=… MODE=fast --token=…',
     );
   });
 
@@ -104,6 +104,14 @@ describe('names and multiword values after ps flattens argv (review of legends)'
       splitArgs('claude --append-system-prompt Customer password is hunter2 swordfish --token a b c --model opus'),
     );
     expect(out).toBe('claude --append-system-prompt … --token … --model opus');
+  });
+
+  it('cuts every word of an equals-form value too (--x={"a": "b c"}, --token=a b c)', () => {
+    const out = commandPreview(
+      splitArgs('claude --mcp-config={"env": {"DB_PASSWORD": "hunter2 swordfish"}} --token=abc def ghi --model opus'),
+    );
+    expect(out).toBe('claude --mcp-config=… --token=… --model opus');
+    for (const leaked of ['hunter2', 'swordfish', 'def', 'ghi']) expect(out).not.toContain(leaked);
   });
 });
 

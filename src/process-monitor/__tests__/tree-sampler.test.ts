@@ -108,7 +108,6 @@ describe('TreeSampler', () => {
 
   it('a pid reused between the two ps calls (its parent differs) is not counted nor remembered', async () => {
     const ps = machine();
-    const sampler = new TreeSampler(ps.run, () => 0);
     // Call 1 sees 400 under bash 300; by call 2 that 400 exited and an unrelated program got the pid.
     const run = ps.run;
     let calls = 0;
@@ -121,7 +120,6 @@ describe('TreeSampler', () => {
     const out = await s2.sample([{ pid: 200, sessionKey: 'A' }], 'n1');
     expect(out.sessions[0].processes.map((p) => p.pid)).toEqual([200, 300]);
     expect(s2.rememberedStart('A', 400)).toBeUndefined();
-    void sampler;
   });
 
   it('a remembered process re-parented between the two ps calls stays', async () => {

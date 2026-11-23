@@ -3,7 +3,7 @@
  * process uses, sampled with the real `ps`, paused and resumed with real signals. Runs on macOS and Linux (CI).
  */
 import { type ChildProcess, execFileSync } from 'node:child_process';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createTrackedClaudeProcessSpawner,
   getClaudeChildProcessRegistry,
@@ -35,15 +35,8 @@ afterEach(() => {
   getClaudeChildProcessRegistry().resetForTests();
 });
 
-async function until<T>(read: () => Promise<T | undefined>, ms = 8_000): Promise<T> {
-  const end = Date.now() + ms;
-  for (;;) {
-    const v = await read();
-    if (v !== undefined) return v;
-    if (Date.now() > end) throw new Error('timed out');
-    await new Promise((r) => setTimeout(r, 100));
-  }
-}
+const until = <T>(read: () => Promise<T | undefined>, timeout = 8_000): Promise<T> =>
+  vi.waitUntil(read, { timeout, interval: 100 }) as Promise<T>;
 
 describe.skipIf(!posix)('process monitor on the real OS', () => {
   it('sees the session’s whole tree, pauses a child with SIGSTOP and resumes it', async () => {

@@ -177,6 +177,64 @@ describe('LocalProcessMonitor', () => {
     expect(signals).toEqual([]);
   });
 
+  it('refuses when the process table itself changed: the pid the tab showed now names another program', async () => {
+    const { monitor, signals, ps } = setup();
+    await monitor.sample();
+    // The bash the tab listed exited; an unrelated program under the same parent got pid 300.
+    ps.set(300, { ppid: 200, start: 'Tue Nov 24 08:00:00 2026', args: '/usr/bin/someone-else' });
+    expect(await monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' })).toEqual({
+      ok: false,
+      reason: 'stale',
+    });
+    expect(signals).toEqual([]);
+  });
+
+  it('refuses a pause once shutdown cleanup ran, and a pause whose check spans it', async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let held = false;
+    const { monitor, signals, fireShutdown } = setup({
+      runPs: (ps) => async (a) => {
+        if (!held) {
+          held = true;
+          await gate;
+        }
+        return ps.run(a);
+      },
+    });
+    const pending = monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' });
+    fireShutdown();
+    release();
+    expect(await pending).toEqual({ ok: false, reason: 'not-found' });
+    expect(await monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' })).toEqual({
+      ok: false,
+      reason: 'not-found',
+    });
+    expect(signals).toEqual([]);
+  });
+
+  it('keeps a pause tracked when the OS refuses its automatic resume, so shutdown tries again', async () => {
+    let refuse = false;
+    const sent: Array<[number, NodeJS.Signals]> = [];
+    const { monitor, fireAbort, fireShutdown } = setup({
+      kill: (pid, signal) => {
+        if (refuse && signal === 'SIGCONT') throw Object.assign(new Error('not permitted'), { code: 'EPERM' });
+        sent.push([pid, signal]);
+      },
+    });
+    await monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' });
+    refuse = true;
+    fireAbort({ pid: 200, sessionKey: 'A' });
+    refuse = false;
+    fireShutdown();
+    expect(sent).toEqual([
+      [300, 'SIGSTOP'],
+      [300, 'SIGCONT'],
+    ]);
+  });
+
   it('answers denied when the OS refuses the signal, unsupported on Windows', async () => {
     const denied = setup({
       kill: () => {
