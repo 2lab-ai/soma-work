@@ -65,6 +65,7 @@ function host(over: Partial<Parameters<typeof createUserTaskQueueHost>[0]> = {})
     isAdmin: (u) => u === 'UADMIN',
     runningTasksOf: (u) => running.get(u) ?? [],
     isTaskRunning: () => false,
+    isTurnBusy: () => false,
     sessionAlive: () => true,
     handleMessage,
     makeSay: () => vi.fn(),
@@ -135,7 +136,9 @@ describe('createUserTaskQueueHost', () => {
 
   it('a chain settling releases shortly after', () => {
     vi.useFakeTimers();
-    const { h, running, handleMessage } = host();
+    const t0 = Date.now();
+    const { h, running, handleMessage } = host({ now: () => Date.now() });
+    vi.setSystemTime(t0 + USER_TASK_QUEUE_BOOT_GRACE_MS + 1);
     running.set('U1', [{ sessionKey: 'C1:1.0', channel: 'C1', threadTs: '1.0' }]);
     h.queue.gate(gateInput('C1:2.0', '2.0'));
     running.set('U1', []);
@@ -159,25 +162,87 @@ describe('createUserTaskQueueHost', () => {
     expect(handleMessage).toHaveBeenCalledTimes(1);
     expect(h.queue.snapshot().entries).toEqual([]);
   });
-  it('먼저 진행 on a turn that is still starting keeps trying to stop it until it lands', () => {
+  it('먼저 진행 on a turn that is still starting keeps trying to stop it; the entry starts only after', () => {
     vi.useFakeTimers();
     let abortable = false;
+    let busy = true;
     const abort = vi.fn(() => abortable);
-    const { h, running } = host({ abort, isTaskRunning: () => true, abortRetryMs: 100, abortRetryForMs: 5_000 });
+    const { h, running, handleMessage } = host({
+      abort,
+      isTaskRunning: () => busy,
+      isTurnBusy: () => busy,
+      abortRetryMs: 100,
+      abortRetryForMs: 5_000,
+    });
     running.set('U1', [{ sessionKey: 'C1:1.0', channel: 'C1', threadTs: '1.0' }]);
     const queued = h.queue.gate(gateInput('C1:2.0', '2.0'));
     if (queued.action !== 'queued') throw new Error('expected queued');
-    expect(h.queue.bypass(queued.entry.id, 'U1')).toMatchObject({ ok: true });
-    // The stopped task is carried on later: its resume entry is in line.
-    expect(h.queue.snapshot().entries.some((e) => e.kind === 'resume')).toBe(true);
+    expect(h.queue.bypass(queued.entry.id, 'U1')).toMatchObject({ ok: true, pending: true });
+    // Nothing runs beside the task that has not stopped yet.
+    expect(handleMessage).not.toHaveBeenCalled();
     vi.advanceTimersByTime(300);
-    const tries = abort.mock.calls.length;
-    expect(tries).toBeGreaterThan(1);
+    expect(abort.mock.calls.length).toBeGreaterThan(1);
     abortable = true;
     vi.advanceTimersByTime(100);
     const landed = abort.mock.calls.length;
     vi.advanceTimersByTime(1_000);
     expect(abort.mock.calls.length).toBe(landed);
+    // The stopped task carries on later; the entry starts when its slot frees.
+    expect(h.queue.snapshot().entries.some((e) => e.kind === 'resume')).toBe(true);
+    busy = false;
+    running.set('U1', []);
+    h.release('U1');
+    expect(handleMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('a starting turn that ends by itself before the stop lands is not carried on', () => {
+    vi.useFakeTimers();
+    let busy = true;
+    const { h, running } = host({
+      abort: vi.fn(() => false),
+      isTaskRunning: () => busy,
+      isTurnBusy: () => busy,
+      abortRetryMs: 100,
+    });
+    running.set('U1', [{ sessionKey: 'C1:1.0', channel: 'C1', threadTs: '1.0' }]);
+    const queued = h.queue.gate(gateInput('C1:2.0', '2.0'));
+    if (queued.action !== 'queued') throw new Error('expected queued');
+    h.queue.bypass(queued.entry.id, 'U1');
+    busy = false;
+    vi.advanceTimersByTime(200);
+    expect(h.queue.snapshot().entries.some((e) => e.kind === 'resume')).toBe(false);
+  });
+
+  it('between goal turns nothing runs: the stop counts as landed and the entry starts now', () => {
+    const abort = vi.fn(() => false);
+    const { h, running, handleMessage } = host({
+      abort,
+      isTaskRunning: () => true,
+      isTurnBusy: () => false,
+    });
+    running.set('U1', [{ sessionKey: 'C1:1.0', channel: 'C1', threadTs: '1.0' }]);
+    const queued = h.queue.gate(gateInput('C1:2.0', '2.0'));
+    if (queued.action !== 'queued') throw new Error('expected queued');
+    expect(h.queue.bypass(queued.entry.id, 'U1')).toMatchObject({ ok: true, deferred: expect.any(Object) });
+    expect(abort).toHaveBeenCalledTimes(1);
+    expect(handleMessage).toHaveBeenCalledTimes(1);
+    expect(h.queue.snapshot().entries.some((e) => e.kind === 'resume')).toBe(true);
+  });
+
+  it('a settle in the boot grace releases nothing; after it, it does', () => {
+    vi.useFakeTimers();
+    const t0 = Date.now();
+    const { h, running, handleMessage } = host({ now: () => Date.now() });
+    running.set('U1', [{ sessionKey: 'C1:1.0', channel: 'C1', threadTs: '1.0' }]);
+    h.queue.gate(gateInput('C1:2.0', '2.0'));
+    running.set('U1', []);
+    h.scheduleRelease();
+    vi.advanceTimersByTime(1_000);
+    expect(handleMessage).not.toHaveBeenCalled();
+    vi.setSystemTime(t0 + USER_TASK_QUEUE_BOOT_GRACE_MS + 1);
+    h.scheduleRelease();
+    vi.advanceTimersByTime(1_000);
+    expect(handleMessage).toHaveBeenCalledTimes(1);
   });
 
   it('a task that already ended is not stopped and not carried on', () => {

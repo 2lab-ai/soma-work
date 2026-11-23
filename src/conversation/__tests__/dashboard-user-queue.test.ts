@@ -23,6 +23,10 @@ const mockConfig = {
 };
 
 vi.mock('../../config', () => ({ config: mockConfig }));
+vi.mock('../../admin-utils', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../admin-utils')>()),
+  isAdminUser: (id: string) => id === 'U_ADMIN',
+}));
 vi.mock('../../env-paths', () => ({ IS_DEV: true, DATA_DIR: '/tmp/test-data' }));
 vi.mock('../recorder', () => ({
   listConversations: vi.fn().mockResolvedValue([]),
@@ -88,7 +92,7 @@ describe('Dashboard — the per-user task queue (대기큐)', () => {
       interrupt: (t: any) => {
         interrupted.push(t.sessionKey);
         running = [];
-        return true;
+        return 'stopped' as const;
       },
       newId: (() => {
         let n = 0;
@@ -212,7 +216,7 @@ describe('Dashboard — the per-user task queue (대기큐)', () => {
       limitFor: () => 1,
       runningTasks: () => [{ sessionKey: 'D9:t1', channel: 'D9', threadTs: 't1', title: '비밀 프로젝트 X' }],
       start: () => undefined,
-      interrupt: () => true,
+      interrupt: () => 'stopped' as const,
     });
     queue.gate({
       userId: 'U1',
@@ -236,5 +240,74 @@ describe('Dashboard — the per-user task queue (대기큐)', () => {
     const b = await board();
     expect(b.userQueue).toBeUndefined();
     expect(b.idle.map((c: any) => c.threadTs)).toEqual(['t2']);
+  });
+  async function signIn(slackUserId: string) {
+    const { issueSlackToken } = await import('../oauth');
+    const token = issueSlackToken({ slackUserId, email: `${slackUserId}@slack.local`, name: slackUserId });
+    const sso = await injectWebServer({ method: 'GET', url: `/auth/sso?token=${encodeURIComponent(token)}` });
+    const cookie = String(sso.headers['set-cookie']).split(';')[0];
+    const me = JSON.parse((await injectWebServer({ method: 'GET', url: '/auth/me', headers: { cookie } })).body);
+    return { cookie, 'x-csrf-token': me.csrfToken as string };
+  }
+  const act = (url: string, headers: Record<string, string>) =>
+    injectWebServer({
+      method: 'POST',
+      url,
+      headers: { ...headers, 'content-type': 'application/json' },
+      payload: '{}',
+    });
+
+  it('as Slack users: another person is refused, an admin needs admin mode, the owner may — a refusal changes nothing', async () => {
+    const other = await act('/api/dashboard/user-queue/q2/bypass', await signIn('U_OTHER'));
+    expect(other.statusCode).toBe(403);
+    const adminOff = await act('/api/dashboard/user-queue/q2/cancel', {
+      ...(await signIn('U_ADMIN')),
+      'x-admin-mode': 'off',
+    });
+    expect(adminOff.statusCode).toBe(403);
+    expect(interrupted).toEqual([]);
+    expect(startedIds).toEqual([]);
+    expect(active.queue.viewFor('U1').waiting.map((w: any) => w.id)).toEqual(['q1', 'q2']);
+    const adminOn = await act('/api/dashboard/user-queue/q2/cancel', {
+      ...(await signIn('U_ADMIN')),
+      'x-admin-mode': 'on',
+    });
+    expect(adminOn.statusCode).toBe(200);
+    const owner = await act('/api/dashboard/user-queue/q1/cancel', await signIn('U1'));
+    expect(owner.statusCode).toBe(200);
+    expect(active.queue.viewFor('U1').waiting).toEqual([]);
+  });
+
+  it('a private entry (a DM request, even with no session yet) reaches its owner and admins only', async () => {
+    const { UserTaskQueue } = await import('../../user-task-queue/user-task-queue');
+    const { setActiveUserTaskQueue } = await import('../../user-task-queue/active');
+    const queue = new UserTaskQueue({
+      store: { load: () => undefined, save: () => undefined },
+      limitFor: () => 1,
+      runningTasks: () => [{ sessionKey: 'C1:t1', channel: 'C1', threadTs: 't1', title: 'first task' }],
+      start: () => undefined,
+      interrupt: () => 'stopped' as const,
+    });
+    queue.gate({
+      userId: 'U1',
+      sessionKey: 'D7:t7',
+      channel: 'D7',
+      threadTs: 't7',
+      text: 'DM 비밀 요청',
+      message: { channel: 'D7' },
+      continuation: 'none',
+      admitted: false,
+    });
+    setActiveUserTaskQueue({ queue, limits: {} as any, release: vi.fn() });
+    dashboard.setDashboardSessionAccessor(() => new Map([['C1:t1', session({ activityState: 'working' })]]));
+    const read = async (headers: Record<string, string>) =>
+      JSON.parse((await injectWebServer({ method: 'GET', url: '/api/dashboard/sessions', headers })).body).board;
+    const stranger = await read(await signIn('U_OTHER'));
+    expect(JSON.stringify(stranger.userQueue ?? [])).not.toContain('DM 비밀 요청');
+    expect(JSON.stringify(stranger.userQueue ?? [])).not.toContain('D7');
+    const owner = await read(await signIn('U1'));
+    expect(owner.userQueue.map((q: any) => q.preview)).toEqual(['DM 비밀 요청']);
+    const admin = await read(await signIn('U_ADMIN'));
+    expect(admin.userQueue.map((q: any) => q.preview)).toEqual(['DM 비밀 요청']);
   });
 });

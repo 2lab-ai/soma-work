@@ -36,6 +36,8 @@ export interface UserTaskEntry extends UserTaskThread {
   notice?: { channel: string; ts: string };
   /** `resume`: the task that went first and put this one back. */
   deferredFor?: UserTaskThread;
+  /** The person let it go first (먼저 진행) while the running task's stop was still landing: it starts as such. */
+  bypass?: boolean;
 }
 
 export interface UserTaskLedger {
@@ -121,6 +123,13 @@ export function parseLedger(raw: unknown): UserTaskLedger {
     }
     if (entry.kind !== 'request' && entry.kind !== 'resume') throw new Error('entry kind unknown');
     if (entry.state !== 'waiting' && entry.state !== 'admitted') throw new Error('entry state unknown');
+    // A request is replayed as it arrived: one without its message could never run.
+    if (entry.kind === 'request') {
+      const m = entry.message as { channel?: unknown } | undefined;
+      if (!m || typeof m !== 'object' || Array.isArray(m) || typeof m.channel !== 'string') {
+        throw new Error('request entry has no replayable message');
+      }
+    }
   }
   return raw as UserTaskLedger;
 }

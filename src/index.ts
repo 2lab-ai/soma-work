@@ -2427,6 +2427,7 @@ async function start() {
         isAdmin: isAdminUser,
         runningTasksOf: (userId) => slackHandler.runningTasksOf(userId),
         isTaskRunning: (key) => slackHandler.isTaskRunning(key),
+        isTurnBusy: (key) => slackHandler.isFollowupTurnBusy(key),
         sessionAlive: (key) => {
           const s = claudeHandler.getSessionRegistry().getSessionByKey(key);
           return !!s && !s.terminated;

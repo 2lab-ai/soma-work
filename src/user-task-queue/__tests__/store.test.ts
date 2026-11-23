@@ -37,11 +37,31 @@ describe('createUserTaskQueueStore', () => {
           preview: 'p',
           enqueuedAt: 1,
           state: 'waiting' as const,
+          message: { channel: 'C1', ts: '1.1', text: 'p' },
         },
       ],
     };
     store.save(ledger);
     expect(createUserTaskQueueStore(dir).load()).toEqual(ledger);
+  });
+
+  it('a request entry that could never be replayed (no message) makes the file unusable, not a smaller line', () => {
+    const file = path.join(dir, USER_TASK_QUEUE_FILE);
+    const entry = {
+      id: 'a',
+      userId: 'U1',
+      kind: 'request',
+      sessionKey: 'C1:1',
+      channel: 'C1',
+      threadTs: '1',
+      preview: 'p',
+      enqueuedAt: 1,
+      state: 'waiting',
+    };
+    fs.writeFileSync(file, JSON.stringify({ version: 1, entries: [entry] }));
+    expect(createUserTaskQueueStore(dir).load()).toBeUndefined();
+    fs.writeFileSync(file, JSON.stringify({ version: 1, entries: [{ ...entry, message: { channel: 'C1' } }] }));
+    expect(createUserTaskQueueStore(dir).load()?.entries).toHaveLength(1);
   });
 
   it('an unreadable file is never taken for empty, and is not overwritten', () => {

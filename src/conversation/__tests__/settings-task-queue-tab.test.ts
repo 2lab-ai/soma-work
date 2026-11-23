@@ -116,18 +116,18 @@ describe('saving', () => {
       data: { user: { id: 'U1', name: 'Alice', limit: null, setting: 'unlimited', defaultLimit: 1 } },
     });
     const tqStatus = vi.fn();
-    const renderTaskQueue = vi.fn();
+    const tqRefreshRow = vi.fn();
     const k = load<any>(['tqPut', 'tqUser', 'tqLabel', 'tqStepOf'], {
       apiWrite,
       tqStatus,
-      renderTaskQueue,
+      tqRefreshRow,
       encodeURIComponent,
     });
     k.setTq({ users: [{ id: 'U1', name: 'Alice', limit: 1 }] });
     await k.tqPut('U1', 'unlimited');
     expect(apiWrite).toHaveBeenCalledWith('PUT', '/api/settings/task-limits/U1', { limit: 'unlimited' });
     expect(tqStatus).toHaveBeenCalledWith('Alice: 동시 작업 무제한로 저장했습니다');
-    expect(renderTaskQueue).toHaveBeenCalled();
+    expect(tqRefreshRow).toHaveBeenCalledWith('U1');
   });
 
   it('a refusal is said as an error and the knob goes back', async () => {
@@ -135,17 +135,17 @@ describe('saving', () => {
       .fn()
       .mockResolvedValue({ ok: false, error: '관리자 모드를 켜야 작업 큐 한도를 바꿀 수 있습니다' });
     const tqStatus = vi.fn();
-    const renderTaskQueue = vi.fn();
+    const tqRefreshRow = vi.fn();
     const k = load<any>(['tqPut', 'tqUser', 'tqLabel', 'tqStepOf'], {
       apiWrite,
       tqStatus,
-      renderTaskQueue,
+      tqRefreshRow,
       encodeURIComponent,
     });
     k.setTq({ users: [] });
     await k.tqPut('U1', 2);
     expect(tqStatus.mock.calls[0][1]).toBe(true);
-    expect(renderTaskQueue).toHaveBeenCalled();
+    expect(tqRefreshRow).toHaveBeenCalledWith('U1');
   });
 });
 

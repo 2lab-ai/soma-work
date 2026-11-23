@@ -194,9 +194,7 @@ function renderTaskQueue() {
   if (editable) tqWire(el);
 }
 function tqUser(id) {
-  var users = (_tq && _tq.users) || [];
-  for (var i = 0; i < users.length; i++) if (users[i].id === id) return users[i];
-  return null;
+  return ((_tq && _tq.users) || []).find(function(u) { return u.id === id; }) || null;
 }
 // Paint a knob at a step (while it turns) without rebuilding the row.
 function tqPaint(knob, step) {
@@ -268,7 +266,8 @@ async function tqPut(id, limit) {
   var r = await apiWrite('PUT', '/api/settings/task-limits/' + encodeURIComponent(id), { limit: limit });
   if (!r.ok) {
     tqStatus(who + ' 한도를 저장하지 못했습니다 — ' + r.error, true);
-    renderTaskQueue();
+    // The knob goes back to what is saved; nothing else on the page moves.
+    tqRefreshRow(id);
     return;
   }
   var row = r.data && r.data.user;
@@ -276,7 +275,33 @@ async function tqPut(id, limit) {
     for (var i = 0; i < _tq.users.length; i++) if (_tq.users[i].id === id) _tq.users[i] = row;
   }
   tqStatus(who + ': 동시 작업 ' + (limit === null ? '기본값 (' + tqLabel(tqStepOf(row && row.limit)) + ')' : tqLabel(tqStepOf(limit))) + '로 저장했습니다');
-  renderTaskQueue();
+  tqRefreshRow(id);
+}
+// One person's row as saved — updated in place: the knob keeps its focus, and a knob being dragged is left alone
+// (a save of another person's knob, or of this one, must not take it from under the hand).
+function tqRefreshRow(id) {
+  var u = tqUser(id);
+  var body = document.getElementById('tq-body');
+  if (!u || !body) return;
+  var li = null;
+  var rows = body.querySelectorAll('.tq-row');
+  for (var i = 0; i < rows.length; i++) if (rows[i].getAttribute('data-user') === id) li = rows[i];
+  if (!li) return;
+  var editable = adminModeOn();
+  var probe = document.createElement('ul');
+  probe.innerHTML = tqRow(u, editable);
+  var fresh = probe.firstChild;
+  var who = li.querySelector('.tq-who');
+  var freshWho = fresh && fresh.querySelector('.tq-who');
+  if (who && freshWho) who.innerHTML = freshWho.innerHTML;
+  var knob = li.querySelector('.tq-knob');
+  if (!knob) return;
+  var isDefault = u.setting === null || u.setting === undefined;
+  if (isDefault) knob.classList.add('is-default');
+  else knob.classList.remove('is-default');
+  var dragging = _tqDrag && _tqDrag.knob === knob;
+  var step = tqStepOf(u.limit);
+  if (!dragging && !_tqSaveTimers[id] && Number(knob.getAttribute('data-step')) !== step) tqPaint(knob, step);
 }
 function tqReset(btn) {
   tqPut(btn.getAttribute('data-user'), null);

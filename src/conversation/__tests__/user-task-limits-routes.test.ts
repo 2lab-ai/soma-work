@@ -68,7 +68,7 @@ describe('user task limit routes (작업 큐 tab)', () => {
       limitFor: (u: string) => limits.limitFor(u),
       runningTasks: (u: string) => (u === 'U_ALICE' ? [{ sessionKey: 'C1:1', channel: 'C1', threadTs: '1' }] : []),
       start: () => undefined,
-      interrupt: () => true,
+      interrupt: () => 'stopped' as const,
     });
     queue.gate({
       userId: 'U_ALICE',

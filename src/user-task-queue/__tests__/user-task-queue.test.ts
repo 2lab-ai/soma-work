@@ -26,7 +26,9 @@ interface Harness {
   clock: { now: number };
 }
 
-function harness(opts: { ledger?: UserTaskLedger; startThrows?: boolean } = {}): Harness {
+function harness(
+  opts: { ledger?: UserTaskLedger; startThrows?: boolean; stop?: 'stopped' | 'pending' | 'gone' } = {},
+): Harness {
   const running = new Map<string, RunningTask[]>();
   const limits = new Map<string, number>();
   const started: UserTaskEntry[] = [];
@@ -59,7 +61,7 @@ function harness(opts: { ledger?: UserTaskLedger; startThrows?: boolean } = {}):
     },
     interrupt: (task) => {
       interrupted.push(task);
-      return true;
+      return opts.stop ?? 'stopped';
     },
     notify,
     now: () => clock.now,
@@ -348,6 +350,47 @@ describe('UserTaskQueue.bypass (먼저 진행)', () => {
       ['request', 'C1:2.0'],
       ['resume', 'C1:1.0'],
     ]);
+  });
+
+  it('a turn still starting: the entry goes first and waits for the stop; nothing runs beside it', () => {
+    const h = harness({ stop: 'pending' });
+    h.running.set('U1', [taskA]);
+    h.queue.gate(input());
+    expect(h.queue.bypass('t1', 'U1')).toMatchObject({ ok: true, deferred: taskA, pending: true });
+    expect(h.started).toEqual([]);
+    expect(h.queue.snapshot().entries.map((e) => [e.sessionKey, e.kind, e.state])).toEqual([
+      ['C1:2.0', 'request', 'waiting'],
+      ['C1:1.0', 'resume', 'waiting'],
+    ]);
+    // The stop landed: the stopped thread is told; once its slot frees, the entry that went first starts as such.
+    h.queue.stopResolved('C1:1.0', true);
+    expect(h.notices).toContain('deferred:C1:1.0:for:C1:2.0');
+    expect(h.started).toEqual([]);
+    h.running.set('U1', []);
+    h.queue.release('U1');
+    expect(h.started.map((e) => e.id)).toEqual(['t1']);
+    expect(h.notices).toContain('started:t1:bypass');
+  });
+
+  it('a stop that never lands (the turn ended by itself, or time ran out) does not carry the task on', () => {
+    const h = harness({ stop: 'pending' });
+    h.running.set('U1', [taskA]);
+    h.queue.gate(input());
+    h.queue.bypass('t1', 'U1');
+    h.queue.stopResolved('C1:1.0', false);
+    expect(h.queue.snapshot().entries.map((e) => e.kind)).toEqual(['request']);
+    expect(h.notices.some((n) => n.startsWith('deferred:'))).toBe(false);
+    // Still at the limit: it waits for the running task to end.
+    expect(h.started).toEqual([]);
+  });
+
+  it('a task that already ended is not stopped: the entry starts now', () => {
+    const h = harness({ stop: 'gone' });
+    h.running.set('U1', [taskA]);
+    h.queue.gate(input());
+    expect(h.queue.bypass('t1', 'U1')).toEqual({ ok: true });
+    expect(h.started.map((e) => e.id)).toEqual(['t1']);
+    expect(h.queue.snapshot().entries.some((e) => e.kind === 'resume')).toBe(false);
   });
 
   it('refuses an entry that is not waiting', () => {

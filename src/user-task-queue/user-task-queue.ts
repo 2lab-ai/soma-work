@@ -105,8 +105,12 @@ export interface UserTaskQueueDeps {
    * synchronously; a throw means it could not start (the entry is dropped).
    */
   start(entry: UserTaskEntry): void;
-  /** Stop a running task's turn so another may go first. `false` = it could not be stopped. */
-  interrupt(task: RunningTask): boolean;
+  /**
+   * Stop a running task's turn so another may go first: `stopped` — it stopped (or nothing of it runs now: a goal loop
+   * between turns, whose next turn the gate holds); `pending` — its turn is still starting and the stop lands later
+   * (the host calls `stopResolved`); `gone` — it already ended.
+   */
+  interrupt(task: RunningTask): StopOutcome;
   notify?: UserTaskQueueNotifier;
   /** The queue changed (the dashboard repaints). */
   onChange?(): void;
@@ -137,7 +141,11 @@ export interface UserQueueView {
 /** What the ingress needs of the queue (`SlackHandler.handleMessage`). */
 export type UserTaskGatePort = Pick<UserTaskQueue, 'gate' | 'takeAdmission'>;
 
-export type QueueActionResult = { ok: true; deferred?: RunningTask } | { ok: false; reason: QueueActionRefusal };
+export type StopOutcome = 'stopped' | 'pending' | 'gone';
+
+export type QueueActionResult =
+  | { ok: true; deferred?: RunningTask; pending?: boolean }
+  | { ok: false; reason: QueueActionRefusal };
 export type QueueActionRefusal = 'not-found' | 'not-waiting' | 'forbidden';
 
 /** The cron job behind a scheduled fire (`MessageEvent.cron`), if the message is one. */
@@ -154,6 +162,8 @@ function previewOf(text: string | undefined): string {
 
 export class UserTaskQueue {
   private ledger: UserTaskLedger;
+  /** Stops 먼저 진행 asked for whose turn was still starting, by the stopped thread (in memory: a restart ends them). */
+  private readonly pendingStops = new Map<string, { victim: RunningTask; firstId: string; resumeId: string }>();
   private readonly now: () => number;
   private readonly newId: () => string;
 
@@ -245,16 +255,43 @@ export class UserTaskQueue {
       state: 'waiting',
       deferredFor: { sessionKey: entry.sessionKey, channel: entry.channel, threadTs: entry.threadTs },
     };
+    const stop = this.deps.interrupt(victim);
+    if (stop === 'gone') {
+      // It ended meanwhile: the slot is free, nothing to stop or carry on.
+      this.admitAndStart(entry, 'bypass', true);
+      return { ok: true };
+    }
+    if (stop === 'pending') {
+      // Its turn is still starting (no stop handle yet): this entry goes first in line and starts once the stop lands
+      // and the slot frees — never beside it (`stopResolved`).
+      const first: UserTaskEntry = { ...entry, bypass: true };
+      this.commit(putFirst(this.ledger, first, resume));
+      this.pendingStops.set(victim.sessionKey, { victim, firstId: first.id, resumeId: resume.id });
+      return { ok: true, deferred: victim, pending: true };
+    }
     const admitted: UserTaskEntry = { ...entry, state: 'admitted', admittedAt: this.now() };
     this.commit(putFirst(this.ledger, admitted, resume));
-    if (!this.deps.interrupt(victim)) {
-      // It could not be stopped (it just ended, or is gone): nothing to carry on later.
-      this.commit(remove(this.ledger, resume.id));
-    } else {
-      this.safe(() => this.deps.notify?.deferred(victim, admitted));
-    }
+    this.safe(() => this.deps.notify?.deferred(victim, admitted));
     this.startAdmitted(admitted, 'bypass');
     return { ok: true, deferred: victim };
+  }
+
+  /**
+   * A stop 먼저 진행 asked for while the turn was still starting is settled: `landed` — the turn was stopped (its
+   * thread is told, it carries on later); otherwise it ended by itself, or could not be stopped in time — it was never
+   * paused, so it is not carried on. Either way the entry that goes first starts when the slot frees.
+   */
+  stopResolved(sessionKey: string, landed: boolean): void {
+    const pending = this.pendingStops.get(sessionKey);
+    if (!pending) return;
+    this.pendingStops.delete(sessionKey);
+    if (landed) {
+      const first = findEntry(this.ledger, pending.firstId);
+      if (first) this.safe(() => this.deps.notify?.deferred(pending.victim, first));
+    } else if (findEntry(this.ledger, pending.resumeId)?.state === 'waiting') {
+      this.commit(remove(this.ledger, pending.resumeId));
+    }
+    this.release(this.ownerOf(pending));
   }
 
   /** Take a waiting entry out of line. */
@@ -348,7 +385,7 @@ export class UserTaskQueue {
         const ownBusy = this.deps.runningTasks(userId).some((t) => t.sessionKey === next.sessionKey);
         if (holding >= limit || ownBusy) return;
       }
-      this.admitAndStart(next, 'turn', false);
+      this.admitAndStart(next, next.bypass ? 'bypass' : 'turn', false);
     }
   }
 
@@ -367,6 +404,10 @@ export class UserTaskQueue {
       // It cannot start (its thread is gone): it leaves the line, the next one may go.
       if (findEntry(this.ledger, entry.id)) this.commit(remove(this.ledger, entry.id));
     }
+  }
+
+  private ownerOf(pending: { firstId: string; resumeId: string }): string | undefined {
+    return (findEntry(this.ledger, pending.firstId) ?? findEntry(this.ledger, pending.resumeId))?.userId;
   }
 
   private othersRunning(userId: string, sessionKey: string): RunningTask[] {

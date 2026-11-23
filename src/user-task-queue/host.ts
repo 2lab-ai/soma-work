@@ -34,6 +34,8 @@ export interface UserTaskQueueHostDeps {
   runningTasksOf(userId: string): RunningTask[];
   /** The thread's turn holds its slot, or its goal loop is about to run the next one. */
   isTaskRunning(sessionKey: string): boolean;
+  /** The thread's turn holds its slot (a turn runs, or is starting) — not just its goal loop between turns. */
+  isTurnBusy(sessionKey: string): boolean;
   /** The session is there and not closed (a stopped task can be carried on). */
   sessionAlive(sessionKey: string): boolean;
   handleMessage(event: Record<string, unknown>, say: Say): Promise<unknown>;
@@ -101,14 +103,21 @@ export function createUserTaskQueueHost(deps: UserTaskQueueHostDeps): UserTaskQu
   const retryEvery = deps.abortRetryMs ?? USER_TASK_QUEUE_ABORT_RETRY_MS;
   const retryFor = deps.abortRetryForMs ?? USER_TASK_QUEUE_ABORT_RETRY_FOR_MS;
   /**
-   * 먼저 진행 on a turn that is still starting (its stop handle is registered only after session setup) or between
-   * goal turns: try again until it stops, or until it is no longer running (a goal continuation of a thread that waits
-   * in line is dropped at the gate, so a goal gap ends by itself).
+   * 먼저 진행 on a turn that is still starting (its stop handle is registered only after session setup): try again
+   * until the stop lands, the turn ends by itself, or the time runs out — and tell the queue which (`stopResolved`):
+   * the entry that goes first waits for the slot either way, and only a stopped task is carried on later.
    */
   const keepStopping = (sessionKey: string) => {
     const until = now() + retryFor;
     const timer = setInterval(() => {
-      if (deps.abort(sessionKey) || !deps.isTaskRunning(sessionKey) || now() > until) clearInterval(timer);
+      let landed: boolean | undefined;
+      if (deps.abort(sessionKey)) landed = true;
+      else if (!deps.isTurnBusy(sessionKey) || now() > until) landed = false;
+      if (landed === undefined) return;
+      clearInterval(timer);
+      if (!landed)
+        logger.info('User task queue: 먼저 진행 stop did not land — the task is not carried on', { sessionKey });
+      queueRef?.stopResolved(sessionKey, landed);
     }, retryEvery);
     timer.unref?.();
   };
@@ -143,11 +152,13 @@ export function createUserTaskQueueHost(deps: UserTaskQueueHostDeps): UserTaskQu
       });
     },
     interrupt: (task) => {
-      if (deps.abort(task.sessionKey)) return true;
+      if (deps.abort(task.sessionKey)) return 'stopped';
       // It already ended: nothing to stop, nothing to carry on later.
-      if (!deps.isTaskRunning(task.sessionKey)) return false;
+      if (!deps.isTaskRunning(task.sessionKey)) return 'gone';
+      // Between goal turns nothing runs: the gate holds its next turn (its thread now waits in line).
+      if (!deps.isTurnBusy(task.sessionKey)) return 'stopped';
       keepStopping(task.sessionKey);
-      return true;
+      return 'pending';
     },
     notify,
     onChange: () => deps.onChange(),
@@ -179,6 +190,8 @@ export function createUserTaskQueueHost(deps: UserTaskQueueHostDeps): UserTaskQu
       if (pending) return;
       pending = setTimeout(() => {
         pending = undefined;
+        // Not in the boot grace either: the turns a restart cut resume first, whichever way the release is asked for.
+        if (now() - startedAt < USER_TASK_QUEUE_BOOT_GRACE_MS) return;
         if (queue.usersWaiting().length > 0) release();
       }, USER_TASK_QUEUE_RELEASE_DELAY_MS);
       pending.unref?.();

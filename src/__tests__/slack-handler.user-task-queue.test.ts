@@ -166,7 +166,7 @@ describe('SlackHandler — per-user task queue gate', () => {
               };
         void handler.handleMessage(event, vi.fn().mockResolvedValue({ ts: 'x' }));
       },
-      interrupt: () => true,
+      interrupt: () => 'stopped' as const,
     });
     handler.setUserTaskQueue(queue);
   });
@@ -307,5 +307,17 @@ describe('SlackHandler — per-user task queue gate', () => {
     expect(running[0]).toMatchObject({ sessionKey: 'C123:900.0', channel: 'C9', threadTs: '900.0' });
     handlerAny.followupMigration = undefined;
     await a.settle();
+  });
+  it('when the running task ends, the chain-settled hook starts the waiting one — no manual release', async () => {
+    handler.setUserTaskQueue(queue, () => queue.release(OWNER));
+    const a = await startBusy('100.0');
+    await handler.handleMessage(message('200.0', { ts: '200.01', text: '두 번째 일' }), vi.fn());
+    expect(startWithContinuation).toHaveBeenCalledTimes(1);
+    await a.settle();
+    await tick();
+    await tick();
+    expect(started.map((e) => e.sessionKey)).toEqual(['C123:200.0']);
+    expect(startWithContinuation).toHaveBeenCalledTimes(2);
+    expect(ledger.entries).toEqual([]);
   });
 });
