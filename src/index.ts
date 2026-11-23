@@ -103,6 +103,7 @@ import {
   setDashboardMultiChoiceAnswerHandler,
   setDashboardNewTaskProvider,
   setDashboardPermissionAnswerHandler,
+  setDashboardProcessSource,
   setDashboardRollbackHandler,
   setDashboardSessionAccessor,
   setDashboardStopHandler,
@@ -181,6 +182,7 @@ import { getPhoneCallStore } from './phone/store-instance';
 import { acquirePidLock, releasePidLock } from './pid-lock';
 import { BUNDLED_PLUGINS } from './plugin/bundled';
 import { PluginManager } from './plugin/plugin-manager';
+import { startProcessMonitor } from './process-monitor';
 import { getProjectMemoryStore, normalizeProjectSlug } from './project-memory-store';
 import { getVersionInfo, notifyRelease } from './release-notifier';
 import { clearDaemonReady, clearStaleDaemonReady, publishDaemonReadiness } from './service-readiness';
@@ -910,6 +912,9 @@ async function start() {
     // Connect dashboard: session accessor + real-time WebSocket broadcast on state changes
     setDashboardSessionAccessor(() => claudeHandler.getAllSessions());
     claudeHandler.getSessionRegistry().setActivityStateChangeCallback(() => broadcastSessionUpdate());
+    // Connect dashboard: the process monitor — each session's Claude Code process and every process under it on this
+    // node (the card's CPU · 메모리 chip, the 프로세스 tab with pause · resume). Samples every 5 s while one is alive.
+    setDashboardProcessSource(startProcessMonitor());
 
     // user-memory-store, user-settings-store, AND user-skill-store mutate
     // SSOT fields that feed the cached system prompt but live outside the

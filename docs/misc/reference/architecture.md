@@ -182,6 +182,22 @@ updates inside its terminal-cleanup boundary, including setup failures.
 - 대시보드는 `src/conversation/permission-prompts.ts`가 웹 서버 listen 동안 1초마다 shared store의 pending 디렉터리를 다시 읽어 세션 스레드별 인덱스를 만들고, 바뀌면 보드를 푸시한다. 보드 페이로드에는 도구 입력이 없다(요청자 전용 `GET .../permission/:approvalId`).
 - 환경 스킬(배포가 `plugin.envPlugins`로 표시한 플러그인의 스킬)은 어드민만 바로 쓴다. 모델의 `Skill` 호출과 그 플러그인 파일 읽기·쓰기(`Read`·`Glob`·`Grep`·`Bash`·`Write`·`Edit`·`NotebookEdit`)는 `evaluateToolPolicy` 6b단계가(비어드민 샌드박스 Bash에는 OS 수준 `denyRead`도), `$plugin:skill`은 `SkillForceHandler`가 같은 판정 함수(`src/env-skill-registry.ts`)로 막는다. 집행은 PreToolUse 훅의 `onEnvSkillDenied`(→ `ClaudeHandler.setEnvSkillPermissionRequester`, SlackHandler가 배선) → `src/slack/env-skill-permission-request.ts`(어드민 DM), 어드민 답은 `env_skill_perm_*` 액션(`src/slack/actions/env-skill-permission-action-handler.ts`). 허용 저장은 `user-skill-grants-store.ts`의 예약 소유자 `env-skills`. 운영 설명: `docs/runbook/add-new-deploy.md` §8.5.
 
+### Process monitor (`src/process-monitor/`)
+- 세션 = Claude Code 프로세스 하나. SDK spawn 훅(`createTrackedClaudeProcessSpawner(onStderr, owner)`, `claude-child-process-registry.ts`)이
+  자식마다 `{ sessionKey }`를 붙인다 — `ClaudeHandler.streamSdkQuery`가 `buildStreamOptions({ processOwner })`로 넘긴다. 세션 없는
+  one-shot(제목 · 디스패치 · 음성)은 owner가 없고 노드의 `unattributed`로 잡힌다.
+- `LocalProcessMonitor`(데몬이 `startProcessMonitor()`로 기동, `setDashboardProcessSource`로 대시보드에 연결)는 추적 루트가 있거나 기억한 프로세스가
+  남아 있을 때만 5초마다 `ps` 두 번(`-A -o pid=,ppid=` 전체 부모 맵 → 트리 멤버만 `-ww -o pid,ppid,stat,lstart,time,%cpu,rss,args -p …`)으로
+  `TreeSampler`가 루트 아래 자손 전부를 모은다. CPU = 두 샘플 사이 누적 CPU 시간 변화 ÷ 벽시계(100% = 코어 1개). 부모가 끝나 재부모된 프로세스는
+  (pid, 시작 시각)으로 기억해 계속 그 세션에 남긴다. 시작 시각이 다르면 재사용된 pid로 보고 버린다.
+- 스냅샷 모양은 노드 단위(`NodeProcessSnapshot`: `node` 가용량 + `sessions[]` + `unattributed`)이고, 호출부는 `ProcessHost` 인터페이스만 쓴다 —
+  워커 노드는 같은 인터페이스를 자기 전송으로 구현하면 된다(ADR 0003).
+- 대시보드: `KanbanSession.procUsage`(카드의 `proc` foot 칩, `faceFootMetrics`) — 샘플마다 칩이 바뀐 카드만 `scheduleLiveSessionUpdate`로 per-viewer
+  푸시(`procCardsToPush`). 디테일 카드 `procs` 탭(`renderPanelProcs`)은 `GET /api/dashboard/session/:key/processes`(비공개 작업 게이트 적용)를 3초마다,
+  `POST …/processes/:pid/:op`(pause · resume, body `{startToken}`, owner 또는 admin mode admin + CSRF)로 `SIGSTOP`/`SIGCONT`. 서버가 그 순간 다시 샘플해
+  트리 소속과 시작 시각을 확인한 뒤에만 신호를 보낸다. 턴 abort는 멈춘 루트를 `SIGCONT`하고(spawner) 모니터가 그 세션에서 멈춘 것을 모두 이어 실행한다.
+  `GET /api/dashboard/nodes`(admin)는 스케줄러용 노드 뷰.
+
 ### Observability (`src/metrics/`, `src/conversation/`)
 - 이벤트 기반 텔레메트리(토큰·툴콜·레이턴시), 주기 리포트
 - 대화 레코더 + 웹 대시보드(`src/conversation/dashboard.ts`). 세션 하나의 세 서피스(`.prd/13`): 접힌 카드 `renderCardFace`(분류) ·

@@ -1,0 +1,318 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { registerPublicChannel } from '../__fixtures__/public-channel';
+
+/**
+ * The 프로세스 tab's routes and the card's CPU · 메모리 projection (src/process-monitor):
+ *   GET  /api/dashboard/session/:key/processes            — whoever may see the task
+ *   POST /api/dashboard/session/:key/processes/:pid/:op   — owner, or admin in admin mode; CSRF
+ *   GET  /api/dashboard/nodes                             — admins (it names every session on the node)
+ * The monitor is a double here; its own behaviour is pinned in src/process-monitor/__tests__.
+ */
+
+const mockConfig = {
+  conversation: {
+    summaryModel: 'claude-haiku-4-20250414',
+    viewerHost: '127.0.0.1',
+    viewerPort: 0,
+    viewerUrl: '',
+    viewerToken: 'test-token',
+  },
+  oauth: {
+    google: { clientId: '', clientSecret: '' },
+    microsoft: { clientId: '', clientSecret: '' },
+    jwtSecret: '',
+    jwtExpiresIn: 604800,
+  },
+};
+
+vi.mock('../../config', () => ({ config: mockConfig }));
+vi.mock('../../env-paths', () => ({ IS_DEV: true, DATA_DIR: '/tmp/test-data' }));
+vi.mock('../../admin-utils', () => ({ isAdminUser: (id: string) => id === 'U_ADMIN' }));
+vi.mock('../recorder', () => ({
+  listConversations: vi.fn().mockResolvedValue([]),
+  getConversation: vi.fn().mockResolvedValue(null),
+  getTurnRawContent: vi.fn().mockResolvedValue(null),
+}));
+vi.mock('../viewer', () => ({
+  renderConversationListPage: vi.fn().mockReturnValue('<html></html>'),
+  renderConversationViewPage: vi.fn().mockReturnValue('<html></html>'),
+}));
+vi.mock('../../session-archive', () => ({
+  getArchiveStore: () => ({ listRecent: () => [] }),
+}));
+
+const AUTH_HEADER = { Authorization: 'Bearer test-token' };
+const KEY = 'C1:t1';
+
+function liveSession(overrides: Record<string, any> = {}) {
+  return {
+    sessionId: 'sid1',
+    ownerId: 'U1',
+    channelId: 'C1',
+    threadTs: 't1',
+    model: 'claude-opus-5-5[1m]',
+    activityState: 'working',
+    state: 'MAIN',
+    lastActivity: new Date('2026-11-23T00:00:00Z'),
+    ...overrides,
+  };
+}
+
+const node = {
+  nodeId: 'n1',
+  platform: 'darwin',
+  cpuCount: 8,
+  cpuBusyPercent: 20,
+  loadAvg1: 1,
+  totalMemBytes: 16e9,
+  availableMemBytes: 8e9,
+};
+const proc = (pid: number, extra: Record<string, unknown> = {}) => ({
+  pid,
+  ppid: 1,
+  startToken: 'Mon Nov 23 10:00:00 2026',
+  depth: 0,
+  role: 'root',
+  state: 'running',
+  cpuPercent: 40,
+  rssBytes: 300e6,
+  name: 'claude',
+  command: 'claude --model …',
+  ...extra,
+});
+function snapshot(sessions: any[] = []) {
+  return { node, sampledAt: 1, sessions, unattributed: { processCount: 0, cpuPercent: 0, rssBytes: 0 } };
+}
+const sessionA = {
+  sessionKey: KEY,
+  nodeId: 'n1',
+  rootAlive: true,
+  processCount: 2,
+  stoppedCount: 1,
+  cpuPercent: 42.5,
+  rssBytes: 1.2e9,
+  sampledAt: 1,
+  processes: [proc(200), proc(300, { ppid: 200, depth: 1, role: 'child', state: 'stopped', name: 'bash' })],
+};
+
+function fakeSource(snap = snapshot([sessionA])) {
+  const listeners = new Set<(s: any) => void>();
+  return {
+    snap,
+    latest: vi.fn(() => snap),
+    fresh: vi.fn(async () => snap),
+    control: vi.fn(async (input: any) => ({ ok: true as const, pid: input.pid, state: 'stopped' })),
+    onSample: vi.fn((l: (s: any) => void) => {
+      listeners.add(l);
+      return () => listeners.delete(l);
+    }),
+    emit(s: any) {
+      for (const l of listeners) l(s);
+    },
+  };
+}
+
+describe('Dashboard — the 프로세스 tab and the CPU · 메모리 chip', () => {
+  let web: any;
+  let dashboard: any;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    web = await import('../web-server');
+    dashboard = await import('../dashboard');
+    await web.startWebServer({ listen: false });
+    await registerPublicChannel('C1');
+    dashboard.setDashboardSessionAccessor(() => new Map([[KEY, liveSession()]]));
+  });
+
+  afterEach(async () => {
+    dashboard.setDashboardProcessSource(null);
+    await web.stopWebServer();
+  });
+
+  async function signIn(slackUserId: string) {
+    const { issueSlackToken } = await import('../oauth');
+    const token = issueSlackToken({ slackUserId, email: `${slackUserId}@slack.local`, name: slackUserId });
+    const sso = await web.injectWebServer({ method: 'GET', url: `/auth/sso?token=${encodeURIComponent(token)}` });
+    const cookie = String(sso.headers['set-cookie']).split(';')[0];
+    const me = JSON.parse((await web.injectWebServer({ method: 'GET', url: '/auth/me', headers: { cookie } })).body);
+    return { cookie, 'x-csrf-token': me.csrfToken as string };
+  }
+  const get = (headers: Record<string, string> = AUTH_HEADER, key = KEY) =>
+    web.injectWebServer({ method: 'GET', url: `/api/dashboard/session/${encodeURIComponent(key)}/processes`, headers });
+  const control = (op: string, pid: string | number, payload: unknown, headers: Record<string, string> = AUTH_HEADER) =>
+    web.injectWebServer({
+      method: 'POST',
+      url: `/api/dashboard/session/${encodeURIComponent(KEY)}/processes/${pid}/${op}`,
+      headers,
+      payload,
+    });
+
+  it('GET answers the node and this session’s tree — any signed-in viewer of a public task', async () => {
+    const src = fakeSource();
+    dashboard.setDashboardProcessSource(src);
+    const res = await get(await signIn('U2'));
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.node).toEqual(node);
+    expect(body.session.processes.map((p: any) => p.pid)).toEqual([200, 300]);
+    expect(src.fresh).toHaveBeenCalled();
+  });
+
+  it('GET answers session null when the task has no live process, 503 with no monitor', async () => {
+    expect((await get()).statusCode).toBe(503);
+    dashboard.setDashboardProcessSource(fakeSource(snapshot([])));
+    const res = await get();
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).session).toBeNull();
+  });
+
+  it('GET of a private task is hidden from another user (the private-task gate covers the route)', async () => {
+    dashboard.setDashboardSessionAccessor(() => new Map([[KEY, liveSession({ channelId: 'D_PRIVATE' })]]));
+    dashboard.setDashboardProcessSource(fakeSource());
+    expect((await get(await signIn('U2'))).statusCode).toBe(404);
+    expect((await get(await signIn('U1'))).statusCode).toBe(200);
+  });
+
+  it('POST pauses through the monitor with the pid and the start time the tab showed', async () => {
+    const src = fakeSource();
+    dashboard.setDashboardProcessSource(src);
+    const res = await control('pause', 300, { startToken: 'Mon Nov 23 10:00:00 2026' });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ ok: true, pid: 300, state: 'stopped' });
+    expect(src.control).toHaveBeenCalledWith({
+      sessionKey: KEY,
+      pid: 300,
+      startToken: 'Mon Nov 23 10:00:00 2026',
+      action: 'pause',
+    });
+  });
+
+  it('POST: owner yes; another user 403; admin only in admin mode; no CSRF 403', async () => {
+    const src = fakeSource();
+    dashboard.setDashboardProcessSource(src);
+    const body = { startToken: 'Mon Nov 23 10:00:00 2026' };
+    expect((await control('resume', 300, body, await signIn('U1'))).statusCode).toBe(200);
+    expect((await control('resume', 300, body, await signIn('U2'))).statusCode).toBe(403);
+    const admin = await signIn('U_ADMIN');
+    expect((await control('resume', 300, body, admin)).statusCode).toBe(403);
+    expect((await control('resume', 300, body, { ...admin, 'x-admin-mode': 'on' })).statusCode).toBe(200);
+    const { cookie } = await signIn('U1');
+    expect((await control('resume', 300, body, { cookie })).statusCode).toBe(403);
+    expect(src.control).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['kill', 300, { startToken: 'x' }, 404],
+    ['pause', 'abc', { startToken: 'x' }, 400],
+    ['pause', 0, { startToken: 'x' }, 400],
+    ['pause', 300, {}, 400],
+    ['pause', 300, { startToken: 'x'.repeat(65) }, 400],
+  ])('POST %s %s %j → %i, and the monitor is never asked', async (op, pid, payload, status) => {
+    const src = fakeSource();
+    dashboard.setDashboardProcessSource(src);
+    expect((await control(op, pid, payload)).statusCode).toBe(status);
+    expect(src.control).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['not-found', 404],
+    ['stale', 409],
+    ['denied', 403],
+    ['unsupported', 501],
+  ])('POST answers the monitor’s refusal %s with %i', async (reason, status) => {
+    const src = fakeSource();
+    src.control.mockResolvedValueOnce({ ok: false, reason } as any);
+    dashboard.setDashboardProcessSource(src);
+    const res = await control('pause', 300, { startToken: 'x' });
+    expect(res.statusCode).toBe(status);
+    expect(JSON.parse(res.body)).toEqual({ ok: false, code: reason });
+  });
+
+  it('a sibling instance’s key is refused (409) — its processes are on that instance', async () => {
+    dashboard.setSelfInstanceEnv({ instanceName: 'self-host', port: 33000, host: '127.0.0.1' });
+    try {
+      dashboard.setDashboardProcessSource(fakeSource());
+      expect((await get(AUTH_HEADER, 'other-instance::C9:t9')).statusCode).toBe(409);
+      expect((await get(AUTH_HEADER, `self-host::${KEY}`)).statusCode).toBe(200);
+    } finally {
+      dashboard.setSelfInstanceEnv(undefined as never);
+    }
+  });
+
+  it('the board card carries procUsage from the latest sample, and none when the session has no process', async () => {
+    dashboard.setDashboardProcessSource(fakeSource());
+    const board = JSON.parse(
+      (await web.injectWebServer({ method: 'GET', url: '/api/dashboard/sessions', headers: AUTH_HEADER })).body,
+    ).board;
+    const card = [...board.working, ...board.waiting, ...board.idle].find((c: any) => c.key.endsWith(KEY));
+    expect(card.procUsage).toEqual({
+      nodeId: 'n1',
+      cpuCount: 8,
+      rootAlive: true,
+      processCount: 2,
+      stoppedCount: 1,
+      cpuPercent: 42.5,
+      rssBytes: 1.2e9,
+    });
+
+    dashboard.setDashboardProcessSource(fakeSource(snapshot([])));
+    const board2 = JSON.parse(
+      (await web.injectWebServer({ method: 'GET', url: '/api/dashboard/sessions', headers: AUTH_HEADER })).body,
+    ).board;
+    const card2 = [...board2.working, ...board2.waiting, ...board2.idle].find((c: any) => c.key.endsWith(KEY));
+    expect(card2).not.toHaveProperty('procUsage');
+  });
+
+  it('GET /api/dashboard/nodes: admins get each node’s capacity and per-session totals; others 403', async () => {
+    dashboard.setDashboardProcessSource(fakeSource());
+    expect(
+      (await web.injectWebServer({ method: 'GET', url: '/api/dashboard/nodes', headers: await signIn('U2') }))
+        .statusCode,
+    ).toBe(403);
+    const res = await web.injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/nodes',
+      headers: await signIn('U_ADMIN'),
+    });
+    expect(res.statusCode).toBe(200);
+    const [n] = JSON.parse(res.body).nodes;
+    expect(n.node).toEqual(node);
+    expect(n.sessions).toEqual([
+      {
+        sessionKey: KEY,
+        nodeId: 'n1',
+        rootAlive: true,
+        processCount: 2,
+        stoppedCount: 1,
+        cpuPercent: 42.5,
+        rssBytes: 1.2e9,
+        sampledAt: 1,
+      },
+    ]);
+  });
+
+  it('a sample pushes only cards whose chip changed, and once more when the last process exits', () => {
+    const pushed = new Map<string, string>();
+    expect(dashboard.procCardsToPush(pushed, snapshot([sessionA]))).toEqual([KEY]);
+    // Same whole CPU percent, same 10 MB: the chip reads the same — no push.
+    expect(
+      dashboard.procCardsToPush(pushed, snapshot([{ ...sessionA, cpuPercent: 42.6, rssBytes: 1.2e9 + 1e6 }])),
+    ).toEqual([]);
+    // A process paused: the chip changes.
+    expect(dashboard.procCardsToPush(pushed, snapshot([{ ...sessionA, stoppedCount: 2 }]))).toEqual([KEY]);
+    // Every process gone: one more push so the chip disappears, then nothing.
+    expect(dashboard.procCardsToPush(pushed, snapshot([]))).toEqual([KEY]);
+    expect(dashboard.procCardsToPush(pushed, snapshot([]))).toEqual([]);
+  });
+
+  it('wiring a source subscribes once and unwiring unsubscribes', () => {
+    const src = fakeSource();
+    dashboard.setDashboardProcessSource(src);
+    expect(src.onSample).toHaveBeenCalledTimes(1);
+    dashboard.setDashboardProcessSource(null);
+    const again = fakeSource();
+    dashboard.setDashboardProcessSource(again);
+    expect(again.onSample).toHaveBeenCalledTimes(1);
+  });
+});
