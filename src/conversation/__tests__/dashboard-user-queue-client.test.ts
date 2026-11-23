@@ -173,8 +173,7 @@ describe('renderBoard wiring (source)', () => {
 // poll). The push carries this instance's 대기큐 too: dropping it emptied the line on the first push after a poll.
 describe('a pushed board keeps the 대기큐 (mergeSiblingCards)', () => {
   const cols = () => ({ working: [], waiting: [], idle: [], closed: [] });
-  const sib = (over: Record<string, unknown> = {}) =>
-    item({ key: 'other::C9:t9', entryId: 'q9', environment: { instanceName: 'other' }, ...over });
+  const sib = () => item({ key: 'other::C9:t9', entryId: 'q9', environment: { instanceName: 'other' } });
   const merge = (polled: unknown) =>
     load<any>(['mergeSiblingCards', 'isSiblingSession'], { _lastPolledBoard: polled, SELF_INSTANCE_NAME: 'dev' })
       .mergeSiblingCards;
