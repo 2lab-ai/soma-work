@@ -17,7 +17,8 @@ function clientFn(name: string): string {
   const end = ALL_JS.indexOf('\n}\n', start);
   return ALL_JS.slice(start + 1, end + 2);
 }
-const VARS = 'var TQ_MAX = 10; var TQ_SWEEP = 270; var TQ_PX_PER_STEP = 14; var _tq = null; var _tqSaveTimers = {};';
+const VARS =
+  'var TQ_MAX = 10; var TQ_SWEEP = 270; var TQ_PX_PER_STEP = 14; var _tq = null; var _tqSaveTimers = { U1: 7 }; var _tqWriteSeq = {};';
 function load<T>(fns: string[], inject: Record<string, unknown> = {}): T {
   const names = Object.keys(inject);
   const body = `${VARS}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')}, setTq: function (v) { _tq = v; } };`;
@@ -146,6 +147,44 @@ describe('saving', () => {
     await k.tqPut('U1', 2);
     expect(tqStatus.mock.calls[0][1]).toBe(true);
     expect(tqRefreshRow).toHaveBeenCalledWith('U1');
+  });
+});
+
+describe('writes in order', () => {
+  it('기본값으로 drops a turn of the knob still waiting to be saved', () => {
+    const tqPut = vi.fn();
+    const clear = vi.fn();
+    // _tqSaveTimers holds a pending save for U1 (timer 7, the knob's debounce).
+    const k = load<any>(['tqReset'], { tqPut, clearTimeout: clear });
+    k.tqReset({ getAttribute: () => 'U1' });
+    expect(clear).toHaveBeenCalledWith(7);
+    expect(tqPut).toHaveBeenCalledWith('U1', null);
+  });
+
+  it('an answer to a write a later one replaced moves nothing', async () => {
+    let resolveFirst!: (v: unknown) => void;
+    const apiWrite = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise((r) => (resolveFirst = r)))
+      .mockResolvedValueOnce({
+        ok: true,
+        data: { user: { id: 'U1', name: 'Alice', limit: null, setting: null, defaultLimit: 1 } },
+      });
+    const tqStatus = vi.fn();
+    const tqRefreshRow = vi.fn();
+    const k = load<any>(['tqPut', 'tqUser', 'tqLabel', 'tqStepOf'], {
+      apiWrite,
+      tqStatus,
+      tqRefreshRow,
+      encodeURIComponent,
+    });
+    k.setTq({ users: [{ id: 'U1', name: 'Alice', limit: 1 }] });
+    const first = k.tqPut('U1', 5);
+    await k.tqPut('U1', null);
+    resolveFirst({ ok: true, data: { user: { id: 'U1', name: 'Alice', limit: 5, setting: 5, defaultLimit: 1 } } });
+    await first;
+    expect(tqStatus).toHaveBeenCalledTimes(1);
+    expect(tqStatus.mock.calls[0][0]).toContain('기본값');
   });
 });
 

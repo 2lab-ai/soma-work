@@ -8,9 +8,10 @@
  * - **When** — a chain settling (a task ended, or stopped to ask its owner) asks for a release shortly after (the
  *   goal loop registers its next turn first); a tick looks every few seconds as a safety net, and not at all in the
  *   first seconds after a restart (the turns a restart cut resume first).
- * - **Stop** (먼저 진행) — the running task's turn is aborted as `user-interrupted`: the turn that replaces it runs
- *   now, and the follow-up queue is not frozen. A turn that is still starting has no stop handle yet: the stop is
- *   tried again until it lands. Nothing starts while the host shuts down.
+ * - **Stop** (먼저 진행) — the running task's turn is aborted as `user-interrupted` (the follow-up queue is not frozen;
+ *   an interrupted run opens no drain, so its queued follow-ups wait for its resume). The entry that goes first starts
+ *   once that turn's slot is free — never beside it. A turn that is still starting has no stop handle yet: the stop
+ *   is tried again until it lands. Nothing starts while the host shuts down.
  */
 import { Logger } from '../logger';
 import type { UserTaskEntry } from './ledger';
@@ -24,6 +25,8 @@ export const USER_TASK_QUEUE_BOOT_GRACE_MS = 20_000;
 export const USER_TASK_QUEUE_RELEASE_DELAY_MS = 600;
 export const USER_TASK_QUEUE_ABORT_RETRY_MS = 500;
 export const USER_TASK_QUEUE_ABORT_RETRY_FOR_MS = 60_000;
+/** A turn that took the stop gets this many retry windows to free its slot before the watch lets go. */
+export const USER_TASK_QUEUE_SETTLE_FACTOR = 10;
 
 type Say = (args: any) => Promise<{ ts?: string }>;
 
@@ -103,17 +106,22 @@ export function createUserTaskQueueHost(deps: UserTaskQueueHostDeps): UserTaskQu
   const retryEvery = deps.abortRetryMs ?? USER_TASK_QUEUE_ABORT_RETRY_MS;
   const retryFor = deps.abortRetryForMs ?? USER_TASK_QUEUE_ABORT_RETRY_FOR_MS;
   /**
-   * 먼저 진행 on a turn that is still starting (its stop handle is registered only after session setup): try again
-   * until the stop lands, the turn ends by itself, or the time runs out — and tell the queue which (`stopResolved`):
-   * the entry that goes first waits for the slot either way, and only a stopped task is carried on later.
+   * 먼저 진행 on a running turn: ask it to stop (again and again while it is still starting and has no stop handle),
+   * and wait until its slot is free — a stop that was asked for is not a turn that ended (a tool may still unwind).
+   * Then tell the queue (`stopResolved`): `landed` — the stop was taken (its thread is told and it carries on later);
+   * otherwise the turn ended by itself first, or the stop never landed in time. The entry that goes first starts only
+   * when the slot frees, either way.
    */
-  const keepStopping = (sessionKey: string) => {
+  const watchStop = (sessionKey: string, landedNow: boolean) => {
     const until = now() + retryFor;
+    // Waiting for the slot of a turn that took the stop is bounded too (a stuck teardown must not leak a timer).
+    const settleBy = now() + retryFor * USER_TASK_QUEUE_SETTLE_FACTOR;
+    let landed = landedNow;
     const timer = setInterval(() => {
-      let landed: boolean | undefined;
-      if (deps.abort(sessionKey)) landed = true;
-      else if (!deps.isTurnBusy(sessionKey) || now() > until) landed = false;
-      if (landed === undefined) return;
+      if (!landed) landed = deps.abort(sessionKey);
+      const free = !deps.isTurnBusy(sessionKey);
+      const out = landed ? now() > settleBy : now() > until;
+      if (!free && !out) return;
       clearInterval(timer);
       if (!landed)
         logger.info('User task queue: 먼저 진행 stop did not land — the task is not carried on', { sessionKey });
@@ -152,12 +160,11 @@ export function createUserTaskQueueHost(deps: UserTaskQueueHostDeps): UserTaskQu
       });
     },
     interrupt: (task) => {
-      if (deps.abort(task.sessionKey)) return 'stopped';
       // It already ended: nothing to stop, nothing to carry on later.
       if (!deps.isTaskRunning(task.sessionKey)) return 'gone';
       // Between goal turns nothing runs: the gate holds its next turn (its thread now waits in line).
       if (!deps.isTurnBusy(task.sessionKey)) return 'stopped';
-      keepStopping(task.sessionKey);
+      watchStop(task.sessionKey, deps.abort(task.sessionKey));
       return 'pending';
     },
     notify,

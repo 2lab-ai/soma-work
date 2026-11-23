@@ -100,6 +100,23 @@ describe('uqCardOf', () => {
     expect(admitted.actions).toBeUndefined();
   });
 
+  it('someone who may not act on it sees the buttons inert, with the reason', () => {
+    const { uqCardOf: asStranger } = load<any>(['uqCardOf', 'uqCardKey', 'uqSibling'], {
+      SELF_INSTANCE_NAME: 'dev',
+      viewerCanManage: () => false,
+      OWNER_ONLY_MSG: '소유자나 관리자 모드를 켠 관리자만 할 수 있어요',
+    });
+    const card = asStranger(item(), undefined);
+    expect(card.primary).toMatchObject({
+      id: 'uq-bypass',
+      disabled: '소유자나 관리자 모드를 켠 관리자만 할 수 있어요',
+    });
+    expect(card.actions[0]).toMatchObject({
+      id: 'uq-cancel',
+      disabled: '소유자나 관리자 모드를 켠 관리자만 할 수 있어요',
+    });
+  });
+
   it('a sibling instance’s entry shows no buttons here; no limit reads 무제한', () => {
     const card = uqCardOf(item({ environment: { instanceName: 'main' }, limit: null }), undefined);
     expect(card.primary).toBeUndefined();

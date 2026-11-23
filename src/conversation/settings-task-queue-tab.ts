@@ -260,10 +260,15 @@ function tqSave(knob, delay) {
     tqPut(id, tqSettingOf(Number(knob.getAttribute('data-step')) || 1));
   }, delay);
 }
+var _tqWriteSeq = {};
 async function tqPut(id, limit) {
   var u = tqUser(id);
   var who = (u && u.name) || id;
+  // Writes go out in order; an answer to one that a later write replaced moves nothing.
+  var seq = (_tqWriteSeq[id] || 0) + 1;
+  _tqWriteSeq[id] = seq;
   var r = await apiWrite('PUT', '/api/settings/task-limits/' + encodeURIComponent(id), { limit: limit });
+  if (_tqWriteSeq[id] !== seq) return;
   if (!r.ok) {
     tqStatus(who + ' 한도를 저장하지 못했습니다 — ' + r.error, true);
     // The knob goes back to what is saved; nothing else on the page moves.
@@ -304,6 +309,12 @@ function tqRefreshRow(id) {
   if (!dragging && !_tqSaveTimers[id] && Number(knob.getAttribute('data-step')) !== step) tqPaint(knob, step);
 }
 function tqReset(btn) {
-  tqPut(btn.getAttribute('data-user'), null);
+  var id = btn.getAttribute('data-user');
+  // A turn of the knob still waiting to be saved is dropped: 기본값으로 is the last word.
+  if (_tqSaveTimers[id]) {
+    clearTimeout(_tqSaveTimers[id]);
+    delete _tqSaveTimers[id];
+  }
+  tqPut(id, null);
 }
 `;

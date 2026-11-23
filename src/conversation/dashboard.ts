@@ -12527,8 +12527,11 @@ function uqCardOf(item, session) {
   var since = Number(item.enqueuedAt);
   if (since > 0) card.since = since;
   if (item.state === 'waiting' && !uqSibling(item)) {
-    card.primary = { id: 'uq-bypass', label: '먼저 진행' };
-    card.actions = [{ id: 'uq-cancel', label: '대기 취소' }];
+    // As the server allows (#716): the entry's owner, or an admin with admin mode on; anyone else sees why not.
+    var may = typeof viewerCanManage === 'function' ? viewerCanManage(item) : true;
+    var why = may ? false : typeof OWNER_ONLY_MSG === 'string' ? OWNER_ONLY_MSG : true;
+    card.primary = { id: 'uq-bypass', label: '먼저 진행', disabled: why };
+    card.actions = [{ id: 'uq-cancel', label: '대기 취소', disabled: why }];
   }
   return card;
 }

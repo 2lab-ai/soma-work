@@ -110,7 +110,7 @@ describe('createUserTaskQueueHost', () => {
   });
 
   it('먼저 진행 aborts the running turn as user-interrupted', () => {
-    const { h, running, abort } = host();
+    const { h, running, abort } = host({ isTaskRunning: () => true, isTurnBusy: () => true });
     running.set('U1', [{ sessionKey: 'C1:1.0', channel: 'C1', threadTs: '1.0' }]);
     const queued = h.queue.gate(gateInput('C1:2.0', '2.0'));
     if (queued.action !== 'queued') throw new Error('expected queued');
@@ -195,6 +195,33 @@ describe('createUserTaskQueueHost', () => {
     expect(handleMessage).toHaveBeenCalledTimes(1);
   });
 
+  it('a stop that was taken still waits for the turn to unwind: nothing starts while its slot is held', () => {
+    vi.useFakeTimers();
+    let busy = true;
+    const abort = vi.fn(() => true);
+    const { h, running, handleMessage } = host({
+      abort,
+      isTaskRunning: () => busy,
+      isTurnBusy: () => busy,
+      abortRetryMs: 100,
+    });
+    running.set('U1', [{ sessionKey: 'C1:1.0', channel: 'C1', threadTs: '1.0' }]);
+    const queued = h.queue.gate(gateInput('C1:2.0', '2.0'));
+    if (queued.action !== 'queued') throw new Error('expected queued');
+    expect(h.queue.bypass(queued.entry.id, 'U1')).toMatchObject({ ok: true, pending: true });
+    expect(abort).toHaveBeenCalledTimes(1);
+    // A tool still unwinds: the slot is held, the entry waits.
+    vi.advanceTimersByTime(1_000);
+    expect(handleMessage).not.toHaveBeenCalled();
+    expect(abort).toHaveBeenCalledTimes(1);
+    // The turn settled: the slot frees, the stopped task carries on later, the entry starts.
+    busy = false;
+    running.set('U1', []);
+    vi.advanceTimersByTime(100);
+    expect(handleMessage).toHaveBeenCalledTimes(1);
+    expect(h.queue.snapshot().entries.some((e) => e.kind === 'resume')).toBe(true);
+  });
+
   it('a starting turn that ends by itself before the stop lands is not carried on', () => {
     vi.useFakeTimers();
     let busy = true;
@@ -224,7 +251,8 @@ describe('createUserTaskQueueHost', () => {
     const queued = h.queue.gate(gateInput('C1:2.0', '2.0'));
     if (queued.action !== 'queued') throw new Error('expected queued');
     expect(h.queue.bypass(queued.entry.id, 'U1')).toMatchObject({ ok: true, deferred: expect.any(Object) });
-    expect(abort).toHaveBeenCalledTimes(1);
+    // Nothing runs to stop: the gate holds its next goal turn.
+    expect(abort).not.toHaveBeenCalled();
     expect(handleMessage).toHaveBeenCalledTimes(1);
     expect(h.queue.snapshot().entries.some((e) => e.kind === 'resume')).toBe(true);
   });
