@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import type { TrackedClaudeRootInfo } from '../agent-runtime/claude-child-process-registry';
 import { createNodeCapacityReader, type RunCommand } from './node-capacity';
 import { type ReadCpuSeconds, type RunPs, TreeSampler } from './tree-sampler';
@@ -59,10 +60,31 @@ export interface ProcessMonitorDeps {
   readonly now?: () => number;
   readonly intervalMs?: number;
   readonly readCapacity?: () => Promise<NodeCapacity>;
+  /**
+   * The live start time of a pid, in the start-token form (`ps lstart`), or null when it is gone. Asked right before an
+   * automatic resume (abort, shutdown) so a paused process that was killed and whose pid the OS reused since the last
+   * sample is never signalled. Synchronous: it runs on exit paths.
+   */
+  readonly liveStartToken?: (pid: number) => string | null;
   readonly logger?: { info(msg: string, meta?: unknown): void; warn(msg: string, meta?: unknown): void };
 }
 
 const DEFAULT_INTERVAL_MS = 5_000;
+
+/** `ps -o lstart= -p <pid>` with the C locale, whitespace collapsed like the sampler's start token; null when gone. */
+function psLiveStartToken(pid: number): string | null {
+  try {
+    const out = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
+      env: { PATH: '/bin:/usr/bin', LC_ALL: 'C' },
+      timeout: 2_000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).toString();
+    const token = out.trim().split(/\s+/).join(' ');
+    return token || null;
+  } catch {
+    return null;
+  }
+}
 
 type Listener = (snapshot: NodeProcessSnapshot) => void;
 
@@ -78,8 +100,11 @@ export class LocalProcessMonitor implements ProcessHost {
   private snapshot: NodeProcessSnapshot | null = null;
   private inFlight: Promise<NodeProcessSnapshot> | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
-  private unsubscribeAbort: (() => void) | null = null;
-  private unsubscribeShutdown: (() => void) | null = null;
+  private readonly unsubscribeAbort: () => void;
+  private readonly unsubscribeShutdown: (() => void) | null;
+  private readonly liveStartToken: (pid: number) => string | null;
+  /** session → how many times its turn was aborted; a pause whose check spans an abort is refused. */
+  private readonly abortGen = new Map<string, number>();
   private readonly listeners = new Set<Listener>();
   /** session → pid → start token, for every process this monitor paused and has not resumed. */
   private readonly paused = new Map<string, Map<number, string>>();
@@ -94,12 +119,15 @@ export class LocalProcessMonitor implements ProcessHost {
     this.readCapacity =
       deps.readCapacity ??
       createNodeCapacityReader({ nodeId: deps.nodeId, platform: this.platform, run: deps.runCommand });
+    this.liveStartToken = deps.liveStartToken ?? psLiveStartToken;
+    // Cleanup is live from the start, not from start(): control() works on an unstarted monitor too, and a pause it
+    // makes must still be undone by an abort or a shutdown.
+    this.unsubscribeAbort = deps.roots.onAbort((root) => this.resumeAfterAbort(root));
+    this.unsubscribeShutdown = deps.roots.onShutdown?.(() => this.resumeAllPaused()) ?? null;
   }
 
   start(): void {
     if (this.timer) return;
-    this.unsubscribeAbort = this.deps.roots.onAbort((root) => this.resumeAfterAbort(root));
-    this.unsubscribeShutdown = this.deps.roots.onShutdown?.(() => this.resumeAllPaused()) ?? null;
     this.timer = setInterval(() => {
       // Idle: nothing tracked, nothing remembered, and the last sample already said so — no ps, no vm_stat.
       if (!this.sampler.hasWork(this.deps.roots.roots()) && this.snapshot && this.snapshot.sessions.length === 0)
@@ -109,13 +137,17 @@ export class LocalProcessMonitor implements ProcessHost {
     this.timer.unref?.();
   }
 
+  /** Stops the sampling timer. Abort and shutdown cleanup stay live while the monitor exists (see dispose). */
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
-    this.unsubscribeAbort?.();
-    this.unsubscribeAbort = null;
+  }
+
+  /** Stop the timer and detach from the registry — the monitor is going away (tests). */
+  dispose(): void {
+    this.stop();
+    this.unsubscribeAbort();
     this.unsubscribeShutdown?.();
-    this.unsubscribeShutdown = null;
   }
 
   /**
@@ -123,17 +155,20 @@ export class LocalProcessMonitor implements ProcessHost {
    * behind would hold its memory, ports and locks with nobody to resume it). Synchronous — it runs on exit paths.
    */
   resumeAllPaused(): void {
-    for (const [sessionKey, mine] of this.paused) {
-      for (const [pid, startToken] of mine) {
-        if (this.sampler.rememberedStart(sessionKey, pid) !== startToken) continue;
-        try {
-          this.kill(pid, 'SIGCONT');
-        } catch {
-          // Gone already.
-        }
-      }
+    for (const mine of this.paused.values()) {
+      for (const [pid, startToken] of mine) this.continueIfSame(pid, startToken);
     }
     this.paused.clear();
+  }
+
+  /** SIGCONT only when the pid still names the process that was paused (its live start time), never a reused pid. */
+  private continueIfSame(pid: number, startToken: string): void {
+    if (this.liveStartToken(pid) !== startToken) return;
+    try {
+      this.kill(pid, 'SIGCONT');
+    } catch {
+      // Gone already.
+    }
   }
 
   /** Called after every sample; returns the unsubscribe function. */
@@ -199,7 +234,12 @@ export class LocalProcessMonitor implements ProcessHost {
    */
   async control(input: ProcessControlInput): Promise<ProcessControlResult> {
     if (this.platform === 'win32') return { ok: false, reason: 'unsupported' };
+    const gen = this.abortGen.get(input.sessionKey) ?? 0;
     const before = await this.fresh(0);
+    // The turn was aborted while this check sampled: its cleanup already ran, so a pause now would never be undone.
+    if (input.action === 'pause' && (this.abortGen.get(input.sessionKey) ?? 0) !== gen) {
+      return { ok: false, reason: 'not-found' };
+    }
     const proc = before.sessions
       .find((s) => s.sessionKey === input.sessionKey)
       ?.processes.find((p) => p.pid === input.pid);
@@ -229,17 +269,10 @@ export class LocalProcessMonitor implements ProcessHost {
   /** An aborted turn must end: continue every process this monitor paused in that session. */
   private resumeAfterAbort(root: TrackedClaudeRootInfo): void {
     if (!root.sessionKey) return;
+    this.abortGen.set(root.sessionKey, (this.abortGen.get(root.sessionKey) ?? 0) + 1);
     const mine = this.paused.get(root.sessionKey);
     if (!mine) return;
-    for (const [pid, startToken] of mine) {
-      // Only a process still remembered with the same start time: never signal a reused pid.
-      if (this.sampler.rememberedStart(root.sessionKey, pid) !== startToken) continue;
-      try {
-        this.kill(pid, 'SIGCONT');
-      } catch {
-        // Gone already.
-      }
-    }
+    for (const [pid, startToken] of mine) this.continueIfSame(pid, startToken);
     this.paused.delete(root.sessionKey);
     this.deps.logger?.info('resumed paused processes after abort', { sessionKey: root.sessionKey });
   }

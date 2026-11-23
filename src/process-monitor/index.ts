@@ -90,9 +90,3 @@ export function startProcessMonitor(): LocalProcessMonitor {
   m.start();
   return m;
 }
-
-/** Test isolation only. */
-export function resetProcessMonitorForTests(): void {
-  monitor?.stop();
-  monitor = null;
-}

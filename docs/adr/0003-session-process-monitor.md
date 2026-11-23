@@ -39,7 +39,9 @@ same snapshot, and work will be placed by each node's free CPU and memory.
    comes from `/proc/<pid>/stat` (clock ticks), because `ps time` there has whole-second resolution.
 4. **Pause is a signal guarded by identity.** Pause is `SIGSTOP` and resume is `SIGCONT`. A request names the pid and
    its start time. The monitor samples again at that moment and signals only a process that is in that session's tree
-   with that start time. The route allows the owner, or an admin in admin mode, with CSRF. Aborting a turn continues
+   with that start time. A pause whose check spans an abort of that turn is refused, because the abort's cleanup has
+   already run. Every automatic resume (abort, shutdown) first reads the pid's live start time and skips a pid the OS
+   has reused. The route allows the owner, or an admin in admin mode, with CSRF. Aborting a turn continues
    the paused root (in the spawner) and everything the monitor paused in that session, so a stop still lands. The
    same holds when the abort arrives after the root has exited. On shutdown (drain, crash kill) the registry first tells
    the monitor, which continues everything it paused. Every non-SIGKILL kill is followed by SIGCONT through the

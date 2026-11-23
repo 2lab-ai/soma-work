@@ -2,7 +2,7 @@
  * The monitor against the real OS: a process tree spawned through the same SDK spawn hook a session's Claude Code
  * process uses, sampled with the real `ps`, paused and resumed with real signals. Runs on macOS and Linux (CI).
  */
-import type { ChildProcess } from 'node:child_process';
+import { type ChildProcess, execFileSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   createTrackedClaudeProcessSpawner,
@@ -16,9 +16,16 @@ let child: ChildProcess | null = null;
 
 afterEach(() => {
   if (child?.pid) {
+    // The whole fixture tree: continue (a failed assertion may have left one stopped), then kill the children, then the
+    // shell.
+    for (const sig of ['-CONT', '-KILL']) {
+      try {
+        execFileSync('pkill', [sig, '-P', String(child.pid)], { stdio: 'ignore' });
+      } catch {
+        // none left
+      }
+    }
     try {
-      // The shell's group: the shell and its sleeps.
-      process.kill(child.pid, 'SIGCONT');
       process.kill(child.pid, 'SIGKILL');
     } catch {
       // gone

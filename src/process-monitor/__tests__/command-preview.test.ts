@@ -90,6 +90,23 @@ describe('commandPreview — the review’s leaks (2026-11-23)', () => {
   });
 });
 
+describe('names and multiword values after ps flattens argv (review of legends)', () => {
+  it('an interpreter running inline code is named by the interpreter, never by the code', () => {
+    expect(processName(splitArgs('python3 -c print("xoxb-1234567890-abcdef")'))).toBe('python3');
+    expect(processName(splitArgs('node -e require("x").run("sk-ant-api03-secret")'))).toBe('node');
+    expect(processName(splitArgs('perl -e print 1'))).toBe('perl');
+    expect(processName(splitArgs('/usr/bin/python3 -m http.server'))).toBe('python3');
+    expect(processName(splitArgs('node /app/dist/server.js'))).toBe('node server.js');
+  });
+
+  it('cuts every word of a multiword secret or prompt value, up to the next flag', () => {
+    const out = commandPreview(
+      splitArgs('claude --append-system-prompt Customer password is hunter2 swordfish --token a b c --model opus'),
+    );
+    expect(out).toBe('claude --append-system-prompt … --token … --model opus');
+  });
+});
+
 describe('splitArgs', () => {
   it('splits on runs of whitespace', () => {
     expect(splitArgs('  a  b\tc ')).toEqual(['a', 'b', 'c']);

@@ -1,13 +1,10 @@
+import type { TrackedClaudeRootInfo } from '../agent-runtime/claude-child-process-registry';
 import { commandPreview, processName, splitArgs } from './command-preview';
 import { DETAIL_COLUMNS, type PsRow, parseDetailRows, parseParentMap, stateOf } from './ps-table';
 import type { NodeCapacity, ProcessSample, SessionProcessDetail } from './types';
 
-/** A Claude Code process the SDK spawned, as the child registry knows it. */
-export interface TrackedRoot {
-  readonly pid: number;
-  /** The work session it runs for; absent for one-shot helpers (title, dispatch, voice). */
-  readonly sessionKey?: string;
-}
+/** A Claude Code process the SDK spawned, as the child registry knows it (pid + the session it runs for, if any). */
+export type TrackedRoot = TrackedClaudeRootInfo;
 
 /** Runs `ps` with these arguments and returns stdout. Must resolve with partial stdout when ps exits 1 because a pid vanished. */
 export type RunPs = (args: readonly string[]) => Promise<string>;

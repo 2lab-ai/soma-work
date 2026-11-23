@@ -14,13 +14,25 @@ const capacity: NodeCapacity = {
   availableMemBytes: 9e9,
 };
 
-function setup(opts: { platform?: string; kill?: (pid: number, signal: NodeJS.Signals) => void } = {}) {
+function setup(
+  opts: {
+    platform?: string;
+    kill?: (pid: number, signal: NodeJS.Signals) => void;
+    runPs?: (ps: FakePs) => (a: readonly string[]) => Promise<string>;
+  } = {},
+) {
   const ps = new FakePs()
     .set(100, { ppid: 1, args: 'node soma' })
     .set(200, { ppid: 100, args: '/usr/local/bin/claude' })
     .set(300, { ppid: 200, args: '/bin/bash -c sleep 100' })
+    // Session B: its own Claude Code process and child.
+    .set(500, { ppid: 100, args: '/usr/local/bin/claude' })
+    .set(600, { ppid: 500, args: '/usr/bin/node server.js' })
     .set(800, { ppid: 1, args: '/usr/bin/not-ours' });
-  const roots: TrackedClaudeRootInfo[] = [{ pid: 200, sessionKey: 'A' }];
+  const roots: TrackedClaudeRootInfo[] = [
+    { pid: 200, sessionKey: 'A' },
+    { pid: 500, sessionKey: 'B' },
+  ];
   const abort = new Set<(r: TrackedClaudeRootInfo) => void>();
   const shutdown = new Set<() => void>();
   const signals: Array<[number, NodeJS.Signals]> = [];
@@ -46,8 +58,9 @@ function setup(opts: { platform?: string; kill?: (pid: number, signal: NodeJS.Si
         return () => shutdown.delete(l);
       },
     },
-    runPs: ps.run,
+    runPs: opts.runPs ? opts.runPs(ps) : ps.run,
     kill,
+    liveStartToken: (pid) => ps.procs.get(pid)?.start ?? (ps.procs.has(pid) ? 'Mon Nov 23 10:00:00 2026' : null),
     platform: opts.platform ?? 'darwin',
     now: () => now,
     readCapacity: async () => capacity,
@@ -76,10 +89,10 @@ describe('LocalProcessMonitor', () => {
     const { monitor } = setup();
     const snap = await monitor.sample();
     expect(snap.node).toEqual(capacity);
-    expect(snap.sessions.map((s) => s.sessionKey)).toEqual(['A']);
+    expect(snap.sessions.map((s) => s.sessionKey).sort()).toEqual(['A', 'B']);
     expect(monitor.usage('A')).toMatchObject({ sessionKey: 'A', processCount: 2, rootAlive: true });
     expect(monitor.usage('A')).not.toHaveProperty('processes');
-    expect(monitor.usage('B')).toBeUndefined();
+    expect(monitor.usage('C')).toBeUndefined();
   });
 
   it('pauses with SIGSTOP and resumes with SIGCONT a process of the session’s tree', async () => {
@@ -94,19 +107,62 @@ describe('LocalProcessMonitor', () => {
     ]);
   });
 
-  it('refuses a pid outside the session’s tree — another session’s, the daemon, anything else', async () => {
+  it('refuses a pid outside the session’s tree — another live session’s, the daemon, anything else', async () => {
     const { monitor, signals } = setup();
-    for (const pid of [800, 100, 1, 999]) {
+    for (const pid of [800, 100, 1, 999, 500, 600]) {
       expect(await monitor.control({ sessionKey: 'A', pid, startToken: start, action: 'pause' })).toEqual({
         ok: false,
         reason: 'not-found',
       });
     }
-    expect(await monitor.control({ sessionKey: 'B', pid: 300, startToken: start, action: 'pause' })).toEqual({
-      ok: false,
-      reason: 'not-found',
-    });
+    for (const pid of [200, 300]) {
+      expect(await monitor.control({ sessionKey: 'B', pid, startToken: start, action: 'pause' })).toEqual({
+        ok: false,
+        reason: 'not-found',
+      });
+    }
     expect(signals).toEqual([]);
+  });
+
+  it('refuses a pause whose check spans an abort of that turn (its cleanup already ran)', async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let held = false;
+    const { monitor, signals, fireAbort } = setup({
+      runPs: (ps) => async (a) => {
+        if (!held) {
+          held = true;
+          await gate;
+        }
+        return ps.run(a);
+      },
+    });
+    const pending = monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' });
+    fireAbort({ pid: 200, sessionKey: 'A' });
+    release();
+    expect(await pending).toEqual({ ok: false, reason: 'not-found' });
+    expect(signals).toEqual([]);
+  });
+
+  it('cleanup works on a monitor whose timer never started', async () => {
+    const { monitor, signals, fireAbort } = setup();
+    await monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' });
+    fireAbort({ pid: 200, sessionKey: 'A' });
+    expect(signals).toEqual([
+      [300, 'SIGSTOP'],
+      [300, 'SIGCONT'],
+    ]);
+  });
+
+  it('never continues a pid the OS reused after the pause (live start time differs)', async () => {
+    const { monitor, signals, fireAbort, ps } = setup();
+    await monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' });
+    // The paused bash is killed from outside; another program gets pid 300 before the next sample.
+    ps.set(300, { ppid: 1, start: 'Tue Nov 24 08:00:00 2026', args: '/usr/bin/someone-else' });
+    fireAbort({ pid: 200, sessionKey: 'A' });
+    expect(signals).toEqual([[300, 'SIGSTOP']]);
   });
 
   it('refuses a pid whose start time differs from what the caller saw (a reused pid)', async () => {

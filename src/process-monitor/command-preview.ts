@@ -1,3 +1,4 @@
+import { posix } from 'node:path';
 import { redactSecrets } from '@soma/common/logger';
 
 /**
@@ -37,10 +38,13 @@ const SECRET_HEADER = /^[A-Za-z0-9-]*:$/;
 const URL_CREDENTIALS = /([a-z][a-z0-9+.-]*:\/\/[^\s/:@]*):[^\s/@]*@/gi;
 const LONG_TOKEN = /[A-Za-z0-9_\-+/=.]{32,}/g;
 
-function basename(p: string): string {
-  const i = p.lastIndexOf('/');
-  return i >= 0 ? p.slice(i + 1) : p;
-}
+const basename = (p: string): string => posix.basename(p) || p;
+
+/** A script argument that is a file, not inline code: a path-like word with no quotes, spaces or brackets. */
+const SCRIPT_FILE = /^[\w./@+-]+$/;
+/** Interpreter flags whose next argument is inline code, not a script (`python -c`, `node -e`, `perl -e`, `ruby -e`). */
+const INLINE_CODE_FLAG = /^(-c|-e|-E|-p|--eval|--print|-m)$/;
+const MAX_NAME = 60;
 
 /** Split a `ps args` line into argv. ps joins argv with single spaces and does not quote, so this is best effort. */
 export function splitArgs(line: string): string[] {
@@ -51,13 +55,17 @@ export function splitArgs(line: string): string[] {
 export function processName(argv: readonly string[]): string {
   if (argv.length === 0) return '?';
   const exe = basename(argv[0]);
+  let name = exe;
   if (/^(node|bun|deno|python[0-9.]*|ruby|perl|sh|bash|zsh)$/.test(exe)) {
-    // `sh -c '…'` runs inline text, not a script: the command column shows it.
-    if (/^(sh|bash|zsh)$/.test(exe) && argv.includes('-c')) return exe;
-    const script = argv.slice(1).find((a) => !a.startsWith('-'));
-    if (script && script.length <= MAX_ARG) return `${exe} ${basename(script)}`;
+    // Inline code (`sh -c '…'`, `python -c '…'`, `node -e '…'`) is not a script: the name stays the interpreter, and
+    // the code shows (redacted) on the command line only.
+    if (!argv.slice(1).some((a) => INLINE_CODE_FLAG.test(a))) {
+      const script = argv.slice(1).find((a) => !a.startsWith('-'));
+      if (script && SCRIPT_FILE.test(script)) name = `${exe} ${basename(script)}`;
+    }
   }
-  return exe;
+  name = String(redactSecrets(name)).replace(LONG_TOKEN, CUT);
+  return name.length > MAX_NAME ? `${name.slice(0, MAX_NAME - 1)}${CUT}` : name;
 }
 
 function previewArg(arg: string): string {
@@ -94,9 +102,9 @@ export function commandPreview(argv: readonly string[]): string {
     if (isFlag && (SPAN_FLAG.test(flag) || SECRET_WORD.test(flag.replace(/^-+/, '')))) {
       if (arg.includes('=')) parts.push(`${flag}=${CUT}`);
       else {
-        parts.push(arg);
-        hide = SPAN_FLAG.test(flag) ? 'span' : 'next';
-        if (hide === 'span') parts.push(CUT);
+        // ps flattened argv: a quoted multiword value is several tokens now — cut all of them, up to the next flag.
+        parts.push(arg, CUT);
+        hide = 'span';
       }
       continue;
     }
