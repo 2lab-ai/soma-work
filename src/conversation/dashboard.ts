@@ -210,6 +210,8 @@ import { VIEW_LAYOUT_CLIENT_JS } from './view-layout-client';
 import { CARD_FINISH_CLIENT_JS, CARD_FINISH_CSS } from './card-finish-client';
 import { type HostWait, hostWaitFor } from '../work-queue/host-wait';
 import type { WorkLogEntry } from './work-log';
+import type { ProcessControlInput } from '../process-monitor/process-monitor';
+import type { NodeProcessSnapshot, ProcessControlResult, SessionProcessUsage } from '../process-monitor/types';
 
 const logger = new Logger('Dashboard');
 
@@ -234,6 +236,12 @@ export function usageForViewer<T extends { byUser: unknown; tokenRankings: unkno
 }
 
 // ── Types ──────────────────────────────────────────────────────────
+
+/**
+ * A session's process tree in one line: `SessionProcessUsage` without the session key and the time, plus the node's
+ * logical cores (`cpuCount` — 100% CPU is one of them).
+ */
+export type KanbanProcUsage = Omit<SessionProcessUsage, 'sessionKey' | 'sampledAt'> & { cpuCount: number };
 
 export interface KanbanSession {
   key: string;
@@ -488,6 +496,12 @@ export interface KanbanSession {
     port: number;
     host: string;
   };
+  /**
+   * What the session's Claude Code process and every process under it use now on the node it runs on
+   * (`src/process-monitor`): the card's CPU · 메모리 chip and the 프로세스 tab's count. Absent when none of its
+   * processes is alive (or the monitor is not wired).
+   */
+  procUsage?: KanbanProcUsage;
   /**
    * The session's goal list (SSOT 2026-10-21 T2): the current goal with its
    * state, and the goals queued behind it in start order. Absent when the
@@ -1250,6 +1264,89 @@ let _capacityInFlight: Promise<CapacityView> | null = null;
 const CAPACITY_TTL_MS = 30_000;
 /** A failed read is retried sooner. */
 const CAPACITY_FAIL_TTL_MS = 10_000;
+
+// ── Process monitor (session CPU · memory, the 프로세스 tab, pause · resume) ──
+/**
+ * The node's process monitor as the dashboard uses it (`src/process-monitor` — `LocalProcessMonitor` today; a
+ * worker node's remote host later). Wired by `index.ts`; absent in tests that do not need it.
+ */
+export interface DashboardProcessSource {
+  latest(): NodeProcessSnapshot | null;
+  fresh(maxAgeMs?: number): Promise<NodeProcessSnapshot>;
+  control(input: ProcessControlInput): Promise<ProcessControlResult>;
+  onSample(listener: (snapshot: NodeProcessSnapshot) => void): () => void;
+}
+let _processSource: DashboardProcessSource | null = null;
+let _processUnsubscribe: (() => void) | null = null;
+/** sessionKey → the card's last pushed usage, so only a card whose chip changes is pushed again. */
+const _procPushed = new Map<string, string>();
+
+/** What the card shows changes only at this grain: whole CPU percents, 10 MB of memory, the counts. */
+function procSignature(u: SessionProcessUsage): string {
+  // CPU in 5-point buckets (whole points under 10%): a busy tree's CPU moves every sample, and a push per sample per
+  // card to every viewer costs more than the chip's last few points are worth.
+  const cpu = u.cpuPercent < 10 ? Math.round(u.cpuPercent) : 10 + Math.round((u.cpuPercent - 10) / 5);
+  return [cpu, Math.round(u.rssBytes / 10_000_000), u.processCount, u.stoppedCount, u.rootAlive].join('|');
+}
+
+/**
+ * Wire the process monitor. Every sample pushes the cards whose CPU · 메모리 chip changed — and once more the cards
+ * whose last process exited, so the chip goes away — through the per-viewer single-card push (private tasks stay
+ * with their viewers).
+ */
+export function setDashboardProcessSource(
+  source: DashboardProcessSource | null,
+  // Where a changed card goes: the per-viewer single-card push. A seam for the wiring test.
+  pushCard: (sessionKey: string) => void = scheduleLiveSessionUpdate,
+): void {
+  _processUnsubscribe?.();
+  _processUnsubscribe = null;
+  _processSource = source;
+  _procPushed.clear();
+  if (!source) return;
+  _processUnsubscribe = source.onSample((snapshot) => {
+    for (const key of procCardsToPush(_procPushed, snapshot)) pushCard(key);
+  });
+}
+
+/**
+ * The cards a sample changes: a session whose chip reads differently now, and a session that had a chip and has no
+ * process left. Updates `pushed` (sessionKey → the signature last pushed) in place.
+ */
+export function procCardsToPush(pushed: Map<string, string>, snapshot: Pick<NodeProcessSnapshot, 'sessions'>): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const s of snapshot.sessions) {
+    seen.add(s.sessionKey);
+    const sig = procSignature(s);
+    if (pushed.get(s.sessionKey) === sig) continue;
+    pushed.set(s.sessionKey, sig);
+    out.push(s.sessionKey);
+  }
+  for (const key of [...pushed.keys()]) {
+    if (seen.has(key)) continue;
+    pushed.delete(key);
+    out.push(key);
+  }
+  return out;
+}
+
+function procUsageField(key: string): { procUsage?: KanbanProcUsage } {
+  const snapshot = _processSource?.latest();
+  const u = snapshot?.sessions.find((x) => x.sessionKey === key);
+  if (!snapshot || !u) return {};
+  return {
+    procUsage: {
+      nodeId: u.nodeId,
+      cpuCount: snapshot.node.cpuCount,
+      rootAlive: u.rootAlive,
+      processCount: u.processCount,
+      stoppedCount: u.stoppedCount,
+      cpuPercent: u.cpuPercent,
+      rssBytes: u.rssBytes,
+    },
+  };
+}
 
 export function setCapacitySource(source: CapacitySource | null): void {
   _capacitySource = source;
@@ -3021,6 +3118,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     // badge for self cards too — siblings get their env from the
     // aggregator's mergeBoards stamp.
     environment: _selfInstanceEnv ? { ..._selfInstanceEnv } : undefined,
+    ...procUsageField(key),
     goal: goalToKanban(s),
     ...(typeof s.sessionId === 'string' && s.sessionId && s.conversationId ? { rollbackAvailable: true } : {}),
     userActions: restoreUserActions(s.userActions)?.map(({ slackTs: _ts, ...view }) => view),
@@ -4742,6 +4840,116 @@ export async function registerDashboardRoutes(
       }
     },
   );
+
+  // ── Process monitor routes (the 프로세스 tab) ──
+
+  // The session's process tree now: every process, its CPU and memory, its state. Read by whoever may see the task
+  // (the private-task gate covers this prefix). Commands — previews with secrets cut out (`command-preview.ts`) — only
+  // for the task's owner and admins.
+  server.get<{ Params: { key: string } }>(
+    '/api/dashboard/session/:key/processes',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const originalKey = resolveSelfActionKey(request.params.key ?? '', reply);
+      if (originalKey === null) return;
+      if (!_processSource) {
+        reply.status(503).send({ error: 'Process monitor is not running', code: 'monitor_off' });
+        return;
+      }
+      try {
+        const snapshot = await _processSource.fresh(2_000);
+        const found = snapshot.sessions.find((x) => x.sessionKey === originalKey) ?? null;
+        // Commands carry the model's shell lines and paths: the work log's rule — the task's owner and admins only
+        // (admin = authContext.isAdmin, a read needs no admin mode). Everyone else sees the same rows without them.
+        const auth = (request as any).authContext;
+        const ownerId = _getSessionsFn?.()?.get(originalKey)?.ownerId;
+        const seesCommands = !!auth && (auth.isAdmin === true || (!!ownerId && auth.userId === ownerId));
+        const session =
+          found && !seesCommands ? { ...found, processes: found.processes.map((p) => ({ ...p, command: '' })) } : found;
+        reply.send({ node: snapshot.node, sampledAt: snapshot.sampledAt, session, commands: seesCommands });
+      } catch (error) {
+        logger.warn('Process sample failed', { error: error instanceof Error ? error.message : String(error) });
+        reply.status(500).send({ error: 'Process sample failed' });
+      }
+    },
+  );
+
+  // Pause (SIGSTOP) or resume (SIGCONT) one process of the session's tree. Body: { startToken } — the start time the
+  // tab showed for that pid, so a pid the OS reused for another program is refused (409). Owner, or admin in admin
+  // mode (#716), as the stop button.
+  server.post<{ Params: { key: string; pid: string; op: string }; Body: { startToken?: unknown } | undefined }>(
+    '/api/dashboard/session/:key/processes/:pid/:op',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const { pid: rawPid, op } = request.params;
+      if (op !== 'pause' && op !== 'resume') {
+        reply.status(404).send({ error: 'Not found' });
+        return;
+      }
+      const pid = /^[1-9]\d{0,9}$/.test(rawPid ?? '') ? Number(rawPid) : Number.NaN;
+      const startToken = request.body?.startToken;
+      if (!Number.isSafeInteger(pid) || typeof startToken !== 'string' || !startToken || startToken.length > 64) {
+        reply.status(400).send({ error: 'pid must be a process id and startToken the start time the tab showed' });
+        return;
+      }
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      if (!resolved) return;
+      if (!_processSource) {
+        reply.status(503).send({ error: 'Process monitor is not running', code: 'monitor_off' });
+        return;
+      }
+      try {
+        const result = await _processSource.control({ sessionKey: resolved.originalKey, pid, startToken, action: op });
+        logger.info('Process control from the dashboard', {
+          sessionKey: resolved.originalKey,
+          pid,
+          action: op,
+          actor: (request as any).authContext?.userId,
+          result: result.ok ? result.state : result.reason,
+        });
+        if (result.ok) {
+          scheduleLiveSessionUpdate(resolved.originalKey);
+          reply.send({ ok: true, pid: result.pid, state: result.state });
+          return;
+        }
+        const status = { 'not-found': 404, stale: 409, denied: 403, unsupported: 501 }[result.reason];
+        reply.status(status).send({ ok: false, code: result.reason });
+      } catch (error) {
+        logger.error('Process control failed', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
+  // The node as a scheduler will read it: capacity (cores, CPU in use, load, memory left) and each session's totals.
+  // Admins only — it names every session on the node, private ones included. One node today; a worker node will
+  // report the same shape.
+  server.get('/api/dashboard/nodes', { preHandler: authMiddleware }, async (request: any, reply) => {
+    if (!request.authContext?.isAdmin) {
+      reply.status(403).send({ error: 'Forbidden — admins only' });
+      return;
+    }
+    if (!_processSource) {
+      reply.send({ nodes: [] });
+      return;
+    }
+    try {
+      const snapshot = await _processSource.fresh(5_000);
+      reply.send({
+        nodes: [
+          {
+            node: snapshot.node,
+            sampledAt: snapshot.sampledAt,
+            unattributed: snapshot.unattributed,
+            sessions: snapshot.sessions.map(({ processes: _p, ...usage }) => usage),
+          },
+        ],
+      });
+    } catch (error) {
+      logger.warn('Node sample failed', { error: error instanceof Error ? error.message : String(error) });
+      reply.status(500).send({ error: 'Node sample failed' });
+    }
+  });
 
   // ── Action routes ──
 
