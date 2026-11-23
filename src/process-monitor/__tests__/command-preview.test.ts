@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { commandPreview, processName, splitArgs } from '../command-preview';
+import { commandPreview, processName, SHOWN_FLAGS, splitArgs } from '../command-preview';
 
 /** What the sampler does: a ps args line (argv boundaries already lost) → preview. */
 const preview = (line: string) => commandPreview(splitArgs(line));
@@ -26,38 +26,104 @@ describe('processName', () => {
     // A script read from stdin (`-`): the next argument is data. A bare word is not a script file.
     expect(processName(splitArgs('python3 - S3cretArg'))).toBe('python3');
     expect(processName(splitArgs('node S3cretWord'))).toBe('node');
+    // The script is the first operand after known interpreter options; a value of one of them is not (round 6).
+    expect(processName(splitArgs('node --require p@ss/word.js app.js'))).toBe('node app.js');
+    expect(processName(splitArgs('node --inspect-brk=9229 p@ss/word.js'))).toBe('node');
   });
 });
 
-describe('commandPreview — shows the shape, never a value', () => {
-  it('keeps the program, flag names and paths — no other word (a word alone cannot be told from a secret)', () => {
-    expect(preview('/usr/bin/git -C /work/repo status --short')).toBe('git -C … --short');
-    expect(preview('/usr/bin/git status /work/repo')).toBe('git … /work/repo');
+describe('commandPreview — a known prefix of the command, never a value', () => {
+  it('shows the program and the flags it knows; a value is cut; the first word it does not know ends it', () => {
     expect(preview('/usr/local/bin/claude --model opus --verbose')).toBe('claude --model … --verbose');
-    expect(preview('/usr/bin/node /app/dist/server.js --port 3000')).toBe('node /app/dist/server.js --port …');
+    expect(preview('/usr/bin/node /app/dist/server.js --port 3000')).toBe('node server.js --port …');
+    expect(preview('/usr/bin/git -C /work/repo status --short')).toBe('git …');
+    expect(preview('/usr/bin/git status /work/repo')).toBe('git …');
+    expect(preview('tool --level=debug -n5 -rf build')).toBe('tool …');
+    expect(preview('env MODE=fast API_KEY=sk live 1 node x.js')).toBe('env …');
+    expect(preview('node ./x.js {"k":"v"} "quoted words"')).toBe('node x.js …');
   });
 
-  it('cuts the value written into a flag, long or short', () => {
-    expect(preview('tool --level=debug -n5 -rf build')).toBe('tool --level=… -n… -r… …');
+  it("the SDK's own CLI line keeps its known flags and loses every value", () => {
+    const line =
+      'node /opt/sdk/cli.js --output-format stream-json --verbose --input-format stream-json --max-thinking-tokens 0 ' +
+      '--model claude-opus --permission-mode default --setting-sources user,project --mcp-config {"mcpServers":{}} ' +
+      '--append-system-prompt Customer password is hunter2';
+    expect(preview(line)).toBe(
+      'node cli.js --output-format … --verbose --input-format … --max-thinking-tokens … --model … ' +
+        '--permission-mode … --setting-sources … …',
+    );
   });
 
-  it('cuts NAME=value, and the whole rest of the line after a secret-named one', () => {
-    expect(preview('env MODE=fast API_KEY=sk live 1 node x.js')).toBe('env MODE=… API_KEY= …');
+  it('a value written into a known flag is cut', () => {
+    expect(preview('claude --output-format=stream-json --porcelain=v2 --verbose')).toBe(
+      'claude --output-format=… --porcelain=… --verbose',
+    );
   });
 
-  it('cuts JSON, quoted text and token runs', () => {
-    const out = preview('node ./x.js {"k":"v"} "quoted words" abcdefghijklmnopqrstuvwxyz0123456789');
-    expect(out).toBe('node ./x.js …');
+  it('the word after a value flag is its value, whatever it looks like (`--model --verbose` hides `--verbose`)', () => {
+    expect(preview('claude --model --verbose --continue')).toBe('claude --model … --continue');
   });
 
-  it('runs the shaped-token redaction over what is left', () => {
-    expect(preview('slack-cli xoxb-1234567890-abc')).not.toContain('xoxb-1234567890-abc');
+  it('every word of the output is the program, its script, a known flag, or …', () => {
+    const vocab = [
+      '--model',
+      'opus',
+      '--verbose',
+      '--swordfish',
+      'p@ss/word',
+      '/work/repo',
+      '-p',
+      'S3cret',
+      '--arg',
+      'x.js',
+      './run.sh',
+      '--require',
+      '--output-format=stream-json',
+      '--token=abc',
+      'NAME=v',
+      '-',
+      '--',
+      '{"k":1}',
+    ];
+    const programs = ['node', '/usr/bin/python3', 'claude', 'jq', 'git'];
+    let seed = 7;
+    const next = (n: number) => {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      return seed % n;
+    };
+    for (let c = 0; c < 500; c++) {
+      const argv = [
+        programs[next(programs.length)],
+        ...Array.from({ length: 1 + next(8) }, () => vocab[next(vocab.length)]),
+      ];
+      const out = commandPreview(argv);
+      const [exe, script] = processName(argv).split(' ');
+      const words = out.split(' ');
+      expect(words[0]).toBe(exe);
+      for (const w of words.slice(1)) {
+        const known =
+          w === '…' || w === script || SHOWN_FLAGS.has(w) || (w.endsWith('=…') && SHOWN_FLAGS.has(w.slice(0, -2)));
+        expect(known, `${argv.join(' ')} → ${out}`).toBe(true);
+      }
+      for (const secret of ['swordfish', 'p@ss', 'S3cret', 'abc', 'opus', 'stream-json', 'NAME', '/work']) {
+        expect(out, `${argv.join(' ')} → ${out}`).not.toContain(secret);
+      }
+    }
+  });
+
+  it("runs the logger's token redaction over the program's and the script's own names", () => {
+    const out = preview('/opt/tools/xoxb-12345678-abcdef --verbose');
+    expect(out).not.toContain('xoxb-12345678-abcdef');
+    expect(out).toContain('[REDACTED xoxb-');
+    const name = processName(splitArgs('node /work/sk-ant-api03-abcdefgh.js'));
+    expect(name).not.toContain('sk-ant-api03-abcdefgh');
+    expect(name).toContain('[REDACTED sk-ant-api03-');
   });
 
   it('caps the argument count', () => {
-    const out = commandPreview(['cmd', ...Array.from({ length: 30 }, (_, i) => `a${i}`)]);
-    expect(out.endsWith('…')).toBe(true);
-    expect(out).not.toContain('a20');
+    const out = commandPreview(['cmd', ...Array.from({ length: 30 }, () => '--verbose')]);
+    expect(out.split(' ').filter((w) => w === '--verbose')).toHaveLength(16);
+    expect(out.endsWith(' …')).toBe(true);
   });
 });
 
@@ -98,6 +164,12 @@ describe('commandPreview — every leak the reviews found (2026-11-23), through 
     ['tool --model claude opus extra', ['opus', 'extra']],
     ['gpg --passphrase correct horse', ['correct', 'horse']],
     ['openssl enc --pin 1234 --in /x', ['1234']],
+    // Option-looking and path-looking values (round 6): no word after the program is copied.
+    ['jq --arg password --swordfish .', ['swordfish', 'password']],
+    ['jq --arg password p@ss/word .', ['p@ss', 'word', 'password']],
+    ['claude --model opus --swordfish', ['swordfish', 'opus']],
+    ['claude --add-dir /a /p@ss/word --verbose', ['p@ss', '/a']],
+    ['node --require p@ss/word.js app.js', ['p@ss', 'word']],
   ];
   it.each(leaks)('%s', (line, secrets) => {
     const out = preview(line);

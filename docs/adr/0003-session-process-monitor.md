@@ -60,17 +60,18 @@ same snapshot, and work will be placed by each node's free CPU and memory.
 6. **Board privacy unchanged.** A card's usage is a field of its board card (`KanbanSession.procUsage`). It travels
    through the existing per-viewer board and the single-card pushes, and only cards whose chip changed are pushed. The
    process list route sits under `/api/dashboard/session/:key`, so the private-task gate covers it. Commands are shown
-   only to the task's owner and admins (the work log's rule), and only as previews. A preview is fail-closed, because
-   ps has flattened argv and the end of a multiword value cannot be found:
-   - It shows the program, flag names and paths, and never a value. A word that is not a path is not shown,
-     because a subcommand, an operand and a positional password cannot be told apart.
-   - A value written into a flag is cut, with every plain word after it up to the next flag. The token after a bare
-     flag is cut. A short flag is judged by its letter, whether its value is attached or not.
-   - A flag that takes code, a prompt, a config, a header, a body or a credential cuts the rest of the line.
-   - A secret-named `NAME=` cuts the rest of the line.
-   - URL credentials are cut from plain words.
-
-   The logger's token redaction then runs over what is left.
+   only to the task's owner and admins (the work log's rule), and only as previews. A preview is an allow-list,
+   because ps has flattened argv, and even with argv a flag's arity is unknown: a value can look like a flag
+   (`jq --arg name --swordfish`) or a path (`p@ss/word`). So nothing after the program is copied from the command
+   line:
+   - The preview shows the program's basename and, for an interpreter, its script's basename (the first operand after
+     known interpreter options).
+   - It shows flag names from a fixed list (`SHOWN_FLAGS` in `command-preview.ts`). A listed flag that takes a value
+     shows as `--model …`, and its next word is cut whatever it looks like.
+   - The walk stops at the first word it does not know (an unknown or short flag, an operand, `NAME=value`, a second
+     value). Everything from there is one `…`.
+   - Every word of a preview is a constant of that module or the program's (or script's) own name. The logger's token
+     redaction runs over that name.
 
 ## Consequences
 

@@ -8,6 +8,7 @@ import type {
   NodeProcessSnapshot,
   ProcessControlAction,
   ProcessControlResult,
+  ProcessSample,
   ProcessState,
   SessionProcessDetail,
 } from './types';
@@ -70,24 +71,33 @@ export interface ProcessMonitorDeps {
 
 const DEFAULT_INTERVAL_MS = 5_000;
 
+/** Runs ps synchronously; throws like `execFileSync` (with `status`, `stdout`, `stderr`) when it fails. */
+export type RunPsSync = (args: string[]) => string;
+
+const runPsSync: RunPsSync = (args) =>
+  execFileSync('ps', args, {
+    env: { PATH: '/bin:/usr/bin', LC_ALL: 'C' },
+    timeout: 2_000,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).toString();
+
 /**
- * `ps -o lstart= -p <pid>` with the C locale, whitespace collapsed like the sampler's start token. ps exits 1 with no
- * output when the pid does not exist: `null`. Anything else that fails (a timeout, no ps): `undefined` — unknown, so a
- * caller keeps what it tracks rather than treating the process as gone.
+ * `ps -o lstart= -p <pid>` with the C locale, whitespace collapsed like the sampler's start token. ps exits 1, silent,
+ * when the pid does not exist: `null` (gone). Anything else that fails — exit 1 with a diagnostic on stderr (ps could
+ * not read the process table), a timeout, no ps — is `undefined`: unknown, so a caller keeps what it tracks and tries
+ * again rather than treating the process as gone.
  */
-function psLiveStartToken(pid: number): string | null | undefined {
+export function psLiveStartToken(pid: number, run: RunPsSync = runPsSync): string | null | undefined {
   try {
-    const out = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
-      env: { PATH: '/bin:/usr/bin', LC_ALL: 'C' },
-      timeout: 2_000,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).toString();
-    const token = out.trim().split(/\s+/).join(' ');
+    const token = run(['-o', 'lstart=', '-p', String(pid)])
+      .trim()
+      .split(/\s+/)
+      .join(' ');
     return token || null;
   } catch (err) {
-    const e = err as { status?: unknown; stdout?: unknown };
-    if (e.status === 1 && String(e.stdout ?? '').trim() === '') return null;
-    return undefined;
+    const e = err as { status?: unknown; stdout?: unknown; stderr?: unknown };
+    const silent = String(e.stdout ?? '').trim() === '' && String(e.stderr ?? '').trim() === '';
+    return e.status === 1 && silent ? null : undefined;
   }
 }
 
@@ -110,15 +120,17 @@ export class LocalProcessMonitor implements ProcessHost {
   private readonly kill: (pid: number, signal: NodeJS.Signals) => void;
   private readonly platform: string;
   private readonly now: () => number;
-  private readonly intervalMs: number;
   private snapshot: NodeProcessSnapshot | null = null;
   private inFlight: Promise<NodeProcessSnapshot> | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly unsubscribeAbort: () => void;
   private readonly unsubscribeShutdown: (() => void) | null;
   private readonly liveStartToken: (pid: number) => string | null | undefined;
-  /** session → the Claude Code processes (turns) aborted so far, in order; a pause whose check spans its turn's abort is refused. */
-  private readonly aborted = new Map<string, number[]>();
+  /**
+   * Pause checks in progress: each collects the turns (Claude Code pids) of its session aborted while it samples. A
+   * pause whose check spans its own turn's abort is refused — that abort's cleanup already ran.
+   */
+  private readonly pendingPauses = new Set<{ readonly sessionKey: string; readonly abortedTurns: number[] }>();
   /** `pid:start` → the turn (Claude Code pid) whose tree held it when last seen with one — kept after it is orphaned. */
   private readonly turnOf = new Map<string, number>();
   /** How many times a shutdown pass retries what it could not continue (an unreadable identity, a refused signal). */
@@ -135,7 +147,6 @@ export class LocalProcessMonitor implements ProcessHost {
     this.sampler = new TreeSampler(deps.runPs, this.now, deps.readCpuSeconds);
     this.platform = deps.platform ?? process.platform;
     this.kill = deps.kill ?? ((pid, signal) => process.kill(pid, signal));
-    this.intervalMs = DEFAULT_INTERVAL_MS;
     this.readCapacity =
       deps.readCapacity ??
       createNodeCapacityReader({ nodeId: deps.nodeId, platform: this.platform, run: deps.runCommand });
@@ -153,7 +164,7 @@ export class LocalProcessMonitor implements ProcessHost {
       if (!this.sampler.hasWork(this.deps.roots.roots()) && this.snapshot && this.snapshot.sessions.length === 0)
         return;
       this.sample().catch((err) => this.deps.logger?.warn('process sample failed', { error: String(err) }));
-    }, this.intervalMs);
+    }, DEFAULT_INTERVAL_MS);
     this.timer.unref?.();
   }
 
@@ -262,15 +273,22 @@ export class LocalProcessMonitor implements ProcessHost {
   async control(input: ProcessControlInput): Promise<ProcessControlResult> {
     if (this.platform === 'win32') return { ok: false, reason: 'unsupported' };
     if (input.action === 'pause' && this.shuttingDown) return { ok: false, reason: 'not-found' };
-    const abortsBefore = this.aborted.get(input.sessionKey)?.length ?? 0;
-    const before = await this.fresh(0);
+    const check = { sessionKey: input.sessionKey, abortedTurns: [] as number[] };
+    if (input.action === 'pause') this.pendingPauses.add(check);
+    let before: NodeProcessSnapshot;
+    try {
+      before = await this.fresh(0);
+    } finally {
+      this.pendingPauses.delete(check);
+    }
+    // From here to the signal nothing awaits, so no abort or shutdown can land in between.
     const tree = before.sessions.find((s) => s.sessionKey === input.sessionKey);
     const proc = tree?.processes.find((p) => p.pid === input.pid);
     // The host started shutting down, or this process's own turn was aborted (any turn, for a process between
     // turns), while this check sampled: that cleanup already ran, so a pause now would never be undone. An abort of
     // another turn of the session does not block it.
     if (input.action === 'pause' && proc) {
-      const since = (this.aborted.get(input.sessionKey) ?? []).slice(abortsBefore);
+      const since = check.abortedTurns;
       const turn = this.turnFor(tree, proc.pid, proc.startToken);
       if (this.shuttingDown || (since.length > 0 && (turn === undefined || since.includes(turn)))) {
         return { ok: false, reason: 'not-found' };
@@ -315,9 +333,7 @@ export class LocalProcessMonitor implements ProcessHost {
   /** An aborted turn must end: continue every process this monitor paused in that session. */
   private resumeAfterAbort(root: TrackedClaudeRootInfo): void {
     if (!root.sessionKey) return;
-    const log = this.aborted.get(root.sessionKey) ?? [];
-    log.push(root.pid);
-    this.aborted.set(root.sessionKey, log.slice(-64));
+    for (const check of this.pendingPauses) if (check.sessionKey === root.sessionKey) check.abortedTurns.push(root.pid);
     const mine = this.paused.get(root.sessionKey);
     if (!mine) return;
     // Only what was paused under this turn (or between turns): a late abort of an earlier turn — the SDK can fire it
@@ -342,19 +358,23 @@ export class LocalProcessMonitor implements ProcessHost {
     this.deps.logger?.info('resumed paused processes after abort', { sessionKey: root.sessionKey });
   }
 
-  /** The turn of a process: its Claude Code ancestor now, or the one it had when last seen under one (an orphan). */
+  /** The turn of a process now (see {@link turnsIn}); the remembered one when it is no longer in the sample. */
   private turnFor(tree: SessionProcessDetail | undefined, pid: number, startToken: string): number | undefined {
-    return owningRoot(tree, pid) ?? this.turnOf.get(`${pid}:${startToken}`);
+    const inTree = tree?.processes.some((p) => p.pid === pid && p.startToken === startToken);
+    return inTree
+      ? turnsIn(tree as SessionProcessDetail, this.turnOf).get(pid)
+      : this.turnOf.get(`${pid}:${startToken}`);
   }
 
   /** Remember each process's turn while it has one, so it keeps it after its parent exits. */
   private noteTurns(snapshot: NodeProcessSnapshot): void {
     const live = new Set<string>();
     for (const s of snapshot.sessions) {
+      const turns = turnsIn(s, this.turnOf);
       for (const p of s.processes) {
         const key = `${p.pid}:${p.startToken}`;
         live.add(key);
-        const turn = owningRoot(s, p.pid);
+        const turn = turns.get(p.pid);
         if (turn !== undefined) this.turnOf.set(key, turn);
       }
     }
@@ -382,16 +402,38 @@ export class LocalProcessMonitor implements ProcessHost {
   }
 }
 
-/** The session's Claude Code process (turn) whose tree holds this pid — up the parent chain — or undefined (an orphan). */
-function owningRoot(tree: SessionProcessDetail | undefined, pid: number): number | undefined {
-  if (!tree) return undefined;
+/**
+ * The turn (Claude Code pid) of every process in a session's sample: up the parent chain, the first ancestor that is a
+ * Claude Code process, or that has a remembered turn (an orphan that outlived its turn passes it to what it starts).
+ * Undefined when neither is found. One pid index per session and each process resolved once, so a sample is linear.
+ */
+function turnsIn(tree: SessionProcessDetail, remembered: ReadonlyMap<string, number>): Map<number, number | undefined> {
   const byPid = new Map(tree.processes.map((p) => [p.pid, p]));
-  const seen = new Set<number>();
-  let cur = byPid.get(pid);
-  while (cur && !seen.has(cur.pid)) {
-    if (cur.role === 'root') return cur.pid;
-    seen.add(cur.pid);
-    cur = byPid.get(cur.ppid);
+  const turns = new Map<number, number | undefined>();
+  for (const start of tree.processes) {
+    const chain: number[] = [];
+    const onChain = new Set<number>();
+    let turn: number | undefined;
+    let cur: ProcessSample | undefined = start;
+    while (cur && !onChain.has(cur.pid)) {
+      if (turns.has(cur.pid)) {
+        turn = turns.get(cur.pid);
+        break;
+      }
+      chain.push(cur.pid);
+      onChain.add(cur.pid);
+      if (cur.role === 'root') {
+        turn = cur.pid;
+        break;
+      }
+      const known = remembered.get(`${cur.pid}:${cur.startToken}`);
+      if (known !== undefined) {
+        turn = known;
+        break;
+      }
+      cur = byPid.get(cur.ppid);
+    }
+    for (const pid of chain) turns.set(pid, turn);
   }
-  return undefined;
+  return turns;
 }

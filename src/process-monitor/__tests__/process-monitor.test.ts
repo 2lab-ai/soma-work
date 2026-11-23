@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { TrackedClaudeRootInfo } from '../../agent-runtime/claude-child-process-registry';
 import { FakePs } from '../__fixtures__/fake-ps';
-import { LocalProcessMonitor } from '../process-monitor';
+import { LocalProcessMonitor, psLiveStartToken } from '../process-monitor';
 import type { NodeCapacity } from '../types';
 
 const capacity: NodeCapacity = {
@@ -453,6 +453,52 @@ describe('LocalProcessMonitor', () => {
     ]);
   });
 
+  it('the abort fence holds however many aborts the session had before (round 6: a capped history went blind)', async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let hold = false;
+    const { monitor, signals, fireAbort } = setup({
+      runPs: (ps) => async (a) => {
+        if (hold) {
+          hold = false;
+          await gate;
+        }
+        return ps.run(a);
+      },
+    });
+    for (let i = 0; i < 100; i++) fireAbort({ pid: 1_000 + i, sessionKey: 'A' }); // earlier turns of A
+    hold = true;
+    const pending = monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' });
+    fireAbort({ pid: 200, sessionKey: 'A' }); // 300's own turn, while the check samples
+    release();
+    expect(await pending).toEqual({ ok: false, reason: 'not-found' });
+    expect(signals).toEqual([]);
+  });
+
+  it('a child born under an orphan inherits the orphan’s turn: a later turn’s abort leaves its pause alone', async () => {
+    const { monitor, signals, fireAbort, ps, roots, tick } = setup();
+    await monitor.sample(); // 300 seen under turn 200
+    // Turn 200 ends; bash 300 is re-parented and then starts 310; the next turn 201 starts.
+    ps.remove(200)
+      .reparent(300, 1)
+      .set(310, { ppid: 300, args: '/bin/sleep 100' })
+      .set(201, { ppid: 100, args: '/usr/local/bin/claude' });
+    roots.splice(0, 1, { pid: 201, sessionKey: 'A' });
+    tick(1);
+    expect(await monitor.control({ sessionKey: 'A', pid: 310, startToken: start, action: 'pause' })).toMatchObject({
+      ok: true,
+    });
+    fireAbort({ pid: 201, sessionKey: 'A' });
+    expect(signals).toEqual([[310, 'SIGSTOP']]);
+    fireAbort({ pid: 200, sessionKey: 'A' });
+    expect(signals).toEqual([
+      [310, 'SIGSTOP'],
+      [310, 'SIGCONT'],
+    ]);
+  });
+
   it('two live turns in one session: each abort continues only its own tree’s pauses', async () => {
     const { monitor, signals, fireAbort, ps, roots } = setup();
     ps.set(210, { ppid: 100, args: '/usr/local/bin/claude' }).set(310, { ppid: 210, args: '/bin/bash -c b' });
@@ -502,5 +548,34 @@ describe('LocalProcessMonitor', () => {
     const { monitor, ps } = setup();
     await Promise.all([monitor.sample(), monitor.sample()]);
     expect(ps.calls.filter((c) => c[0] === '-A')).toHaveLength(1);
+  });
+});
+
+describe('psLiveStartToken — gone only when ps says so silently', () => {
+  const fail = (status: number, stdout: string, stderr: string) => () => {
+    throw Object.assign(new Error('ps failed'), { status, stdout, stderr });
+  };
+
+  it('reads the start time; a silent exit 1 is gone; a diagnostic, another status or a timeout is unknown', () => {
+    expect(psLiveStartToken(42, () => 'Mon Nov 23  10:00:00 2026\n')).toBe('Mon Nov 23 10:00:00 2026');
+    expect(psLiveStartToken(42, fail(1, '', ''))).toBeNull();
+    expect(psLiveStartToken(42, fail(1, '', 'ps: sysctl: Cannot allocate memory\n'))).toBeUndefined();
+    expect(psLiveStartToken(42, fail(2, '', ''))).toBeUndefined();
+    expect(psLiveStartToken(42, fail(1, 'garbage', ''))).toBeUndefined();
+    expect(
+      psLiveStartToken(42, () => {
+        throw Object.assign(new Error('spawnSync ps ETIMEDOUT'), { code: 'ETIMEDOUT' });
+      }),
+    ).toBeUndefined();
+  });
+
+  it('against the real ps: this process has a start time; an exited pid is gone; a pid ps rejects is unknown', async () => {
+    expect(psLiveStartToken(process.pid)).toMatch(/\d{4}$/);
+    const { spawn } = await import('node:child_process');
+    const child = spawn('/usr/bin/true');
+    await new Promise((r) => child.on('exit', r));
+    expect(psLiveStartToken(child.pid as number)).toBeNull();
+    // macOS: "ps: process id too large" on stderr with exit 1 — a diagnostic, not a missing process.
+    if (process.platform === 'darwin') expect(psLiveStartToken(2147483646)).toBeUndefined();
   });
 });

@@ -2,55 +2,153 @@ import { posix } from 'node:path';
 import { redactSecrets } from '@soma/common/logger';
 
 /**
- * What the Processes tab may show of a command line — fail-closed.
+ * What the Processes tab may show of a command line — an allow-list, fail-closed.
  *
- * `ps args` joins argv with spaces and does not quote, so argument boundaries are gone: a prompt, an inline JSON config
- * or a passphrase with spaces becomes several tokens, and no parser can tell where such a value ends. So the preview
- * never tries to find the end of a value. It shows the shape of the command and hides every value:
- *   - the program's name;
- *   - flag names (`--model`, `-C`); a value written into a flag (`--x=value`, `-pS3cret`) is cut, and so is anything
- *     after a short flag's first letter (`-uroot` and `-rf` look the same);
- *   - the token right after a flag is cut (it may be that flag's value);
- *   - a flag that takes code, a prompt, a config, a header, a body or a credential (`-c`, `-e`, `-p`,
- *     `--append-system-prompt`, `--mcp-config`, `-H`, `-d`, `-u`, `--token` …) cuts everything after it, to the end of
- *     the line — a value that may hold spaces has no end we can find;
- *   - a `NAME=value` whose name says secret cuts the rest of the line too; any other `NAME=value` shows `NAME=…`;
- *   - a plain word shows only when it is a path (`/work/repo`, `./dist/server.js`): short, containing `/`, not a token
- *     run, URL credentials cut. Any other word — a subcommand, an operand, a positional password — is cut: a word
- *     alone cannot be told apart from a secret.
- * The logger's shaped-token redaction runs over what is left.
+ * `ps args` joins argv with spaces and does not quote, so argument boundaries are gone, and even with them a flag's
+ * arity is unknown (`jq --arg name --swordfish`: the third word is a value that looks like a flag; `p@ss/word` is a
+ * value that looks like a path). No rule over the words can tell a value from a flag or a path. So nothing after the
+ * program is copied from the command line. The preview is built only from:
+ *   - the program's basename;
+ *   - for an interpreter (`node`, `python3` …), its script's basename, when the script is where the interpreter takes
+ *     it (the first operand after known interpreter options) and looks like a file;
+ *   - flag names from {@link SHOWN_FLAGS}, a fixed list: a known flag that takes no value is shown as is; a known flag
+ *     that takes one value is shown with its value cut (`--model …`, `--model=…`);
+ *   - `…`.
+ * The walk stops at the first word it does not know — an unknown flag, a short flag, an operand, `NAME=value`, a
+ * second value — and everything from there is one `…`. So the output is a known prefix of the command, and every word
+ * in it is a constant of this module or the program's (and script's) own name. The logger's shaped-token redaction then
+ * runs over that name.
  */
 
 const MAX_ARGS = 16;
 const MAX_TOTAL = 240;
+const MAX_NAME = 60;
 const CUT = '…';
 
-/** A word that marks a flag or a `NAME=` as carrying a secret. */
-const SECRET_WORD = /(token|secret|pass|phrase|pwd|pin|otp|key|auth|credential|cookie|session|bearer|user|login|sign)/i;
-/**
- * Flags whose value can be code, a prompt, a config, a header, a request body or a credential — and can hold spaces.
- * Everything after one is cut.
- */
-const CUT_REST_FLAG =
-  /^(-c|-e|-E|-p|-m|-a|-u|-H|-d|-b|--eval|--print|--command|--mcp-config|--settings|--append-system-prompt|--system-prompt|--prompt|--env|--header|--data[\w-]*|--form|--user|--cookie|--json|--body)$/;
-/** A plain argument shown as is: a short word, path or address — no quotes, spaces, braces or `=`. */
-const SAFE_WORD = /^[A-Za-z0-9._/@:+,~%-]{1,64}$/;
-const URL_CREDENTIALS = /([a-z][a-z0-9+.-]*:\/\/[^\s/:@]*):[^\s/@]*@/gi;
+/** Flags that take no value: shown as is. */
+const BARE_FLAGS = [
+  // Claude Code (the SDK's CLI)
+  '--verbose',
+  '--continue',
+  '--fork-session',
+  '--include-partial-messages',
+  '--include-hook-events',
+  '--strict-mcp-config',
+  '--no-session-persistence',
+  '--allow-dangerously-skip-permissions',
+  '--dangerously-skip-permissions',
+  '--debug-to-stderr',
+  '--no-optional-locks',
+  // node
+  '--enable-source-maps',
+  '--no-warnings',
+  '--no-deprecation',
+  '--trace-warnings',
+  '--expose-gc',
+  // common
+  '--porcelain',
+  '--short',
+  '--quiet',
+  '--silent',
+  '--version',
+  '--help',
+  '--watch',
+  '--no-color',
+] as const;
+
+/** Flags that take exactly one value: the name is shown, the value is cut. */
+const VALUE_FLAGS = [
+  // Claude Code (the SDK's CLI)
+  '--model',
+  '--fallback-model',
+  '--output-format',
+  '--input-format',
+  '--permission-mode',
+  '--max-turns',
+  '--max-thinking-tokens',
+  '--max-budget-usd',
+  '--effort',
+  '--thinking-display',
+  '--setting-sources',
+  '--permission-prompt-tool',
+  '--resume',
+  '--add-dir',
+  '--plugin-dir',
+  '--tools',
+  '--agent',
+  // node
+  '--require',
+  '--import',
+  '--max-old-space-size',
+  // common
+  '--port',
+] as const;
+
+/** Every flag name the preview may show. Anything else — including any short flag — ends the preview. */
+export const SHOWN_FLAGS: ReadonlySet<string> = new Set<string>([...BARE_FLAGS, ...VALUE_FLAGS]);
+const TAKES_VALUE: ReadonlySet<string> = new Set<string>(VALUE_FLAGS);
+
+const INTERPRETER = /^(node|bun|deno|python[0-9.]*|ruby|perl|sh|bash|zsh)$/;
+/** A script argument that is a file: path-like (a `/` or a script extension), with no quotes, spaces or brackets. */
+const SCRIPT_FILE = /^(?=[\w./@+-]+$)(?:.*\/.*|.*\.(?:js|mjs|cjs|ts|mts|py|rb|pl|sh|php|lua))$/;
 const LONG_TOKEN = /[A-Za-z0-9_\-+/=.]{32,}/g;
-const HAS_LONG_TOKEN = /[A-Za-z0-9_\-+/=.]{32,}/;
-const MAX_NAME = 60;
 
 const basename = (p: string): string => posix.basename(p) || p;
 
-/** A script argument that is a file: path-like (a `/` or a script extension), with no quotes, spaces or brackets. */
-const SCRIPT_FILE = /^(?=[\w./@+-]+$)(?:.*\/.*|.*\.(?:js|mjs|cjs|ts|mts|py|rb|pl|sh|php|lua))$/;
-/**
- * Interpreter flags that take inline code, not a script (`python -c`, `node -e`, `perl -e`, `ruby -e`) — in every form:
- * separate (`-c code`), equals (`--eval=code`) or attached (`-cprint(1)`).
- */
-const INLINE_CODE_FLAG = /^(-[ceEpm]|--eval|--print)(=|$)|^-[ceEpm]./;
-/** Short-flag letters whose value can be code, a prompt, a password, a user, a header or a body. */
-const CUT_REST_SHORT = /^-[ceEpmauHdb]/;
+/** A name taken from the command line (the program's, the script's): token-redacted, long runs cut, length capped. */
+function safeName(raw: string): string {
+  const name = String(redactSecrets(raw)).replace(LONG_TOKEN, CUT);
+  return name.length > MAX_NAME ? `${name.slice(0, MAX_NAME - 1)}${CUT}` : name;
+}
+
+interface Walked {
+  readonly exe: string;
+  readonly script?: string;
+  /** The known prefix after the program: shown flags, `…` for a cut value, and a final `…` if the walk stopped. */
+  readonly rest: string[];
+}
+
+/** Walk argv while every word is known (see the module comment); stop at the first one that is not. */
+function walk(argv: readonly string[]): Walked {
+  const exe = safeName(basename(argv[0]));
+  const interpreter = INTERPRETER.test(basename(argv[0]));
+  const rest: string[] = [];
+  let script: string | undefined;
+  let shown = 0;
+  for (let i = 1; i < argv.length; i++) {
+    const arg = argv[i];
+    if (shown >= MAX_ARGS) {
+      rest.push(CUT);
+      break;
+    }
+    shown++;
+    const eq = arg.indexOf('=');
+    const name = arg.startsWith('--') && eq > 0 ? arg.slice(0, eq) : arg;
+    if (SHOWN_FLAGS.has(name)) {
+      if (name !== arg) {
+        // `--model=opus`, `--porcelain=v2`: the value is written in.
+        rest.push(`${name}=${CUT}`);
+        continue;
+      }
+      rest.push(name);
+      if (TAKES_VALUE.has(name) && i + 1 < argv.length) {
+        // The next word is this flag's value, whatever it looks like (`--model --verbose` hides `--verbose`).
+        rest.push(CUT);
+        i++;
+      }
+      continue;
+    }
+    if (interpreter && script === undefined && !arg.startsWith('-') && SCRIPT_FILE.test(arg)) {
+      // The interpreter's first operand is its script.
+      script = safeName(basename(arg));
+      rest.push(script);
+      continue;
+    }
+    rest.push(CUT);
+    break;
+  }
+  return { exe, script, rest };
+}
 
 /** Split a `ps args` line into argv. ps joins argv with single spaces and does not quote, so this is best effort. */
 export function splitArgs(line: string): string[] {
@@ -60,93 +158,16 @@ export function splitArgs(line: string): string[] {
 /** Program name for the table: the executable's basename, plus the script for an interpreter. */
 export function processName(argv: readonly string[]): string {
   if (argv.length === 0) return '?';
-  const exe = basename(argv[0]);
-  let name = exe;
-  if (/^(node|bun|deno|python[0-9.]*|ruby|perl|sh|bash|zsh)$/.test(exe)) {
-    // Inline code (`sh -c '…'`, `python -c '…'`, `node -e '…'`) is not a script: the name stays the interpreter.
-    // `-` (or `--` then nothing) is a script read from stdin: its next argument is data, not a file.
-    if (!argv.slice(1).some((a) => INLINE_CODE_FLAG.test(a) || a === '-')) {
-      const script = argv.slice(1).find((a) => !a.startsWith('-'));
-      if (script && SCRIPT_FILE.test(script)) name = `${exe} ${basename(script)}`;
-    }
-  }
-  name = String(redactSecrets(name)).replace(LONG_TOKEN, CUT);
+  const { exe, script } = walk(argv);
+  const name = script ? `${exe} ${script}` : exe;
   return name.length > MAX_NAME ? `${name.slice(0, MAX_NAME - 1)}${CUT}` : name;
 }
 
 /** A command line safe to show in the dashboard (see the module comment for what is shown). */
 export function commandPreview(argv: readonly string[]): string {
   if (argv.length === 0) return '';
-  const parts: string[] = [basename(argv[0])];
-  const cut = () => {
-    if (parts[parts.length - 1] !== CUT) parts.push(CUT);
-  };
-  // afterFlag: the token after a bare flag may be its value. inValue: a value was written into the previous flag
-  // (`--x=a b c`, `-pa b c`) and ps may have split it — every following plain word is cut until the next flag.
-  let afterFlag = false;
-  let inValue = false;
-  let shown = 0;
-  for (const arg of argv.slice(1)) {
-    if (shown >= MAX_ARGS) {
-      cut();
-      break;
-    }
-    shown++;
-    if (arg.startsWith('-') && arg.length > 1) {
-      inValue = false;
-      const short = !arg.startsWith('--');
-      const eq = arg.indexOf('=');
-      // A short flag's name is its letter: `-pS3cret`, `-uroot`, `-rf` and `-p` are all `-p` / `-u` / `-r` here.
-      const name = short ? arg.slice(0, 2) : eq > 0 ? arg.slice(0, eq) : arg;
-      if (
-        (short ? CUT_REST_SHORT.test(name) : CUT_REST_FLAG.test(name)) ||
-        SECRET_WORD.test(short ? arg.slice(1) : name.replace(/^-+/, ''))
-      ) {
-        parts.push(name);
-        cut();
-        break;
-      }
-      if (short && arg.length > 2) {
-        // More after the letter — a value attached (`-n5`) or bundled flags (`-rf`), which ps cannot tell apart.
-        parts.push(`${name}${CUT}`);
-        afterFlag = false;
-        inValue = true;
-      } else if (eq > 0) {
-        parts.push(`${name}=${CUT}`);
-        afterFlag = false;
-        inValue = true;
-      } else {
-        parts.push(name);
-        afterFlag = true;
-      }
-      continue;
-    }
-    if (inValue) {
-      cut();
-      continue;
-    }
-    const eq = arg.indexOf('=');
-    if (eq > 0 && /^[A-Za-z_][A-Za-z0-9_]*$/.test(arg.slice(0, eq))) {
-      if (SECRET_WORD.test(arg.slice(0, eq))) {
-        parts.push(`${arg.slice(0, eq)}=`);
-        cut();
-        break;
-      }
-      parts.push(`${arg.slice(0, eq)}=${CUT}`);
-      afterFlag = false;
-      continue;
-    }
-    if (afterFlag) {
-      // May be the previous flag's value.
-      cut();
-      afterFlag = false;
-      continue;
-    }
-    const word = arg.replace(URL_CREDENTIALS, `$1:${CUT}@`);
-    if (word.includes('/') && SAFE_WORD.test(word.replace(CUT, '')) && !HAS_LONG_TOKEN.test(word)) parts.push(word);
-    else cut();
-  }
-  let line = String(redactSecrets(parts.join(' ')));
+  const { exe, rest } = walk(argv);
+  let line = [exe, ...rest].join(' ');
   if (line.length > MAX_TOTAL) line = `${line.slice(0, MAX_TOTAL - 1)}${CUT}`;
   return line;
 }
