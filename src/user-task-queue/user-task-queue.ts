@@ -277,19 +277,26 @@ export class UserTaskQueue {
   }
 
   /**
-   * A stop 먼저 진행 asked for while the turn was still starting is settled: `landed` — the turn was stopped (its
-   * thread is told, it carries on later); otherwise it ended by itself, or could not be stopped in time — it was never
-   * paused, so it is not carried on. Either way the entry that goes first starts when the slot frees.
+   * A stop 먼저 진행 asked for on a running turn is settled: `landed` — the turn was stopped (its thread is told, it
+   * carries on later); otherwise it ended by itself, or could not be stopped in time — it was never paused, so it is
+   * not carried on. `freed` — the turn let go of its slot: the entry that goes first takes it now. Otherwise (a
+   * teardown that never finished in time) the entry stays first in line for the next release.
    */
-  stopResolved(sessionKey: string, landed: boolean): void {
+  stopResolved(sessionKey: string, landed: boolean, freed = true): void {
     const pending = this.pendingStops.get(sessionKey);
     if (!pending) return;
     this.pendingStops.delete(sessionKey);
+    const first = findEntry(this.ledger, pending.firstId);
     if (landed) {
-      const first = findEntry(this.ledger, pending.firstId);
       if (first) this.safe(() => this.deps.notify?.deferred(pending.victim, first));
     } else if (findEntry(this.ledger, pending.resumeId)?.state === 'waiting') {
       this.commit(remove(this.ledger, pending.resumeId));
+    }
+    // The stopped task let go of its slot (it took the stop, or ended first): that slot is the entry's that went
+    // first — it starts now, whatever else the person still runs (an admin may have lowered the limit meanwhile).
+    if (freed && first?.state === 'waiting') {
+      this.admitAndStart(first, 'bypass', true);
+      return;
     }
     this.release(this.ownerOf(pending));
   }

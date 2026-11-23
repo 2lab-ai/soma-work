@@ -369,22 +369,65 @@ describe('UserTaskQueue.bypass (먼저 진행)', () => {
       ['C1:2.0', 'request', 'waiting'],
       ['C1:1.0', 'resume', 'waiting'],
     ]);
-    // The stop landed: the stopped thread is told; once its slot frees, the entry that went first starts as such.
-    h.queue.stopResolved('C1:1.0', true);
-    expect(h.notices).toContain('deferred:C1:1.0:for:C1:2.0');
-    expect(h.started).toEqual([]);
+    // The stop landed and the stopped turn let go of its slot: the stopped thread is told, and the entry that went
+    // first takes that slot now, as such.
     h.running.set('U1', []);
-    h.queue.release('U1');
+    h.queue.stopResolved('C1:1.0', true, true);
+    expect(h.notices).toContain('deferred:C1:1.0:for:C1:2.0');
     expect(h.started.map((e) => e.id)).toEqual(['t1']);
     expect(h.notices).toContain('started:t1:bypass');
   });
 
-  it('a stop that never lands (the turn ended by itself, or time ran out) does not carry the task on', () => {
+  it("the entry that went first takes the stopped task's slot even when the person runs others over the limit", () => {
+    // An admin lowered the limit while two ran: the slot 먼저 진행 freed is the entry's, whatever else still runs.
+    const older: RunningTask = { ...taskA, sessionKey: 'C1:0.5', threadTs: '0.5', startedAt: 100 };
+    const h = harness({ stop: 'pending' });
+    h.running.set('U1', [older, taskA]);
+    h.queue.gate(input());
+    expect(h.queue.bypass('t1', 'U1')).toMatchObject({ ok: true, deferred: taskA, pending: true });
+    h.running.set('U1', [older]);
+    h.queue.stopResolved('C1:1.0', true, true);
+    expect(h.started.map((e) => e.id)).toEqual(['t1']);
+    expect(h.notices).toContain('started:t1:bypass');
+    // The stopped task waits right behind, and carries on once the person is under the limit again.
+    expect(h.queue.snapshot().entries.map((e) => [e.sessionKey, e.kind, e.state])).toEqual([
+      ['C1:2.0', 'request', 'admitted'],
+      ['C1:1.0', 'resume', 'waiting'],
+    ]);
+  });
+
+  it('a stop that landed on a turn that never let go of its slot starts nothing beside it', () => {
     const h = harness({ stop: 'pending' });
     h.running.set('U1', [taskA]);
     h.queue.gate(input());
     h.queue.bypass('t1', 'U1');
-    h.queue.stopResolved('C1:1.0', false);
+    h.queue.stopResolved('C1:1.0', true, false);
+    expect(h.notices).toContain('deferred:C1:1.0:for:C1:2.0');
+    expect(h.started).toEqual([]);
+    // First in line: the next release once its slot is free starts it.
+    h.running.set('U1', []);
+    h.queue.release('U1');
+    expect(h.started.map((e) => e.id)).toEqual(['t1']);
+  });
+
+  it('a stop that never lands (the turn ended by itself) does not carry the task on; the entry takes its slot', () => {
+    const h = harness({ stop: 'pending' });
+    h.running.set('U1', [taskA]);
+    h.queue.gate(input());
+    h.queue.bypass('t1', 'U1');
+    h.running.set('U1', []);
+    h.queue.stopResolved('C1:1.0', false, true);
+    expect(h.queue.snapshot().entries.map((e) => [e.kind, e.state])).toEqual([['request', 'admitted']]);
+    expect(h.notices.some((n) => n.startsWith('deferred:'))).toBe(false);
+    expect(h.started.map((e) => e.id)).toEqual(['t1']);
+  });
+
+  it('a stop that never lands while the turn still runs (time ran out): no carry-on, the entry waits', () => {
+    const h = harness({ stop: 'pending' });
+    h.running.set('U1', [taskA]);
+    h.queue.gate(input());
+    h.queue.bypass('t1', 'U1');
+    h.queue.stopResolved('C1:1.0', false, false);
     expect(h.queue.snapshot().entries.map((e) => e.kind)).toEqual(['request']);
     expect(h.notices.some((n) => n.startsWith('deferred:'))).toBe(false);
     // Still at the limit: it waits for the running task to end.
