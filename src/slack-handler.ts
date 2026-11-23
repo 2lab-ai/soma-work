@@ -174,6 +174,7 @@ import { TodoManager } from './todo-manager';
 import { TurnNotifier } from './turn-notifier';
 import type { ConversationSession, SessionGoal, SessionGoalStall, SessionIncidentRequest } from './types';
 import { userSettingsStore } from './user-settings-store';
+import type { GateInput, RunningTask, UserTaskGatePort } from './user-task-queue/user-task-queue';
 import { waitsOnHost } from './work-queue/host-wait';
 import { WorkingDirectoryManager } from './working-directory-manager';
 
@@ -1951,6 +1952,12 @@ export class SlackHandler {
     const hasSlackMessage = Boolean(event.ts);
     if (!hasSlackMessage) event = { ...event, ts: mintEventTs() };
 
+    // The per-user task queue started this message (a held request, or the turn that carries a stopped task on):
+    // its admission is taken first, once, whatever happens to the message below — a replay that is parked for a
+    // shutdown, or queued behind a busy slot, has used its entry and is never replayed a second time. And it is no
+    // Slack redelivery: the goal-command dedupe below saw this very ts when it was queued.
+    const userTaskAdmitted = this.takeUserTaskAdmission(event, this.resolveFollowupSessionKey(event));
+
     // First admission point: restored items are only trustworthy once the
     // startup reconcile has run against the registry.
     this.warnIfReconcileSkipped();
@@ -1975,7 +1982,7 @@ export class SlackHandler {
     // of the same event must not run it a second time, whichever path the
     // first delivery took. The verbatim opening turn a goal command admits
     // reuses the command's `ts` and is exempt.
-    if (this.isRedeliveredGoalCommand(event)) {
+    if (!userTaskAdmitted && this.isRedeliveredGoalCommand(event)) {
       this.logger.info('Goal command redelivered — already handled, ignored', {
         channel: event.channel,
         ts: event.ts,
@@ -2119,12 +2126,29 @@ export class SlackHandler {
       return;
     }
 
+    // The per-user task queue: a person at their limit (another thread of theirs runs) does not start this one now —
+    // it waits in their queue and the host starts it when a running task ends. Synchronous, inside the fence.
+    const userTask = this.gateUserTask(event, sessionKey, userTaskAdmitted);
+    if (userTask === 'drop') {
+      this.logger.info('Turn dropped — its thread (or its cron job) already waits in the user task queue', {
+        sessionKey,
+      });
+      this.holdDroppedGoalContinuation(sessionKey, event);
+      return;
+    }
+    if (userTask === 'queued') {
+      // Durably stored, like a follow-up behind a busy slot: a host waiting for the receipt hears it now.
+      this.noteTurnAccepted(event.channel, event.ts);
+      return;
+    }
+
     // Bolt's `say` cannot ride inside the dispatch request (the dispatcher
     // clones the message as JSON), so it is handed over here. The dispatch hook
     // consumes it synchronously — `runInitial` calls it before its first await
     // (`followup-dispatcher.ts:329`, `:567`) — so this never leaks across runs.
     this.rememberInitialSay(sessionKey, say);
     const started = dispatcher.runInitial(sessionKey, event, this.captureFollowupContext(event));
+    if (started.status === 'dispatched') this.noteUserTaskSlot(sessionKey, event);
     // --- end of fence ---
 
     if (started.status !== 'dispatched') {
@@ -7031,6 +7055,14 @@ export class SlackHandler {
    * `Send now` / Resume / Retry click runs): heard only when nothing of the chain is in flight.
    */
   private noteChainSettled(sessionKey: string, outcome: RunReport['outcome'] | undefined): void {
+    // The per-user task queue: a task of someone ended (or stopped to ask) — a waiting one of theirs may start now.
+    if (!this.followupDispatcher?.isBusy(sessionKey)) {
+      try {
+        this.userTaskChainSettled?.(sessionKey);
+      } catch (error) {
+        this.logger.warn('User task queue release hook raised', { error: (error as Error)?.message ?? String(error) });
+      }
+    }
     // #917 — the chain is over: a follow-up its Executive Summary left is asked now. A session with an active goal
     // waits for its loop instead (it continues, or asks; `onRunSettled` hands the rest back here).
     if (outcome && !this.followupDispatcher?.isBusy(sessionKey)) {
@@ -9146,6 +9178,164 @@ export class SlackHandler {
     this.goalLoopActing = fn;
   }
   private goalLoopActing?: (sessionKey: string) => boolean;
+
+  /** The per-user task queue (wired in index.ts). Absent: every message runs as before. */
+  setUserTaskQueue(queue: UserTaskGatePort | undefined, onChainSettled?: (sessionKey: string) => void): void {
+    this.userTaskQueue = queue;
+    this.userTaskChainSettled = onChainSettled;
+  }
+  private userTaskQueue?: UserTaskGatePort;
+  private userTaskChainSettled?: (sessionKey: string) => void;
+
+  /** The thread's task runs: its turn holds the slot, or its goal loop is about to run the next one. */
+  isTaskRunning(sessionKey: string): boolean {
+    return this.isFollowupTurnBusy(sessionKey) || this.goalLoopActing?.(sessionKey) === true;
+  }
+
+  /**
+   * The slots this ingress opened, by the person whose task each is — known at `runInitial`, before the session
+   * exists (a first message creates it only after several awaits) and before a bot-thread migration re-keys it. An
+   * entry counts while its slot is held ({@link isFollowupTurnBusy}); a stale one is dropped when read.
+   */
+  private readonly userTaskSlots = new Map<
+    string,
+    { userId: string; channel: string; threadTs: string; startedAt: number }
+  >();
+
+  /** Whose task a thread is: its session's owner, or — for a thread with no session yet — the sender. */
+  private userTaskOwnerOf(sessionKey: string, event: MessageEvent): string | undefined {
+    const session =
+      typeof this.claudeHandler?.getSessionByKey === 'function'
+        ? this.claudeHandler.getSessionByKey(sessionKey)
+        : undefined;
+    return session?.ownerId || event.user || undefined;
+  }
+
+  private takeUserTaskAdmission(event: MessageEvent, sessionKey: string | undefined): boolean {
+    const id = event.routeContext?.userTaskEntryId;
+    if (!id || !sessionKey || !this.userTaskQueue) return false;
+    try {
+      return this.userTaskQueue.takeAdmission(id, sessionKey);
+    } catch (error) {
+      this.logger.warn('User task queue: admission could not be taken', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      });
+      return false;
+    }
+  }
+
+  /**
+   * The per-user task queue's gate, at the idle dispatch point. `run` — start now; `queued` — the message waits in
+   * the person's queue (the queue posted the notice); `drop` — a goal continuation of a thread that waits in line.
+   * A queue that fails lets the message run: a broken queue must not stop the bot.
+   */
+  private gateUserTask(event: MessageEvent, sessionKey: string, admitted: boolean): 'run' | 'queued' | 'drop' {
+    const queue = this.userTaskQueue;
+    if (!queue) return 'run';
+    const userId = this.userTaskOwnerOf(sessionKey, event);
+    if (!userId) return 'run';
+    const route = event.routeContext;
+    const continuation: GateInput['continuation'] = route?.goalContinuation
+      ? 'drop'
+      : route?.hostTurn || route?.autoResume || route?.compactRedispatch || event.epicChild
+        ? 'pass'
+        : 'none';
+    try {
+      const result = queue.gate({
+        userId,
+        sessionKey,
+        channel: event.channel,
+        threadTs: event.thread_ts || event.ts,
+        text: event.text,
+        message: JSON.parse(JSON.stringify(event)) as Record<string, unknown>,
+        continuation,
+        admitted,
+      });
+      if (result.action === 'queued') {
+        this.logger.info('User task queue: message waits for the person to have a free slot', {
+          sessionKey,
+          userId,
+          entry: result.entry.id,
+          position: result.position,
+          limit: result.limit,
+        });
+      }
+      return result.action;
+    } catch (error) {
+      this.logger.error('User task queue gate failed — the message runs', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      });
+      return 'run';
+    }
+  }
+
+  private noteUserTaskSlot(sessionKey: string, event: MessageEvent): void {
+    const userId = this.userTaskOwnerOf(sessionKey, event);
+    if (!userId) return;
+    this.userTaskSlots.set(sessionKey, {
+      userId,
+      channel: event.channel,
+      threadTs: event.thread_ts || event.ts,
+      startedAt: Date.now(),
+    });
+  }
+
+  /**
+   * The person's tasks that run right now: a thread whose turn holds its slot (from the ingress map, or any session
+   * of theirs whose slot is held — a drain, a Send now), or whose goal loop is about to run its next turn. One entry
+   * per slot: a migrated thread's work key and source key are the same task.
+   */
+  runningTasksOf(userId: string): RunningTask[] {
+    const out: RunningTask[] = [];
+    const seen = new Set<string>();
+    const slotOf = (key: string) => this.followupMigration?.byCanonical.get(key) ?? key;
+    const titleOf = (key: string) => {
+      const s =
+        typeof this.claudeHandler?.getSessionByKey === 'function' ? this.claudeHandler.getSessionByKey(key) : undefined;
+      return s?.title || undefined;
+    };
+    for (const [key, slot] of this.userTaskSlots) {
+      if (!this.isFollowupTurnBusy(key)) {
+        this.userTaskSlots.delete(key);
+        continue;
+      }
+      if (slot.userId !== userId) continue;
+      seen.add(slotOf(key));
+      // After a bot-thread migration the task is the work thread's: its key, channel and thread (a resume or a
+      // notice addressed to the source thread would land on the session the migration ended).
+      const canonical = this.followupMigration?.bySlot.get(key) ?? key;
+      const work =
+        canonical !== key && typeof this.claudeHandler?.getSessionByKey === 'function'
+          ? this.claudeHandler.getSessionByKey(canonical)
+          : undefined;
+      out.push({
+        sessionKey: canonical,
+        channel: work?.channelId || slot.channel,
+        threadTs: work?.threadTs || slot.threadTs,
+        title: titleOf(canonical) ?? titleOf(key),
+        startedAt: slot.startedAt,
+      });
+    }
+    const sessions =
+      typeof this.claudeHandler?.getAllSessions === 'function' ? this.claudeHandler.getAllSessions() : undefined;
+    for (const [key, s] of sessions ?? []) {
+      if (s.ownerId !== userId || s.terminated || !s.channelId) continue;
+      if (seen.has(slotOf(key)) || seen.has(key)) continue;
+      const busy = this.isFollowupTurnBusy(key) || this.goalLoopActing?.(key) === true;
+      if (!busy) continue;
+      seen.add(slotOf(key));
+      out.push({
+        sessionKey: key,
+        channel: s.channelId,
+        threadTs: s.threadTs || '',
+        title: s.title || undefined,
+        startedAt: Number(s.activityStateChangedAt) || undefined,
+      });
+    }
+    return out;
+  }
 
   /**
    * #917 (trinity R2 fable P2) — the host lets the agent act again on its own (goal resume, an objective update, a

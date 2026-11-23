@@ -138,6 +138,7 @@ import { type EpicBoardView, epicBoardView } from '../task-turn/epic-board';
 import { sessionCostUsd } from '../task-turn/epic-cost';
 import type { PlanDecision, TaskPlanGate, TaskPlanState } from '../task-turn/task-plan';
 import { buildThreadPermalink } from '../turn-notifier';
+import { getActiveUserTaskQueue } from '../user-task-queue/active';
 import type { ConversationSession } from '../types';
 import { coerceEffort, EFFORT_LEVELS, type EffortLevel, userSettingsStore } from '../user-settings-store';
 import { BUILTIN_PRESETS } from '../view-layout';
@@ -519,6 +520,11 @@ export interface KanbanSession {
    */
   queueWait?: HostWait;
   /**
+   * The per-user task queue: this thread's request waits for its owner to have a free slot (or it was stopped so
+   * another of theirs could go first — `resume`). The board puts it in 응답 필요, under 대기큐. Absent otherwise.
+   */
+  userQueue?: { entryId: string; kind: 'request' | 'resume'; position: number; since: number };
+  /**
    * Anthropic safeguards halted the session: nothing runs in it until an admin
    * lifts the lock from the Slack notice. The card says so instead of "대기".
    */
@@ -856,6 +862,36 @@ export interface KanbanBoard {
   waiting: KanbanSession[];
   idle: KanbanSession[];
   closed: KanbanSession[];
+  /**
+   * The per-user task queue (대기큐): every entry of the owners this board shows, in line order — also the ones whose
+   * thread has no session yet (a first message that waits). Filtered per viewer like the columns (`privateTask`).
+   */
+  userQueue?: KanbanUserQueueItem[];
+}
+
+/** One entry of the per-user task queue as the board shows it (대기큐, above 응답 필요). */
+export interface KanbanUserQueueItem {
+  /** The thread's card key (the key its session's card has, or will have). */
+  key: string;
+  entryId: string;
+  ownerId: string;
+  ownerName: string;
+  channelId: string;
+  threadTs: string;
+  /** `request` — a request that waits; `resume` — a task stopped so another could go first. */
+  kind: 'request' | 'resume';
+  /** `admitted` — started, on its way to its turn. */
+  state: 'waiting' | 'admitted';
+  /** 1-based place in its owner's line (0 once admitted). */
+  position: number;
+  preview: string;
+  enqueuedAt: number;
+  /** Tasks the owner may run at once (`null` = no limit). */
+  limit: number | null;
+  /** What the owner runs now (what this entry waits for). */
+  running: Array<{ key: string; title: string; slackThreadUrl?: string }>;
+  slackThreadUrl?: string;
+  privateTask: boolean;
 }
 
 export interface UserDayStats {
@@ -2888,6 +2924,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
   const autoResume = deriveAutoResume(s, Date.now());
   // .prd/36 D8 — the session waits on the host: a work-queue entry, or an environment hand-off it asked for.
   const queueWait = hostWaitFor(s?.channelId, s?.threadTs);
+  const userQueue = userQueueOfSession(key);
   const taskView = _getTasksFn ? _getTasksFn(key) : undefined;
   const aggregate = computeThreadAggregate(s.channelId, s.threadTs, getAllSessions(), Date.now());
   const headline = displayTitle(s);
@@ -3014,6 +3051,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
       : {}),
     ...(autoResume ? { autoResume } : {}),
     ...(queueWait ? { queueWait } : {}),
+    ...(userQueue ? { userQueue } : {}),
     ...(s.safeguardHalt && Number.isFinite(Number(s.safeguardHalt.atMs))
       ? {
           safeguardHalt: {
@@ -3262,6 +3300,12 @@ function placeOnBoard(board: KanbanBoard, kanban: KanbanSession, session: { stat
     board.waiting.push(kanban);
     return;
   }
+  // The per-user task queue: a thread whose request waits for its owner's free slot is 응답 필요 (under 대기큐),
+  // whatever it last did.
+  if (kanban.userQueue && kanban.activityState !== 'working') {
+    board.waiting.push(kanban);
+    return;
+  }
   // Closed: SLEEPING state (terminated sessions are handled via archive below)
   if (session.state === 'SLEEPING') {
     board.closed.push(kanban);
@@ -3475,7 +3519,76 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
   board.idle.sort(byActivity);
   board.closed.sort(byActivity);
 
+  const queued = userQueueItems(userId);
+  if (queued.length > 0) board.userQueue = queued;
   return board;
+}
+
+/** The per-user task queue entry a session's thread has in line (waiting first, else on its way). */
+function userQueueOfSession(key: string): KanbanSession['userQueue'] {
+  const active = getActiveUserTaskQueue();
+  if (!active) return undefined;
+  const entry = active.queue.waitingEntryFor(key);
+  if (!entry) return undefined;
+  const view = active.queue.viewFor(entry.userId).waiting.find((w) => w.id === entry.id);
+  return { entryId: entry.id, kind: entry.kind, position: view?.position ?? 0, since: entry.enqueuedAt };
+}
+
+/** 대기큐 — every entry in line of the owners this board shows (one owner's, or everyone's), in line order. */
+function userQueueItems(userId?: string): KanbanUserQueueItem[] {
+  const active = getActiveUserTaskQueue();
+  if (!active) return [];
+  const sessions = getAllSessions();
+  const out: KanbanUserQueueItem[] = [];
+  const owners = userId ? [userId] : [...new Set(active.queue.snapshot().entries.map((e) => e.userId))];
+  for (const owner of owners) {
+    const view = active.queue.viewFor(owner);
+    if (view.waiting.length === 0) continue;
+    const ownerName = ownerNameOf(owner, sessions);
+    const runningOf = (t: (typeof view.running)[number]) => {
+      const s = sessions.get(t.sessionKey);
+      return {
+        key: composeSessionKey(t.sessionKey),
+        title: (s ? displayTitle(s) : t.title) || t.title || '진행 중인 작업',
+        slackThreadUrl: t.channel && t.threadTs ? (buildThreadPermalink(t.channel, t.threadTs) ?? undefined) : undefined,
+      };
+    };
+    for (const w of view.waiting) {
+      // #1315 — an entry everyone may see names no private task of its owner (a DM's, a private channel's): only that
+      // a task runs. An entry that is itself private is shown to its owner and admins only.
+      const entryPrivate = isPrivateTask(w.channel);
+      const running = view.running.map((t) =>
+        !entryPrivate && t.channel !== w.channel && isPrivateTask(t.channel)
+          ? { key: composeSessionKey(t.sessionKey), title: '비공개 작업' }
+          : runningOf(t),
+      );
+      out.push({
+        key: composeSessionKey(w.sessionKey),
+        entryId: w.id,
+        ownerId: owner,
+        ownerName,
+        channelId: w.channel,
+        threadTs: w.threadTs,
+        kind: w.kind,
+        state: w.state,
+        position: w.position,
+        preview: w.preview,
+        enqueuedAt: w.enqueuedAt,
+        limit: view.limit,
+        running,
+        slackThreadUrl: buildThreadPermalink(w.channel, w.threadTs) ?? undefined,
+        privateTask: entryPrivate,
+      });
+    }
+  }
+  return out;
+}
+
+/** A person's name as the board shows it: from one of their sessions, else their settings, else their id. */
+function ownerNameOf(userId: string, sessions: Map<string, ConversationSession>): string {
+  for (const [, s] of sessions) if (s.ownerId === userId && s.ownerName) return s.ownerName;
+  const settings = userSettingsStore.getUserSettings(userId);
+  return settings?.slackDisplayName || settings?.slackName || userId;
 }
 
 // ── Stats aggregation ──────────────────────────────────────────────
@@ -4634,6 +4747,40 @@ export async function registerDashboardRoutes(
 
   // Body (optional): { pauseGoalId } — the owner confirmed pausing the running goal first (the card's 중지 asks when
   // a goal is running: a stop alone would let the goal start its next turn). No body: a plain stop, as before.
+  // The per-user task queue (대기큐): 먼저 진행 — the entry goes first (a running task of its owner is stopped and put
+  // right behind it); 대기 취소 — the entry leaves the line. The entry's owner, or an admin with admin mode on (#716).
+  server.post<{ Params: { entryId: string; action: string } }>(
+    '/api/dashboard/user-queue/:entryId/:action',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const { entryId, action } = request.params;
+      if (action !== 'bypass' && action !== 'cancel') {
+        reply.status(404).send({ error: 'Unknown queue action' });
+        return;
+      }
+      const active = getActiveUserTaskQueue();
+      const entry = active?.queue.entry(entryId);
+      if (!active || !entry) {
+        reply.status(404).send({ error: 'This queue entry is gone — it started or was cancelled' });
+        return;
+      }
+      if (!_hasWriteAccess(request, entry.userId)) {
+        reply.status(403).send({ error: 'Forbidden — the entry\'s owner, or an admin with X-Admin-Mode: on (#716)' });
+        return;
+      }
+      const by = signedInUserId(request) ?? entry.userId;
+      const result =
+        action === 'bypass' ? active.queue.bypass(entryId, entry.userId) : active.queue.cancel(entryId, entry.userId);
+      if (!result.ok) {
+        reply.status(result.reason === 'not-found' ? 404 : 409).send({ error: result.reason });
+        return;
+      }
+      logger.info('Dashboard: user queue action', { entryId, action, by });
+      broadcastSessionUpdate();
+      reply.send({ ok: true, deferred: result.deferred ? { sessionKey: composeSessionKey(result.deferred.sessionKey) } : undefined });
+    },
+  );
+
   server.post<{ Params: { key: string }; Body: { pauseGoalId?: unknown } | undefined }>(
     '/api/dashboard/session/:key/stop',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
@@ -12321,6 +12468,135 @@ function patchLastBoard(s) {
   });
 }
 
+// The per-user task queue (대기큐) — the line of requests that wait for their owner's free slot (a person runs as many
+// tasks at once as their limit), led in 응답 필요 above the cards that need an answer. Each entry is one card of its
+// own ('uq:<entry>'): what it waits for, its place, and 먼저 진행 / 대기 취소. A thread in line is not drawn twice.
+var UQ_GROUP_LINE = 'uq-line';
+var UQ_GROUP_NEEDS = 'uq-needs';
+var _uqItems = [];
+var _uqByCard = Object.create(null);
+
+function uqCardKey(item) {
+  return 'uq:' + String(item && item.entryId);
+}
+
+// This render's line (renderBoard): the cards are placed afresh.
+function uqReset(line) {
+  _uqItems = line;
+  _uqByCard = Object.create(null);
+}
+
+// The 대기큐 entry a card key draws, or null.
+function uqItemOf(key) {
+  return _uqByCard[key] || null;
+}
+
+// The thread keys of the entries in line (a launch whose request waits there has arrived).
+function uqLineKeys() {
+  return _uqItems.map(function(q) {
+    return q.key;
+  });
+}
+
+// An entry of a sibling instance's queue: acted on there (its own dashboard), not here.
+function uqSibling(item) {
+  return !!(SELF_INSTANCE_NAME && item && item.environment && item.environment.instanceName && item.environment.instanceName !== SELF_INSTANCE_NAME);
+}
+
+// Pure: the 대기큐 line (in its order, the board's owner filter applied) and the 응답 필요 cards left once the threads
+// in line are taken out (their entry's card stands for them).
+function uqSplitWaiting(queue, waiting, users) {
+  var line = (queue || []).filter(function(q) {
+    return q && q.entryId && (!users || !users.length || users.indexOf(q.ownerId || '') >= 0);
+  });
+  var inLine = Object.create(null);
+  (queue || []).forEach(function(q) {
+    if (q && q.key) inLine[q.key] = true;
+  });
+  var needs = (waiting || []).filter(function(s) {
+    return !(s && (s.userQueue || inLine[s.key]));
+  });
+  return { line: line, needs: needs };
+}
+
+// Pure: one entry's card — its title (the thread's, else the request's first words), 대기중 · n번째, what runs
+// before it, and the two buttons (this instance's entries that still wait).
+function uqCardOf(item, session) {
+  var title = (session && (session.displayHeadline || session.title)) || item.preview || '대기 중인 작업';
+  var word = item.state === 'admitted' ? '시작 중' : item.kind === 'resume' ? '이어서 하기 대기' : '대기중';
+  var place = item.state === 'waiting' && item.position > 0 ? word + ' · ' + item.position + '번째' : word;
+  var running = (item.running || [])
+    .map(function(r) {
+      return r && r.title ? String(r.title) : '';
+    })
+    .filter(Boolean);
+  var limit = item.limit === null || item.limit === undefined ? '무제한' : String(item.limit) + '개';
+  var details = [];
+  if (running.length) details.push({ label: '진행 중: ' + running.join(', '), meta: '끝나면 자동으로 시작' });
+  else details.push('진행 중인 작업이 끝나면 자동으로 시작합니다');
+  if (item.kind === 'resume') details.push('다른 작업을 먼저 하느라 멈춘 작업 — 차례가 오면 멈춘 지점부터 이어서 합니다');
+  if (item.state === 'waiting') {
+    details.push({ label: '먼저 진행: 진행 중인 작업을 멈추고 이 작업을 바로 시작', meta: '멈춘 작업은 끝난 뒤 이어서' });
+  }
+  var card = {
+    id: uqCardKey(item),
+    title: String(title),
+    summary: (item.kind === 'resume' ? '멈춘 작업' : '대기 중인 요청') + ' · 동시 ' + limit + (running.length ? ' · ' + running[0] + ' 다음' : ''),
+    status: 'idle',
+    statusText: place,
+    bodyMode: 'steps',
+    details: details,
+  };
+  var since = Number(item.enqueuedAt);
+  if (since > 0) card.since = since;
+  if (item.state === 'waiting' && !uqSibling(item)) {
+    // As the server allows (#716): the entry's owner, or an admin with admin mode on; anyone else sees why not.
+    var may = typeof viewerCanManage === 'function' ? viewerCanManage(item) : true;
+    var why = may ? false : typeof OWNER_ONLY_MSG === 'string' ? OWNER_ONLY_MSG : true;
+    card.primary = { id: 'uq-bypass', label: '먼저 진행', disabled: why };
+    card.actions = [{ id: 'uq-cancel', label: '대기 취소', disabled: why }];
+  }
+  return card;
+}
+
+// The line's cards on the board element this render (their faces drawn now, keyed 'uq:<entry>').
+function uqPlace(line, host) {
+  return line.map(function(item) {
+    var k = uqCardKey(item);
+    _uqByCard[k] = item;
+    _cardHost[k] = host;
+    _cardCol[k] = 'waiting';
+    _cardData[k] = uqCardOf(item, _sessionCache[item.key]);
+    _cardDrawn[k] = true;
+    return k;
+  });
+}
+
+// 먼저 진행 / 대기 취소 from an entry's card; the server's push repaints the line.
+async function uqAct(item, action) {
+  if (!item || uqSibling(item)) return;
+  var label = action === 'bypass' ? '먼저 진행' : '대기 취소';
+  try {
+    var res = await acPost('/api/dashboard/user-queue/' + encodeURIComponent(String(item.entryId)) + '/' + action, '{}');
+    if (res.ok) {
+      var data = {};
+      try { data = await res.json(); } catch (_e) {}
+      dashToast({
+        title: action === 'bypass' ? '먼저 진행합니다' : '대기를 취소했어요',
+        description: action === 'bypass'
+          ? (data && data.deferred ? '진행 중이던 작업은 멈췄다가, 이 작업이 끝나면 멈춘 지점부터 이어서 합니다' : '바로 시작합니다')
+          : String(item.preview || ''),
+        tone: 'success',
+      });
+    } else {
+      var st = await acRefusal(res);
+      dashToast({ title: label + '하지 못했어요', description: st.message, tone: 'warning' });
+    }
+  } catch (_e) {
+    dashToast({ title: label + '하지 못했어요', description: '네트워크 오류 — 다시 시도하세요', tone: 'warning' });
+  }
+}
+
 function renderBoard(board, partial) {
   // Partial: anything painted before the board is certified — this instance's
   // cards under the error, or re-rendered during 다시 시도 — is never announced as
@@ -12367,6 +12643,12 @@ function renderBoard(board, partial) {
   _cronPlan = cronPlan;
   syncCronLane(cronPlan);
   var rest = cronPlan.board;
+  // The per-user task queue (대기큐) leads 응답 필요; the threads in line are drawn as their entry's card only.
+  var uq =
+    typeof uqSplitWaiting === 'function'
+      ? uqSplitWaiting(board.userQueue || [], rest.waiting || [], _bf && _bf.users)
+      : { line: [], needs: rest.waiting || [] };
+  if (typeof uqReset === 'function') uqReset(uq.line);
   var plan = planDoneColumn(rest.idle || [], rest.closed || [], {
     showArchives: showArchives,
     showSleeping: showSleeping,
@@ -12403,9 +12685,24 @@ function renderBoard(board, partial) {
   // A column the filters emptied says so — only one they hid cards from (the element's own hint says it is empty).
   var filteredEmpty = function(col) { return _bfHiddenCols[col] > 0 ? '필터에 맞는 카드가 없습니다' : ''; };
   if (kb) {
+    var needsKeys = pending.waiting.concat(keys(uq.needs, 'waiting', kb));
+    var uqKeys = uq.line.length ? uqPlace(uq.line, kb) : [];
+    var waitingCol = uqKeys.length
+      ? {
+          id: 'waiting',
+          label: BOARD_LABELS.waiting,
+          emptyText: filteredEmpty('waiting'),
+          keys: [],
+          // 대기큐 first, then 응답 필요 — both open until the reader closes one.
+          groups: [
+            { id: UQ_GROUP_LINE, label: '\u23f3 대기큐 · ' + uqKeys.length, open: _doneGroupOpen[UQ_GROUP_LINE] !== false, keys: uqKeys },
+            { id: UQ_GROUP_NEEDS, label: '응답 필요 · ' + needsKeys.length, open: _doneGroupOpen[UQ_GROUP_NEEDS] !== false, keys: needsKeys },
+          ],
+        }
+      : { id: 'waiting', label: BOARD_LABELS.waiting, emptyText: filteredEmpty('waiting'), keys: needsKeys };
     kb._ibPlan = {
       cols: [
-        { id: 'waiting', label: BOARD_LABELS.waiting, emptyText: filteredEmpty('waiting'), keys: pending.waiting.concat(keys(rest.waiting, 'waiting', kb)) },
+        waitingCol,
         { id: 'working', label: BOARD_LABELS.working, emptyText: filteredEmpty('working'), keys: pending.working.concat(keys(rest.working, 'working', kb)) },
         {
           id: 'done',
@@ -12427,7 +12724,11 @@ function renderBoard(board, partial) {
       // D6: how many need you and how many run — the data as it came (CRON runs
       // waiting on a reply included), before the lane takes its runs and any hold.
       // E4 ⑨c: an epic's children are in no column of the data but drawn in one — counted too.
-      announce: { needs: (board.waiting || []).length + kidCounts.needs, running: (board.working || []).length + kidCounts.running },
+      // A thread that waits in the 대기큐 waits for its owner's free slot, not for an answer: not counted as needs-you.
+      announce: {
+        needs: (board.waiting || []).filter(function(s) { return !s.userQueue; }).length + kidCounts.needs,
+        running: (board.working || []).length + kidCounts.running,
+      },
     };
     inboxPaint(kb);
     // The phone dock's 보드 badge: the same count the board announces — only for a certified board (a partial one,
@@ -12807,6 +13108,8 @@ function wireInbox(host) {
     var key = String(e.detail.cardId);
     var open = !!e.detail.expanded;
     var s = _sessionCache[key];
+    // A 대기큐 entry's card opens in place: its steps and buttons are the element's own.
+    if (typeof uqItemOf === 'function' && uqItemOf(key)) return;
     // A card whose session left the cache (off the board, before the next render
     // drops it) has nothing to build: it stays closed instead of growing an empty body.
     if (open && !s) {
@@ -12832,6 +13135,14 @@ function wireInbox(host) {
   host.addEventListener('ui-detail', function(e) {
     if (e.target !== host || !e.detail) return;
     var key = String(e.detail.cardId);
+    // A 대기큐 entry's title: its thread's detail card when the thread has a session, else its Slack thread.
+    var uqItem = typeof uqItemOf === 'function' ? uqItemOf(key) : null;
+    if (uqItem) {
+      e.preventDefault();
+      if (_sessionCache[uqItem.key]) openPanel(uqItem.key);
+      else if (uqItem.slackThreadUrl) window.open(uqItem.slackThreadUrl, '_blank', 'noopener');
+      return;
+    }
     if (!_sessionCache[key]) {
       // A 시작 중 card (SSOT 2026-11-02 T2) has no session yet: nothing to show, it stays as it is.
       e.preventDefault();
@@ -12866,7 +13177,9 @@ function wireInbox(host) {
         g.open = open;
         g.keys.forEach(function(k) {
           var s = _sessionCache[k];
-          if (s) placeCard(s, _cardCol[k] || 'idle', host, open);
+          if (typeof uqItemOf === 'function' && uqItemOf(k)) {
+            if (open) _cardDrawn[k] = true;
+          } else if (s) placeCard(s, _cardCol[k] || 'idle', host, open);
           if (!open) delete _cardDrawn[k];
         });
       });
@@ -12878,6 +13191,15 @@ function wireInbox(host) {
   });
   // A file chip on the face opens the viewer (never the card). The chip is the
   // opener focus returns to.
+  // A 대기큐 entry's buttons: 먼저 진행 · 대기 취소.
+  host.addEventListener('ui-action', function(e) {
+    if (e.target !== host || !e.detail) return;
+    var item = typeof uqItemOf === 'function' ? uqItemOf(String(e.detail.cardId)) : null;
+    if (!item) return;
+    var act = String(e.detail.actionId || '');
+    if (act === 'uq-bypass') uqAct(item, 'bypass');
+    else if (act === 'uq-cancel') uqAct(item, 'cancel');
+  });
   // The face's star (SSOT 2026-11-01): the same write as the open card's ☆ 즐겨찾기; the card does not toggle.
   host.addEventListener('ui-star', function(e) {
     if (e.target !== host || !e.detail) return;
@@ -28391,7 +28713,8 @@ function ntBoardIsViewers() {
 // Settle the launches against the board (the viewer's): the ones whose card is there leave; one whose card did not
 // come within NT_PENDING_MAX_MS leaves with a toast that says so (and links its thread). True when one left.
 function ntPendingPrune() {
-  var keys = Object.keys(_sessionCache);
+  // A launch whose request waits in the 대기큐 has arrived too: its entry's card is on the board.
+  var keys = Object.keys(_sessionCache).concat(typeof uqLineKeys === 'function' ? uqLineKeys() : []);
   var kept = ntPendingSettle(_ntPending, keys, SELF_INSTANCE_NAME, Date.now());
   if (kept.length === _ntPending.length) return false;
   _ntPending.forEach(function (p) {
