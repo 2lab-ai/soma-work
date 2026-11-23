@@ -222,6 +222,30 @@ describe('createUserTaskQueueHost', () => {
     expect(h.queue.snapshot().entries.some((e) => e.kind === 'resume')).toBe(true);
   });
 
+  it("over the limit (an admin lowered it): the entry still takes the stopped turn's slot when it frees", () => {
+    vi.useFakeTimers();
+    const busy = new Set(['C1:0.5', 'C1:1.0']);
+    const { h, running, handleMessage } = host({
+      abort: vi.fn(() => true),
+      isTaskRunning: (key: string) => busy.has(key),
+      isTurnBusy: (key: string) => busy.has(key),
+      abortRetryMs: 100,
+    });
+    running.set('U1', [
+      { sessionKey: 'C1:0.5', channel: 'C1', threadTs: '0.5', startedAt: 100 },
+      { sessionKey: 'C1:1.0', channel: 'C1', threadTs: '1.0', startedAt: 500 },
+    ]);
+    const queued = h.queue.gate(gateInput('C1:2.0', '2.0'));
+    if (queued.action !== 'queued') throw new Error('expected queued');
+    expect(h.queue.bypass(queued.entry.id, 'U1')).toMatchObject({ ok: true, pending: true });
+    // The newest task took the stop and let go of its slot; the older one still runs.
+    busy.delete('C1:1.0');
+    running.set('U1', [{ sessionKey: 'C1:0.5', channel: 'C1', threadTs: '0.5', startedAt: 100 }]);
+    vi.advanceTimersByTime(100);
+    expect(handleMessage).toHaveBeenCalledTimes(1);
+    expect(handleMessage.mock.calls[0][0]).toMatchObject({ routeContext: { userTaskEntryId: queued.entry.id } });
+  });
+
   it('a starting turn that ends by itself before the stop lands is not carried on', () => {
     vi.useFakeTimers();
     let busy = true;

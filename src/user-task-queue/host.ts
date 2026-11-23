@@ -109,8 +109,8 @@ export function createUserTaskQueueHost(deps: UserTaskQueueHostDeps): UserTaskQu
    * 먼저 진행 on a running turn: ask it to stop (again and again while it is still starting and has no stop handle),
    * and wait until its slot is free — a stop that was asked for is not a turn that ended (a tool may still unwind).
    * Then tell the queue (`stopResolved`): `landed` — the stop was taken (its thread is told and it carries on later);
-   * otherwise the turn ended by itself first, or the stop never landed in time. The entry that goes first starts only
-   * when the slot frees, either way.
+   * otherwise the turn ended by itself first, or the stop never landed in time. `free` — the slot is free: the entry
+   * that goes first takes it at once; a turn still holding it when the watch gives up starts nothing beside it.
    */
   const watchStop = (sessionKey: string, landedNow: boolean) => {
     const until = now() + retryFor;
@@ -125,7 +125,7 @@ export function createUserTaskQueueHost(deps: UserTaskQueueHostDeps): UserTaskQu
       clearInterval(timer);
       if (!landed)
         logger.info('User task queue: 먼저 진행 stop did not land — the task is not carried on', { sessionKey });
-      queueRef?.stopResolved(sessionKey, landed);
+      queueRef?.stopResolved(sessionKey, landed, free);
     }, retryEvery);
     timer.unref?.();
   };
