@@ -89,14 +89,15 @@ function setup(
 const start = 'Mon Nov 23 10:00:00 2026';
 
 describe('LocalProcessMonitor', () => {
-  it('a sample carries the node capacity and each session’s tree; usage() drops the process list', async () => {
+  it('a sample carries the node capacity and each session’s tree', async () => {
     const { monitor } = setup();
     const snap = await monitor.sample();
     expect(snap.node).toEqual(capacity);
     expect(snap.sessions.map((s) => s.sessionKey).sort()).toEqual(['A', 'B']);
-    expect(monitor.usage('A')).toMatchObject({ sessionKey: 'A', processCount: 2, rootAlive: true });
-    expect(monitor.usage('A')).not.toHaveProperty('processes');
-    expect(monitor.usage('C')).toBeUndefined();
+    expect(monitor.latest()?.sessions.find((x) => x.sessionKey === 'A')).toMatchObject({
+      processCount: 2,
+      rootAlive: true,
+    });
   });
 
   it('pauses with SIGSTOP and resumes with SIGCONT a process of the session’s tree', async () => {
@@ -318,16 +319,61 @@ describe('LocalProcessMonitor', () => {
   });
 
   it('a late abort of an earlier turn does not continue a pause made under the next turn', async () => {
-    const { monitor, signals, fireAbort } = setup();
-    await monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' });
-    // Claude Code 199 ran the previous turn of session A; its abort arrives late.
-    fireAbort({ pid: 199, sessionKey: 'A' });
-    expect(signals).toEqual([[300, 'SIGSTOP']]);
+    const { monitor, signals, fireAbort, ps, roots } = setup();
+    // Turn rollover in session A: Claude Code 200 exits, the next turn's 201 starts a child 301.
+    ps.remove(300).remove(200).set(201, { ppid: 100, args: '/usr/local/bin/claude' });
+    ps.set(301, { ppid: 201, args: '/bin/bash -c make' });
+    roots.splice(0, 1, { pid: 201, sessionKey: 'A' });
+    await monitor.control({ sessionKey: 'A', pid: 301, startToken: start, action: 'pause' });
+    // The SDK's abort of the earlier turn (200) arrives late.
     fireAbort({ pid: 200, sessionKey: 'A' });
+    expect(signals).toEqual([[301, 'SIGSTOP']]);
+    fireAbort({ pid: 201, sessionKey: 'A' });
     expect(signals).toEqual([
+      [301, 'SIGSTOP'],
+      [301, 'SIGCONT'],
+    ]);
+  });
+
+  it('an abort’s resume that could not be done is retried on every sample until it lands', async () => {
+    let refuse = false;
+    const sent: Array<[number, NodeJS.Signals]> = [];
+    const { monitor, fireAbort } = setup({
+      kill: (pid, signal) => {
+        if (refuse && signal === 'SIGCONT') throw Object.assign(new Error('not permitted'), { code: 'EPERM' });
+        sent.push([pid, signal]);
+      },
+    });
+    await monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' });
+    refuse = true;
+    fireAbort({ pid: 200, sessionKey: 'A' });
+    await monitor.sample();
+    expect(sent).toEqual([[300, 'SIGSTOP']]);
+    refuse = false;
+    await monitor.sample();
+    expect(sent).toEqual([
       [300, 'SIGSTOP'],
       [300, 'SIGCONT'],
     ]);
+    await monitor.sample();
+    expect(sent).toHaveLength(2);
+  });
+
+  it('a delivered signal stays a success when the follow-up sample fails', async () => {
+    let calls = 0;
+    const { monitor, signals } = setup({
+      runPs: (ps) => async (a) => {
+        calls++;
+        if (calls > 2) throw new Error('ps timed out');
+        return ps.run(a);
+      },
+    });
+    expect(await monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' })).toEqual({
+      ok: true,
+      pid: 300,
+      state: 'stopped',
+    });
+    expect(signals).toEqual([[300, 'SIGSTOP']]);
   });
 
   it('shutdown continues the paused processes of every session', async () => {

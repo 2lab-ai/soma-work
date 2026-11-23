@@ -20,6 +20,9 @@ describe('processName', () => {
     expect(processName(splitArgs('perl -e print 1'))).toBe('perl');
     expect(processName(splitArgs('/usr/bin/python3 -m http.server'))).toBe('python3');
     expect(processName(splitArgs('node /app/dist/server.js'))).toBe('node server.js');
+    // Equals and attached forms of inline code (round 4).
+    expect(processName(splitArgs('node --eval=require("x") secret-script.js'))).toBe('node');
+    expect(processName(splitArgs('python3 -cimport os secret-module.py'))).toBe('python3');
   });
 });
 
@@ -31,7 +34,7 @@ describe('commandPreview — shows the shape, never a value', () => {
   });
 
   it('cuts the value written into a flag, long or short', () => {
-    expect(preview('tool --level=debug -n5 -rf build')).toBe('tool --level=… -n… -r… build');
+    expect(preview('tool --level=debug -n5 -rf build')).toBe('tool --level=… -n… -r… …');
   });
 
   it('cuts NAME=value, and the whole rest of the line after a secret-named one', () => {
@@ -77,6 +80,14 @@ describe('commandPreview — every leak the reviews found (2026-11-23), through 
     ['env SECRET_PHRASE=correct horse battery staple node x.js', ['correct', 'horse', 'battery', 'staple']],
     ['python3 -c print("swordfish")', ['swordfish']],
     ['sh -c echo hello swordfish', ['swordfish', 'hello']],
+    // Attached short options (round 4): the letter decides, and a written-in value's spill is cut.
+    ['mysql -pcorrect horse battery staple db', ['correct', 'horse', 'battery', 'staple']],
+    ['redis-cli -ahunter2 more words', ['hunter2', 'more', 'words']],
+    ['curl -ualice:wonderland https://x', ['alice', 'wonderland']],
+    ['curl -HAuthorization: Bearer tok3n https://x', ['tok3n', 'Bearer']],
+    ['python3 -cprint("swordfish")', ['swordfish']],
+    ['tool -n5 then spilled words --x', ['spilled', 'words']],
+    ['tool --level=a b c --x', ['b', 'c']],
   ];
   it.each(leaks)('%s', (line, secrets) => {
     const out = preview(line);

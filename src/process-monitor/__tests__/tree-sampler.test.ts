@@ -53,8 +53,10 @@ describe('TreeSampler', () => {
     const ps = machine();
     let now = 10_000;
     const sampler = new TreeSampler(ps.run, () => now);
+    (ps.procs.get(300) as { psCpu: number }).psCpu = 12.5;
     const first = await sampler.sample([{ pid: 200, sessionKey: 'A' }], 'n1');
-    // First sight: ps's own %cpu (0 in the fixture).
+    // First sight: ps's own %cpu — 12.5 for bash 300, 0 for node 400.
+    expect(first.sessions[0].processes[1].cpuPercent).toBe(12.5);
     expect(first.sessions[0].processes[2].cpuPercent).toBe(0);
 
     now += 2_000; // 2 s later
@@ -64,6 +66,7 @@ describe('TreeSampler', () => {
     const byPid = new Map(second.sessions[0].processes.map((p) => [p.pid, p.cpuPercent]));
     expect(byPid.get(400)).toBe(150);
     expect(byPid.get(200)).toBe(25);
+    // From the second sample on, the cputime change — bash 300 used none.
     expect(byPid.get(300)).toBe(0);
     expect(second.sessions[0].cpuPercent).toBe(175);
   });

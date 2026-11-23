@@ -44,8 +44,13 @@ const basename = (p: string): string => posix.basename(p) || p;
 
 /** A script argument that is a file, not inline code: a path-like word with no quotes, spaces or brackets. */
 const SCRIPT_FILE = /^[\w./@+-]+$/;
-/** Interpreter flags whose next argument is inline code, not a script (`python -c`, `node -e`, `perl -e`, `ruby -e`). */
-const INLINE_CODE_FLAG = /^(-c|-e|-E|-p|--eval|--print|-m)$/;
+/**
+ * Interpreter flags that take inline code, not a script (`python -c`, `node -e`, `perl -e`, `ruby -e`) — in every form:
+ * separate (`-c code`), equals (`--eval=code`) or attached (`-cprint(1)`).
+ */
+const INLINE_CODE_FLAG = /^(-[ceEpm]|--eval|--print)(=|$)|^-[ceEpm]./;
+/** Short-flag letters whose value can be code, a prompt, a password, a user, a header or a body. */
+const CUT_REST_SHORT = /^-[ceEpmauHdb]/;
 
 /** Split a `ps args` line into argv. ps joins argv with single spaces and does not quote, so this is best effort. */
 export function splitArgs(line: string): string[] {
@@ -75,7 +80,10 @@ export function commandPreview(argv: readonly string[]): string {
   const cut = () => {
     if (parts[parts.length - 1] !== CUT) parts.push(CUT);
   };
+  // afterFlag: the token after a bare flag may be its value. inValue: a value was written into the previous flag
+  // (`--x=a b c`, `-pa b c`) and ps may have split it — every following plain word is cut until the next flag.
   let afterFlag = false;
+  let inValue = false;
   let shown = 0;
   for (const arg of argv.slice(1)) {
     if (shown >= MAX_ARGS) {
@@ -84,25 +92,36 @@ export function commandPreview(argv: readonly string[]): string {
     }
     shown++;
     if (arg.startsWith('-') && arg.length > 1) {
+      inValue = false;
+      const short = !arg.startsWith('--');
       const eq = arg.indexOf('=');
-      const name = eq > 0 ? arg.slice(0, eq) : arg;
-      if (CUT_REST_FLAG.test(name) || SECRET_WORD.test(name.replace(/^-+/, ''))) {
+      // A short flag's name is its letter: `-pS3cret`, `-uroot`, `-rf` and `-p` are all `-p` / `-u` / `-r` here.
+      const name = short ? arg.slice(0, 2) : eq > 0 ? arg.slice(0, eq) : arg;
+      if (
+        (short ? CUT_REST_SHORT.test(name) : CUT_REST_FLAG.test(name)) ||
+        SECRET_WORD.test(short ? arg.slice(1) : name.replace(/^-+/, ''))
+      ) {
         parts.push(name);
         cut();
         break;
       }
-      if (eq > 0) {
+      if (short && arg.length > 2) {
+        // More after the letter — a value attached (`-n5`) or bundled flags (`-rf`), which ps cannot tell apart.
+        parts.push(`${name}${CUT}`);
+        afterFlag = false;
+        inValue = true;
+      } else if (eq > 0) {
         parts.push(`${name}=${CUT}`);
         afterFlag = false;
-      } else if (!arg.startsWith('--') && arg.length > 2) {
-        // A short flag with more after it — a value attached (`-pS3cret`, `-uroot`, `-n5`) or bundled flags (`-rf`),
-        // which ps cannot tell apart: the first letter only.
-        parts.push(`${arg.slice(0, 2)}${CUT}`);
-        afterFlag = false;
+        inValue = true;
       } else {
         parts.push(name);
         afterFlag = true;
       }
+      continue;
+    }
+    if (inValue) {
+      cut();
       continue;
     }
     const eq = arg.indexOf('=');

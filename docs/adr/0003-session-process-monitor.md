@@ -44,7 +44,8 @@ same snapshot, and work will be placed by each node's free CPU and memory.
    automatic resume (abort, shutdown), the pid's live start time is read and a pid the OS has reused is skipped. An
    unreadable identity is unknown, not gone: the manual signal is refused, and an automatic resume keeps its entry, as
    it does when the OS refuses the resume. An abort continues only what was paused under that turn, or between turns,
-   so a late abort of an earlier turn leaves the next turn's pauses alone. The route allows the owner, or an admin in admin mode, with CSRF. Aborting a turn continues
+   so a late abort of an earlier turn leaves the next turn's pauses alone. An abort's resume that could not be done is
+   retried on every sample until it lands. The route allows the owner, or an admin in admin mode, with CSRF. Aborting a turn continues
    the paused root (in the spawner) and everything the monitor paused in that session, so a stop still lands. The
    same holds when the abort arrives after the root has exited. On shutdown (drain, crash kill) the registry first tells
    the monitor, which continues everything it paused. Every non-SIGKILL kill is followed by SIGCONT through the
@@ -60,7 +61,8 @@ same snapshot, and work will be placed by each node's free CPU and memory.
    only to the task's owner and admins (the work log's rule), and only as previews. A preview is fail-closed, because
    ps has flattened argv and the end of a multiword value cannot be found:
    - It shows the program, flag names and short plain words, and never a value.
-   - A value written into a flag is cut. So is the token after a flag.
+   - A value written into a flag is cut, with every plain word after it up to the next flag. The token after a bare
+     flag is cut. A short flag is judged by its letter, whether its value is attached or not.
    - A flag that takes code, a prompt, a config, a header, a body or a credential cuts the rest of the line.
    - A secret-named `NAME=` cuts the rest of the line.
    - URL credentials are cut from plain words.
