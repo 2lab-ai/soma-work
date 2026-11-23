@@ -68,8 +68,8 @@ describe('ClaudeChildProcessRegistry', () => {
 
     await vi.advanceTimersByTimeAsync(100);
     await drain;
-    expect(child.kill).toHaveBeenCalledTimes(1);
-    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    // SIGTERM once, followed by SIGCONT (a paused child must run to take it) — never SIGKILL.
+    expect((child.kill as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0])).toEqual(['SIGTERM', 'SIGCONT']);
   });
 
   it('retains a spawned child after AbortError so drain can escalate it', async () => {
@@ -191,5 +191,26 @@ describe('ClaudeChildProcessRegistry', () => {
     registry.notifyAborted(child);
 
     expect(seen).toEqual([{ pid: 1234, sessionKey: 'K' }]);
+  });
+
+  it('tells shutdown listeners before it kills (drain and crash), so paused processes can be continued first', async () => {
+    const registry = new ClaudeChildProcessRegistry();
+    const child = fakeProcess();
+    registry.track(child);
+    const order: string[] = [];
+    (child.kill as ReturnType<typeof vi.fn>).mockImplementation((sig: NodeJS.Signals) => {
+      order.push(sig);
+      if (sig === 'SIGTERM') queueMicrotask(() => child.emit('exit', 0, 'SIGTERM'));
+      return true;
+    });
+    registry.onShutdown(() => order.push('listener'));
+    await registry.drain({ graceMs: 100, killWaitMs: 0 });
+    expect(order.slice(0, 3)).toEqual(['listener', 'SIGTERM', 'SIGCONT']);
+
+    const crash = new ClaudeChildProcessRegistry();
+    const seen: string[] = [];
+    crash.onShutdown(() => seen.push('listener'));
+    crash.killAllSync('SIGKILL');
+    expect(seen).toEqual(['listener']);
   });
 });

@@ -106,6 +106,58 @@ describe('TreeSampler', () => {
     expect(sampler.hasWork([])).toBe(false);
   });
 
+  it('a pid reused between the two ps calls (its parent differs) is not counted nor remembered', async () => {
+    const ps = machine();
+    const sampler = new TreeSampler(ps.run, () => 0);
+    // Call 1 sees 400 under bash 300; by call 2 that 400 exited and an unrelated program got the pid.
+    const run = ps.run;
+    let calls = 0;
+    const racing = async (args: readonly string[]) => {
+      calls++;
+      if (calls === 2) ps.set(400, { ppid: 1, args: '/usr/bin/someone-else', start: 'Tue Nov 24 08:00:00 2026' });
+      return run(args);
+    };
+    const s2 = new TreeSampler(racing, () => 0);
+    const out = await s2.sample([{ pid: 200, sessionKey: 'A' }], 'n1');
+    expect(out.sessions[0].processes.map((p) => p.pid)).toEqual([200, 300]);
+    expect(s2.rememberedStart('A', 400)).toBeUndefined();
+    void sampler;
+  });
+
+  it('a remembered process re-parented between the two ps calls stays', async () => {
+    const ps = machine();
+    const run = ps.run;
+    let calls = 0;
+    let reparent = false;
+    const racing = async (args: readonly string[]) => {
+      calls++;
+      if (reparent && args[0] === '-ww') ps.reparent(400, 1);
+      return run(args);
+    };
+    const sampler = new TreeSampler(racing, () => 0);
+    await sampler.sample([{ pid: 200, sessionKey: 'A' }], 'n1');
+    reparent = true;
+    const out = await sampler.sample([{ pid: 200, sessionKey: 'A' }], 'n1');
+    expect(out.sessions[0].processes.map((p) => p.pid)).toContain(400);
+    expect(calls).toBe(4);
+  });
+
+  it('takes finer CPU seconds when the platform reader has them (Linux /proc)', async () => {
+    const ps = machine();
+    let now = 0;
+    let fine = 10;
+    const sampler = new TreeSampler(
+      ps.run,
+      () => now,
+      async (pids) => new Map(pids.filter((p) => p === 400).map((p) => [p, fine])),
+    );
+    await sampler.sample([{ pid: 200, sessionKey: 'A' }], 'n1');
+    now += 5_000;
+    fine += 0.37; // ps time would still read whole seconds; /proc says 0.37 s in 5 s = 7.4%
+    const out = await sampler.sample([{ pid: 200, sessionKey: 'A' }], 'n1');
+    expect(out.sessions[0].processes.find((p) => p.pid === 400)?.cpuPercent).toBe(7.4);
+  });
+
   it('reports stopped processes', async () => {
     const ps = machine();
     (ps.procs.get(400) as { stat: string }).stat = 'T';

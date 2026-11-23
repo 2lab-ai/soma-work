@@ -1,11 +1,12 @@
 import { execFile } from 'node:child_process';
+import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import { getClaudeChildProcessRegistry } from '../agent-runtime/claude-child-process-registry';
 import { getProcessMonitorNodeId } from '../config';
 import { Logger } from '../logger';
 import type { RunCommand } from './node-capacity';
 import { LocalProcessMonitor } from './process-monitor';
-import type { RunPs } from './tree-sampler';
+import type { ReadCpuSeconds, RunPs } from './tree-sampler';
 
 export type { ProcessControlInput, ProcessHost } from './process-monitor';
 export { LocalProcessMonitor } from './process-monitor';
@@ -38,6 +39,35 @@ export const runReadOnly: RunCommand = (cmd, args) =>
 
 const runPs: RunPs = (args) => runReadOnly('ps', args);
 
+/** Linux kernel clock ticks per second (`getconf CLK_TCK`): 100 on every mainstream build. */
+const LINUX_CLK_TCK = 100;
+
+/** `/proc/<pid>/stat` → utime + stime in seconds. The command name sits in parentheses and may hold spaces. */
+export function parseProcStatCpuSeconds(stat: string, clkTck = LINUX_CLK_TCK): number | null {
+  const close = stat.lastIndexOf(')');
+  if (close < 0) return null;
+  const f = stat.slice(close + 2).split(' ');
+  // After ")": state(0) ppid pgrp session tty_nr tpgid flags minflt cminflt majflt cmajflt utime(11) stime(12)
+  const utime = Number(f[11]);
+  const stime = Number(f[12]);
+  return Number.isFinite(utime) && Number.isFinite(stime) ? (utime + stime) / clkTck : null;
+}
+
+const readLinuxCpuSeconds: ReadCpuSeconds = async (pids) => {
+  const out = new Map<number, number>();
+  await Promise.all(
+    pids.map(async (pid) => {
+      try {
+        const v = parseProcStatCpuSeconds(await fs.readFile(`/proc/${pid}/stat`, 'utf8'));
+        if (v !== null) out.set(pid, v);
+      } catch {
+        // Gone, or not readable: ps time stands.
+      }
+    }),
+  );
+  return out;
+};
+
 let monitor: LocalProcessMonitor | null = null;
 
 /** The daemon's monitor of its own node. Created on first use; `startProcessMonitor` starts the timer. */
@@ -48,6 +78,7 @@ export function getProcessMonitor(): LocalProcessMonitor {
       roots: getClaudeChildProcessRegistry(),
       runPs,
       runCommand: runReadOnly,
+      readCpuSeconds: process.platform === 'linux' ? readLinuxCpuSeconds : undefined,
       logger,
     });
   }

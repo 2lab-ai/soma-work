@@ -33,10 +33,11 @@ describe('commandPreview — never shows a secret', () => {
   });
 
   it('cuts JSON blobs, long token runs and long arguments', () => {
-    const long = `/very/${'x'.repeat(120)}`;
-    const out = commandPreview(['node', '{"a":1}', 'abcdefghijklmnopqrstuvwxyz0123456789', long]);
-    expect(out).toContain('node {…} …');
+    const long = 'a,'.repeat(60); // not a token run (commas), just long
+    const out = commandPreview(['node', 'abcdefghijklmnopqrstuvwxyz0123456789', long, '{"a":1}']);
     expect(out).not.toContain('abcdefghijklmnopqrstuvwxyz0123456789');
+    expect(out).toContain(`${long.slice(0, 79)}…`);
+    expect(out.endsWith(' {…}')).toBe(true);
     expect(out.length).toBeLessThanOrEqual(240);
   });
 
@@ -50,6 +51,42 @@ describe('commandPreview — never shows a secret', () => {
     const out = commandPreview(argv);
     expect(out.endsWith('…')).toBe(true);
     expect(out).not.toContain('a20');
+  });
+});
+
+describe('commandPreview — the review’s leaks (2026-11-23)', () => {
+  const leaks: Array<[string, string]> = [
+    ['gh api --access-token hunter2hunter2', 'hunter2hunter2'],
+    ['curl --client-secret s3cr3tvalue https://x', 's3cr3tvalue'],
+    ['tool --db-password S3cretPass', 'S3cretPass'],
+    ['mysql -uroot -pS3cretPass db', 'S3cretPass'],
+    ['mysql -u root -p S3cretPass db', 'S3cretPass'],
+    ['psql postgres://app:S3cretPass@db/x', 'S3cretPass'],
+    ['redis-cli -a hunter2 ping', 'hunter2'],
+    ['curl -H Authorization: Bearer abc123short https://x', 'abc123short'],
+    ['curl --header X-Api-Key: k3y-value https://x', 'k3y-value'],
+  ];
+  it.each(leaks)('%s → never shows %s', (line, secret) => {
+    expect(commandPreview(splitArgs(line))).not.toContain(secret);
+  });
+
+  it('cuts an inline --mcp-config JSON whole even when its spaces split it into many tokens', () => {
+    const argv = splitArgs(
+      'claude --mcp-config {"mcpServers":{"agent":{"command":"node","args":["/Application Support/s.js"],"env":{"DB_PASSWORD":"hunter2","DESC":"a b c"}}}} --model opus',
+    );
+    const out = commandPreview(argv);
+    expect(out).toBe('claude --mcp-config … --model opus');
+    expect(out).not.toContain('hunter2');
+  });
+
+  it('cuts a JSON blob that is not behind a flag up to the next --flag', () => {
+    expect(commandPreview(splitArgs('node x.js {"k": "secret value"} --port 3'))).toBe('node x.js {…} --port 3');
+  });
+
+  it('keeps the shape of a harmless command', () => {
+    expect(commandPreview(splitArgs('/usr/bin/git -C /work/repo status --short'))).toBe(
+      'git -C /work/repo status --short',
+    );
   });
 });
 

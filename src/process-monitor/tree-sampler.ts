@@ -12,6 +12,12 @@ export interface TrackedRoot {
 /** Runs `ps` with these arguments and returns stdout. Must resolve with partial stdout when ps exits 1 because a pid vanished. */
 export type RunPs = (args: readonly string[]) => Promise<string>;
 
+/**
+ * Cumulative CPU seconds per pid from a finer source than ps `time` (whole seconds on Linux, where 1 s of a 5 s
+ * window is 20% of a core): Linux `/proc/<pid>/stat` ticks. A pid it does not answer for keeps the ps value.
+ */
+export type ReadCpuSeconds = (pids: readonly number[]) => Promise<Map<number, number>>;
+
 export interface TreeSample {
   readonly sessions: SessionProcessDetail[];
   readonly unattributed: { processCount: number; cpuPercent: number; rssBytes: number };
@@ -46,6 +52,7 @@ export class TreeSampler {
   constructor(
     private readonly runPs: RunPs,
     private readonly now: () => number = Date.now,
+    private readonly readCpuSeconds?: ReadCpuSeconds,
   ) {}
 
   /** Whether a sample would do any work (a tracked root, or a remembered leftover). */
@@ -82,7 +89,17 @@ export class TreeSampler {
     const rows = new Map<number, PsRow>();
     if (wanted.size > 0) {
       const out = await this.runPs(['-ww', '-o', DETAIL_COLUMNS, '-p', [...wanted].join(',')]);
-      for (const row of parseDetailRows(out)) rows.set(row.pid, row);
+      const fine = this.readCpuSeconds
+        ? await this.readCpuSeconds([...wanted]).catch(() => new Map<number, number>())
+        : null;
+      for (const row of parseDetailRows(out)) {
+        // A pid whose parent differs between the two ps calls exited and was reused in between: not the process the
+        // tree walk found, so it is not counted (nor remembered, nor offered for pause) — unless it is a process
+        // already remembered with this start time, which the OS just re-parented in that window.
+        if (parentOf.get(row.pid) !== row.ppid && !this.rememberedAnywhere(row.pid, row.startToken)) continue;
+        const cpu = fine?.get(row.pid);
+        rows.set(row.pid, cpu === undefined ? row : { ...row, cpuSeconds: cpu });
+      }
     }
 
     // Second pass: a remembered pid that now started at another time is a reused pid — not ours, nor its children.
@@ -149,6 +166,11 @@ export class TreeSampler {
     for (const key of this.prevCpu.keys()) if (!liveCpuKeys.has(key)) this.prevCpu.delete(key);
     unattributed.cpuPercent = round1(unattributed.cpuPercent);
     return { sessions, unattributed };
+  }
+
+  private rememberedAnywhere(pid: number, startToken: string): boolean {
+    for (const m of this.remembered.values()) if (m.get(pid)?.startToken === startToken) return true;
+    return false;
   }
 
   /** The owner's remembered process with this pid, if it was in the last sample. */

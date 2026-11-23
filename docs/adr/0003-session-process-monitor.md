@@ -31,14 +31,19 @@ same snapshot, and work will be placed by each node's free CPU and memory.
 2. **Walk the tree with `ps`, remember what was seen.** Each sample runs `ps` twice: first the whole parent map
    (`-A -o pid=,ppid=`, small), then the details for the tree members only. Every process seen under a session is
    remembered by (pid, start time). A process re-parented after its parent exits stays with the session. A
-   remembered pid with another start time is a reused pid and is dropped, together with its children. A process born
-   and orphaned between two samples is not seen. This is the known limit.
-3. **CPU from cumulative CPU time.** CPU is the change in `ps time` between two samples divided by the wall time
-   between them (100% = one core). This means the same on macOS and Linux, unlike `ps %cpu`.
+   remembered pid with another start time is a reused pid and is dropped, together with its children. A new pid whose
+   parent differs between the two `ps` calls was reused in between and is dropped too. A process born and orphaned
+   between two samples is not seen. This is the known limit.
+3. **CPU from cumulative CPU time.** CPU is the change in cumulative CPU time between two samples divided by the wall
+   time between them (100% = one core). This means the same on macOS and Linux, unlike `ps %cpu`. On Linux the time
+   comes from `/proc/<pid>/stat` (clock ticks), because `ps time` there has whole-second resolution.
 4. **Pause is a signal guarded by identity.** Pause is `SIGSTOP` and resume is `SIGCONT`. A request names the pid and
    its start time. The monitor samples again at that moment and signals only a process that is in that session's tree
    with that start time. The route allows the owner, or an admin in admin mode, with CSRF. Aborting a turn continues
-   the paused root (in the spawner) and everything the monitor paused in that session, so a stop still lands.
+   the paused root (in the spawner) and everything the monitor paused in that session, so a stop still lands. The
+   same holds when the abort arrives after the root has exited. On shutdown (drain, crash kill) the registry first tells
+   the monitor, which continues everything it paused. Every non-SIGKILL kill is followed by SIGCONT through the
+   child's own handle. No process is left stopped once the daemon is gone.
 5. **Per-node snapshot behind an interface.** `NodeProcessSnapshot` holds the node's capacity (cores, whole-node CPU
    in use, load, total and available memory) and each session's usage and processes. The dashboard and a future
    scheduler call `ProcessHost` (`latest`, `fresh`, `control`). They never touch `ps` or signals. `SOMA_NODE_ID`
@@ -46,9 +51,17 @@ same snapshot, and work will be placed by each node's free CPU and memory.
    `GET /api/dashboard/nodes` (admins) is the scheduler-shaped read.
 6. **Board privacy unchanged.** A card's usage is a field of its board card (`KanbanSession.procUsage`). It travels
    through the existing per-viewer board and the single-card pushes, and only cards whose chip changed are pushed. The
-   process list route sits under `/api/dashboard/session/:key`, so the private-task gate covers it. Commands are
-   previews: values after config, prompt and secret flags, `NAME=secret` values, JSON blobs and long tokens are cut,
-   and then the logger's token redaction runs over the result.
+   process list route sits under `/api/dashboard/session/:key`, so the private-task gate covers it. Commands are shown
+   only to the task's owner and admins (the work log's rule), and only as previews. The preview cuts:
+   - values after config, prompt and secret-named flags
+   - `-p`/`-a` passwords
+   - URL credentials
+   - auth-scheme and credential-header values
+   - `NAME=secret` values
+   - JSON blobs up to the next flag
+   - long tokens
+
+   The logger's token redaction then runs over the result.
 
 ## Consequences
 

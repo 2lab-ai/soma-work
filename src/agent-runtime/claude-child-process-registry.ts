@@ -34,6 +34,7 @@ export class ClaudeChildProcessRegistry {
   private readonly children = new Set<TrackedClaudeProcess>();
   private readonly owners = new WeakMap<TrackedClaudeProcess, ClaudeProcessOwner>();
   private readonly abortListeners = new Set<(root: TrackedClaudeRootInfo) => void>();
+  private readonly shutdownListeners = new Set<() => void>();
   private shutdownSignal: NodeJS.Signals | null = null;
   private changeWaiters = new Set<() => void>();
   private drainPromise: Promise<void> | null = null;
@@ -92,6 +93,25 @@ export class ClaudeChildProcessRegistry {
     return () => this.abortListeners.delete(listener);
   }
 
+  /**
+   * Called synchronously when the host starts shutting its children down (drain, crash kill). The process monitor
+   * continues every process it paused, so nothing is left stopped after the daemon is gone.
+   */
+  onShutdown(listener: () => void): () => void {
+    this.shutdownListeners.add(listener);
+    return () => this.shutdownListeners.delete(listener);
+  }
+
+  private notifyShutdown(): void {
+    for (const listener of [...this.shutdownListeners]) {
+      try {
+        listener();
+      } catch {
+        // One listener's failure must not keep the others (or the kill) from running.
+      }
+    }
+  }
+
   /** @internal the spawner reports an aborted child here. */
   notifyAborted(child: TrackedClaudeProcess): void {
     if (child.pid === undefined) return;
@@ -121,6 +141,7 @@ export class ClaudeChildProcessRegistry {
   private async drainOnce(graceMs: number, killWaitMs: number): Promise<void> {
     const deadline = Date.now() + graceMs;
     if (this.shutdownSignal !== 'SIGKILL') this.shutdownSignal = 'SIGTERM';
+    this.notifyShutdown();
     this.killLiveChildren(this.shutdownSignal);
 
     while (this.hasLiveChildren() && this.shutdownSignal !== 'SIGKILL') {
@@ -145,6 +166,7 @@ export class ClaudeChildProcessRegistry {
   }
 
   killAllSync(signal: NodeJS.Signals): void {
+    this.notifyShutdown();
     for (const child of this.children) {
       if (child.exitCode === null) {
         this.kill(child, signal);
@@ -209,15 +231,20 @@ export class ClaudeChildProcessRegistry {
     } catch {
       if (child.exitCode === null) this.killFailures.add(child.pid);
     }
+    // A child the owner paused (SIGSTOP, the dashboard's 프로세스 tab) holds any other signal pending until it runs
+    // again: continue it so SIGTERM lands now instead of waiting out the grace for SIGKILL. Through the handle, so a
+    // child that already exited (and whose pid the OS may have reused) is never signalled.
+    if (signal !== 'SIGKILL' && child.exitCode === null) continueChild(child);
   }
 }
 
 const registry = new ClaudeChildProcessRegistry();
 
-function resumeAfterAbort(pid: number | undefined): void {
-  if (pid === undefined || process.platform === 'win32') return;
+/** SIGCONT through the child's own handle — never a bare pid, which the OS may have handed to another program. */
+function continueChild(child: TrackedClaudeProcess): void {
+  if (process.platform === 'win32' || child.exitCode !== null || child.signalCode) return;
   try {
-    process.kill(pid, 'SIGCONT');
+    child.kill('SIGCONT');
   } catch {
     // Already gone: nothing to continue.
   }
@@ -251,14 +278,16 @@ export function createTrackedClaudeProcessSpawner(
     // Node sends the kill signal on abort first (its listener was added by spawn). A child the owner paused
     // (SIGSTOP) holds that signal pending until it runs again, so continue it, and let the monitor continue
     // the paused processes under it.
-    if (signal) {
-      const onAbort = () => {
-        resumeAfterAbort(child.pid);
+    // The listener stays after the child exits: the SDK can abort after the CLI has already gone (close() with a
+    // grace), and the processes paused under it must still be continued. continueChild skips an exited child.
+    signal?.addEventListener(
+      'abort',
+      () => {
+        continueChild(child);
         registry.notifyAborted(child);
-      };
-      signal.addEventListener('abort', onAbort, { once: true });
-      child.once('exit', () => signal.removeEventListener('abort', onAbort));
-    }
+      },
+      { once: true },
+    );
 
     return registry.track(child, owner);
   };

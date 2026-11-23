@@ -1,6 +1,6 @@
 import type { TrackedClaudeRootInfo } from '../agent-runtime/claude-child-process-registry';
 import { createNodeCapacityReader, type RunCommand } from './node-capacity';
-import { type RunPs, TreeSampler } from './tree-sampler';
+import { type ReadCpuSeconds, type RunPs, TreeSampler } from './tree-sampler';
 import type {
   NodeCapacity,
   NodeId,
@@ -18,6 +18,8 @@ import type {
 export interface ClaudeRootSource {
   roots(): TrackedClaudeRootInfo[];
   onAbort(listener: (root: TrackedClaudeRootInfo) => void): () => void;
+  /** Synchronous, as the host starts killing its children (drain, crash). */
+  onShutdown?(listener: () => void): () => void;
 }
 
 /**
@@ -49,6 +51,8 @@ export interface ProcessMonitorDeps {
   readonly roots: ClaudeRootSource;
   readonly runPs: RunPs;
   readonly runCommand?: RunCommand;
+  /** Finer CPU time than ps `time` where the platform has it (Linux `/proc`). */
+  readonly readCpuSeconds?: ReadCpuSeconds;
   /** Signal delivery; `process.kill` in production. */
   readonly kill?: (pid: number, signal: NodeJS.Signals) => void;
   readonly platform?: string;
@@ -75,6 +79,7 @@ export class LocalProcessMonitor implements ProcessHost {
   private inFlight: Promise<NodeProcessSnapshot> | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private unsubscribeAbort: (() => void) | null = null;
+  private unsubscribeShutdown: (() => void) | null = null;
   private readonly listeners = new Set<Listener>();
   /** session → pid → start token, for every process this monitor paused and has not resumed. */
   private readonly paused = new Map<string, Map<number, string>>();
@@ -82,7 +87,7 @@ export class LocalProcessMonitor implements ProcessHost {
   constructor(private readonly deps: ProcessMonitorDeps) {
     this.nodeId = deps.nodeId;
     this.now = deps.now ?? Date.now;
-    this.sampler = new TreeSampler(deps.runPs, this.now);
+    this.sampler = new TreeSampler(deps.runPs, this.now, deps.readCpuSeconds);
     this.platform = deps.platform ?? process.platform;
     this.kill = deps.kill ?? ((pid, signal) => process.kill(pid, signal));
     this.intervalMs = deps.intervalMs ?? DEFAULT_INTERVAL_MS;
@@ -94,7 +99,11 @@ export class LocalProcessMonitor implements ProcessHost {
   start(): void {
     if (this.timer) return;
     this.unsubscribeAbort = this.deps.roots.onAbort((root) => this.resumeAfterAbort(root));
+    this.unsubscribeShutdown = this.deps.roots.onShutdown?.(() => this.resumeAllPaused()) ?? null;
     this.timer = setInterval(() => {
+      // Idle: nothing tracked, nothing remembered, and the last sample already said so — no ps, no vm_stat.
+      if (!this.sampler.hasWork(this.deps.roots.roots()) && this.snapshot && this.snapshot.sessions.length === 0)
+        return;
       this.sample().catch((err) => this.deps.logger?.warn('process sample failed', { error: String(err) }));
     }, this.intervalMs);
     this.timer.unref?.();
@@ -105,6 +114,26 @@ export class LocalProcessMonitor implements ProcessHost {
     this.timer = null;
     this.unsubscribeAbort?.();
     this.unsubscribeAbort = null;
+    this.unsubscribeShutdown?.();
+    this.unsubscribeShutdown = null;
+  }
+
+  /**
+   * Continue every process this monitor paused, in every session (the daemon is going away: a stopped process left
+   * behind would hold its memory, ports and locks with nobody to resume it). Synchronous — it runs on exit paths.
+   */
+  resumeAllPaused(): void {
+    for (const [sessionKey, mine] of this.paused) {
+      for (const [pid, startToken] of mine) {
+        if (this.sampler.rememberedStart(sessionKey, pid) !== startToken) continue;
+        try {
+          this.kill(pid, 'SIGCONT');
+        } catch {
+          // Gone already.
+        }
+      }
+    }
+    this.paused.clear();
   }
 
   /** Called after every sample; returns the unsubscribe function. */

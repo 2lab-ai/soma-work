@@ -22,6 +22,7 @@ function setup(opts: { platform?: string; kill?: (pid: number, signal: NodeJS.Si
     .set(800, { ppid: 1, args: '/usr/bin/not-ours' });
   const roots: TrackedClaudeRootInfo[] = [{ pid: 200, sessionKey: 'A' }];
   const abort = new Set<(r: TrackedClaudeRootInfo) => void>();
+  const shutdown = new Set<() => void>();
   const signals: Array<[number, NodeJS.Signals]> = [];
   const kill =
     opts.kill ??
@@ -40,6 +41,10 @@ function setup(opts: { platform?: string; kill?: (pid: number, signal: NodeJS.Si
         abort.add(l);
         return () => abort.delete(l);
       },
+      onShutdown: (l) => {
+        shutdown.add(l);
+        return () => shutdown.delete(l);
+      },
     },
     runPs: ps.run,
     kill,
@@ -54,6 +59,9 @@ function setup(opts: { platform?: string; kill?: (pid: number, signal: NodeJS.Si
     signals,
     fireAbort: (r: TrackedClaudeRootInfo) => {
       for (const l of abort) l(r);
+    },
+    fireShutdown: () => {
+      for (const l of shutdown) l();
     },
     tick: (ms: number) => {
       now += ms;
@@ -143,6 +151,23 @@ describe('LocalProcessMonitor', () => {
       // Once: nothing is left paused.
       fireAbort({ pid: 200, sessionKey: 'A' });
       expect(signals).toHaveLength(2);
+    } finally {
+      monitor.stop();
+    }
+  });
+
+  it('the daemon shutting down continues every process the monitor paused, in every session', async () => {
+    const { monitor, signals, fireShutdown } = setup();
+    monitor.start();
+    try {
+      await monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' });
+      await monitor.control({ sessionKey: 'A', pid: 200, startToken: start, action: 'pause' });
+      signals.length = 0;
+      fireShutdown();
+      expect(signals.sort()).toEqual([
+        [200, 'SIGCONT'],
+        [300, 'SIGCONT'],
+      ]);
     } finally {
       monitor.stop();
     }

@@ -19,11 +19,22 @@ const MAX_ARG = 80;
 const MAX_TOTAL = 240;
 const CUT = '…';
 
-/** Flags whose next argument is never shown. */
-const HIDDEN_VALUE_FLAG =
-  /^--?(mcp-config|settings|append-system-prompt|system-prompt|prompt|env|header|password|token|secret|api[-_]?key|auth\w*)$/i;
-/** `NAME=value` arguments whose value is never shown. */
-const SECRET_NAME = /(token|secret|password|passwd|api[-_]?key|auth|credential|cookie|session)/i;
+/**
+ * Flags whose value can span several ps tokens (ps joins argv with spaces and does not quote): inline JSON, prompts,
+ * headers. Everything after one is cut up to the next `--flag`.
+ */
+const SPAN_FLAG = /^--?(mcp-config|settings|append-system-prompt|system-prompt|prompt|env|header|H|data|d)$/;
+/** A word that marks a value as secret — in a flag's name (`--access-token`), a `NAME=` or a header name. */
+const SECRET_WORD =
+  /(token|secret|passw|pwd|api[-_]?key|apikey|auth|credential|cookie|session|bearer|private[-_]?key)/i;
+/** Short flags whose next token (or attached value) is commonly a password: mysql `-p`, redis-cli `-a`. */
+const SHORT_SECRET = /^-(p|a)$/;
+const SHORT_SECRET_ATTACHED = /^-p\S+$/;
+/** Auth schemes whose next token is the credential (`Authorization: Bearer …`). */
+const AUTH_SCHEME = /^(bearer|basic|token|digest)$/i;
+/** A header name that carries a credential (`X-Api-Key:`, `Authorization:`). */
+const SECRET_HEADER = /^[A-Za-z0-9-]*:$/;
+const URL_CREDENTIALS = /([a-z][a-z0-9+.-]*:\/\/[^\s/:@]*):[^\s/@]*@/gi;
 const LONG_TOKEN = /[A-Za-z0-9_\-+/=.]{32,}/g;
 
 function basename(p: string): string {
@@ -50,10 +61,9 @@ export function processName(argv: readonly string[]): string {
 }
 
 function previewArg(arg: string): string {
-  if (arg.startsWith('{') || arg.startsWith('[')) return '{…}';
   const eq = arg.indexOf('=');
-  if (eq > 0 && SECRET_NAME.test(arg.slice(0, eq))) return `${arg.slice(0, eq + 1)}${CUT}`;
-  let out = arg.replace(LONG_TOKEN, CUT);
+  if (eq > 0 && SECRET_WORD.test(arg.slice(0, eq))) return `${arg.slice(0, eq + 1)}${CUT}`;
+  let out = arg.replace(URL_CREDENTIALS, `$1:${CUT}@`).replace(LONG_TOKEN, CUT);
   if (out.length > MAX_ARG) out = `${out.slice(0, MAX_ARG - 1)}${CUT}`;
   return out;
 }
@@ -62,26 +72,51 @@ function previewArg(arg: string): string {
 export function commandPreview(argv: readonly string[]): string {
   if (argv.length === 0) return '';
   const parts: string[] = [basename(argv[0])];
-  let hideNext = false;
-  for (const arg of argv.slice(1, MAX_ARGS + 1)) {
-    if (hideNext) {
+  // 'next': hide the next token; 'span': hide every token up to the next `--flag`.
+  let hide: 'none' | 'next' | 'span' = 'none';
+  let shown = 0;
+  for (const arg of argv.slice(1)) {
+    if (hide === 'span') {
+      if (!arg.startsWith('--')) continue;
+      hide = 'none';
+    } else if (hide === 'next') {
       parts.push(CUT);
-      hideNext = false;
+      hide = 'none';
       continue;
     }
+    if (shown >= MAX_ARGS) {
+      parts.push(CUT);
+      break;
+    }
+    shown++;
     const flag = arg.split('=')[0];
-    if (HIDDEN_VALUE_FLAG.test(flag)) {
-      // `--token=abc` carries its value inline; `--token abc` in the next argument.
+    const isFlag = arg.startsWith('-');
+    if (isFlag && (SPAN_FLAG.test(flag) || SECRET_WORD.test(flag.replace(/^-+/, '')))) {
       if (arg.includes('=')) parts.push(`${flag}=${CUT}`);
       else {
         parts.push(arg);
-        hideNext = true;
+        hide = SPAN_FLAG.test(flag) ? 'span' : 'next';
+        if (hide === 'span') parts.push(CUT);
       }
+      continue;
+    }
+    if (SHORT_SECRET_ATTACHED.test(arg)) {
+      parts.push(`-p${CUT}`);
+      continue;
+    }
+    if (SHORT_SECRET.test(arg) || AUTH_SCHEME.test(arg) || (SECRET_HEADER.test(arg) && SECRET_WORD.test(arg))) {
+      parts.push(arg);
+      hide = 'next';
+      continue;
+    }
+    if (arg.startsWith('{') || arg.startsWith('[')) {
+      // Inline JSON: its spaces split it into many tokens — cut it whole, up to the next --flag.
+      parts.push('{…}');
+      hide = 'span';
       continue;
     }
     parts.push(previewArg(arg));
   }
-  if (argv.length > MAX_ARGS + 1) parts.push(CUT);
   let line = String(redactSecrets(parts.join(' ')));
   if (line.length > MAX_TOTAL) line = `${line.slice(0, MAX_TOTAL - 1)}${CUT}`;
   return line;

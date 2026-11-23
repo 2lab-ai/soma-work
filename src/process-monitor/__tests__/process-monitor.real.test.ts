@@ -140,4 +140,25 @@ describe.skipIf(!posix)('process monitor on the real OS', () => {
       Promise.race([exited.then(() => 'exited'), new Promise((r) => setTimeout(() => r('stuck'), 5_000))]),
     ).resolves.toBe('exited');
   }, 20_000);
+
+  it('an abort that comes after the Claude Code process already exited still reaches the monitor', async () => {
+    const controller = new AbortController();
+    const spawn = createTrackedClaudeProcessSpawner(undefined, { sessionKey: 'late-abort' });
+    child = spawn({
+      command: '/bin/sh',
+      args: ['-c', 'exit 0'],
+      cwd: '/',
+      env: { PATH: '/bin:/usr/bin' },
+      signal: controller.signal,
+    } as never) as unknown as ChildProcess;
+    await new Promise<void>((resolve) => child?.once('exit', () => resolve()));
+    const seen: unknown[] = [];
+    const off = getClaudeChildProcessRegistry().onAbort((r) => seen.push(r));
+    try {
+      controller.abort();
+      expect(seen).toEqual([{ pid: child.pid, sessionKey: 'late-abort' }]);
+    } finally {
+      off();
+    }
+  });
 });
