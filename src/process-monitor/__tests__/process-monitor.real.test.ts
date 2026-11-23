@@ -149,6 +149,34 @@ describe.skipIf(!posix)('process monitor on the real OS', () => {
     ).resolves.toBe('exited');
   }, 20_000);
 
+  it('the spawner alone continues a stopped Claude Code process on abort (no monitor involved)', async () => {
+    const controller = new AbortController();
+    const spawn = createTrackedClaudeProcessSpawner(undefined, { sessionKey: 'spawner-only' });
+    // Like Claude Code, it handles SIGTERM. A handled signal waits while the process is stopped (an unhandled
+    // SIGTERM would end even a stopped process, and prove nothing here).
+    child = spawn({
+      command: process.execPath,
+      args: ['-e', "process.on('SIGTERM', () => process.exit(0)); setInterval(() => {}, 1000)"],
+      cwd: '/',
+      env: { PATH: '/bin:/usr/bin' },
+      signal: controller.signal,
+    } as never) as unknown as ChildProcess;
+    const exited = new Promise<void>((resolve) => child?.once('exit', () => resolve()));
+    child.on('error', () => {});
+    const pid = child.pid as number;
+    await new Promise((r) => setTimeout(r, 300)); // its SIGTERM handler is installed
+    // Stopped from outside — not by a monitor, so only the spawner's own SIGCONT can let the abort's SIGTERM land.
+    process.kill(pid, 'SIGSTOP');
+    await until(async () => {
+      const stat = (await runReadOnly('ps', ['-o', 'stat=', '-p', String(pid)])).trim();
+      return stat.startsWith('T') ? stat : undefined;
+    });
+    controller.abort();
+    await expect(
+      Promise.race([exited.then(() => 'exited'), new Promise((r) => setTimeout(() => r('stuck'), 5_000))]),
+    ).resolves.toBe('exited');
+  }, 20_000);
+
   it('an abort that comes after the Claude Code process already exited still reaches the monitor', async () => {
     const controller = new AbortController();
     const spawn = createTrackedClaudeProcessSpawner(undefined, { sessionKey: 'late-abort' });
@@ -164,7 +192,7 @@ describe.skipIf(!posix)('process monitor on the real OS', () => {
     const off = getClaudeChildProcessRegistry().onAbort((r) => seen.push(r));
     try {
       controller.abort();
-      expect(seen).toEqual([{ pid: child.pid, sessionKey: 'late-abort' }]);
+      expect(seen).toEqual([{ pid: child.pid, sessionKey: 'late-abort', turnId: expect.any(Number) }]);
     } finally {
       off();
     }

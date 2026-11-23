@@ -57,6 +57,26 @@ describe('ClaudeChildProcessRegistry', () => {
     expect(child.kill).toHaveBeenCalledWith('SIGKILL');
   });
 
+  it('the grace period starts at the SIGTERM, after a slow shutdown listener', async () => {
+    vi.useFakeTimers();
+    const registry = new ClaudeChildProcessRegistry();
+    const child = fakeProcess();
+    (child.kill as ReturnType<typeof vi.fn>).mockImplementation((signal: NodeJS.Signals) => {
+      // Claude Code needs 50 ms after SIGTERM to clean up.
+      if (signal === 'SIGTERM') setTimeout(() => child.emit('exit', 0, null), 50);
+      return true;
+    });
+    registry.track(child);
+    // The monitor's resume pass took 10 s (identity probes on a loaded host).
+    registry.onShutdown(() => vi.setSystemTime(Date.now() + 10_000));
+
+    const drain = registry.drain({ graceMs: 100 });
+    await vi.advanceTimersByTimeAsync(100);
+    await drain;
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(child.kill).not.toHaveBeenCalledWith('SIGKILL');
+  });
+
   it('does not SIGKILL a child that exits during the grace period', async () => {
     vi.useFakeTimers();
     const registry = new ClaudeChildProcessRegistry();
@@ -170,10 +190,30 @@ describe('ClaudeChildProcessRegistry', () => {
     registry.track(owned, { sessionKey: 'C1-1700000000.000100' });
     registry.track(helper);
 
-    expect(registry.roots()).toEqual([{ pid: 1234, sessionKey: 'C1-1700000000.000100' }, { pid: 4321 }]);
+    expect(registry.roots()).toEqual([
+      { pid: 1234, sessionKey: 'C1-1700000000.000100', turnId: 1 },
+      { pid: 4321, turnId: 2 },
+    ]);
 
     owned.emit('exit', 0, null);
-    expect(registry.roots()).toEqual([{ pid: 4321 }]);
+    expect(registry.roots()).toEqual([{ pid: 4321, turnId: 2 }]);
+  });
+
+  it('numbers each spawn: a child that gets an exited child’s pid is another turn', () => {
+    const registry = new ClaudeChildProcessRegistry();
+    const first = fakeProcess();
+    registry.track(first, { sessionKey: 'K' });
+    first.emit('exit', 0, null);
+    const second = fakeProcess(); // the OS gave it the same pid, 1234
+    registry.track(second, { sessionKey: 'K' });
+    const seen: unknown[] = [];
+    registry.onAbort((root) => seen.push(root));
+    registry.notifyAborted(first); // a late abort of the first turn
+    registry.notifyAborted(second);
+    expect(seen).toEqual([
+      { pid: 1234, sessionKey: 'K', turnId: 1 },
+      { pid: 1234, sessionKey: 'K', turnId: 2 },
+    ]);
   });
 
   it('tells abort listeners which session a child was aborted in, and survives a throwing listener', () => {
@@ -190,7 +230,7 @@ describe('ClaudeChildProcessRegistry', () => {
     off();
     registry.notifyAborted(child);
 
-    expect(seen).toEqual([{ pid: 1234, sessionKey: 'K' }]);
+    expect(seen).toEqual([{ pid: 1234, sessionKey: 'K', turnId: 1 }]);
   });
 
   it('tells shutdown listeners before it kills (drain and crash), so paused processes can be continued first', async () => {

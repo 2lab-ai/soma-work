@@ -779,7 +779,11 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
         signal: new AbortController().signal,
       } as never) as unknown as import('node:child_process').ChildProcess;
       try {
-        expect(getClaudeChildProcessRegistry().roots()).toContainEqual({ pid: child.pid, sessionKey: 'C1-111.222' });
+        expect(getClaudeChildProcessRegistry().roots()).toContainEqual({
+          pid: child.pid,
+          sessionKey: 'C1-111.222',
+          turnId: expect.any(Number),
+        });
       } finally {
         child.kill('SIGKILL');
         getClaudeChildProcessRegistry().resetForTests();

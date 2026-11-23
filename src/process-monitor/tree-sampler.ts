@@ -4,7 +4,7 @@ import { DETAIL_COLUMNS, type PsRow, parseDetailRows, parseParentMap, stateOf } 
 import type { NodeCapacity, ProcessSample, SessionProcessDetail } from './types';
 
 /** A Claude Code process the SDK spawned, as the child registry knows it (pid + the session it runs for, if any). */
-export type TrackedRoot = TrackedClaudeRootInfo;
+export type TrackedRoot = Pick<TrackedClaudeRootInfo, 'pid' | 'sessionKey'>;
 
 /** Runs `ps` with these arguments and returns stdout. Must resolve with partial stdout when ps exits 1 because a pid vanished. */
 export type RunPs = (args: readonly string[]) => Promise<string>;

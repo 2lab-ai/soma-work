@@ -16,6 +16,11 @@ export interface ClaudeProcessOwner {
 export interface TrackedClaudeRootInfo {
   readonly pid: number;
   readonly sessionKey?: string;
+  /**
+   * This spawn's own number, unique in this daemon: the turn's identity. A pid is not one — the OS can give an exited
+   * child's pid to the next one, and a late abort of the first must not reach what the second paused.
+   */
+  readonly turnId: number;
 }
 
 export interface DrainOptions {
@@ -33,6 +38,8 @@ export interface DrainOptions {
 export class ClaudeChildProcessRegistry {
   private readonly children = new Set<TrackedClaudeProcess>();
   private readonly owners = new WeakMap<TrackedClaudeProcess, ClaudeProcessOwner>();
+  private readonly turnIds = new WeakMap<TrackedClaudeProcess, number>();
+  private nextTurnId = 0;
   private readonly abortListeners = new Set<(root: TrackedClaudeRootInfo) => void>();
   private readonly shutdownListeners = new Set<() => void>();
   private shutdownSignal: NodeJS.Signals | null = null;
@@ -47,6 +54,7 @@ export class ClaudeChildProcessRegistry {
   track(child: TrackedClaudeProcess, owner?: ClaudeProcessOwner): TrackedClaudeProcess {
     this.children.add(child);
     if (owner) this.owners.set(child, owner);
+    if (!this.turnIds.has(child)) this.turnIds.set(child, ++this.nextTurnId);
 
     const remove = () => {
       child.off('exit', onExit);
@@ -77,10 +85,15 @@ export class ClaudeChildProcessRegistry {
     const out: TrackedClaudeRootInfo[] = [];
     for (const child of this.children) {
       if (child.pid === undefined || child.exitCode !== null) continue;
-      const owner = this.owners.get(child);
-      out.push(owner ? { pid: child.pid, sessionKey: owner.sessionKey } : { pid: child.pid });
+      out.push(this.infoOf(child, child.pid));
     }
     return out;
+  }
+
+  private infoOf(child: TrackedClaudeProcess, pid: number): TrackedClaudeRootInfo {
+    const owner = this.owners.get(child);
+    const turnId = this.turnIds.get(child) ?? 0;
+    return owner ? { pid, sessionKey: owner.sessionKey, turnId } : { pid, turnId };
   }
 
   /**
@@ -115,8 +128,7 @@ export class ClaudeChildProcessRegistry {
   /** @internal the spawner reports an aborted child here. */
   notifyAborted(child: TrackedClaudeProcess): void {
     if (child.pid === undefined) return;
-    const owner = this.owners.get(child);
-    const info: TrackedClaudeRootInfo = owner ? { pid: child.pid, sessionKey: owner.sessionKey } : { pid: child.pid };
+    const info = this.infoOf(child, child.pid);
     for (const listener of [...this.abortListeners]) {
       try {
         listener(info);
@@ -139,9 +151,11 @@ export class ClaudeChildProcessRegistry {
   }
 
   private async drainOnce(graceMs: number, killWaitMs: number): Promise<void> {
-    const deadline = Date.now() + graceMs;
     if (this.shutdownSignal !== 'SIGKILL') this.shutdownSignal = 'SIGTERM';
     this.notifyShutdown();
+    // The grace period starts at the SIGTERM, after the shutdown listeners (the monitor's resume pass can take a while
+    // on a loaded host): the children get all of it.
+    const deadline = Date.now() + graceMs;
     this.killLiveChildren(this.shutdownSignal);
 
     while (this.hasLiveChildren() && this.shutdownSignal !== 'SIGKILL') {

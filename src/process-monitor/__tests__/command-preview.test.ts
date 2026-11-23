@@ -27,8 +27,12 @@ describe('processName', () => {
     expect(processName(splitArgs('python3 - S3cretArg'))).toBe('python3');
     expect(processName(splitArgs('node S3cretWord'))).toBe('node');
     // The script is the first operand after known interpreter options; a value of one of them is not (round 6).
-    expect(processName(splitArgs('node --require p@ss/word.js app.js'))).toBe('node app.js');
+    expect(processName(splitArgs('node --enable-source-maps /app/main.js'))).toBe('node main.js');
     expect(processName(splitArgs('node --inspect-brk=9229 p@ss/word.js'))).toBe('node');
+    // After any value, no word is the script: ps may have split the value, and its tail can look like one (round 7).
+    expect(processName(splitArgs('node --require p@ss/word.js app.js'))).toBe('node');
+    expect(processName(splitArgs('node --import data:text/javascript,/* /hunter2 */ -e x'))).toBe('node');
+    expect(processName(splitArgs('node --import=data:text/javascript,/* auth/swordfish */ /app/main.js'))).toBe('node');
   });
 });
 
@@ -170,6 +174,11 @@ describe('commandPreview — every leak the reviews found (2026-11-23), through 
     ['claude --model opus --swordfish', ['swordfish', 'opus']],
     ['claude --add-dir /a /p@ss/word --verbose', ['p@ss', '/a']],
     ['node --require p@ss/word.js app.js', ['p@ss', 'word']],
+    // A flattened multiword value whose tail looks like a script (round 7).
+    ['node --import data:text/javascript,/* /hunter2 */ -e setInterval(()=>{},1000)', ['hunter2']],
+    ['node --import data:text/javascript,/* auth/swordfish */ /app/main.js', ['swordfish', 'auth']],
+    ['node --require=./a b/hunter2.js /app/main.js', ['hunter2']],
+    ['python3 --model x /p@ss/word.py', ['p@ss', 'word']],
   ];
   it.each(leaks)('%s', (line, secrets) => {
     const out = preview(line);

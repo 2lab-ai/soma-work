@@ -45,13 +45,16 @@ same snapshot, and work will be placed by each node's free CPU and memory.
    unreadable identity is unknown, not gone: the manual signal is refused, and an automatic resume keeps its entry, as
    it does when the OS refuses the resume. An abort continues only what was paused under that turn, or between turns,
    so a late abort of an earlier turn leaves the next turn's pauses alone. An abort's resume that could not be done is
-   retried on every sample until it lands. A process keeps the turn it was seen under after it is orphaned. A pause is
-   refused only when its own turn is aborted during the check. Shutdown retries a few times and logs whatever it could
+   retried on every sample until it lands. A turn is its spawn's number in the registry (`turnId`), not the Claude Code
+   pid, which the OS can hand to the next turn. A process keeps the turn it was seen under after it is orphaned, and
+   what an orphan starts inherits it. A pause is refused only when its own turn is aborted during the check. A pause
+   missing from a sample is dropped only when its live start time says the process is gone. Shutdown retries a few times and logs whatever it could
    not continue. The route allows the owner, or an admin in admin mode, with CSRF. Aborting a turn continues
    the paused root (in the spawner) and everything the monitor paused in that session, so a stop still lands. The
    same holds when the abort arrives after the root has exited. On shutdown (drain, crash kill) the registry first tells
-   the monitor, which continues everything it paused. Every non-SIGKILL kill is followed by SIGCONT through the
-   child's own handle. No process is left stopped once the daemon is gone.
+   the monitor, which continues everything it paused; the SIGTERM grace period starts after that pass. Every
+   non-SIGKILL kill is followed by SIGCONT through the child's own handle. (Claude Code handles SIGTERM, and a handled
+   signal waits while its process is stopped.) No process is left stopped once the daemon is gone.
 5. **Per-node snapshot behind an interface.** `NodeProcessSnapshot` holds the node's capacity (cores, whole-node CPU
    in use, load, total and available memory) and each session's usage and processes. The dashboard and a future
    scheduler call `ProcessHost` (`latest`, `fresh`, `control`). They never touch `ps` or signals. `SOMA_NODE_ID`
@@ -64,8 +67,9 @@ same snapshot, and work will be placed by each node's free CPU and memory.
    because ps has flattened argv, and even with argv a flag's arity is unknown: a value can look like a flag
    (`jq --arg name --swordfish`) or a path (`p@ss/word`). So nothing after the program is copied from the command
    line:
-   - The preview shows the program's basename and, for an interpreter, its script's basename (the first operand after
-     known interpreter options).
+   - The preview shows the program's basename and, for an interpreter, its script's basename: the first operand, with
+     only known no-value options before it. After any cut value no word is taken as the script, because ps may have
+     split that value and its tail can look like one.
    - It shows flag names from a fixed list (`SHOWN_FLAGS` in `command-preview.ts`). A listed flag that takes a value
      shows as `--model …`, and its next word is cut whatever it looks like.
    - The walk stops at the first word it does not know (an unknown or short flag, an operand, `NAME=value`, a second

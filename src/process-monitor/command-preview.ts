@@ -10,7 +10,9 @@ import { redactSecrets } from '@soma/common/logger';
  * program is copied from the command line. The preview is built only from:
  *   - the program's basename;
  *   - for an interpreter (`node`, `python3` …), its script's basename, when the script is where the interpreter takes
- *     it (the first operand after known interpreter options) and looks like a file;
+ *     it and looks like a file: the first operand, with only known no-value options before it. Once any value has been
+ *     cut, no word is taken as the script — ps may have split that value (`--import 'data:… /hunter2 …'`), and its
+ *     tail can look like a script;
  *   - flag names from {@link SHOWN_FLAGS}, a fixed list: a known flag that takes no value is shown as is; a known flag
  *     that takes one value is shown with its value cut (`--model …`, `--model=…`);
  *   - `…`.
@@ -114,6 +116,8 @@ function walk(argv: readonly string[]): Walked {
   const interpreter = INTERPRETER.test(basename(argv[0]));
   const rest: string[] = [];
   let script: string | undefined;
+  // A value was cut: from here on a word may be its spill, so none is taken as the script.
+  let afterValue = false;
   let shown = 0;
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i];
@@ -128,17 +132,19 @@ function walk(argv: readonly string[]): Walked {
       if (name !== arg) {
         // `--model=opus`, `--porcelain=v2`: the value is written in.
         rest.push(`${name}=${CUT}`);
+        afterValue = true;
         continue;
       }
       rest.push(name);
       if (TAKES_VALUE.has(name) && i + 1 < argv.length) {
         // The next word is this flag's value, whatever it looks like (`--model --verbose` hides `--verbose`).
         rest.push(CUT);
+        afterValue = true;
         i++;
       }
       continue;
     }
-    if (interpreter && script === undefined && !arg.startsWith('-') && SCRIPT_FILE.test(arg)) {
+    if (interpreter && script === undefined && !afterValue && !arg.startsWith('-') && SCRIPT_FILE.test(arg)) {
       // The interpreter's first operand is its script.
       script = safeName(basename(arg));
       rest.push(script);

@@ -4,6 +4,9 @@ import { FakePs } from '../__fixtures__/fake-ps';
 import { LocalProcessMonitor, psLiveStartToken } from '../process-monitor';
 import type { NodeCapacity } from '../types';
 
+type RootFixture = Omit<TrackedClaudeRootInfo, 'turnId'> & { turnId?: number };
+const withTurn = (r: RootFixture): TrackedClaudeRootInfo => ({ ...r, turnId: r.turnId ?? r.pid });
+
 const capacity: NodeCapacity = {
   nodeId: 'n1',
   platform: 'darwin',
@@ -20,6 +23,7 @@ function setup(
     platform?: string;
     kill?: (pid: number, signal: NodeJS.Signals) => void;
     runPs?: (ps: FakePs) => (a: readonly string[]) => Promise<string>;
+    readCapacity?: () => Promise<NodeCapacity>;
   } = {},
 ) {
   const ps = new FakePs()
@@ -30,7 +34,8 @@ function setup(
     .set(500, { ppid: 100, args: '/usr/local/bin/claude' })
     .set(600, { ppid: 500, args: '/usr/bin/node server.js' })
     .set(800, { ppid: 1, args: '/usr/bin/not-ours' });
-  const roots: TrackedClaudeRootInfo[] = [
+  // A root's turnId is its pid unless a test gives one (the registry numbers each spawn).
+  const roots: RootFixture[] = [
     { pid: 200, sessionKey: 'A' },
     { pid: 500, sessionKey: 'B' },
   ];
@@ -49,7 +54,7 @@ function setup(
   const monitor = new LocalProcessMonitor({
     nodeId: 'n1',
     roots: {
-      roots: () => roots,
+      roots: () => roots.map(withTurn),
       onAbort: (l) => {
         abort.add(l);
         return () => abort.delete(l);
@@ -67,15 +72,15 @@ function setup(
     },
     platform: opts.platform ?? 'darwin',
     now: () => now,
-    readCapacity: async () => capacity,
+    readCapacity: opts.readCapacity ?? (async () => capacity),
   });
   return {
     ps,
     roots,
     monitor,
     signals,
-    fireAbort: (r: TrackedClaudeRootInfo) => {
-      for (const l of abort) l(r);
+    fireAbort: (r: RootFixture) => {
+      for (const l of abort) l(withTurn(r));
     },
     fireShutdown: () => {
       for (const l of shutdown) l();
@@ -497,6 +502,96 @@ describe('LocalProcessMonitor', () => {
       [310, 'SIGSTOP'],
       [310, 'SIGCONT'],
     ]);
+  });
+
+  it('a turn is its spawn, not its pid: a late abort of a turn whose pid the next one reused continues only its own', async () => {
+    const { monitor, signals, fireAbort, ps, roots, tick } = setup();
+    roots[0] = { pid: 200, sessionKey: 'A', turnId: 1 };
+    await monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' });
+    // Turn 1's Claude Code exits (300 is re-parented); the OS gives pid 200 to turn 2's, which starts 310.
+    ps.reparent(300, 1)
+      .set(200, { ppid: 100, start: 'Tue Nov 24 09:00:00 2026', args: '/usr/local/bin/claude' })
+      .set(310, { ppid: 200, args: '/bin/sleep 100' });
+    roots[0] = { pid: 200, sessionKey: 'A', turnId: 2 };
+    for (let i = 0; i < 2; i++) {
+      tick(1);
+      await monitor.sample();
+    }
+    expect(await monitor.control({ sessionKey: 'A', pid: 310, startToken: start, action: 'pause' })).toMatchObject({
+      ok: true,
+    });
+    fireAbort({ pid: 200, sessionKey: 'A', turnId: 1 }); // turn 1's abort, late
+    expect(signals).toEqual([
+      [300, 'SIGSTOP'],
+      [310, 'SIGSTOP'],
+      [300, 'SIGCONT'],
+    ]);
+  });
+
+  it('a pause missing from one sample is kept while its process lives: the abort still continues it', async () => {
+    let hide = false;
+    const { monitor, signals, fireAbort, tick } = setup({
+      // ps leaves 300's row out of the detail call (a skipped or unreadable row), though the process is alive.
+      runPs: (ps) => async (a) => {
+        const out = await ps.run(a);
+        if (!hide || a[0] === '-A') return out;
+        return out
+          .split('\n')
+          .filter((line) => line.trim().split(/\s+/)[0] !== '300')
+          .join('\n');
+      },
+    });
+    await monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' });
+    hide = true;
+    tick(1);
+    const snap = await monitor.sample();
+    expect(snap.sessions.find((s) => s.sessionKey === 'A')?.processes.map((p) => p.pid)).not.toContain(300);
+    fireAbort({ pid: 200, sessionKey: 'A' });
+    expect(signals).toEqual([
+      [300, 'SIGSTOP'],
+      [300, 'SIGCONT'],
+    ]);
+  });
+
+  it('a pause whose process is confirmed gone is dropped (nothing to continue later)', async () => {
+    const { monitor, signals, fireShutdown, ps, tick } = setup();
+    await monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' });
+    ps.remove(300);
+    tick(1);
+    await monitor.sample();
+    fireShutdown();
+    expect(signals).toEqual([[300, 'SIGSTOP']]);
+  });
+
+  it('a failed capacity read keeps the sampling lock until the tree read settles: no second sampler runs', async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let failCapacity = true;
+    const { monitor, ps } = setup({
+      runPs: (fake) => async (a) => {
+        const out = fake.run(a); // recorded in fake.calls now
+        if (failCapacity) await gate;
+        return out;
+      },
+      readCapacity: async () => {
+        if (failCapacity) throw new Error('vm_stat failed');
+        return capacity;
+      },
+    });
+    const first = monitor.sample();
+    first.catch(() => {});
+    await new Promise((r) => setTimeout(r, 0)); // the capacity read has rejected; the tree read still waits
+    const second = monitor.sample();
+    second.catch(() => {});
+    expect(ps.calls.filter((c) => c[0] === '-A')).toHaveLength(1);
+    release();
+    await expect(first).rejects.toThrow('vm_stat failed');
+    await expect(second).rejects.toThrow('vm_stat failed');
+    failCapacity = false;
+    const next = await monitor.sample();
+    expect(next.sessions.map((x) => x.sessionKey).sort()).toEqual(['A', 'B']);
   });
 
   it('two live turns in one session: each abort continues only its own tree’s pauses', async () => {
