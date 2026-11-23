@@ -152,7 +152,6 @@ async function main() {
       roots: getClaudeChildProcessRegistry(),
       runPs: (args) => runReadOnly('ps', args),
       runCommand: runReadOnly,
-      intervalMs: 1_000,
     });
     monitor.start();
     dashboard.setDashboardProcessSource(monitor);
