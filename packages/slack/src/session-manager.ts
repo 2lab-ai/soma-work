@@ -34,6 +34,55 @@ export interface ConversationSession {
   shutdownNotificationSent?: boolean;
   shutdownNotifiedAt?: number;
   wasWorkingAtShutdown?: boolean;
+  /** When the current turn leg began (the registry's `beginTurn`); undefined when no turn runs. */
+  activeLegStartedAtMs?: number;
+  /** When `activityState` last changed. */
+  activityStateChangedAt?: number;
+  /** When a person last stopped this session (dashboard 중지, `!`) — set by the host's stop observer, saved. */
+  lastPersonStopAtMs?: number;
+  /**
+   * Set by a person's stop (the work it hit: `activeLegStartedAtMs`, or `activityStateChangedAt` before a leg began),
+   * cleared when new work begins (`clearPersonStop`: a turn leg, a switch to working). Present = the work a person
+   * stopped is still this session's work.
+   */
+  personStoppedWorkAt?: number;
+}
+
+/**
+ * The work a session is on now: its turn leg's start, or — before a leg begins (a turn still being prepared, a button
+ * that marks the session working first) — the moment it last changed state.
+ */
+function currentWorkMarker(
+  session: Pick<ConversationSession, 'activeLegStartedAtMs' | 'activityStateChangedAt'>,
+): number {
+  return session.activeLegStartedAtMs ?? session.activityStateChangedAt ?? 0;
+}
+
+/** Z 2026-11-23 — a person stopped this session (dashboard 중지, `!`): record when, and which work it hit. */
+export function markPersonStop(
+  session: Pick<
+    ConversationSession,
+    'lastPersonStopAtMs' | 'personStoppedWorkAt' | 'activeLegStartedAtMs' | 'activityStateChangedAt'
+  >,
+  now: number,
+): void {
+  session.lastPersonStopAtMs = now;
+  session.personStoppedWorkAt = currentWorkMarker(session);
+}
+
+/** New work begins (a turn leg, a switch to working): the stop no longer speaks for this session's work. */
+export function clearPersonStop(session: Pick<ConversationSession, 'personStoppedWorkAt'>): void {
+  session.personStoppedWorkAt = undefined;
+}
+
+/**
+ * Z 2026-11-23 — a person stopped this session and no new work has begun since (`personStoppedWorkAt` is set by the
+ * stop and cleared by new work). Its `working` is then only what the stop could not unwind (a turn stuck after its
+ * abort, or one still starting), and a restart must not resume it. Cleared rather than compared by clock, so new work
+ * that begins in the stop's millisecond — or after the clock moved back — is never read as stopped.
+ */
+export function stoppedByPersonSinceTurnStart(session: Pick<ConversationSession, 'personStoppedWorkAt'>): boolean {
+  return typeof session.personStoppedWorkAt === 'number';
 }
 
 export interface ClaudeSessionUiReader {
@@ -1168,7 +1217,8 @@ export class SessionUiManager {
    *
    * For every session this method touches, it stamps
    * `shutdownNotificationSent=true`, `wasWorkingAtShutdown` (snapshot of
-   * `activityState === 'working'` at shutdown start) and
+   * `activityState === 'working'` at shutdown start, unless a person stopped
+   * the session since its turn began — `stoppedByPersonSinceTurnStart`) and
    * `shutdownNotifiedAt` on the in-memory session BEFORE awaiting the
    * Slack postMessage. The caller (`index.ts` cleanup handler) runs
    * `saveSessions()` immediately afterwards, so these markers reach
@@ -1234,7 +1284,8 @@ export class SessionUiManager {
         // many other turns between here and when postMessage resolves;
         // reading `session.activityState` after the await would see a
         // (very likely) post-completion 'idle' state.
-        const wasWorkingSnapshot = session.activityState === 'working';
+        // A session a person stopped since its turn began is not working, whatever its state still says.
+        const wasWorkingSnapshot = session.activityState === 'working' && !stoppedByPersonSinceTurnStart(session);
         const stampedAt = Date.now();
 
         // Stamp the recovery marker optimistically. saveSessions() in

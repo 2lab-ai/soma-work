@@ -788,6 +788,7 @@
   "소유자": "Owner",
   "소유자가 승인하면 실행됩니다 — 소유자에게 DM과 대시보드로 요청했어요": "It runs once the owner approves — the owner was asked by DM and on the dashboard",
   "소유자나 관리자 모드를 켠 관리자만 할 수 있어요": "Only the owner, or an admin with admin mode on, can do this",
+  "소유자나 관리자만 중지할 수 있어요": "Only the owner, or an admin, can stop this",
   "소유자만": "Owner only",
   "수동 실행 (": "Manual run (",
   "수동 실행 허용": "Allowed to run on demand",
