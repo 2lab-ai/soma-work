@@ -16,7 +16,7 @@
  *   GET  /api/dashboard/session/:id/worklog  → Work log entries (JSON, registered in work-log-routes.ts)
  *   POST /api/dashboard/session/:id/ensure-title   → Fill a missing titleSub (any signed-in viewer; never overwrites)
  *   POST /api/dashboard/session/:id/generate-title → Regenerate titleSub (owner, or ADMIN_USERS + X-Admin-Mode: on)
- *   POST /api/dashboard/session/:key/stop    → Stop a working session
+ *   POST /api/dashboard/session/:key/stop    → Stop a working session (owner, or any admin — 관리자 모드 not needed)
  *   POST /api/dashboard/session/:key/close   → Close/terminate a session
  *   POST /api/dashboard/session/:key/trash   → Trash (hide) a closed session
  *   POST /api/dashboard/session/:key/command → Send command to session
@@ -1024,21 +1024,21 @@ function resolveSelfActionKey(wireKey: string, reply: any): string | null {
 function resolveSelfActionKeyAndOwner(
   request: any,
   reply: any,
-  opts: { instruct?: boolean } = {},
+  opts: { instruct?: boolean; stop?: boolean } = {},
 ): { wireKey: string; originalKey: string } | null {
   const wireKey: string = request.params?.key ?? '';
   const originalKey = resolveSelfActionKey(wireKey, reply);
   if (originalKey === null) return null;
   // The gate first: a refusal answers 403, not a hint of what the session is.
   // An instruction or an answer (SSOT 2026-11-02): every signed-in user, as in
-  // a Slack thread — it runs as them. Everything else: the #716 write policy.
-  if (
-    opts.instruct
-      ? !requireInstructAccess(request, reply, originalKey)
-      : !requireSessionOwner(request, reply, originalKey)
-  ) {
-    return null;
-  }
+  // a Slack thread — it runs as them. A stop: the owner or any admin (Z 2026-11-23).
+  // Everything else: the #716 write policy.
+  const allowed = opts.instruct
+    ? requireInstructAccess(request, reply, originalKey)
+    : opts.stop
+      ? requireStopAccess(request, reply, originalKey)
+      : requireSessionOwner(request, reply, originalKey);
+  if (!allowed) return null;
   return { wireKey, originalKey };
 }
 
@@ -1537,6 +1537,22 @@ function requireSessionOwner(request: any, reply: any, sessionKey: string): bool
   reply.status(403).send({
     error: 'Forbidden — write requires session ownership, or admin user with X-Admin-Mode: on header (#716)',
   });
+  return false;
+}
+
+/**
+ * Who may stop a task (Z 2026-11-23: "어드민이면 다른 사람 작업 중지할수 있게") — the #716 write policy, and every
+ * admin signed in with Slack, 관리자 모드 on or not. A stop is the brake: it cuts the running turn and leaves the task
+ * to be resumed, so an admin who finds someone's runaway work stops it without a toggle first. Close, trash and every
+ * other manage action keep the #716 policy. `authContext.isAdmin` is rebuilt per request from the verified JWT.
+ */
+function requireStopAccess(request: any, reply: any, sessionKey: string): boolean {
+  const authContext = request.authContext;
+  const signedInAdmin = authContext?.mode === 'oauth_jwt' && authContext.isAdmin === true;
+  if (signedInAdmin) return true;
+  const targetSession = _getSessionsFn?.()?.get(sessionKey);
+  if (_hasWriteAccess(request, targetSession?.ownerId)) return true;
+  reply.status(403).send({ error: 'Forbidden — stopping a task takes its owner, or an admin' });
   return false;
 }
 
@@ -4630,7 +4646,7 @@ export async function registerDashboardRoutes(
         reply.status(400).send({ error: 'pauseGoalId must be a non-empty string' });
         return;
       }
-      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { stop: true });
       if (!resolved) return;
       const { wireKey: key, originalKey } = resolved;
       // Who may see the task, read before the stop (it may take the session away).
@@ -8443,17 +8459,24 @@ let _viewerUserId = ''; // the signed-in user (/auth/me) — not currentUserId, 
 
 // Who may do what on a card (SSOT 2026-11-02) — UX only, the server re-checks every write.
 // Mine: the signed-in viewer's — never the board filter's user ('' on the All Users board).
-// Manage (stop · close · trash · star · 살리기 · model · effort · goal · compact): the owner, or an
-// admin with 관리자 모드 on. Instruct (the composer, a question's answer): every signed-in user, as
+// Manage (close · trash · star · 살리기 · model · effort · goal · compact): the owner, or an
+// admin with 관리자 모드 on. Stop: the owner, or any admin — 관리자 모드 or not (Z 2026-11-23). Instruct
+// (the composer, a question's answer): every signed-in user, as
 // in a Slack thread — the turn runs as them; an epic and its children, and someone else's DM with the
 // bot (nobody else can write there in Slack), only from those who manage them; a viewer token only a
 // Slack session it manages.
 const OWNER_ONLY_MSG = '소유자나 관리자 모드를 켠 관리자만 할 수 있어요';
+const STOP_OWNER_ONLY_MSG = '소유자나 관리자만 중지할 수 있어요';
 function viewerOwns(s) {
   return !!(s && s.ownerId) && !!_viewerUserId && s.ownerId === _viewerUserId;
 }
 function viewerCanManage(s) {
   return viewerOwns(s) || !!(_viewerIsAdmin && _isAdminModeOn());
+}
+// 중지 is the brake: an admin stops anyone's runaway work without turning 관리자 모드 on first (the server's
+// requireStopAccess is the guard). Closing, trash and the rest stay viewerCanManage.
+function viewerCanStop(s) {
+  return viewerCanManage(s) || !!_viewerIsAdmin;
 }
 function viewerCanInstruct(s) {
   if (!s) return false;
@@ -16738,7 +16761,9 @@ function sessionActionsOf(s, col) {
   // SSOT 2026-11-10 T1: from the confirmed press until the board has it closed, Close reads 닫는 중 on both surfaces.
   // armed: the open card's first press on Close (pressClose) — that surface asks for the second.
   var closing = kind === 'close' && isBusy(s.key, 'closing');
-  var act = { id: kind, label: closing ? STRINGS.statusClosing : label, lock: lock, busy: isBusy(s.key, 'action') };
+  // 중지 has its own rule (viewerCanStop): any admin, 관리자 모드 or not.
+  var actLock = kind === 'stop' ? (viewerCanStop(s) ? '' : STOP_OWNER_ONLY_MSG) : lock;
+  var act = { id: kind, label: closing ? STRINGS.statusClosing : label, lock: actLock, busy: isBusy(s.key, 'action') };
   if (kind === 'close' && !closing && isBusy(s.key, 'close-armed')) act.armed = true;
   out.push(act);
   return out;

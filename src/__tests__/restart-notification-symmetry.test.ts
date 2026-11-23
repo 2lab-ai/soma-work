@@ -120,6 +120,66 @@ describe('Restart symmetry: notifyShutdown stamps recovery markers', () => {
     expect(idle.wasWorkingAtShutdown).toBe(false);
   });
 
+  // Z 2026-11-23 (the customer dev host): three tasks stopped from the dashboard at 10:43–10:45 still read `working` — the stop could
+  // not unwind their turn — so the 10:47 restart marked them working and the boot resumed all of them at 10:49.
+  // A person's stop after the turn began is the last word: the restart does not resume that work.
+  it('a session a person stopped after its turn began is not marked working, whatever its activityState says', async () => {
+    const { manager, sessions } = buildManager();
+    const base = {
+      userId: 'U1',
+      ownerId: 'U1',
+      channelId: 'C1',
+      sessionId: 'sid',
+      isActive: true,
+      lastActivity: new Date(),
+      activityState: 'working',
+    };
+    const stoppedMidTurn = {
+      ...base,
+      threadTs: 't1',
+      activeLegStartedAtMs: 1_000,
+      lastPersonStopAtMs: 2_000,
+    } as unknown as ConversationSession;
+    const stoppedBeforeTurnBegan = {
+      ...base,
+      threadTs: 't2',
+      lastPersonStopAtMs: 2_000,
+    } as unknown as ConversationSession;
+    const turnAfterTheStop = {
+      ...base,
+      threadTs: 't3',
+      lastPersonStopAtMs: 2_000,
+      activeLegStartedAtMs: 3_000,
+    } as unknown as ConversationSession;
+    const neverStopped = { ...base, threadTs: 't4', activeLegStartedAtMs: 1_000 } as unknown as ConversationSession;
+    // An old stop, then the session went working again without a turn leg yet (a button marks it working before its
+    // turn starts): new work — resumed (review: a missing leg must not make every later restart drop the work).
+    const workingAgainAfterOldStop = {
+      ...base,
+      threadTs: 't5',
+      lastPersonStopAtMs: 2_000,
+      activityStateChangedAt: 3_000,
+    } as unknown as ConversationSession;
+    sessions.set('k1', stoppedMidTurn);
+    sessions.set('k2', stoppedBeforeTurnBegan);
+    sessions.set('k3', turnAfterTheStop);
+    sessions.set('k4', neverStopped);
+    sessions.set('k5', workingAgainAfterOldStop);
+
+    await manager.notifyShutdown();
+
+    expect(stoppedMidTurn.wasWorkingAtShutdown).toBe(false);
+    expect(stoppedBeforeTurnBegan.wasWorkingAtShutdown).toBe(false);
+    // A turn that began after the stop is new work — the restart resumes it as before.
+    expect(turnAfterTheStop.wasWorkingAtShutdown).toBe(true);
+    expect(neverStopped.wasWorkingAtShutdown).toBe(true);
+    expect(workingAgainAfterOldStop.wasWorkingAtShutdown).toBe(true);
+    // Every one of them is still told about the restart.
+    for (const s of [stoppedMidTurn, stoppedBeforeTurnBegan, turnAfterTheStop, neverStopped]) {
+      expect(s.shutdownNotificationSent).toBe(true);
+    }
+  });
+
   it('does NOT mark a session when postMessage fails (channel inaccessible)', async () => {
     const { manager, sessions, postMessage } = buildManager();
     postMessage.mockRejectedValueOnce(new Error('channel_not_found'));
@@ -408,6 +468,56 @@ describe('Restart symmetry: loadSessions honors shutdownNotificationSent marker'
     expect(recovered.length).toBe(1);
     expect(recovered[0].shouldAutoResume).toBe(true);
   });
+
+  // Z 2026-11-23 (the customer dev host): the restarts that brought another user's stopped tasks back were crashes — `uncaughtException
+  // { code: 'ECOMPROMISED' }` saves the sessions and exits without notifyShutdown, so the load read the stale
+  // persisted `working` and resumed them. A person's stop is saved with the session and wins on that path too.
+  const crashed = (over: Record<string, unknown>) => ({
+    ownerId: 'U1',
+    userId: 'U1',
+    channelId: 'C-crash',
+    sessionId: 'sess-crash',
+    isActive: true,
+    lastActivity: new Date().toISOString(),
+    activityState: 'working',
+    state: 'MAIN',
+    ...over,
+  });
+
+  it('a crash does not resume a session a person stopped after its turn began, and it loads idle', async () => {
+    fs.writeFileSync(
+      path.join(TEST_DIR, 'sessions.json'),
+      JSON.stringify([
+        crashed({ key: 'C-crash-2', threadTs: 'ts-stopped', activeLegStartedAtMs: 1_000, lastPersonStopAtMs: 2_000 }),
+        crashed({ key: 'C-crash-3', threadTs: 'ts-new-turn', activeLegStartedAtMs: 3_000, lastPersonStopAtMs: 2_000 }),
+      ]),
+    );
+
+    const registry = new SessionRegistry();
+    registry.loadSessions();
+
+    const byThread = new Map(registry.getCrashRecoveredSessions().map((r) => [r.threadTs, r]));
+    // Still told about the restart; not resumed; the card no longer says working.
+    expect(byThread.get('ts-stopped')?.shouldAutoResume).toBe(false);
+    expect(registry.getSession('C-crash', 'ts-stopped')?.activityState).toBe('idle');
+    // A turn that began after the stop is new work: resumed as before.
+    expect(byThread.get('ts-new-turn')?.shouldAutoResume).toBe(true);
+    expect(registry.getSession('C-crash', 'ts-new-turn')?.activityState).toBe('working');
+  });
+
+  it('a person’s stop is saved with the session, so the next crash still honours it', async () => {
+    const registry = new SessionRegistry();
+    const session = registry.createSession('U1', 'U1', 'C-save', 'ts-save');
+    session.sessionId = 'sess-save';
+    session.lastPersonStopAtMs = 2_000;
+    registry.saveSessions();
+    const saved = JSON.parse(fs.readFileSync(path.join(TEST_DIR, 'sessions.json'), 'utf8'));
+    expect(saved.find((s: any) => s.threadTs === 'ts-save')?.lastPersonStopAtMs).toBe(2_000);
+
+    const reloaded = new SessionRegistry();
+    reloaded.loadSessions();
+    expect(reloaded.getSession('C-save', 'ts-save')?.lastPersonStopAtMs).toBe(2_000);
+  });
 });
 
 // ---------- notifyCrashRecovery: shouldAutoResume drives auto-resume ----------
@@ -454,6 +564,56 @@ describe('Restart symmetry: notifyCrashRecovery routes auto-resume via shouldAut
     const text = postMessage.mock.calls[0][0].text as string;
     expect(text).toContain('자동으로 재개');
     expect(handleMessageSpy).toHaveBeenCalledTimes(1);
+  });
+
+  // Review (2026-11-23): a resume turn a person stopped while it was being prepared returns without taking its
+  // turn. That is the stop, not a failed resume: the session is not handed back to the goal loop, which would start
+  // the stopped work again.
+  it('a resume a person stopped while it was being prepared is not handed back to the goal loop', async () => {
+    const { handler, getCrashRecoveredSessions, handleMessageSpy } = buildHandler();
+    const live: Record<string, unknown> = { goal: { goalId: 'g1', status: 'active' }, activityState: 'idle' };
+    (handler as any).claudeHandler.getSessionByKey.mockImplementation((key: string) =>
+      key === 'C1-t1' ? live : undefined,
+    );
+    getCrashRecoveredSessions.mockReturnValue([
+      {
+        channelId: 'C1',
+        threadTs: 't1',
+        ownerId: 'U1',
+        activityState: 'working',
+        sessionKey: 'C1-t1',
+        shouldAutoResume: true,
+      },
+    ]);
+    // The resume runs, a person stops the session while it is being prepared, and it returns without its turn.
+    handleMessageSpy.mockImplementation(async () => {
+      handler.getRequestCoordinator().abortSession('C1-t1', 'user-stop');
+    });
+    const handBack = vi.spyOn(handler as any, 'handBackFailedRestartResume');
+
+    await handler.notifyCrashRecovery();
+    await vi.waitFor(() => expect(handleMessageSpy).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(handBack).not.toHaveBeenCalled();
+  });
+
+  it('a resume that returns without its turn for any other reason is still handed back', async () => {
+    const { handler, getCrashRecoveredSessions, handleMessageSpy } = buildHandler();
+    getCrashRecoveredSessions.mockReturnValue([
+      {
+        channelId: 'C1',
+        threadTs: 't1',
+        ownerId: 'U1',
+        activityState: 'working',
+        sessionKey: 'C1-t1',
+        shouldAutoResume: true,
+      },
+    ]);
+    const handBack = vi.spyOn(handler as any, 'handBackFailedRestartResume');
+
+    await handler.notifyCrashRecovery();
+    await vi.waitFor(() => expect(handBack).toHaveBeenCalledWith('C1-t1'));
   });
 
   it('does NOT auto-resume when shouldAutoResume=false even if activityState=working', async () => {

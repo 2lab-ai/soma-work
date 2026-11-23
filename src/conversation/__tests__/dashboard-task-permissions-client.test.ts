@@ -5,7 +5,8 @@
  *
  *   T1  "내 태스크" is the signed-in viewer's task in every view — the All Users board (filter '') and
  *       another user's board too — never the board filter's user
- *   T2  an admin with 관리자 모드 on manages every task (stop · close · trash · star · revive · compact)
+ *   T2  an admin with 관리자 모드 on manages every task (stop · close · trash · star · revive · compact); an admin
+ *       stops every task even with 관리자 모드 off (Z 2026-11-23: "어드민이면 다른 사람 작업 중지할수 있게")
  *   T3  every signed-in user instructs every task (the composer, a question's answer) — as in a Slack
  *       thread; closing someone else's task stays the owner's or an admin's in 관리자 모드
  *
@@ -46,7 +47,7 @@ function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> 
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
 
-const VIEWER_FNS = ['viewerOwns', 'viewerCanManage', 'viewerCanInstruct'];
+const VIEWER_FNS = ['viewerOwns', 'viewerCanManage', 'viewerCanInstruct', 'viewerCanStop'];
 const FNS = [
   ...VIEWER_FNS,
   'toNum',
@@ -66,6 +67,7 @@ type Page = {
   viewerOwns(s: unknown): boolean;
   viewerCanManage(s: unknown): boolean;
   viewerCanInstruct(s: unknown): boolean;
+  viewerCanStop(s: unknown): boolean;
   sessionActionsOf(s: unknown, col: string): Action[];
   pcModeOf(s: unknown): string;
   cwCanCompact(s: unknown): string;
@@ -84,6 +86,7 @@ function page(viewer: string, board: string, opts: { admin?: boolean; adminMode?
     SELF_INSTANCE_NAME: '',
     READ_ONLY_MSG: 'ro',
     OWNER_ONLY_MSG: 'owner-only',
+    STOP_OWNER_ONLY_MSG: 'stop-owner-only',
   });
 }
 const mine = (over: Record<string, unknown> = {}) => ({
@@ -149,9 +152,22 @@ describe('T2 — an admin in 관리자 모드 manages every task', () => {
     expect(locks(p, theirs).close).toBe('owner-only');
   });
 
+  it('admin mode off: the admin still stops someone else’s running task — and only stops it', () => {
+    const p = page('UA', '', { admin: true, adminMode: false });
+    expect(p.viewerCanStop(theirs)).toBe(true);
+    expect(locks(p, theirs, 'working')).toEqual({ star: 'owner-only', stop: '' });
+    expect(locks(p, theirs).close).toBe('owner-only');
+    expect(p.cwCanCompact({ ...theirs, contextWindow: 1 })).toBe('owner-only');
+  });
+
+  it('a viewer token (an admin with no Slack user) stops a task too', () => {
+    expect(page('', '', { admin: true }).viewerCanStop(theirs)).toBe(true);
+  });
+
   it('a non-admin with a stale admin-mode flag manages nothing', () => {
     const p = page('U3', '', { admin: false, adminMode: true });
     expect(p.viewerCanManage(theirs)).toBe(false);
+    expect(p.viewerCanStop(theirs)).toBe(false);
   });
 });
 
@@ -170,7 +186,8 @@ describe('T3 — every signed-in user instructs every task; only the owner or �
   it("someone else's task: stop, close, trash, star and compact stay locked, with the reason", () => {
     const p = page('U3', '');
     expect(locks(p, theirs)).toEqual({ star: 'owner-only', close: 'owner-only' });
-    expect(locks(p, theirs, 'working')).toEqual({ star: 'owner-only', stop: 'owner-only' });
+    expect(locks(p, theirs, 'working')).toEqual({ star: 'owner-only', stop: 'stop-owner-only' });
+    expect(p.viewerCanStop(theirs)).toBe(false);
     expect(locks(p, { ...theirs, terminated: true, sessionState: 'TERMINATED' }, 'closed').trash).toBe('owner-only');
     expect(p.cwCanCompact({ ...theirs, contextWindow: 1 })).toBe('owner-only');
   });

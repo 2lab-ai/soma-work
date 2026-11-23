@@ -34,6 +34,28 @@ export interface ConversationSession {
   shutdownNotificationSent?: boolean;
   shutdownNotifiedAt?: number;
   wasWorkingAtShutdown?: boolean;
+  /** When the current turn leg began (the registry's `beginTurn`); undefined when no turn runs. */
+  activeLegStartedAtMs?: number;
+  /** When `activityState` last changed. */
+  activityStateChangedAt?: number;
+  /** When a person last stopped this session (dashboard 중지, `!`) — set by the host's stop observer, saved. */
+  lastPersonStopAtMs?: number;
+}
+
+/**
+ * Z 2026-11-23 — a person stopped this session at or after the moment its current work began: the turn leg's start,
+ * or — before a leg begins (a turn still being prepared, a button that marks the session working first) — the moment
+ * the session last changed state. Its `working` is then only what the stop could not unwind (a turn stuck after its
+ * abort, or one still starting), and a restart must not resume work a person stopped. Work that began after the
+ * stop is new work.
+ */
+export function stoppedByPersonSinceTurnStart(
+  session: Pick<ConversationSession, 'lastPersonStopAtMs' | 'activeLegStartedAtMs' | 'activityStateChangedAt'>,
+): boolean {
+  const stoppedAt = session.lastPersonStopAtMs;
+  if (typeof stoppedAt !== 'number') return false;
+  const workBeganAt = session.activeLegStartedAtMs ?? session.activityStateChangedAt ?? 0;
+  return stoppedAt >= workBeganAt;
 }
 
 export interface ClaudeSessionUiReader {
@@ -1168,7 +1190,8 @@ export class SessionUiManager {
    *
    * For every session this method touches, it stamps
    * `shutdownNotificationSent=true`, `wasWorkingAtShutdown` (snapshot of
-   * `activityState === 'working'` at shutdown start) and
+   * `activityState === 'working'` at shutdown start, unless a person stopped
+   * the session since its turn began — `stoppedByPersonSinceTurnStart`) and
    * `shutdownNotifiedAt` on the in-memory session BEFORE awaiting the
    * Slack postMessage. The caller (`index.ts` cleanup handler) runs
    * `saveSessions()` immediately afterwards, so these markers reach
@@ -1234,7 +1257,8 @@ export class SessionUiManager {
         // many other turns between here and when postMessage resolves;
         // reading `session.activityState` after the await would see a
         // (very likely) post-completion 'idle' state.
-        const wasWorkingSnapshot = session.activityState === 'working';
+        // A session a person stopped since its turn began is not working, whatever its state still says.
+        const wasWorkingSnapshot = session.activityState === 'working' && !stoppedByPersonSinceTurnStart(session);
         const stampedAt = Date.now();
 
         // Stamp the recovery marker optimistically. saveSessions() in

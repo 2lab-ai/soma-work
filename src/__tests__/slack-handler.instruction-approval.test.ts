@@ -248,6 +248,78 @@ describe('SlackHandler — someone else’s instruction waits for the owner (#76
     expect(handlerAny.inputProcessor.routeCommand).toHaveBeenCalledTimes(1);
   });
 
+  // Z 2026-11-23: "내가 어드민인데 … 내가 왜 중지 못함? … 어드민이면 다른 사람 작업 중지할수 있게 픽스해"
+  describe('an admin’s bare `!` stops someone else’s work at once (Z 2026-11-23)', () => {
+    const previousAdmins = process.env.ADMIN_USERS;
+    beforeEach(async () => {
+      process.env.ADMIN_USERS = 'U_ADMIN';
+      (await import('../admin-utils')).resetAdminUsersCache();
+    });
+    afterEach(async () => {
+      if (previousAdmins === undefined) delete process.env.ADMIN_USERS;
+      else process.env.ADMIN_USERS = previousAdmins;
+      (await import('../admin-utils')).resetAdminUsersCache();
+    });
+
+    it('while the owner’s turn runs, the admin’s `!` aborts it — not held for the owner', async () => {
+      let finish!: () => void;
+      startWithContinuation.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = () => resolve({ hasPendingChoice: false });
+          }),
+      );
+      const running = handler.handleMessage(message({ ts: '303.1' }), say);
+      await vi.waitFor(() => expect(startWithContinuation).toHaveBeenCalledTimes(1));
+      const abort = vi.spyOn(handlerAny.requestCoordinator, 'abortSession');
+      await handler.handleMessage(message({ user: 'U_ADMIN', ts: '303.2', text: '!' }), say);
+      expect(abort).toHaveBeenCalledWith(SESSION_KEY);
+      expect(approvals.pendingFor(SESSION_KEY)).toEqual([]);
+      finish();
+      await running;
+    });
+
+    it('only the bare stop: the admin’s `!{prompt}` and words stay held — they would run in the owner’s session', async () => {
+      const abort = vi.spyOn(handlerAny.requestCoordinator, 'abortSession');
+      await handler.handleMessage(message({ user: 'U_ADMIN', ts: '303.3', text: '!이거 대신 해' }), say);
+      await handler.handleMessage(message({ user: 'U_ADMIN', ts: '303.4', text: '배포해줘' }), say);
+      expect(abort).not.toHaveBeenCalled();
+      expect(startWithContinuation).not.toHaveBeenCalled();
+      expect(approvals.pendingFor(SESSION_KEY)[0]).toMatchObject({ requesterId: 'U_ADMIN', count: 2 });
+    });
+
+    it('on a session whose goal runs, the admin’s `!` pauses the goal first — a stop alone would not hold', async () => {
+      registrySession.goal = { goalId: 'g1', objective: 'PR 리뷰', status: 'active' };
+      const order: string[] = [];
+      const pause = vi.spyOn(handler, 'pauseGoalForStop').mockImplementation(() => {
+        order.push('pause');
+        return { outcome: 'paused', inPlace: false };
+      });
+      const abort = vi.spyOn(handlerAny.requestCoordinator, 'abortSession').mockImplementation(() => {
+        order.push('abort');
+        return false;
+      });
+      await handler.handleMessage(message({ user: 'U_ADMIN', ts: '303.6', text: '!' }), say);
+      expect(pause).toHaveBeenCalledWith(SESSION_KEY, 'g1', 'slack');
+      expect(abort).toHaveBeenCalledWith(SESSION_KEY);
+      expect(order).toEqual(['pause', 'abort']);
+    });
+
+    it('the owner’s own `!` keeps its meaning — it does not pause the goal', async () => {
+      registrySession.goal = { goalId: 'g1', objective: 'PR 리뷰', status: 'active' };
+      const pause = vi.spyOn(handler, 'pauseGoalForStop');
+      await handler.handleMessage(message({ ts: '303.7', text: '!' }), say);
+      expect(pause).not.toHaveBeenCalled();
+    });
+
+    it('a non-admin’s bare `!` is still held for the owner', async () => {
+      const abort = vi.spyOn(handlerAny.requestCoordinator, 'abortSession');
+      await handler.handleMessage(message({ user: 'U_OTHER', ts: '303.5', text: '!' }), say);
+      expect(abort).not.toHaveBeenCalled();
+      expect(approvals.pendingFor(SESSION_KEY)[0]).toMatchObject({ requesterId: 'U_OTHER', count: 1 });
+    });
+  });
+
   it('a host turn (synthetic) and a top-level message are not held', async () => {
     await handler.handleMessage(message({ user: 'U_OTHER', ts: '301.0', synthetic: true }), say);
     expect(approvals.pendingFor(SESSION_KEY)).toEqual([]);

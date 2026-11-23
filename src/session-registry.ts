@@ -17,6 +17,7 @@ import {
 import { LOG_VERBOSITY_MASK_VERSION, upgradeLegacyVerbosityMask } from '@soma/slack/output-flags';
 import { endGoalCapDecision } from '@soma/slack/session-goal';
 import { canonicalLinkUrl } from '@soma/slack/session-link-capture';
+import { stoppedByPersonSinceTurnStart } from '@soma/slack/session-manager';
 import {
   sanitizeSdkUsageBaseline,
   sanitizeSessionUsage,
@@ -432,6 +433,8 @@ interface SerializedSession {
   activeLegStartedAtMs?: number;
   activeLegGoalId?: string;
   activeAccumulatedMs?: number;
+  /** When a person last stopped the session (Z 2026-11-23) — a crash or restart does not resume that work. */
+  lastPersonStopAtMs?: number;
   summaryTitle?: string;
   summaryTitleTurnId?: string;
   summaryTitleLastUpdatedAtMs?: number;
@@ -3982,6 +3985,7 @@ export class SessionRegistry {
             activeLegStartedAtMs: session.activeLegStartedAtMs,
             activeLegGoalId: session.activeLegGoalId,
             activeAccumulatedMs: session.activeAccumulatedMs,
+            lastPersonStopAtMs: session.lastPersonStopAtMs,
             summaryTitle: session.summaryTitle,
             summaryTitleTurnId: session.summaryTitleTurnId,
             summaryTitleLastUpdatedAtMs: session.summaryTitleLastUpdatedAtMs,
@@ -4359,6 +4363,15 @@ export class SessionRegistry {
         // Set when an active session went idle past the policy limit while the
         // process was down: it loads asleep, as the sweep would leave it.
         let sleptOnLoad = false;
+        // Z 2026-11-23 — a person stopped this session after its last turn began (dashboard 중지, `!`). A crash
+        // saves without notifyShutdown, so the persisted `working` would otherwise bring the stopped work back.
+        const stoppedByPerson =
+          serialized.activityState === 'working' &&
+          stoppedByPersonSinceTurnStart({
+            lastPersonStopAtMs: finiteStamp(serialized.lastPersonStopAtMs),
+            activeLegStartedAtMs: finiteStamp(serialized.activeLegStartedAtMs),
+            activityStateChangedAt: finiteStamp(serialized.activityStateChangedAt),
+          });
         // A starred session is kept alive across restarts too (SSOT 2026-10-30 T3).
         const starred = serialized.starred === true;
 
@@ -4437,8 +4450,9 @@ export class SessionRegistry {
           linkRefreshGeneration: serialized.linkRefreshGeneration,
           sleepStartedAt,
           // Preserve saved state for correct dashboard display; crash recovery handles auto-resume.
-          // A session put to sleep on load is idle by definition.
-          activityState: sleptOnLoad ? 'idle' : serialized.activityState || 'idle',
+          // A session put to sleep on load is idle by definition, and so is one a person stopped after its last
+          // turn began (Z 2026-11-23): that turn is not running and is not resumed.
+          activityState: sleptOnLoad || stoppedByPerson ? 'idle' : serialized.activityState || 'idle',
           // Restore restart-notification markers so we can still drive the
           // symmetric restart message (and the correct auto-resume decision)
           // even if a save happened after notifyShutdown but before exit.
@@ -4591,6 +4605,7 @@ export class SessionRegistry {
           activeLegStartedAtMs: serialized.activeLegStartedAtMs,
           activeLegGoalId: serialized.activeLegGoalId,
           activeAccumulatedMs: typeof serialized.activeAccumulatedMs === 'number' ? serialized.activeAccumulatedMs : 0,
+          lastPersonStopAtMs: finiteStamp(serialized.lastPersonStopAtMs),
           summaryTitle: serialized.summaryTitle,
           summaryTitleTurnId: serialized.summaryTitleTurnId,
           summaryTitleLastUpdatedAtMs: serialized.summaryTitleLastUpdatedAtMs,
@@ -4747,7 +4762,7 @@ export class SessionRegistry {
             sessionKey: derivedKey,
             title: serialized.title,
             workflow: serialized.workflow,
-            shouldAutoResume: serialized.activityState === 'working',
+            shouldAutoResume: serialized.activityState === 'working' && !stoppedByPerson,
             ...(stoppedAgents.length > 0 ? { stoppedAgents } : {}),
           });
         }
