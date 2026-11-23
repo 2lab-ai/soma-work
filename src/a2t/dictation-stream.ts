@@ -18,10 +18,12 @@ export interface DictationText {
 }
 
 export interface DictationStreamOptions {
-  /** Transcribe 16 kHz mono PCM; prompt is the end of what is already final (context for Whisper). */
-  transcribe: (pcm: Int16Array, prompt: string) => Promise<string>;
+  /** Transcribe 16 kHz mono PCM; prompt carries domain keyterms + settled tail; opts.final=true on segment close. */
+  transcribe: (pcm: Int16Array, prompt: string, opts?: { final?: boolean }) => Promise<string>;
   onText: (text: DictationText) => void;
   onError?: (message: string) => void;
+  /** Optional domain/project vocabulary terms prepended to Whisper's initial_prompt. */
+  keyterms?: readonly string[];
   /** Samples per second of the PCM pushed. */
   sampleRate?: number;
   /** New speech between two transcriptions of the open segment. */
@@ -38,9 +40,10 @@ export interface DictationStreamOptions {
 
 const FRAME_MS = 20;
 const PROMPT_CHARS = 120;
+const KEYTERM_PROMPT_CHARS = 220;
 /** A short burst that is only one of these is Whisper's silence talking. */
 const SILENCE_PHRASES =
-  /^(감사합니다|고맙습니다|시청해\s?주셔서 감사합니다|구독과 좋아요 부탁드립니다|mbc 뉴스[^.]*|자막[^.]*|thank you|thanks for watching)[.!。]?$/i;
+  /^(감사합니다|고맙습니다|시청해\s?주셔서 감사합니다|구독과 좋아요 부탁드립니다|mbc 뉴스[^.]*|자막[^.]*|영상\s?편집[^.]*|amara\.org[^.]*|thank you|thanks for watching)[.!。]?$/i;
 const SILENCE_PHRASE_MAX_VOICED_MS = 2000;
 
 /** A word for agreement: punctuation and case do not count. */
@@ -75,7 +78,8 @@ function words(text: string): string[] {
 }
 
 export class DictationStream {
-  private readonly opts: Required<Omit<DictationStreamOptions, 'onError'>> & Pick<DictationStreamOptions, 'onError'>;
+  private readonly opts: Required<Omit<DictationStreamOptions, 'onError' | 'keyterms'>> &
+    Pick<DictationStreamOptions, 'onError' | 'keyterms'>;
   private readonly frame: number;
   // The open segment.
   private chunks: Int16Array[] = [];
@@ -214,8 +218,42 @@ export class DictationStream {
   }
 
   private prompt(): string {
-    const before = [...this.done, this.placeholder].filter(Boolean).join(' ');
-    return before.slice(-PROMPT_CHARS);
+    const before = [...this.done, this.placeholder].filter(Boolean).join(' ').trim();
+    const terms = this.opts.keyterms;
+    if (!terms || !terms.length) return before.slice(-PROMPT_CHARS);
+    const clean: string[] = [];
+    for (let i = 0; i < terms.length; i++) {
+      const t = String(terms[i] || '')
+        .replace(/,/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (t) clean.push(t);
+    }
+    if (!clean.length) return before.slice(-PROMPT_CHARS);
+    if (!before) {
+      const head: string[] = [];
+      let usedHead = 0;
+      for (let i = 0; i < clean.length; i++) {
+        const cost = clean[i].length + (head.length > 0 ? 2 : 0);
+        if (usedHead + cost > KEYTERM_PROMPT_CHARS) break;
+        head.push(clean[i]);
+        usedHead += cost;
+      }
+      return head.join(', ');
+    }
+    const tailBudget = Math.min(before.length, Math.max(100, Math.floor(KEYTERM_PROMPT_CHARS * 0.55)));
+    const tailPart = before.slice(-tailBudget).trim();
+    const keyBudget = KEYTERM_PROMPT_CHARS - tailPart.length - 2;
+    if (keyBudget < 12) return tailPart;
+    const picked: string[] = [];
+    let used = 0;
+    for (let i = 0; i < clean.length; i++) {
+      const cost = clean[i].length + (picked.length > 0 ? 2 : 0);
+      if (used + cost > keyBudget) break;
+      picked.push(clean[i]);
+      used += cost;
+    }
+    return picked.length ? picked.join(', ') + '. ' + tailPart : tailPart;
   }
 
   /** Whisper's silence talking: a short burst that is one of its phrases and nothing else. */
@@ -247,7 +285,7 @@ export class DictationStream {
     this.queue(async () => {
       let text: string;
       try {
-        text = await this.opts.transcribe(pcm, this.prompt());
+        text = await this.opts.transcribe(pcm, this.prompt(), { final: false });
       } catch (e) {
         if (!this.cancelled) this.opts.onError?.((e as Error).message || String(e));
         return;
@@ -288,7 +326,7 @@ export class DictationStream {
     this.queue(async () => {
       let text = '';
       try {
-        text = await this.opts.transcribe(pcm, prompt);
+        text = await this.opts.transcribe(pcm, prompt, { final: true });
       } catch (e) {
         if (!this.cancelled) this.opts.onError?.((e as Error).message || String(e));
         text = placeholder;
@@ -328,6 +366,7 @@ export function dictationStreamSource(): string {
     'var __name = typeof __name === "function" ? __name : function (f) { return f; };',
     `var FRAME_MS = ${FRAME_MS};`,
     `var PROMPT_CHARS = ${PROMPT_CHARS};`,
+    `var KEYTERM_PROMPT_CHARS = ${KEYTERM_PROMPT_CHARS};`,
     `var SILENCE_PHRASES = ${SILENCE_PHRASES.toString()};`,
     `var SILENCE_PHRASE_MAX_VOICED_MS = ${SILENCE_PHRASE_MAX_VOICED_MS};`,
     norm.toString(),

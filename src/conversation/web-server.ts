@@ -14,6 +14,8 @@ import Fastify, {
 } from 'fastify';
 import * as jwt from 'jsonwebtoken';
 import { dictationA2tError, getDictationA2tService } from '../a2t/a2t-service';
+import { resolveDictationBackend } from '../a2t/dictation-cloud';
+import type { A2tDictationConfig } from '../a2t/types';
 import { isAdminUser } from '../admin-utils';
 import { config } from '../config';
 import { IS_DEV } from '../env-paths';
@@ -70,6 +72,14 @@ import { renderConversationListPage, renderConversationViewPage } from './viewer
 import { registerWorkLogRoutes } from './work-log-routes';
 
 const logger = new Logger('ConversationWebServer');
+let dictationConfig: A2tDictationConfig | undefined;
+let dictationA2tEnabled = true;
+
+/** Supply config.json `a2t.dictation` settings (provider, model, keyterms) before starting the web server. */
+export function setDictationConfig(cfg?: A2tDictationConfig, a2tEnabled = true): void {
+  dictationConfig = cfg;
+  dictationA2tEnabled = a2tEnabled;
+}
 
 /**
  * Build AuthContext from request credentials.
@@ -745,8 +755,16 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
 
   // ---- Dashboard Routes ----
   await registerDashboardRoutes(server, authMiddleware, csrfMiddleware);
-  // 받아쓰기 — the server's Whisper (epic #737, #739): after the dashboard routes, which register @fastify/websocket.
-  registerDictationRoutes(server, authMiddleware, dictationWhisperFromA2t(getDictationA2tService, dictationA2tError));
+  // 받아쓰기 — live dictation (local Whisper or configured cloud streaming STT): after dashboard routes (@fastify/websocket).
+  registerDictationRoutes(
+    server,
+    authMiddleware,
+    resolveDictationBackend({
+      config: dictationConfig,
+      a2tEnabled: dictationA2tEnabled,
+      local: dictationWhisperFromA2t(getDictationA2tService, dictationA2tError),
+    }),
+  );
   await registerWorkLogRoutes(server, authMiddleware);
   await registerCodeChangesRoutes(server, authMiddleware);
   await registerArtifactRoutes(server, authMiddleware);

@@ -26320,6 +26320,8 @@ var _ntDictation = null;
 var _ntDictationAutoOff = false;
 // The why a dictation last put on the new task's red error line, so the next press clears only its own.
 var _ntDictationError = '';
+// Active push-to-talk hold state when dictation was started via hardware/keyboard hotkey (e.g. AU05 -> F19).
+var _ntDictationPtt = null;
 
 // The battery's reading for <ui-meter> (value 0..1, null = unknown — the element draws "?" with no fill) and the words
 // of the usage line (the button's title too).
@@ -27169,9 +27171,12 @@ async function ntDictateStart(host, auto) {
     return;
   }
   if (_ntDictation) {
-    // Listening here already: nothing to do. Still settling the last words of a stopped one, or listening in the
-    // other composer: drop that one (its words show already) and start here at once.
-    if (_ntDictation.host.id === host.id && !_ntDictation.stopping) return;
+    // Listening here already: if an explicit press arrives while an auto-start is still checking on-device
+    // availability, promote it to explicit so it is not silently cancelled on Chrome/Edge.
+    if (_ntDictation.host.id === host.id && !_ntDictation.stopping) {
+      if (!auto && _ntDictation.auto) _ntDictation.auto = false;
+      return;
+    }
     ntDictateStop(true);
   }
   if (engine === 'server' || engine === 'browser') {
@@ -27229,7 +27234,7 @@ async function ntDictateStart(host, auto) {
   }
   // Opened listening (SSOT_4) where the words stay on the device or the phone's own recogniser takes them (a Galaxy,
   // SSOT_5): elsewhere (desktop Chrome without Korean on it, Edge) it stays off, quietly — the press still starts it.
-  if (auto && where !== 'local' && where !== 'apple' && where !== 'phone') {
+  if (d.auto && where !== 'local' && where !== 'apple' && where !== 'phone') {
     ntDictationEnd(d, '');
     return;
   }
@@ -27308,6 +27313,43 @@ async function ntDictateStart(host, auto) {
 // (#740 — a Web Worker on this device; the model downloads once). Its words come back as they settle — the settled
 // ones and those still heard, like a recogniser's results. Opens listening like the device engine (the person chose
 // it); a press, a key or sending stops it.
+// Extract short ASCII/repo/channel keyterms from the current dashboard context for server dictation biasing.
+function ntDictationKeyterms() {
+  var terms = [];
+  var add = function (raw) {
+    if (!raw || typeof raw !== 'string') return;
+    var parts = raw.replace(/([a-z])([A-Z])/g, '$1 $2').split(/[-_./:\\s]+/);
+    for (var i = 0; i < parts.length; i++) {
+      var p = parts[i].trim();
+      if (p.length >= 2 && p.length <= 28 && terms.length < 24) terms.push(p);
+    }
+  };
+  try {
+    if (typeof panelSessionKey === 'string' && panelSessionKey && typeof _sessionCache === 'object' && _sessionCache) {
+      var s = _sessionCache[panelSessionKey];
+      if (s) {
+        add(s.repo);
+        add(s.channelName);
+        add(s.title);
+      }
+    }
+    if (typeof _ntState === 'object' && _ntState) {
+      add(_ntState.newRepo);
+      add(_ntState.newChannelName);
+      add(_ntState.folder);
+      if (_ntState.channelId && typeof _ntCtx === 'object' && _ntCtx && Array.isArray(_ntCtx.channels)) {
+        for (var j = 0; j < _ntCtx.channels.length; j++) {
+          if (_ntCtx.channels[j] && _ntCtx.channels[j].id === _ntState.channelId) {
+            add(_ntCtx.channels[j].name);
+            break;
+          }
+        }
+      }
+    }
+  } catch (_e) {}
+  return terms;
+}
+
 function ntDictateStartWhisper(host, el, engine) {
   var d = { host: host, engine: engine, live: '', base: String(el.value || ''), finals: '', interim: '', stopping: false, hard: false, srv: null };
   var name = engine === 'browser' ? '브라우저 위스퍼' : '서버 위스퍼';
@@ -27318,6 +27360,7 @@ function ntDictateStartWhisper(host, el, engine) {
   host.paint();
   var start = engine === 'browser' ? dictationBrowserStart : dictationServerStart;
   d.srv = start({
+    keyterms: engine === 'server' && typeof ntDictationKeyterms === 'function' ? ntDictationKeyterms() : undefined,
     onProgress: function (pct) {
       if (_ntDictation !== d) return;
       d.live = name + ' 모델을 내려받는 중… ' + pct + '% (처음 한 번만)';
@@ -27407,7 +27450,28 @@ function ntDictationHeard(d, e) {
   if (ntDictationAnyWords(results)) {
     d.heard = true;
     d.silent = 0;
+    d.emptyFinals = 0;
     d.retried = false;
+  } else if (!d.android && results && results.length) {
+    // Linux Edge Web Speech API fires final results with empty transcripts ("") on every utterance while appearing
+    // active: detect two consecutive empty final results and guide the user straight to Settings -> 서버 위스퍼.
+    var lastRes = results[results.length - 1];
+    if (lastRes && lastRes.isFinal && !d.heard) {
+      d.emptyFinals = (d.emptyFinals || 0) + 1;
+      if (d.emptyFinals >= 2) {
+        d.hard = true;
+        _ntDictationAutoOff = true;
+        ntDictationEnd(
+          d,
+          '이 브라우저의 기본 음성 인식이 빈 결과만 돌려줍니다 — 설정 › 받아쓰기에서 ‘서버 위스퍼’로 바꿔 주세요',
+          true,
+        );
+        try {
+          d.rec.abort();
+        } catch (err) {}
+        return;
+      }
+    }
   }
   var el = d.host.el();
   if (!el) return;
@@ -27575,7 +27639,10 @@ function ntDictationEnded(d) {
 
 // The dictation is over: the tool lets go, and the page says why (or nothing) — bad: a why the person acts on.
 function ntDictationEnd(d, why, bad) {
-  if (_ntDictation === d) _ntDictation = null;
+  if (_ntDictation === d) {
+    _ntDictation = null;
+    if (typeof _ntDictationPtt !== 'undefined') _ntDictationPtt = null;
+  }
   d.stopping = true;
   d.host.status(why || '', true, !!(why && bad));
   d.host.paint();
@@ -27584,6 +27651,7 @@ function ntDictationEnd(d, why, bad) {
 // Stop the dictation. Soft (the tool pressed again): the recogniser settles what it heard, and that still lands.
 // Hard (the person types, sends or closes the sheet): what is still coming is dropped; the field keeps what it shows.
 function ntDictateStop(hard) {
+  if (typeof _ntDictationPtt !== 'undefined') _ntDictationPtt = null;
   var d = _ntDictation;
   if (!d) return;
   if (d.engine === 'server' || d.engine === 'browser') {
@@ -27669,6 +27737,80 @@ function ntDictateAuto() {
 // What the status line says when nothing else does: a listening dictation's line, or nothing.
 function ntDictationLive() {
   return ntDictating('nt') ? _ntDictation.live || '' : '';
+}
+
+// Which composer a hardware/keyboard dictation hotkey (e.g. AU05 Talk -> F19, or Alt+Shift+D) writes into:
+// open New Task dialog first, else open Session Panel composer, else opens New Task dialog.
+function ntDictationHotkeyTarget() {
+  var dlg = ntEl('nt-dialog');
+  if (dlg && dlg.open) return ntDictationHost('nt');
+  var pcHost = document.getElementById('panel-command');
+  var pcEl = document.getElementById('pc-composer');
+  if (typeof panelOpen !== 'undefined' && panelOpen && pcHost && pcHost._mode === 'open' && pcEl) {
+    return ntDictationHost('pc');
+  }
+  return null;
+}
+
+function ntDictationStore() {
+  try {
+    return typeof localStorage !== 'undefined' ? localStorage : null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+function ntOnDictationKeyDown(e) {
+  if (!e) return;
+  // AU05 Cancel / Escape stops an active dictation without closing the surrounding dialog or panel.
+  if (e.key === 'Escape' && _ntDictation) {
+    e.preventDefault();
+    _ntDictationPtt = null;
+    ntDictateStop(true);
+    return;
+  }
+  var store = ntDictationStore();
+  var pref = typeof dictationHotkeyChoice === 'function' ? dictationHotkeyChoice(store) : 'auto';
+  var trigger =
+    typeof dictationMatchedHotkeyId === 'function'
+      ? dictationMatchedHotkeyId(e, pref)
+      : typeof dictationMatchHotkey === 'function' && dictationMatchHotkey(e, pref)
+        ? pref
+        : '';
+  if (!trigger) return;
+  if (!ntDictationUsable(typeof window !== 'undefined' ? window : null)) return;
+  e.preventDefault();
+  if (e.repeat) return;
+  var mode = typeof dictationHotkeyModeChoice === 'function' ? dictationHotkeyModeChoice(store) : 'hold';
+  if (mode === 'toggle' && _ntDictation && !_ntDictation.stopping) {
+    _ntDictationPtt = null;
+    ntDictateStop(false);
+    return;
+  }
+  if (_ntDictation && !_ntDictation.stopping) {
+    if (_ntDictation.auto) _ntDictation.auto = false;
+    if (mode === 'hold') _ntDictationPtt = { trigger: trigger, at: Date.now() };
+    return;
+  }
+  var host = ntDictationHotkeyTarget();
+  if (host) {
+    ntDictateStart(host, false);
+  } else {
+    openNewTask();
+    ntDictateStart(ntDictationHost('nt'), false);
+  }
+  // Arm PTT hold AFTER ntDictateStart returns synchronously so hard-stopping a finalizing prior session does not wipe it.
+  if (mode === 'hold' && _ntDictation && !_ntDictation.stopping) {
+    _ntDictationPtt = { trigger: trigger, at: Date.now() };
+  }
+}
+
+function ntOnDictationKeyUp(e) {
+  if (!_ntDictationPtt || !e) return;
+  var trigger = _ntDictationPtt.trigger;
+  if (typeof dictationMatchHotkeyRelease === 'function' && !dictationMatchHotkeyRelease(e, trigger)) return;
+  _ntDictationPtt = null;
+  if (_ntDictation && !_ntDictation.stopping) ntDictateStop(false);
 }
 
 function ntRenderBattery() {
@@ -28619,6 +28761,15 @@ function ntInit() {
     if (ntIsNewTaskKey(e) && !ntIsTypingTarget(ntKeyTarget(e))) {
       e.preventDefault();
       openNewTask();
+    }
+  });
+  // Hardware/keyboard dictation hotkey (AU05 Talk -> F19 / F13 / Alt+Shift+D) and Esc cancel while dictating.
+  document.addEventListener('keydown', ntOnDictationKeyDown, true);
+  document.addEventListener('keyup', ntOnDictationKeyUp, true);
+  window.addEventListener('blur', function () {
+    if (_ntDictationPtt) {
+      _ntDictationPtt = null;
+      if (_ntDictation && !_ntDictation.stopping) ntDictateStop(false);
     }
   });
   // Phones: the floating button folds to the round button (the kit's .is-folded) while scrolling down.

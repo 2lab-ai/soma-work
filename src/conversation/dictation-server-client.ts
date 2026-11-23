@@ -10,19 +10,32 @@
  */
 
 export const DICTATION_SERVER_JS = String.raw`
-// The worklet: the microphone at the context's rate, averaged down to 16 kHz, as s16le chunks of 100 ms. Sent
-// 'flush', it posts what it holds (less than a chunk — the last syllable) and then 'flushed'.
+// The worklet: averages all input channels (stereo/multi-channel mics like AU05 downmixed cleanly to mono) at the
+// context's rate, downsampled to 16 kHz as s16le chunks of 100 ms. Sent 'flush', it posts what it holds (less than a
+// chunk — the last syllable) and then 'flushed'.
 var DICTATION_WORKLET_SRC = "class SomaPcm16 extends AudioWorkletProcessor {" +
   "constructor() { super(); this.step = sampleRate / 16000; this.acc = 0; this.sum = 0; this.cnt = 0; this.out = new Int16Array(1600); this.n = 0;" +
   "var me = this; this.port.onmessage = function (e) { if (e.data !== 'flush') return;" +
   "if (me.n) me.port.postMessage(me.out.slice(0, me.n).buffer); me.n = 0; me.port.postMessage('flushed'); }; }" +
-  "process(inputs) { var ch = inputs[0] && inputs[0][0]; if (!ch) return true;" +
-  "for (var i = 0; i < ch.length; i++) { this.sum += ch[i]; this.cnt++; this.acc += 1;" +
+  "process(inputs) { var ins = inputs[0]; var ch0 = ins && ins[0]; if (!ch0) return true;" +
+  "var nch = ins.length;" +
+  "for (var i = 0; i < ch0.length; i++) { var sample = ch0[i]; if (nch > 1) { for (var c = 1; c < nch; c++) sample += ins[c][i]; sample /= nch; }" +
+  "this.sum += sample; this.cnt++; this.acc += 1;" +
   "if (this.acc >= this.step) { this.acc -= this.step; var v = this.sum / this.cnt; this.sum = 0; this.cnt = 0;" +
   "v = v < -1 ? -1 : v > 1 ? 1 : v; this.out[this.n++] = v < 0 ? v * 32768 : v * 32767;" +
   "if (this.n === this.out.length) { this.port.postMessage(this.out.buffer, [this.out.buffer]); this.out = new Int16Array(1600); this.n = 0; } } }" +
   "return true; } }" +
   "registerProcessor('soma-pcm16', SomaPcm16);";
+
+// Compute normalized RMS (0..1) of a 16-bit PCM ArrayBuffer chunk for UI audio-level meters.
+function dictationPcmRms(buf) {
+  if (!buf || !buf.byteLength) return 0;
+  var pcm = new Int16Array(buf);
+  if (!pcm.length) return 0;
+  var sum = 0;
+  for (var i = 0; i < pcm.length; i++) { var s = pcm[i] / 32768; sum += s * s; }
+  return Math.sqrt(sum / pcm.length);
+}
 
 // The socket's address on this page's origin.
 function dictationServerUrl(loc) {
@@ -81,7 +94,12 @@ function dictationServerStart(cb, env) {
     setTimeout(function () { end('error', 'unsupported', '이 브라우저는 서버 위스퍼를 쓸 수 없습니다 (마이크 스트리밍 미지원)'); }, 0);
     return { stop: function () {}, abort: function () {} };
   }
-  nav.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } }).then(
+  var store = null;
+  try { store = w.localStorage || null; } catch (e) { store = null; }
+  var micPromise = typeof dictationOpenMic === 'function'
+    ? dictationOpenMic(nav, store)
+    : nav.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+  micPromise.then(
     function (stream) {
       if (c.ended) { stream.getTracks().forEach(function (t) { t.stop(); }); return; }
       c.stream = stream;
@@ -104,13 +122,16 @@ function dictationServerStart(cb, env) {
         ws.binaryType = 'arraybuffer';
         c.ws = ws;
         node.port.onmessage = function (e) {
+          if (cb.onLevel && e && e.data && typeof e.data !== 'string') cb.onLevel(dictationPcmRms(e.data));
           if (c.ready && !c.stopping && ws.readyState === 1) ws.send(e.data);
         };
         ws.onopen = function () {
           // the page's display language (<html lang>, #773): an English dashboard dictates English, not English heard
           // as Korean (the interim guesses came out in Korean before the final pass)
           var doc = w.document && w.document.documentElement;
-          ws.send(JSON.stringify({ type: 'start', lang: doc && doc.lang === 'en' ? 'en-US' : 'ko-KR' }));
+          var startMsg = { type: 'start', lang: doc && doc.lang === 'en' ? 'en-US' : 'ko-KR' };
+          if (cb.keyterms && cb.keyterms.length) startMsg.keyterms = cb.keyterms;
+          ws.send(JSON.stringify(startMsg));
         };
         ws.onmessage = function (e) {
           var m = null;

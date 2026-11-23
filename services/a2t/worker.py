@@ -86,19 +86,27 @@ class MlxModel:
         r = self.mlx_whisper.transcribe(path, path_or_hf_repo=self.repo)
         return {"text": str(r.get("text", "")).strip(), "language": r.get("language", "unknown"), "language_probability": 1.0, "duration": 0}
 
-    def pcm(self, audio, language, prompt) -> str:
+    def pcm(self, audio, language, prompt, final: bool = False) -> str:
+        # Two-pass live dictation decoding:
+        # - interim passes (final=False): greedy temperature=0.0 for minimal latency (~130 ms on Apple Silicon)
+        # - segment finalization (final=True): temperature fallback (0.0, 0.2) + strict quality thresholds to
+        #   recover from greedy decoding loops on Korean+English technical speech.
         r = self.mlx_whisper.transcribe(
             audio,
             path_or_hf_repo=self.repo,
             language=language or None,
             initial_prompt=prompt or None,
             condition_on_previous_text=False,
-            temperature=0.0,
+            temperature=(0.0, 0.2) if final else 0.0,
+            compression_ratio_threshold=2.4,
+            logprob_threshold=-1.0,
+            no_speech_threshold=0.6,
         )
         return " ".join(
-            str(seg.get("text", "")).strip()
-            for seg in r.get("segments", [])
-            if not (seg.get("no_speech_prob", 0) > 0.6 and seg.get("avg_logprob", 0) < -1.0)
+            str(seg.get("text") or "").strip()
+            for seg in (r.get("segments") or [])
+            if isinstance(seg, dict)
+            and not ((seg.get("no_speech_prob") or 0) > 0.6 and (seg.get("avg_logprob") or 0) < -1.0)
         ).strip()
 
 
@@ -221,21 +229,32 @@ def serve(model, backend: str) -> None:
                 audio = pcm_audio(request.get("pcm", ""))
                 language = request.get("language") or None
                 prompt = request.get("prompt") or None
+                is_final = bool(request.get("final", False))
                 if backend == "mlx":
-                    text = model.pcm(audio, language, prompt)
+                    text = model.pcm(audio, language, prompt, final=is_final)
                 else:
-                    segments, _info = model.transcribe(
-                        audio,
+                    # Two-pass decoding: beam_size=5 + temperature fallback on finalized segments, beam_size=1 on live interims.
+                    kw = dict(
                         language=language,
-                        beam_size=1,
-                        temperature=0.0,
+                        beam_size=5 if is_final else 1,
+                        temperature=[0.0, 0.2] if is_final else 0.0,
                         initial_prompt=prompt,
                         condition_on_previous_text=False,
-                        vad_filter=False,
+                        vad_filter=is_final,
                     )
+                    try:
+                        segments, _info = model.transcribe(audio, **kw)
+                        seg_list = list(segments)
+                    except Exception:
+                        if is_final and kw.get("vad_filter"):
+                            kw["vad_filter"] = False
+                            segments, _info = model.transcribe(audio, **kw)
+                            seg_list = list(segments)
+                        else:
+                            raise
                     text = " ".join(
                         seg.text.strip()
-                        for seg in segments
+                        for seg in seg_list
                         if not (seg.no_speech_prob > 0.6 and seg.avg_logprob < -1.0)
                     ).strip()
                 send({"type": "result", "text": text, "language": language or "", "duration": round(len(audio) / 16000, 2)})
