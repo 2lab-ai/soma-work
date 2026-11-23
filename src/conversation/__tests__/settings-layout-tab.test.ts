@@ -448,7 +448,8 @@ describe('E5 — the preview is the dashboard’s face', () => {
     ]);
     // #805: the model as icons — the mark in its colour and the sample's effort; the name is the title.
     // SSOT 2026-11-05: the sample's repo and channel lead the foot (레포 · 채널).
-    expect(card.metrics.map((m: { text: string }) => m.text)).toEqual(['app', '#pay', '$6.20', '']);
+    // 2026-11-23: the sample's CPU · 메모리 chip ends the foot.
+    expect(card.metrics.map((m: { text: string }) => m.text)).toEqual(['app', '#pay', '$6.20', '', 'CPU 38% · 1.2GB']);
     expect(card.metrics[0]).toMatchObject({ title: '레포 example/app' });
     expect(card.metrics[3]).toMatchObject({
       glyph: 'claude',
@@ -553,6 +554,7 @@ describe('E7 — 상세 카드 세 구역: 타이틀 바 · 탭 바 · 아래 (S
       'agents',
       'goal',
       'tasks',
+      'procs',
     ]);
     const pv = els['lay-preview'].innerHTML as string;
     expect(pv).toContain(

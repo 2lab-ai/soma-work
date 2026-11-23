@@ -646,6 +646,8 @@ function laySampleCard(id) {
     artifactsCount: 3,
     artifacts: [{ id: 'a1', name: 'analysis.html', kind: 'html' }, { id: 'a2', name: 'board.png', kind: 'image' }, { id: 'a3', name: 'notes.md', kind: 'file' }],
     steps: { done: 2, total: 4 },
+    // The CPU · 메모리 chip's sample: the session's Claude Code process and five under it.
+    procUsage: { nodeId: 'node', cpuCount: 12, rootAlive: true, processCount: 6, stoppedCount: 0, cpuPercent: 38, rssBytes: 1.2e9 },
     contextPct: 64,
     contextLevel: 'warn',
     titles: { cost: 'API 환산 비용 (작업 합계)', tokens: '총 토큰 6.4M', context: '컨텍스트 64%', steps: '완료한 작업 / 전체' },
@@ -669,6 +671,7 @@ function laySampleCard(id) {
     c.status = 'done';
     c.since = LAY_NOW - 60 * M;
     c.elapsedMs = 32 * M;
+    delete c.procUsage; // a finished task has no process left
     delete c.task;
     c.steps = { done: 4, total: 4 };
     c.agents = { total: 2, running: 0, done: 2, failed: 0, dots: ['done', 'done'] };
@@ -709,7 +712,7 @@ function layOpenBody(open) {
 }
 // The detail card's sample: its title bar's items, its tabs' counts and what each tab opens.
 var LAY_DETAIL_HEAD = { model: '● Opus 5.5', cost: '$6.20', tokens: '6.4M 토큰', speed: '97 tok/s', ctx: '컨텍스트 64%', owner: 'Zhuge', workflow: 'zwork' };
-var LAY_DETAIL_TABS = { goal: ['목표', '2/3'], tasks: ['작업', '2/4'], agents: ['에이전트', '2'], artifacts: ['산출물', '3'], info: ['세부', ''] };
+var LAY_DETAIL_TABS = { goal: ['목표', '2/3'], tasks: ['작업', '2/4'], agents: ['에이전트', '2'], artifacts: ['산출물', '3'], info: ['세부', ''], procs: ['프로세스', '6'] };
 function layDetailTabBody(id, spec) {
   if (id === 'goal') return '<div><b>목표</b> 결제 페이지 리뉴얼 끝내기 · 진행 중<div class="pv-sub">펼치기 · 이어하기 2/10 · 삭제 — 남은 것: 폼 검증 테스트</div></div>';
   if (id === 'tasks') {
@@ -721,6 +724,7 @@ function layDetailTabBody(id, spec) {
     + (spec.show.indexOf('agenthead') >= 0 ? '<div class="pv-sub">메인 에이전트 · opus-5-5</div>' : '');
   if (id === 'artifacts') return '<div><b>산출물</b> analysis.html · board.png · notes.md</div>';
   if (id === 'info') return '<div><b>세션 정보</b> 누적 입력 · 출력 · 캐시 · 서브에이전트 · 활성 시간 · 컨텍스트 · 전체 대화</div>';
+  if (id === 'procs') return '<div><b>프로세스 6개</b> CPU 38% · 메모리 1.2GB — claude · node · bash … 줄마다 일시중지 · 재개</div>';
   return '';
 }
 function layDetailHtml(d) {

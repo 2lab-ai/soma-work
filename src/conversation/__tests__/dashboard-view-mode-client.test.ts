@@ -498,7 +498,8 @@ describe('T4 — minimal: the detail card is the task list and the chat', () => 
       ['_viewMode', '_viewPlan', '_viewLayout'],
     );
     expect(env.viewSpec().detail.show).toEqual(['agenttabs', 'logtab', 'controls']);
-    expect(env.viewSpec().detail.tabs).toEqual(['goal', 'tasks', 'agents', 'artifacts']);
+    // 2026-11-23: 프로세스 is on in every built-in (the session's process tree).
+    expect(env.viewSpec().detail.tabs).toEqual(['goal', 'tasks', 'agents', 'artifacts', 'procs']);
     expect(env.viewSpec().detail.head).toEqual(['model', 'cost', 'tokens', 'speed']);
     for (const [tok, sel] of [
       ['subtitle', '#panel-title-sub'],

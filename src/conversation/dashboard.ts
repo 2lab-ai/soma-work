@@ -7401,6 +7401,7 @@ body:not([data-detail~="controls"]) #panel-controls { display: none !important; 
 .slide-panel:not([data-midtab="goal"]) #panel-goal-paused,
 .slide-panel:not([data-midtab="artifacts"]) #panel-artifacts,
 .slide-panel:not([data-midtab="info"]) #panel-info,
+.slide-panel:not([data-midtab="procs"]) #panel-procs,
 .slide-panel:not([data-midtab="tasks"]) #panel-tasks,
 .slide-panel:not([data-midtab="agents"]):not([data-agent-scoped]) #panel-agents,
 body:not([data-detail~="agenthead"]) #panel-agents { display: none !important; }
@@ -7613,6 +7614,29 @@ html[data-pdragging], html[data-pdragging] * { cursor: grabbing !important; user
 @media (hover: hover) and (pointer: fine) { .pi-links a:hover { text-decoration: underline; } }
 .pi-body { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
 .pi-muted { color: var(--text-tertiary); font-weight: 400; }
+/* 프로세스 tab (renderPanelProcs): the node line, the session's totals, then one row per process in tree order. */
+.panel-procs { padding: 6px 12px 10px; font-size: 12px; }
+.pp-node, .pp-sum { color: var(--text-secondary); font-variant-numeric: tabular-nums; margin: 2px 0 6px; line-height: 1.6; }
+.pp-sum { color: var(--text); font-weight: 600; }
+.pp-note { margin: 6px 0; color: var(--text-secondary); }
+.pp-stopped, .pp-table tr.is-stopped td { color: color-mix(in srgb, var(--st-wait) calc(100% * var(--chroma, 1)), var(--text)); }
+.pp-wrap { overflow-x: auto; }
+.pp-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-variant-numeric: tabular-nums; }
+.pp-table th { text-align: left; font-weight: 500; color: var(--text-tertiary); padding: 4px 6px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.pp-table td { padding: 4px 6px; border-bottom: 1px solid var(--border); vertical-align: middle; white-space: nowrap; }
+.pp-table th + th, .pp-table td + td { padding-left: 12px; }
+.pp-table th:nth-child(2) { width: 64px; }
+.pp-table th:nth-child(3) { width: 66px; }
+.pp-table th:nth-child(4) { width: 52px; }
+.pp-table th:nth-child(5) { width: 56px; }
+.pp-table th:nth-child(6) { width: 84px; }
+.pp-num { text-align: right; white-space: nowrap; }
+.pp-name { overflow: hidden; text-overflow: ellipsis; }
+.pp-table tr.has-cmd td { border-bottom: 0; padding-bottom: 0; }
+.pp-table tr.pp-sub td { padding-top: 0; overflow: hidden; text-overflow: ellipsis; }
+.pp-role { margin-left: 6px; padding: 0 6px; border-radius: 999px; background: var(--border); color: var(--text-secondary); font-size: 11px; }
+.pp-cmd { color: var(--text-secondary); font-family: var(--mono, ui-monospace, monospace); font-size: 11px; }
+.pp-act { text-align: right; }
 /* 세부 (re-agent-run D19): label left, value right. */
 /* 세부 and the token rows are the kit's fact list (.ui-dl, D3 E-10 — the disclosure itself stays: see D3-GAPS G6-2). */
 .pi-thread { font-variant-numeric: tabular-nums; }
@@ -8557,6 +8581,9 @@ ${CARD_FINISH_CSS}
         <!-- 세션 정보 (spec 13): the summary line + the links, every number of the session, the context — live. The 세부 tab
              (its summary line's numbers are the title bar's now). -->
         <div class="panel-info" id="panel-info"></div>
+        <!-- 프로세스: the session's Claude Code process tree on its node — CPU, memory, state, pause · resume (renderPanelProcs).
+             The tab right of 세부. -->
+        <div class="panel-procs" id="panel-procs" role="region" aria-label="프로세스"></div>
         <!-- 사용자 할 일 — tasks the agent handed the owner (instruct_user): where, the script, the host's check of it.
              Not a question (never in 입력 필요 or the chat). SSOT 2026-11-16 (.prd/28 §3): the 사용자 작업 tab's content —
              the bar's last tab, with the required ones still waiting as its badge; a press shows it, a second hides it. -->
@@ -13868,6 +13895,8 @@ function cardOf(s, col) {
   var uaWait = userActionsWaiting(s);
   if (uaWait > 0) metrics.push({ text: String(uaWait), glyph: 'alert', title: '사용자 할 일 ' + uaWait + '개', label: '사용자 할 일 ' + uaWait + '개' });
   if (metrics.length) card.metrics = metrics;
+  // The CPU · 메모리 chip (the layout's foot 'proc', faceFootMetrics): the session's process tree on its node, live.
+  if (s.procUsage) card.procUsage = s.procUsage;
   // 작업 카드의 연결 (SSOT 2026-11-02): every linked issue, PR and wiki with its state — the face's links row.
   var links = cardLinksFace(s);
   if (links.length) card.links = links;
@@ -16309,8 +16338,8 @@ function onPanelHeadAction(e) {
 // one at a time, and a second press closes it (.slide-panel[data-midtab] — the CSS of THE TAB BAR). A tab with
 // nothing in it yet is disabled (out of the Tab order too); the open one never is (its content says it is empty).
 var _panelMid = ''; // the open tab ('' = none)
-var MID_TAB_LABEL = { plan: '작업 계획', goal: '목표', tasks: '작업', agents: '에이전트', artifacts: '산출물', info: '세부', useractions: '사용자 작업' };
-var MID_TAB_PANEL = { plan: 'panel-plan', goal: 'panel-goal', tasks: 'panel-tasks', agents: 'panel-tabs', artifacts: 'panel-artifacts', info: 'panel-info', useractions: 'panel-user-actions' };
+var MID_TAB_LABEL = { plan: '작업 계획', goal: '목표', tasks: '작업', agents: '에이전트', artifacts: '산출물', info: '세부', procs: '프로세스', useractions: '사용자 작업' };
+var MID_TAB_PANEL = { plan: 'panel-plan', goal: 'panel-goal', tasks: 'panel-tasks', agents: 'panel-tabs', artifacts: 'panel-artifacts', info: 'panel-info', procs: 'panel-procs', useractions: 'panel-user-actions' };
 // Pure (.prd/28 §3, owner 2026-11-16): the bar is [작업 계획] | the layout's tabs (목표 · 작업 · … · 세부) | 사용자 작업 —
 // the two ends are every layout's, not a layout's to drop.
 function panelBarTabIds(layoutTabs) {
@@ -16377,6 +16406,13 @@ function panelMidTabsOf(s, tabs, c) {
       if (a) t.count = String(a);
       t.empty = !a;
       t.title = a ? '산출물 · 지시 첨부 ' + a + '개' : '산출물 없음';
+    } else if (id === 'procs') {
+      // 프로세스: the session's Claude Code process and every process under it on its node — none alive, an empty tab.
+      var pu = s && s.procUsage;
+      var pn = pu ? toNum(pu.processCount) : 0;
+      if (pn) t.count = String(pn);
+      t.empty = !pn;
+      t.title = pn ? '프로세스 ' + pn + '개 · CPU ' + procCpuText(pu.cpuPercent) + ' · 메모리 ' + procBytesText(pu.rssBytes) : '살아 있는 프로세스 없음';
     } else {
       t.title = '세션 정보 전체 — 토큰 내역 · 링크 · 컨텍스트';
     }
@@ -16455,7 +16491,196 @@ function selectPanelMid(id) {
   else if (_panelMid === 'tasks') repaintPanelTasks();
   else if (_panelMid === 'artifacts') renderPanelArtifactsSection();
   else if (_panelMid === 'agents') { renderPanelTabs(); renderPanelAgents(); }
+  else if (_panelMid === 'procs') renderPanelProcs();
   sizePanelSections();
+}
+
+// ── 프로세스 tab — the session's Claude Code process tree (src/process-monitor) ──
+// Every process under the session's Claude Code process on its node: its CPU (100% = one core) and memory, its state,
+// its command (a preview with secrets cut out, server-side), and 일시중지 · 재개 for whoever may manage the task
+// (the server checks again: owner, or admin in admin mode). Read from GET …/processes every 3 s while the tab is open;
+// the timer stops itself when the tab or the card closes. A pause names the pid AND its start time, so a pid the OS
+// reused is refused (409) instead of stopping another program.
+var PROCS_POLL_MS = 3000;
+// A read or a pause that has not answered by then is given up (its button frees, the next poll reads again).
+var PROCS_READ_TIMEOUT_MS = 10000;
+var PROCS_CONTROL_TIMEOUT_MS = 15000;
+// pending: the read in flight — its card's key and its AbortController; a read for another card retires it.
+var _procs = { key: '', status: 0, body: null, pending: null, again: false, busy: {}, timer: 0 };
+var PROC_STATE_LABEL = { running: '실행', sleeping: '대기', stopped: '멈춤', zombie: '종료됨', other: '기타' };
+function renderPanelProcs() {
+  var el = document.getElementById('panel-procs');
+  if (!el) return;
+  if (!el._wired) {
+    el._wired = true;
+    el.addEventListener('click', function(e) {
+      var b = e.target && e.target.closest ? e.target.closest('[data-proc-op]') : null;
+      if (!b || b.disabled) return;
+      procsControl(b.getAttribute('data-proc-op'), Number(b.getAttribute('data-pid')), b.getAttribute('data-start') || '');
+    });
+  }
+  if (_panelMid !== 'procs' || !panelSessionKey) return;
+  if (_procs.key !== panelSessionKey) {
+    _procs.key = panelSessionKey;
+    _procs.status = 0;
+    _procs.body = null;
+    _procs.busy = {};
+  }
+  paintPanelProcs();
+  procsFetch(panelSessionKey);
+  if (!_procs.timer) {
+    _procs.timer = setInterval(function() {
+      if (_panelMid !== 'procs' || !panelSessionKey) {
+        clearInterval(_procs.timer);
+        _procs.timer = 0;
+        return;
+      }
+      if (_procs.key !== panelSessionKey) { renderPanelProcs(); return; }
+      if (!document.hidden) procsFetch(panelSessionKey);
+    }, PROCS_POLL_MS);
+  }
+}
+// again: read once more after a read already in flight for this card (a pause's result must show, not the read sent
+// before it). A read still pending for another card is aborted: it would only be thrown away.
+function procsFetch(key, again) {
+  var pend = _procs.pending;
+  if (pend && pend.key === key) {
+    if (again) _procs.again = true;
+    return;
+  }
+  if (pend) pend.ctrl.abort();
+  var ctrl = new AbortController();
+  var mine = { key: key, ctrl: ctrl };
+  _procs.pending = mine;
+  var timer = setTimeout(function() { ctrl.abort(); }, PROCS_READ_TIMEOUT_MS);
+  fetch('/api/dashboard/session/' + encodeURIComponent(key) + '/processes', { signal: ctrl.signal })
+    .then(function(r) {
+      return r.json().catch(function() { return null; }).then(function(j) { return { status: r.status, body: j }; });
+    })
+    .then(function(res) {
+      if (_procs.key !== key) return;
+      var ok = res.status === 200 && res.body && typeof res.body === 'object';
+      _procs.status = ok ? 200 : res.status === 200 ? -1 : res.status;
+      _procs.body = ok ? res.body : null;
+    }, function() {
+      if (_procs.key !== key || _procs.pending !== mine) return;
+      _procs.status = -1;
+    })
+    .then(function() {
+      clearTimeout(timer);
+      if (_procs.pending === mine) _procs.pending = null;
+      try {
+        if (_procs.key === key) paintPanelProcs();
+      } catch (_) {
+        // A body the table cannot draw: say the read failed, keep polling.
+        _procs.status = -1;
+        _procs.body = null;
+        try { paintPanelProcs(); } catch (_) {}
+      }
+      if (_procs.again && _procs.pending === null) {
+        _procs.again = false;
+        if (_procs.key === key) procsFetch(key);
+      }
+    });
+}
+async function procsControl(op, pid, start) {
+  var key = _procs.key;
+  if (!key || !pid || !start || _procs.busy[pid]) return;
+  _procs.busy[pid] = true;
+  paintPanelProcs();
+  var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/processes/' + pid + '/' + (op === 'resume' ? 'resume' : 'pause');
+  var body = JSON.stringify({ startToken: start });
+  var ctrl = new AbortController();
+  var timer = setTimeout(function() { ctrl.abort(); }, PROCS_CONTROL_TIMEOUT_MS);
+  var send = function() {
+    var headers = { 'Content-Type': 'application/json' };
+    if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+    return fetch(url, { method: 'POST', headers: headers, body: body, signal: ctrl.signal });
+  };
+  try {
+    var res = await send();
+    // A stale CSRF token: refresh it and send once more — never more than once.
+    if (res.status === 403) {
+      await refreshCsrfToken();
+      res = await send();
+    }
+    var j = null;
+    try { j = await res.json(); } catch (_) {}
+    if (res.ok) dashToast({ title: op === 'resume' ? '프로세스를 재개했어요' : '프로세스를 일시중지했어요', description: 'PID ' + pid, tone: 'success' });
+    else dashToast({ title: op === 'resume' ? '재개하지 못했어요' : '일시중지하지 못했어요', description: procsFailText(res.status, j && j.code), tone: 'danger' });
+  } catch (_) {
+    // No answer (or none in time): the outcome is unknown — the list is read again instead of repeating the request.
+    dashToast({ title: '요청을 보내지 못했어요', description: '목록을 다시 읽어 지금 상태를 보여 줘요', tone: 'danger' });
+  } finally {
+    clearTimeout(timer);
+    delete _procs.busy[pid];
+    if (_procs.key === key) {
+      try { paintPanelProcs(); } catch (_) {}
+      procsFetch(key, true);
+    }
+  }
+}
+// Pure: why a pause or resume was refused, in the reader's words.
+function procsFailText(status, code) {
+  if (code === 'stale' || status === 409) return '그 사이 프로세스가 바뀌었어요 — 목록을 새로 읽었어요';
+  if (code === 'not-found' || status === 404) return '이 작업의 프로세스가 아니거나 이미 끝났어요';
+  if (code === 'unsupported') return '이 노드에서는 일시중지를 쓸 수 없어요';
+  if (code === 'denied') return '운영체제가 신호를 거부했어요';
+  if (status === 403) return '작업 소유자나 관리자 모드의 관리자만 할 수 있어요';
+  return '서버 오류 (' + status + ')';
+}
+function paintPanelProcs() {
+  var el = document.getElementById('panel-procs');
+  if (!el) return;
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  writePanelPart(el, s ? panelProcsHtml(_procs, viewerCanManage(s) && !isSiblingSession(s)) : '');
+}
+// Pure: the tab's content — the node line, the session's totals, one row per process in tree order.
+function panelProcsHtml(state, canControl) {
+  var st = state || {};
+  if (st.status === 409) return '<p class="pp-note">다른 soma-work 인스턴스의 작업이에요 — 프로세스는 그 인스턴스 대시보드에서 보세요.</p>';
+  if (st.status === 503) return '<p class="pp-note">이 노드에서 프로세스 모니터가 꺼져 있어요.</p>';
+  if (st.status === -1 || (st.status && st.status !== 200)) return '<p class="pp-note">프로세스 목록을 읽지 못했어요 (' + (st.status === -1 ? '연결 오류' : st.status) + ') — 3초 뒤 다시 읽어요.</p>';
+  if (!st.body) return '<p class="pp-note">프로세스 목록을 읽는 중…</p>';
+  var node = st.body.node || {};
+  var nodeBits = [];
+  if (node.nodeId) nodeBits.push('노드 <b>' + esc(node.nodeId) + '</b>');
+  if (toNum(node.cpuCount)) nodeBits.push('코어 ' + toNum(node.cpuCount) + '개');
+  if (node.cpuBusyPercent !== null && node.cpuBusyPercent !== undefined) nodeBits.push('노드 CPU ' + procCpuText(node.cpuBusyPercent));
+  if (toNum(node.totalMemBytes)) nodeBits.push('여유 메모리 ' + procBytesText(node.availableMemBytes) + ' / ' + procBytesText(node.totalMemBytes));
+  var html = '<div class="pp-node">' + nodeBits.join('<span class="pi-dot" aria-hidden="true">&middot;</span>') + '</div>';
+  var sess = st.body.session;
+  if (!sess || !sess.processes || !sess.processes.length) return html + '<p class="pp-note">지금 이 작업의 프로세스는 없어요 — 턴이 돌 때 Claude Code와 그 아래 프로세스가 여기 나와요.</p>';
+  var sum = ['프로세스 ' + toNum(sess.processCount) + '개', 'CPU ' + procCpuText(sess.cpuPercent), '메모리 ' + procBytesText(sess.rssBytes)];
+  if (toNum(sess.stoppedCount)) sum.push('<span class="pp-stopped">일시중지 ' + toNum(sess.stoppedCount) + '개</span>');
+  if (!sess.rootAlive) sum.push('<span class="pi-muted">Claude Code는 끝났고 남은 프로세스</span>');
+  html += '<div class="pp-sum">' + sum.join('<span class="pi-dot" aria-hidden="true">&middot;</span>') + '</div>';
+  html += '<div class="pp-wrap"><table class="pp-table"><thead><tr><th scope="col">프로세스</th><th scope="col" class="pp-num">PID</th><th scope="col">상태</th><th scope="col" class="pp-num">CPU</th><th scope="col" class="pp-num">메모리</th>'
+    + (canControl ? '<th scope="col"><span class="ui-sr-only">동작</span></th>' : '') + '</tr></thead><tbody>';
+  for (var i = 0; i < sess.processes.length; i++) {
+    var p = sess.processes[i];
+    var stopped = p.state === 'stopped';
+    var role = p.role === 'root' ? '<span class="pp-role">Claude Code</span>' : p.role === 'orphan' ? '<span class="pp-role" title="부모가 끝나 운영체제가 다른 부모에게 넘긴 프로세스">떨어져 나옴</span>' : '';
+    var indent = Math.min(toNum(p.depth), 8) * 12;
+    var cls = 'pp-row' + (stopped ? ' is-stopped' : '') + (p.command ? ' has-cmd' : '');
+    html += '<tr class="' + cls + '"><td class="pp-name" style="padding-left:' + (6 + indent) + 'px">' + esc(p.name || '?') + role + '</td>'
+      + '<td class="pp-num">' + toNum(p.pid) + '</td>'
+      + '<td>' + esc(PROC_STATE_LABEL[p.state] || p.state || '') + '</td>'
+      + '<td class="pp-num">' + procCpuText(p.cpuPercent) + '</td>'
+      + '<td class="pp-num">' + procBytesText(p.rssBytes) + '</td>';
+    if (canControl) {
+      var busy = st.busy && st.busy[p.pid];
+      var op = stopped ? 'resume' : 'pause';
+      var warn = p.role === 'root' && !stopped ? ' — 이 작업 전체가 멈춰요' : '';
+      html += '<td class="pp-act">' + (p.state === 'zombie' ? '' : '<button type="button" class="ui-btn is-sm" data-proc-op="' + op + '" data-pid="' + toNum(p.pid) + '" data-start="' + escAttr(p.startToken || '') + '"'
+        + (busy ? ' disabled' : '') + ' title="' + escAttr((stopped ? 'PID ' + p.pid + ' 재개' : 'PID ' + p.pid + ' 일시중지') + warn) + '">' + (stopped ? '재개' : '일시중지') + '</button>') + '</td>';
+    }
+    html += '</tr>';
+    // The command (a preview, secrets cut out server-side) under its row, the table's full width; the whole of it in
+    // the tooltip.
+    if (p.command) html += '<tr class="pp-sub' + (stopped ? ' is-stopped' : '') + '"><td colspan="' + (canControl ? 6 : 5) + '" class="pp-cmd" style="padding-left:' + (6 + indent) + 'px" title="' + escAttr(p.command) + '">' + esc(p.command) + '</td></tr>';
+  }
+  return html + '</tbody></table></div>';
 }
 
 // 세션 정보: a <ui-disclosure> (D4 K-06) whose row is the one-line summary (owner ·
