@@ -168,3 +168,59 @@ describe('renderBoard wiring (source)', () => {
     expect(render).toContain('return !s.userQueue;');
   });
 });
+
+// A WebSocket push repaints the board through mergeSiblingCards (this instance's cards + the siblings' from the last
+// poll). The push carries this instance's 대기큐 too: dropping it emptied the line on the first push after a poll.
+describe('a pushed board keeps the 대기큐 (mergeSiblingCards)', () => {
+  const cols = () => ({ working: [], waiting: [], idle: [], closed: [] });
+  const sib = (over: Record<string, unknown> = {}) =>
+    item({ key: 'other::C9:t9', entryId: 'q9', environment: { instanceName: 'other' }, ...over });
+  const merge = (polled: unknown) =>
+    load<any>(['mergeSiblingCards', 'isSiblingSession'], { _lastPolledBoard: polled, SELF_INSTANCE_NAME: 'dev' })
+      .mergeSiblingCards;
+
+  it("keeps the push's own line, then the siblings' entries from the last poll", () => {
+    const polled = { ...cols(), userQueue: [item({ key: 'C1:t0', entryId: 'q0' }), sib()] };
+    const out = merge(polled)({ ...cols(), userQueue: [item()] });
+    expect(out.userQueue.map((q: any) => q.entryId)).toEqual(['q1', 'q9']);
+  });
+
+  it("an emptied line here drops this instance's old entries, never the siblings'", () => {
+    const polled = { ...cols(), userQueue: [item({ key: 'C1:t0', entryId: 'q0' }), sib()] };
+    expect(merge(polled)(cols()).userQueue.map((q: any) => q.entryId)).toEqual(['q9']);
+  });
+
+  it('no line anywhere: the board has none', () => {
+    expect(merge(cols())(cols()).userQueue).toBeUndefined();
+  });
+});
+
+// The board picker (one person's board) filters a push before it paints: the 대기큐 is that person's too.
+describe('a pushed board for one person (pushedBoardForUser)', () => {
+  const { pushedBoardForUser } = load<any>(['pushedBoardForUser']);
+
+  it("keeps only that person's cards and entries; with no person picked, everything", () => {
+    const board = () => ({
+      working: [
+        { key: 'a', ownerId: 'U1' },
+        { key: 'b', ownerId: 'U2' },
+      ],
+      waiting: [],
+      idle: [],
+      closed: [],
+      userQueue: [item(), item({ entryId: 'q2', ownerId: 'U2' })],
+    });
+    const mine = pushedBoardForUser(board(), 'U2');
+    expect(mine.working.map((s: any) => s.key)).toEqual(['b']);
+    expect(mine.userQueue.map((q: any) => q.entryId)).toEqual(['q2']);
+    expect(pushedBoardForUser(board(), null).userQueue).toHaveLength(2);
+  });
+});
+
+describe('the push handler paints through them (source)', () => {
+  it('filters for the picked person, then merges the siblings', () => {
+    const at = TEMPLATE.indexOf("if (msg.type === 'session_update') {");
+    const handler = TEMPLATE.slice(at, TEMPLATE.indexOf('paintPushedBoard(', at) + 60);
+    expect(handler).toContain('pushedBoardForUser(msg.board, currentUserId)');
+  });
+});

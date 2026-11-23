@@ -19988,14 +19988,25 @@ var _lastPolledBoard = null;
 function mergeSiblingCards(board) {
   if (!_lastPolledBoard) return board;
   var out = {};
-  ['working', 'waiting', 'idle', 'closed'].forEach(function(col) {
+  // The 대기큐 rides with the columns: this instance's line as pushed, then the siblings' entries from the poll.
+  ['working', 'waiting', 'idle', 'closed', 'userQueue'].forEach(function(col) {
     var mine = board[col] || [];
     var have = new Set(mine.map(function(s) { return s.key; }));
     var sibs = (_lastPolledBoard[col] || []).filter(function(s) { return isSiblingSession(s) && !have.has(s.key); });
     // Same shape as the server merge: this instance's cards, then siblings'.
-    out[col] = mine.concat(sibs);
+    if (col !== 'userQueue' || mine.length || sibs.length) out[col] = mine.concat(sibs);
   });
   return out;
+}
+
+// A pushed board for the board picker's person (null: everyone) — their cards, and their entries in the 대기큐.
+function pushedBoardForUser(board, user) {
+  if (!user) return board;
+  var mine = function(s) { return s.ownerId === user; };
+  ['working', 'waiting', 'idle', 'closed', 'userQueue'].forEach(function(col) {
+    if (col !== 'userQueue' || board[col]) board[col] = (board[col] || []).filter(mine);
+  });
+  return board;
 }
 
 // The board's first load (spec: no false empty board). 'loading' — skeleton
@@ -20915,12 +20926,7 @@ function connectWs() {
         return;
       }
       if (msg.type === 'session_update') {
-        if (currentUserId) {
-          msg.board.working = (msg.board.working || []).filter(function(s) { return s.ownerId === currentUserId; });
-          msg.board.waiting = (msg.board.waiting || []).filter(function(s) { return s.ownerId === currentUserId; });
-          msg.board.idle = (msg.board.idle || []).filter(function(s) { return s.ownerId === currentUserId; });
-          msg.board.closed = (msg.board.closed || []).filter(function(s) { return s.ownerId === currentUserId; });
-        }
+        msg.board = pushedBoardForUser(msg.board, currentUserId);
         if (!paintPushedBoard(msg.board)) return;
         // Refresh panel question if panel is open (session may have transitioned)
         if (panelOpen && panelSessionKey && _sessionCache[panelSessionKey]) {
