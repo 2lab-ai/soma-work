@@ -42,6 +42,8 @@ export interface AggregatorBoard {
   waiting: any[];
   idle: any[];
   closed: any[];
+  /** The per-user task queue (대기큐) — each instance its own; merged and stamped like the cards. */
+  userQueue?: any[];
 }
 
 export interface InstanceEnvironment {
@@ -178,6 +180,7 @@ export async function fetchSiblingBoards(options: FetchSiblingBoardsOptions): Pr
           waiting: Array.isArray(board.waiting) ? board.waiting : [],
           idle: Array.isArray(board.idle) ? board.idle : [],
           closed: Array.isArray(board.closed) ? board.closed : [],
+          ...(Array.isArray(board.userQueue) ? { userQueue: board.userQueue } : {}),
         },
       } as SiblingBoardResult;
     } catch (err) {
@@ -238,6 +241,7 @@ export function mergeBoards(args: {
     waiting: args.selfBoard.waiting.slice(),
     idle: args.selfBoard.idle.slice(),
     closed: args.selfBoard.closed.slice(),
+    ...(args.selfBoard.userQueue?.length ? { userQueue: args.selfBoard.userQueue.slice() } : {}),
   };
 
   for (const sib of args.siblings) {
@@ -250,6 +254,10 @@ export function mergeBoards(args: {
     pushStamped(out.waiting, sib.board.waiting, env);
     pushStamped(out.idle, sib.board.idle, env);
     pushStamped(out.closed, sib.board.closed, env);
+    if (Array.isArray(sib.board.userQueue) && sib.board.userQueue.length > 0) {
+      out.userQueue ??= [];
+      pushStamped(out.userQueue, sib.board.userQueue, env);
+    }
   }
 
   return out;

@@ -253,6 +253,13 @@ export interface MessageEvent {
      * follow-up queue so a release that had to queue still runs.
      */
     instructionApprovalId?: string;
+    /**
+     * Set only by the host when the per-user task queue starts an entry that waited (`src/user-task-queue`): the
+     * replay of a held request, or the host turn that carries a stopped task on. The ingress takes the admission
+     * once (`UserTaskQueue.takeAdmission` — admitted, this thread, not expired), so a made-up id admits nothing and
+     * the message is gated like any other.
+     */
+    userTaskEntryId?: string;
   };
   files?: Array<{
     id: string;
