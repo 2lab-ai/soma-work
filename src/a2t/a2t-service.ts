@@ -194,7 +194,7 @@ export class A2tService {
    */
   async transcribePcm(
     pcm: Int16Array,
-    opts: { language?: string; prompt?: string; signal?: AbortSignal } = {},
+    opts: { language?: string; prompt?: string; final?: boolean; signal?: AbortSignal } = {},
   ): Promise<string> {
     if (!this.isReady()) throw new Error(this.getStatusMessage());
     const bytes = Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength);
@@ -204,6 +204,7 @@ export class A2tService {
         pcm: bytes.toString('base64'),
         language: opts.language ?? 'ko',
         prompt: opts.prompt ?? '',
+        ...(opts.final ? { final: true } : {}),
       },
       PCM_TIMEOUT_MS,
       opts.signal,

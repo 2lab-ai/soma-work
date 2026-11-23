@@ -18,6 +18,8 @@
  */
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { DictationBackend, DictationStreamingSession } from '../a2t/dictation-cloud';
+import { DEFAULT_DICTATION_KEYTERMS, mergeDictationKeyterms } from '../a2t/dictation-keyterms';
 import { DictationStream } from '../a2t/dictation-stream';
 import { Logger } from '../logger';
 
@@ -25,14 +27,17 @@ const logger = new Logger('DictationRoutes');
 
 type Middleware = (request: FastifyRequest, reply: FastifyReply) => Promise<void> | void;
 
-/** What the routes need of a Whisper worker. */
-export interface DictationWhisper {
+/** What the routes need of a Whisper / streaming STT backend. */
+export interface DictationWhisper extends DictationBackend {
   ready(): boolean;
   model(): string;
   /** Why it cannot take a dictation ('' when it can). */
   why(): string;
   /** signal: aborted when the listener is gone — a request still waiting its turn is dropped. */
-  transcribe(pcm: Int16Array, opts: { language: string; prompt: string; signal?: AbortSignal }): Promise<string>;
+  transcribe(
+    pcm: Int16Array,
+    opts: { language: string; prompt: string; final?: boolean; signal?: AbortSignal },
+  ): Promise<string>;
 }
 
 /** Live dictations at once on this server (each keeps the worker busy a few times a second). */
@@ -43,6 +48,8 @@ export const MAX_DICTATION_MS = 10 * 60 * 1000;
 export const START_MS = 10 * 1000;
 /** A binary frame larger than this is not a microphone chunk. */
 export const MAX_FRAME_BYTES = 64 * 1024;
+/** A JSON control frame larger than this is rejected before parsing. */
+export const MAX_TEXT_FRAME_BYTES = 8 * 1024;
 /** Audio may run ahead of the clock by this much (a network stall delivers a burst); more is not a microphone. */
 export const AHEAD_MS = 10 * 1000;
 /** Transcriptions waiting for one dictation: past this the worker cannot keep up with it. */
@@ -79,7 +86,11 @@ export function registerDictationRoutes(
 
   server.get('/api/dictation/status', { preHandler: [authMiddleware] }, async () => {
     const w = whisper();
-    if (w?.ready()) return { server: { ok: true, model: w.model() } };
+    if (w?.ready()) {
+      const serverInfo: { ok: true; model: string; provider?: string } = { ok: true, model: w.model() };
+      if (w.provider && w.provider !== 'local') serverInfo.provider = w.provider;
+      return { server: serverInfo };
+    }
     return { server: { ok: false, why: w?.why() || '이 서버에는 위스퍼가 없습니다' } };
   });
 
@@ -130,6 +141,7 @@ export function registerDictationRoutes(
       holding = true;
 
       let stream: DictationStream | null = null;
+      let nativeStream: DictationStreamingSession | null = null;
       let language = 'ko';
       let finishing = false;
       let startedAt = 0;
@@ -138,24 +150,32 @@ export function registerDictationRoutes(
       // Ended with an error: the stream is dropped (what the browser already shows stays there).
       const fail = (code: string, message: string) => {
         stream?.cancel();
+        nativeStream?.cancel();
         finishing = true;
         refuse(code, message);
       };
       // Finished: the open segment is finalized and every word goes out with done (and why, when it was not asked).
       const finish = async (message = '') => {
-        if (finishing || !stream) return;
+        if (finishing || (!stream && !nativeStream)) return;
         finishing = true;
+        if (nativeStream) {
+          finishMessage = message;
+          await nativeStream.finish();
+          return;
+        }
+        if (!stream) return;
         const out = await stream.finish();
         if (closed) return;
         send(message ? { type: 'done', final: out.final, message } : { type: 'done', final: out.final });
         hangUp(1000, 'done');
       };
+      let finishMessage = '';
       const unstarted = setTimeout(() => {
-        if (!stream) fail('bad-request', 'start first');
+        if (!stream && !nativeStream) fail('bad-request', 'start first');
       }, startMs);
       unstarted.unref?.();
       const limit = setTimeout(() => {
-        if (!stream) return fail('bad-request', 'start first');
+        if (!stream && !nativeStream) return fail('bad-request', 'start first');
         void finish('받아쓰기는 한 번에 10분까지입니다 — 다시 누르면 이어서 받아씁니다');
       }, maxMs);
       limit.unref?.();
@@ -163,6 +183,7 @@ export function registerDictationRoutes(
       const onMessage = (data: Buffer, isBinary: boolean) => {
         if (closed || finishing) return;
         if (!isBinary) {
+          if (data.length > MAX_TEXT_FRAME_BYTES) return fail('bad-request', 'message too large');
           let msg: unknown = null;
           try {
             msg = JSON.parse(String(data));
@@ -170,26 +191,55 @@ export function registerDictationRoutes(
             return fail('bad-request', 'invalid message');
           }
           if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return fail('bad-request', 'invalid message');
-          const m = msg as { type?: unknown; lang?: unknown };
-          if (m.type === 'start' && !stream) {
+          const m = msg as { type?: unknown; lang?: unknown; keyterms?: unknown };
+          if (m.type === 'start' && !stream && !nativeStream) {
             clearTimeout(unstarted);
             language = LANGS[typeof m.lang === 'string' ? m.lang : 'ko-KR'] ?? 'ko';
             startedAt = Date.now();
-            stream = new DictationStream({
-              transcribe: (pcm, prompt) => w.transcribe(pcm, { language, prompt, signal: gone.signal }),
-              onText: (t) => send({ type: 'text', final: t.final, interim: t.interim }),
-              onError: (message) => {
-                logger.warn('Dictation transcription failed', { message });
-                fail('failed', `서버 위스퍼가 받아쓰지 못했습니다 — ${message}`);
-              },
-            });
-            send({ type: 'ready', model: w.model() });
+            const clientTerms = Array.isArray(m.keyterms)
+              ? m.keyterms.slice(0, 64).filter((x): x is string => typeof x === 'string' && x.length <= 128)
+              : [];
+            const keyterms = mergeDictationKeyterms(clientTerms, w.keyterms, DEFAULT_DICTATION_KEYTERMS);
+            if (w.createStreamingSession) {
+              nativeStream = w.createStreamingSession(
+                { language, keyterms },
+                {
+                  onReady: (model) => send({ type: 'ready', model }),
+                  onText: (t) => send({ type: 'text', final: t.final, interim: t.interim }),
+                  onDone: (finalText) => {
+                    if (closed) return;
+                    send(
+                      finishMessage
+                        ? { type: 'done', final: finalText, message: finishMessage }
+                        : { type: 'done', final: finalText },
+                    );
+                    hangUp(1000, 'done');
+                  },
+                  onError: (message) => {
+                    logger.warn('Dictation streaming transcription failed', { message });
+                    fail('failed', `서버 받아쓰기가 실패했습니다 — ${message}`);
+                  },
+                },
+              );
+            } else {
+              stream = new DictationStream({
+                keyterms,
+                transcribe: (pcm, prompt, o) =>
+                  w.transcribe(pcm, { language, prompt, final: o?.final, signal: gone.signal }),
+                onText: (t) => send({ type: 'text', final: t.final, interim: t.interim }),
+                onError: (message) => {
+                  logger.warn('Dictation transcription failed', { message });
+                  fail('failed', `서버 위스퍼가 받아쓰지 못했습니다 — ${message}`);
+                },
+              });
+              send({ type: 'ready', model: w.model() });
+            }
           } else if (m.type === 'stop') {
             void finish();
           }
           return;
         }
-        if (!stream) return fail('bad-request', 'start first');
+        if (!stream && !nativeStream) return fail('bad-request', 'start first');
         if (data.length > MAX_FRAME_BYTES || data.length % 2) return fail('bad-request', 'bad audio frame');
         received += data.length / 2;
         if ((received * 1000) / RATE > Date.now() - startedAt + AHEAD_MS)
@@ -197,9 +247,15 @@ export function registerDictationRoutes(
         // A copy: the frame's buffer is the socket's, and Int16Array wants an aligned offset.
         const pcm = new Int16Array(data.length / 2);
         for (let i = 0; i < pcm.length; i++) pcm[i] = data.readInt16LE(i * 2);
-        stream.push(pcm);
-        if (stream.backlog > MAX_BACKLOG)
-          fail('busy', '서버 위스퍼가 받아쓰기를 따라가지 못합니다 — 잠시 뒤에 다시 눌러 주세요');
+        if (nativeStream) {
+          nativeStream.push(pcm);
+          if (nativeStream.backlog > MAX_BACKLOG)
+            fail('busy', '서버 위스퍼가 받아쓰기를 따라가지 못합니다 — 잠시 뒤에 다시 눌러 주세요');
+        } else if (stream) {
+          stream.push(pcm);
+          if (stream.backlog > MAX_BACKLOG)
+            fail('busy', '서버 위스퍼가 받아쓰기를 따라가지 못합니다 — 잠시 뒤에 다시 눌러 주세요');
+        }
       };
       socket.on('message', (data: Buffer, isBinary: boolean) => {
         try {
@@ -217,6 +273,7 @@ export function registerDictationRoutes(
         // The listener is gone (finishing or not): nothing it queued is transcribed for no one — not the stream's
         // next steps, not a request still waiting its turn at the worker.
         stream?.cancel();
+        nativeStream?.cancel();
         gone.abort('dictation socket closed');
         letGo();
       });

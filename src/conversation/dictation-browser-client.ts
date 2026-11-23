@@ -278,7 +278,10 @@ function dictationBrowserStart(cb, env) {
     if (c.ended || c.opening) return;
     c.opening = true;
     var worker = c.worker;
-    nav.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } }).then(
+    var micPromise = typeof dictationOpenMic === 'function'
+      ? dictationOpenMic(nav, store)
+      : nav.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    micPromise.then(
       function (stream) {
         if (c.ended) { stream.getTracks().forEach(function (t) { t.stop(); }); return; }
         c.stream = stream;
@@ -298,6 +301,7 @@ function dictationBrowserStart(cb, env) {
           if (ctx.resume) ctx.resume();
           worker.postMessage({ type: 'start', id: id, language: 'korean' });
           node.port.onmessage = function (ev) {
+            if (cb.onLevel && ev && ev.data && typeof ev.data !== 'string' && typeof dictationPcmRms === 'function') cb.onLevel(dictationPcmRms(ev.data));
             if (!c.stopping && !c.ended) worker.postMessage({ type: 'pcm', data: ev.data }, [ev.data]);
           };
           c.ready = true;

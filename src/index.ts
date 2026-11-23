@@ -111,6 +111,7 @@ import {
   setDashboardTaskPlanHandler,
   setDashboardTrashHandler,
   setDashboardUserActionHandler,
+  setDictationConfig,
   setOAuthDirectoryLookup,
   setOAuthUserLookup,
   setOnSummaryGeneratedCallback,
@@ -817,12 +818,18 @@ async function start() {
     } catch (error) {
       logger.warn('Failed to start A2T service (non-critical)', error);
     }
-    // 받아쓰기 — the server's Whisper for live dictation (epic #737, #739): its own worker, loaded in the background
-    // so startup does not wait for the model.
+    // 받아쓰기 — live dictation (local Whisper or cloud streaming STT): configure routes + warm local worker when needed.
     {
       const a2tConfig = appConfig.a2t || {};
-      if (a2tConfig.enabled !== false && a2tConfig.dictation?.enabled !== false) {
-        void initDictationA2tService(a2tConfig).then((d) => {
+      const dictationProvider = a2tConfig.dictation?.provider ?? process.env.SOMA_DICTATION_PROVIDER ?? 'auto';
+      setDictationConfig(a2tConfig.dictation, a2tConfig.enabled !== false);
+      const needsLocalWorker = dictationProvider !== 'deepgram' && dictationProvider !== 'openai';
+      if (a2tConfig.enabled !== false && a2tConfig.dictation?.enabled !== false && needsLocalWorker) {
+        const localModel =
+          dictationProvider === 'local' || dictationProvider === 'auto'
+            ? (a2tConfig.dictation?.model ?? a2tConfig.model)
+            : a2tConfig.model;
+        void initDictationA2tService({ ...a2tConfig, ...(localModel ? { model: localModel } : {}) }).then((d) => {
           if (d) logger.info('Dictation A2T ready', { status: d.getStatus().state });
         });
       }

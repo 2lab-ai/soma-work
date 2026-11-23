@@ -46,6 +46,42 @@ export const DICTATION_TAB_HTML = `<div slot="dictation" data-tab="dictation" cl
       </label>
       <p class="dic-note" id="dic-engine-note" role="status" aria-live="polite"></p>
     </section>
+    <section class="group" aria-labelledby="h-dic-device">
+      <header><h2 id="h-dic-device">마이크 · 단축키</h2><p>AU05 등 외장 마이크와 하드웨어 버튼(Push-to-Talk)을 이 브라우저에 연결합니다. 이 기기에만 저장됩니다.</p></header>
+      <div class="dic-controls">
+        <label class="dic-ctrl"><span>마이크 입력 장치</span>
+          <span class="dic-ctrl-row">
+            <select class="ui-input" id="dic-mic"><option value="">시스템 기본 마이크</option></select>
+            <button type="button" class="btn" id="dic-mic-refresh">목록 새로고침</button>
+          </span>
+          <span class="dic-sub">서버 위스퍼·브라우저 위스퍼에서 사용할 마이크입니다. 장치 이름이 안 보이면 ‘목록 새로고침’을 눌러 권한을 확인하세요.</span>
+        </label>
+        <label class="dic-ctrl dic-check">
+          <input type="checkbox" id="dic-raw-audio">
+          <span><span>하드웨어 노이즈 제거 마이크 모드 (AU05 등)</span>
+            <span class="dic-sub">브라우저의 중복 에코·노이즈 억제를 꺼서 하드웨어 DSP 마이크의 음질 저하를 막습니다.</span>
+          </span>
+        </label>
+        <label class="dic-ctrl"><span>받아쓰기 단축키</span>
+          <select class="ui-input" id="dic-hotkey">
+            <option value="auto">자동 (F19 · F13 · Alt+Shift+D)</option>
+            <option value="f19">F19 (AU05 권장 — Linux/macOS/Windows 충돌 없음)</option>
+            <option value="f13">F13</option>
+            <option value="alt-shift-d">Alt+Shift+D</option>
+            <option value="ctrl-shift-space">Ctrl+Shift+Space</option>
+            <option value="off">끄기</option>
+          </select>
+          <span class="dic-sub">open-au05에서는 config.toml의 <code>[actions.talk]</code>에 <code>dictate = false</code>, <code>keys = "f19"</code>, <code>on = "both"</code>로 설정하면 Talk 버튼으로 바로 받아쓸 수 있습니다.</span>
+        </label>
+        <label class="dic-ctrl"><span>단축키 동작 방식</span>
+          <select class="ui-input" id="dic-hotkey-mode">
+            <option value="hold">길게 눌러 말하기 (Push-to-Talk)</option>
+            <option value="toggle">눌러서 시작 · 다시 눌러 멈춤 (토글)</option>
+          </select>
+        </label>
+      </div>
+      <p class="dic-note" id="dic-device-note" role="status" aria-live="polite"></p>
+    </section>
     <section class="group" aria-labelledby="h-dic-info">
       <header><h2 id="h-dic-info">이 기기의 음성 인식</h2><p>이 브라우저가 알려 주는 정보입니다.</p></header>
       <dl class="dic-info" id="dic-info"><div class="dic-row"><dt>상태</dt><dd>확인하는 중…</dd></div></dl>
@@ -54,6 +90,7 @@ export const DICTATION_TAB_HTML = `<div slot="dictation" data-tab="dictation" cl
       <header><h2 id="h-dic-test">말해서 시험</h2><p>고른 엔진으로 8초 동안 듣습니다. 첫 글자가 나오기까지 걸린 시간과 받아쓴 글을 보여 줍니다.</p></header>
       <div class="dic-test">
         <button type="button" class="btn primary" id="dic-test-btn" disabled>말해서 시험</button>
+        <div class="dic-meter" id="dic-meter" hidden aria-label="마이크 입력 레벨"><div class="dic-meter-fill" id="dic-meter-fill"></div></div>
         <p class="dic-live" id="dic-test-live" aria-live="polite"></p>
         <p class="dic-result" id="dic-test-result" role="status"></p>
       </div>
@@ -88,6 +125,18 @@ export const DICTATION_TAB_CSS = String.raw`
 .dic-row dd .btn { margin-left: 8px; min-height: 28px; padding: 3px 10px; font-size: 12px; }
 .dic-row .dic-sub { display: block; font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
 .dic-test { padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.dic-controls { display: flex; flex-direction: column; }
+.dic-ctrl { display: flex; flex-direction: column; gap: 6px; padding: 12px 16px; border-top: 1px solid var(--border); font-size: 13px; }
+.dic-ctrl:first-child { border-top: 0; }
+.dic-ctrl-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.dic-ctrl-row select { flex: 1 1 260px; max-width: 440px; }
+.dic-ctrl select { max-width: 440px; }
+.dic-ctrl .dic-sub { font-size: 12px; color: var(--text-secondary); }
+.dic-check { flex-direction: row; align-items: flex-start; gap: 10px; cursor: pointer; }
+.dic-check input { margin-top: 3px; width: 16px; height: 16px; accent-color: var(--accent); flex: none; }
+.dic-meter { width: 100%; max-width: 320px; height: 6px; border-radius: 999px; background: var(--border); overflow: hidden; }
+.dic-meter[hidden] { display: none; }
+.dic-meter-fill { height: 100%; width: 0%; background: var(--accent); transition: width 80ms linear; }
 .dic-live { font-size: 14px; min-height: 1.4em; overflow-wrap: anywhere; }
 .dic-live:empty::before { content: ''; }
 .dic-result { font-size: 12.5px; color: var(--text-secondary); }
@@ -332,7 +381,8 @@ function dicInfoRows(info) {
   ]);
   rows.push(['메모리 · 코어', (info.memory ? '약 ' + info.memory + 'GB' : '알 수 없음') + ' · ' + (info.cores ? info.cores + '코어' : '알 수 없음')]);
   var srv = info.server || { ok: false, why: '' };
-  rows.push(['서버 위스퍼', srv.ok ? '쓸 수 있음 — ' + (srv.model || 'Whisper') : srv.why || '이 서버에는 위스퍼가 없습니다']);
+  var srvSub = srv.ok && srv.provider ? '외부 클라우드 STT(' + srv.provider + ')로 전송해 처리합니다' : '';
+  rows.push(['서버 위스퍼', srv.ok ? '쓸 수 있음 — ' + (srv.model || 'Whisper') : srv.why || '이 서버에는 위스퍼가 없습니다', srvSub]);
   rows.push([
     '브라우저 위스퍼',
     info.browserDevice === 'webgpu'
@@ -565,9 +615,15 @@ function dicTestWhisper(engine, live, res, btn) {
     onProgress: function (pct) {
       if (res && _dicTest === t) res.textContent = '모델을 내려받는 중… ' + pct + '% (처음 한 번만)';
     },
+    onLevel: function (rms) {
+      if (_dicTest !== t) return;
+      dicPaintLevel(rms);
+    },
     onReady: function () {
       if (_dicTest !== t) return;
       t.t0 = Date.now();
+      var meter = document.getElementById('dic-meter');
+      if (meter) meter.hidden = false;
       if (res) res.textContent = '듣는 중… 말해 보세요 (8초)';
       t.timer = setTimeout(function () { dicTestStop(); }, DIC_TEST_MS);
     },
@@ -602,10 +658,21 @@ function dicTestSettle(t) {
   setTimeout(function () { dicTestDone(t); }, t.srv ? DIC_SETTLE_WHISPER_MS : DIC_SETTLE_MS);
 }
 
+function dicPaintLevel(rms) {
+  var meter = document.getElementById('dic-meter');
+  var fill = document.getElementById('dic-meter-fill');
+  if (!meter || !fill) return;
+  if (rms == null) { meter.hidden = true; if (fill.style) fill.style.width = '0%'; return; }
+  meter.hidden = false;
+  var pct = Math.min(100, Math.round(Math.sqrt(Math.max(0, rms)) * 180));
+  if (fill.style) fill.style.width = pct + '%';
+}
+
 function dicTestDone(t) {
   if (_dicTest !== t) return;
   _dicTest = null;
   clearTimeout(t.timer);
+  dicPaintLevel(null);
   // A Whisper test let go before its done: its client is dropped (microphone, socket).
   if (t.srv) try { t.srv.abort(); } catch (_e) {}
   t.ended = Date.now();
@@ -615,6 +682,58 @@ function dicTestDone(t) {
   if (btn) btn.textContent = '말해서 시험';
 }
 
+// Populate microphone input selector from navigator.mediaDevices.enumerateDevices(). Returns false if permission probe failed.
+async function dicLoadMics(probePermission) {
+  var sel = document.getElementById('dic-mic');
+  var note = document.getElementById('dic-device-note');
+  if (!sel) return false;
+  var md = window.navigator && window.navigator.mediaDevices;
+  if (!md || typeof md.enumerateDevices !== 'function') return false;
+  var ok = true;
+  if (probePermission && typeof md.getUserMedia === 'function') {
+    try {
+      var st = await md.getUserMedia({ audio: true });
+      st.getTracks().forEach(function (tr) { tr.stop(); });
+    } catch (_e) {
+      ok = false;
+      if (note) note.textContent = '마이크 권한이 거부되어 장치 이름을 불러오지 못했습니다';
+    }
+  }
+  var list = [];
+  try {
+    var all = await md.enumerateDevices();
+    for (var i = 0; i < all.length; i++) {
+      if (all[i] && all[i].kind === 'audioinput') list.push(all[i]);
+    }
+  } catch (_e) { return false; }
+  var saved = typeof dictationMicChoice === 'function' ? dictationMicChoice(dicStore()) : '';
+  var html = '<option value="">시스템 기본 마이크</option>';
+  var found = !saved;
+  for (var j = 0; j < list.length; j++) {
+    var d = list[j];
+    if (!d.deviceId || d.deviceId === 'default' || d.deviceId === 'communications') continue;
+    var lbl = (d.label || ('마이크 ' + (j + 1))).trim();
+    if (d.deviceId === saved) found = true;
+    html += '<option value="' + esc(d.deviceId) + '"' + (d.deviceId === saved ? ' selected' : '') + '>' + esc(lbl) + '</option>';
+  }
+  if (!found && saved) {
+    html += '<option value="' + esc(saved) + '" selected>연결 끊긴 저장 마이크 (' + esc(saved.slice(0, 8)) + '…)</option>';
+  }
+  sel.innerHTML = html;
+  sel.value = saved || '';
+  return ok;
+}
+
+function dicPaintDevicePrefs() {
+  var st = dicStore();
+  var rawEl = document.getElementById('dic-raw-audio');
+  if (rawEl && typeof dictationRawAudioChoice === 'function') rawEl.checked = dictationRawAudioChoice(st);
+  var hkEl = document.getElementById('dic-hotkey');
+  if (hkEl && typeof dictationHotkeyChoice === 'function') hkEl.value = dictationHotkeyChoice(st);
+  var modeEl = document.getElementById('dic-hotkey-mode');
+  if (modeEl && typeof dictationHotkeyModeChoice === 'function') modeEl.value = dictationHotkeyModeChoice(st);
+}
+
 // The tab, the first time it is shown (and after a download): this device's details, then the engines.
 async function loadDictationTab() {
   _dicLoaded = true;
@@ -622,6 +741,8 @@ async function loadDictationTab() {
   dicPaintInfo(_dicInfo);
   dicPaintEngines(_dicInfo);
   dicPaintModels(_dicInfo);
+  dicPaintDevicePrefs();
+  await dicLoadMics(false);
   var btn = document.getElementById('dic-test-btn');
   if (btn) btn.disabled = false;
 }
@@ -637,12 +758,36 @@ function initDictationTab() {
       var ok = dictationSaveBrowserModel(dicStore(), t.value);
       if (note) note.textContent = ok ? '브라우저 위스퍼 모델을 이 기기에 저장했습니다' : '이 브라우저가 저장을 막아 고를 수 없습니다';
     }
+    var dnote = document.getElementById('dic-device-note');
+    if (t && t.id === 'dic-mic' && typeof dictationSaveMic === 'function') {
+      var mok = dictationSaveMic(dicStore(), t.value);
+      if (dnote) dnote.textContent = mok ? '마이크 입력 장치를 이 기기에 저장했습니다' : '이 브라우저가 저장을 막아 고를 수 없습니다';
+    }
+    if (t && t.id === 'dic-raw-audio' && typeof dictationSaveRawAudio === 'function') {
+      var rok = dictationSaveRawAudio(dicStore(), !!t.checked);
+      if (dnote) dnote.textContent = rok ? '하드웨어 노이즈 제거 마이크 모드를 저장했습니다' : '이 브라우저가 저장을 막아 고를 수 없습니다';
+    }
+    if (t && t.id === 'dic-hotkey' && typeof dictationSaveHotkey === 'function') {
+      var hok = dictationSaveHotkey(dicStore(), t.value);
+      if (dnote) dnote.textContent = hok ? '받아쓰기 단축키를 이 기기에 저장했습니다' : '이 브라우저가 저장을 막아 고를 수 없습니다';
+    }
+    if (t && t.id === 'dic-hotkey-mode' && typeof dictationSaveHotkeyMode === 'function') {
+      var hmok = dictationSaveHotkeyMode(dicStore(), t.value);
+      if (dnote) dnote.textContent = hmok ? '단축키 동작 방식을 이 기기에 저장했습니다' : '이 브라우저가 저장을 막아 고를 수 없습니다';
+    }
   });
   root.addEventListener('click', function (e) {
     var t = e.target;
     var lang = t && t.getAttribute && t.getAttribute('data-dic-install');
     if (lang) { dicInstall(lang); return; }
     if (t && t.id === 'dic-test-btn') dicTestStart();
+    if (t && t.id === 'dic-mic-refresh') {
+      dicLoadMics(true).then(function (ok) {
+        if (!ok) return;
+        var dnote = document.getElementById('dic-device-note');
+        if (dnote) dnote.textContent = '마이크 장치 목록을 새로고침했습니다';
+      });
+    }
   });
 }
 initDictationTab();

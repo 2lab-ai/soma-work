@@ -3,6 +3,24 @@
  * Whisper v3 Turbo based transcription service — plugin pattern.
  */
 
+/** Configuration for live dictation (`/ws/dictation`) inside config.json "a2t.dictation". */
+export interface A2tDictationConfig {
+  /** Enable/disable live dictation. Default: true */
+  enabled?: boolean;
+  /** Minimum free memory in MB required for local dictation worker. Default: 4000 */
+  minMemoryMb?: number;
+  /** STT provider: 'auto' (local Whisper) | 'local' | 'deepgram' | 'openai' | 'auto-cloud' (deepgram → local → openai). */
+  provider?: 'auto' | 'local' | 'deepgram' | 'openai' | 'auto-cloud';
+  /** Optional model override (e.g. 'nova-3', 'gpt-4o-transcribe', 'large-v3', 'large-v3-turbo'). */
+  model?: string;
+  /** Extra domain/project vocabulary terms biased during dictation. */
+  keyterms?: string[];
+  /** Custom API URL for cloud/OpenAI-compatible providers. */
+  apiUrl?: string;
+  /** Explicit API key (prefer DEEPGRAM_API_KEY / OPENAI_API_KEY env vars). */
+  apiKey?: string;
+}
+
 /** Configuration for the A2T service (from config.json "a2t" section) */
 export interface A2tConfig {
   /** Enable/disable the service. Default: true */
@@ -19,8 +37,8 @@ export interface A2tConfig {
   pythonPath?: string;
   /** 'auto' (mlx-whisper on Apple Silicon when installed, else faster-whisper) | 'mlx' | 'faster-whisper'. Default: 'auto' */
   backend?: string;
-  /** 받아쓰기 (live dictation, a second worker): enabled (default true) and its free-memory floor (default 4000 MB). */
-  dictation?: { enabled?: boolean; minMemoryMb?: number };
+  /** 받아쓰기 (live dictation): worker + optional cloud streaming STT configuration. */
+  dictation?: A2tDictationConfig;
 }
 
 /** Transcription result from the worker */
