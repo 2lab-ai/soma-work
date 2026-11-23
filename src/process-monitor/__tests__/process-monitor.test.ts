@@ -16,6 +16,7 @@ const capacity: NodeCapacity = {
 
 function setup(
   opts: {
+    live?: (pid: number, fallback: string | null) => string | null | undefined;
     platform?: string;
     kill?: (pid: number, signal: NodeJS.Signals) => void;
     runPs?: (ps: FakePs) => (a: readonly string[]) => Promise<string>;
@@ -60,7 +61,10 @@ function setup(
     },
     runPs: opts.runPs ? opts.runPs(ps) : ps.run,
     kill,
-    liveStartToken: (pid) => ps.procs.get(pid)?.start ?? (ps.procs.has(pid) ? 'Mon Nov 23 10:00:00 2026' : null),
+    liveStartToken: (pid) => {
+      const fallback = ps.procs.get(pid)?.start ?? (ps.procs.has(pid) ? 'Mon Nov 23 10:00:00 2026' : null);
+      return opts.live ? opts.live(pid, fallback) : fallback;
+    },
     platform: opts.platform ?? 'darwin',
     now: () => now,
     readCapacity: async () => capacity,
@@ -285,6 +289,73 @@ describe('LocalProcessMonitor', () => {
     } finally {
       monitor.stop();
     }
+  });
+
+  it('an identity probe that fails keeps the pause tracked (unknown is not gone); the next pass continues it', async () => {
+    let probeFails = false;
+    const { monitor, signals, fireAbort, fireShutdown } = setup({
+      live: (_pid, fallback) => (probeFails ? undefined : fallback),
+    });
+    await monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' });
+    probeFails = true;
+    fireAbort({ pid: 200, sessionKey: 'A' });
+    expect(signals).toEqual([[300, 'SIGSTOP']]);
+    probeFails = false;
+    fireShutdown();
+    expect(signals).toEqual([
+      [300, 'SIGSTOP'],
+      [300, 'SIGCONT'],
+    ]);
+  });
+
+  it('a manual signal whose identity probe fails is refused (denied), never sent blind', async () => {
+    const { monitor, signals } = setup({ live: () => undefined });
+    expect(await monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' })).toEqual({
+      ok: false,
+      reason: 'denied',
+    });
+    expect(signals).toEqual([]);
+  });
+
+  it('a late abort of an earlier turn does not continue a pause made under the next turn', async () => {
+    const { monitor, signals, fireAbort } = setup();
+    await monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' });
+    // Claude Code 199 ran the previous turn of session A; its abort arrives late.
+    fireAbort({ pid: 199, sessionKey: 'A' });
+    expect(signals).toEqual([[300, 'SIGSTOP']]);
+    fireAbort({ pid: 200, sessionKey: 'A' });
+    expect(signals).toEqual([
+      [300, 'SIGSTOP'],
+      [300, 'SIGCONT'],
+    ]);
+  });
+
+  it('shutdown continues the paused processes of every session', async () => {
+    const { monitor, signals, fireShutdown } = setup();
+    await monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' });
+    await monitor.control({ sessionKey: 'B', pid: 600, startToken: start, action: 'pause' });
+    signals.length = 0;
+    fireShutdown();
+    expect(signals.sort()).toEqual([
+      [300, 'SIGCONT'],
+      [600, 'SIGCONT'],
+    ]);
+  });
+
+  it('a sample that fails does not wedge the monitor: the next one runs', async () => {
+    let fail = true;
+    const { monitor } = setup({
+      runPs: (ps) => async (a) => {
+        if (fail) {
+          fail = false;
+          throw new Error('ps timed out');
+        }
+        return ps.run(a);
+      },
+    });
+    await expect(monitor.sample()).rejects.toThrow('ps timed out');
+    const snap = await monitor.sample();
+    expect(snap.sessions.map((s) => s.sessionKey).sort()).toEqual(['A', 'B']);
   });
 
   it('fresh() reuses a recent sample and takes a new one when it is older', async () => {

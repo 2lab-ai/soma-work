@@ -2,41 +2,43 @@ import { posix } from 'node:path';
 import { redactSecrets } from '@soma/common/logger';
 
 /**
- * What the Processes tab may show of a command line.
+ * What the Processes tab may show of a command line — fail-closed.
  *
- * A raw argv can carry secrets: the Agent SDK passes `--mcp-config` as inline
- * JSON with each MCP server's env, and a model can run `FOO_TOKEN=… cmd`. So the
- * preview keeps the shape of the command (program, flags, short values) and cuts
- * everything that could be a value nobody should see:
- *   - the value after a flag whose name says secret, config or prompt;
- *   - `NAME=value` where NAME says secret;
- *   - any JSON-looking argument, any argument longer than {@link MAX_ARG};
- *   - any 32+ character run of token characters;
- * then runs the logger's shaped-token redaction over the result.
+ * `ps args` joins argv with spaces and does not quote, so argument boundaries are gone: a prompt, an inline JSON config
+ * or a passphrase with spaces becomes several tokens, and no parser can tell where such a value ends. So the preview
+ * never tries to find the end of a value. It shows the shape of the command and hides every value:
+ *   - the program's name;
+ *   - flag names (`--model`, `-C`); a value written into a flag (`--x=value`, `-pS3cret`) is cut, and so is anything
+ *     after a short flag's first letter (`-uroot` and `-rf` look the same);
+ *   - the token right after a flag is cut (it may be that flag's value);
+ *   - a flag that takes code, a prompt, a config, a header, a body or a credential (`-c`, `-e`, `-p`,
+ *     `--append-system-prompt`, `--mcp-config`, `-H`, `-d`, `-u`, `--token` …) cuts everything after it, to the end of
+ *     the line — a value that may hold spaces has no end we can find;
+ *   - a `NAME=value` whose name says secret cuts the rest of the line too; any other `NAME=value` shows `NAME=…`;
+ *   - a plain word (`status`, `/work/repo`, `server.js`) shows only when it is short, path- or word-like and not a
+ *     token run; URL credentials are cut from it.
+ * The logger's shaped-token redaction runs over what is left.
  */
 
 const MAX_ARGS = 16;
-const MAX_ARG = 80;
 const MAX_TOTAL = 240;
 const CUT = '…';
 
-/**
- * Flags whose value can span several ps tokens (ps joins argv with spaces and does not quote): inline JSON, prompts,
- * headers. Everything after one is cut up to the next `--flag`.
- */
-const SPAN_FLAG = /^--?(mcp-config|settings|append-system-prompt|system-prompt|prompt|env|header|H|data|d)$/;
-/** A word that marks a value as secret — in a flag's name (`--access-token`), a `NAME=` or a header name. */
+/** A word that marks a flag or a `NAME=` as carrying a secret. */
 const SECRET_WORD =
-  /(token|secret|passw|pwd|api[-_]?key|apikey|auth|credential|cookie|session|bearer|private[-_]?key)/i;
-/** Short flags whose next token (or attached value) is commonly a password: mysql `-p`, redis-cli `-a`. */
-const SHORT_SECRET = /^-(p|a)$/;
-const SHORT_SECRET_ATTACHED = /^-p\S+$/;
-/** Auth schemes whose next token is the credential (`Authorization: Bearer …`). */
-const AUTH_SCHEME = /^(bearer|basic|token|digest)$/i;
-/** A header name that carries a credential (`X-Api-Key:`, `Authorization:`). */
-const SECRET_HEADER = /^[A-Za-z0-9-]*:$/;
+  /(token|secret|passw|pwd|api[-_]?key|apikey|auth|credential|cookie|session|bearer|private[-_]?key|user)/i;
+/**
+ * Flags whose value can be code, a prompt, a config, a header, a request body or a credential — and can hold spaces.
+ * Everything after one is cut.
+ */
+const CUT_REST_FLAG =
+  /^(-c|-e|-E|-p|-m|-a|-u|-H|-d|-b|--eval|--print|--command|--mcp-config|--settings|--append-system-prompt|--system-prompt|--prompt|--env|--header|--data[\w-]*|--form|--user|--cookie|--json|--body)$/;
+/** A plain argument shown as is: a short word, path or address — no quotes, spaces, braces or `=`. */
+const SAFE_WORD = /^[A-Za-z0-9._/@:+,~%-]{1,64}$/;
 const URL_CREDENTIALS = /([a-z][a-z0-9+.-]*:\/\/[^\s/:@]*):[^\s/@]*@/gi;
 const LONG_TOKEN = /[A-Za-z0-9_\-+/=.]{32,}/g;
+const HAS_LONG_TOKEN = /[A-Za-z0-9_\-+/=.]{32,}/;
+const MAX_NAME = 60;
 
 const basename = (p: string): string => posix.basename(p) || p;
 
@@ -44,7 +46,6 @@ const basename = (p: string): string => posix.basename(p) || p;
 const SCRIPT_FILE = /^[\w./@+-]+$/;
 /** Interpreter flags whose next argument is inline code, not a script (`python -c`, `node -e`, `perl -e`, `ruby -e`). */
 const INLINE_CODE_FLAG = /^(-c|-e|-E|-p|--eval|--print|-m)$/;
-const MAX_NAME = 60;
 
 /** Split a `ps args` line into argv. ps joins argv with single spaces and does not quote, so this is best effort. */
 export function splitArgs(line: string): string[] {
@@ -57,8 +58,7 @@ export function processName(argv: readonly string[]): string {
   const exe = basename(argv[0]);
   let name = exe;
   if (/^(node|bun|deno|python[0-9.]*|ruby|perl|sh|bash|zsh)$/.test(exe)) {
-    // Inline code (`sh -c '…'`, `python -c '…'`, `node -e '…'`) is not a script: the name stays the interpreter, and
-    // the code shows (redacted) on the command line only.
+    // Inline code (`sh -c '…'`, `python -c '…'`, `node -e '…'`) is not a script: the name stays the interpreter.
     if (!argv.slice(1).some((a) => INLINE_CODE_FLAG.test(a))) {
       const script = argv.slice(1).find((a) => !a.startsWith('-'));
       if (script && SCRIPT_FILE.test(script)) name = `${exe} ${basename(script)}`;
@@ -68,60 +68,63 @@ export function processName(argv: readonly string[]): string {
   return name.length > MAX_NAME ? `${name.slice(0, MAX_NAME - 1)}${CUT}` : name;
 }
 
-function previewArg(arg: string): string {
-  const eq = arg.indexOf('=');
-  if (eq > 0 && SECRET_WORD.test(arg.slice(0, eq))) return `${arg.slice(0, eq + 1)}${CUT}`;
-  let out = arg.replace(URL_CREDENTIALS, `$1:${CUT}@`).replace(LONG_TOKEN, CUT);
-  if (out.length > MAX_ARG) out = `${out.slice(0, MAX_ARG - 1)}${CUT}`;
-  return out;
-}
-
-/** A command line safe to show in the dashboard. */
+/** A command line safe to show in the dashboard (see the module comment for what is shown). */
 export function commandPreview(argv: readonly string[]): string {
   if (argv.length === 0) return '';
   const parts: string[] = [basename(argv[0])];
-  // 'next': hide the next token; 'span': hide every token up to the next `--flag`.
-  let hide: 'none' | 'next' | 'span' = 'none';
+  const cut = () => {
+    if (parts[parts.length - 1] !== CUT) parts.push(CUT);
+  };
+  let afterFlag = false;
   let shown = 0;
   for (const arg of argv.slice(1)) {
-    if (hide === 'span') {
-      if (!arg.startsWith('--')) continue;
-      hide = 'none';
-    } else if (hide === 'next') {
-      parts.push(CUT);
-      hide = 'none';
-      continue;
-    }
     if (shown >= MAX_ARGS) {
-      parts.push(CUT);
+      cut();
       break;
     }
     shown++;
-    const flag = arg.split('=')[0];
-    const isFlag = arg.startsWith('-');
-    if (isFlag && (SPAN_FLAG.test(flag) || SECRET_WORD.test(flag.replace(/^-+/, '')))) {
-      // ps flattened argv: a quoted multiword value — `--x value with spaces` or `--x={"a": "b c"}` — is several tokens
-      // now. Cut all of them, up to the next flag, in both forms.
-      parts.push(arg.includes('=') ? `${flag}=${CUT}` : `${arg} ${CUT}`);
-      hide = 'span';
+    if (arg.startsWith('-') && arg.length > 1) {
+      const eq = arg.indexOf('=');
+      const name = eq > 0 ? arg.slice(0, eq) : arg;
+      if (CUT_REST_FLAG.test(name) || SECRET_WORD.test(name.replace(/^-+/, ''))) {
+        parts.push(name);
+        cut();
+        break;
+      }
+      if (eq > 0) {
+        parts.push(`${name}=${CUT}`);
+        afterFlag = false;
+      } else if (!arg.startsWith('--') && arg.length > 2) {
+        // A short flag with more after it — a value attached (`-pS3cret`, `-uroot`, `-n5`) or bundled flags (`-rf`),
+        // which ps cannot tell apart: the first letter only.
+        parts.push(`${arg.slice(0, 2)}${CUT}`);
+        afterFlag = false;
+      } else {
+        parts.push(name);
+        afterFlag = true;
+      }
       continue;
     }
-    if (SHORT_SECRET_ATTACHED.test(arg)) {
-      parts.push(`-p${CUT}`);
+    const eq = arg.indexOf('=');
+    if (eq > 0 && /^[A-Za-z_][A-Za-z0-9_]*$/.test(arg.slice(0, eq))) {
+      if (SECRET_WORD.test(arg.slice(0, eq))) {
+        parts.push(`${arg.slice(0, eq)}=`);
+        cut();
+        break;
+      }
+      parts.push(`${arg.slice(0, eq)}=${CUT}`);
+      afterFlag = false;
       continue;
     }
-    if (SHORT_SECRET.test(arg) || AUTH_SCHEME.test(arg) || (SECRET_HEADER.test(arg) && SECRET_WORD.test(arg))) {
-      parts.push(arg);
-      hide = 'next';
+    if (afterFlag) {
+      // May be the previous flag's value.
+      cut();
+      afterFlag = false;
       continue;
     }
-    if (arg.startsWith('{') || arg.startsWith('[')) {
-      // Inline JSON: its spaces split it into many tokens — cut it whole, up to the next --flag.
-      parts.push('{…}');
-      hide = 'span';
-      continue;
-    }
-    parts.push(previewArg(arg));
+    const word = arg.replace(URL_CREDENTIALS, `$1:${CUT}@`);
+    if (SAFE_WORD.test(word.replace(CUT, '')) && !HAS_LONG_TOKEN.test(word)) parts.push(word);
+    else cut();
   }
   let line = String(redactSecrets(parts.join(' ')));
   if (line.length > MAX_TOTAL) line = `${line.slice(0, MAX_TOTAL - 1)}${CUT}`;

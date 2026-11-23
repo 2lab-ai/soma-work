@@ -40,9 +40,11 @@ same snapshot, and work will be placed by each node's free CPU and memory.
 4. **Pause is a signal guarded by identity.** Pause is `SIGSTOP` and resume is `SIGCONT`. A request names the pid and
    its start time. The monitor samples again at that moment and signals only a process that is in that session's tree
    with that start time. A pause whose check spans an abort of that turn is refused, because the abort's cleanup has
-   already run. Once shutdown cleanup starts, no pause is accepted. Right before a manual signal, and before every automatic
-   resume (abort, shutdown), the pid's live start time is read and a pid the OS has reused is skipped. A resume the OS
-   refuses keeps its entry for the next attempt. The route allows the owner, or an admin in admin mode, with CSRF. Aborting a turn continues
+   already run. Once shutdown cleanup starts, no pause is accepted. Right before a manual signal, and before every
+   automatic resume (abort, shutdown), the pid's live start time is read and a pid the OS has reused is skipped. An
+   unreadable identity is unknown, not gone: the manual signal is refused, and an automatic resume keeps its entry, as
+   it does when the OS refuses the resume. An abort continues only what was paused under that turn, or between turns,
+   so a late abort of an earlier turn leaves the next turn's pauses alone. The route allows the owner, or an admin in admin mode, with CSRF. Aborting a turn continues
    the paused root (in the spawner) and everything the monitor paused in that session, so a stop still lands. The
    same holds when the abort arrives after the root has exited. On shutdown (drain, crash kill) the registry first tells
    the monitor, which continues everything it paused. Every non-SIGKILL kill is followed by SIGCONT through the
@@ -55,16 +57,15 @@ same snapshot, and work will be placed by each node's free CPU and memory.
 6. **Board privacy unchanged.** A card's usage is a field of its board card (`KanbanSession.procUsage`). It travels
    through the existing per-viewer board and the single-card pushes, and only cards whose chip changed are pushed. The
    process list route sits under `/api/dashboard/session/:key`, so the private-task gate covers it. Commands are shown
-   only to the task's owner and admins (the work log's rule), and only as previews. The preview cuts:
-   - values after config, prompt and secret-named flags
-   - `-p`/`-a` passwords
-   - URL credentials
-   - auth-scheme and credential-header values
-   - `NAME=secret` values
-   - JSON blobs up to the next flag
-   - long tokens
+   only to the task's owner and admins (the work log's rule), and only as previews. A preview is fail-closed, because
+   ps has flattened argv and the end of a multiword value cannot be found:
+   - It shows the program, flag names and short plain words, and never a value.
+   - A value written into a flag is cut. So is the token after a flag.
+   - A flag that takes code, a prompt, a config, a header, a body or a credential cuts the rest of the line.
+   - A secret-named `NAME=` cuts the rest of the line.
+   - URL credentials are cut from plain words.
 
-   The logger's token redaction then runs over the result.
+   The logger's token redaction then runs over what is left.
 
 ## Consequences
 

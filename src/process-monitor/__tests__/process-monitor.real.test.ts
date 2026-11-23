@@ -31,6 +31,14 @@ afterEach(() => {
       // gone
     }
   }
+  // Descendants that outlived their shell (re-parented by the OS) carry the fixture's marker in their argv.
+  for (const sig of ['-CONT', '-KILL']) {
+    try {
+      execFileSync('pkill', [sig, '-f', 'sleep 6[0-9][.]73519'], { stdio: 'ignore' });
+    } catch {
+      // none left
+    }
+  }
   child = null;
   getClaudeChildProcessRegistry().resetForTests();
 });
@@ -44,7 +52,7 @@ describe.skipIf(!posix)('process monitor on the real OS', () => {
     // A stand-in for Claude Code: a shell that starts two long children (like a Bash tool and an MCP server).
     child = spawn({
       command: '/bin/sh',
-      args: ['-c', 'sleep 61 & sleep 62 & wait'],
+      args: ['-c', 'sleep 61.73519 & sleep 62.73519 & wait'],
       cwd: '/',
       env: { PATH: '/bin:/usr/bin' },
       signal: new AbortController().signal,
@@ -108,7 +116,7 @@ describe.skipIf(!posix)('process monitor on the real OS', () => {
     const spawn = createTrackedClaudeProcessSpawner(undefined, { sessionKey: 'abort-session' });
     child = spawn({
       command: '/bin/sh',
-      args: ['-c', 'sleep 63'],
+      args: ['-c', 'sleep 63.73519'],
       cwd: '/',
       env: { PATH: '/bin:/usr/bin' },
       signal: controller.signal,
