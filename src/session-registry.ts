@@ -17,7 +17,7 @@ import {
 import { LOG_VERBOSITY_MASK_VERSION, upgradeLegacyVerbosityMask } from '@soma/slack/output-flags';
 import { endGoalCapDecision } from '@soma/slack/session-goal';
 import { canonicalLinkUrl } from '@soma/slack/session-link-capture';
-import { stoppedByPersonSinceTurnStart } from '@soma/slack/session-manager';
+import { clearPersonStop, stoppedByPersonSinceTurnStart } from '@soma/slack/session-manager';
 import {
   sanitizeSdkUsageBaseline,
   sanitizeSessionUsage,
@@ -1764,6 +1764,8 @@ export class SessionRegistry {
       creditActiveGoalMs(session, Math.max(0, elapsed));
     }
     session.activeLegStartedAtMs = now;
+    // New work: a person's earlier stop no longer speaks for this session (Z 2026-11-23).
+    clearPersonStop(session);
     // Capture the goal (id + intent epoch) that owns THIS leg — see
     // `stampActiveLegGoalOwner` for why the owner is pinned per leg.
     stampActiveLegGoalOwner(session);
@@ -2172,6 +2174,8 @@ export class SessionRegistry {
     const leftWaiting = session.activityState === 'waiting';
     session.activityState = state;
     session.activityStateChangedAt = Date.now();
+    // New work: a person's earlier stop no longer speaks for this session (Z 2026-11-23).
+    if (state === 'working') clearPersonStop(session);
 
     this.logger.debug('Activity state changed', {
       channelId,
@@ -2216,6 +2220,7 @@ export class SessionRegistry {
     const leftWaiting = session.activityState === 'waiting';
     session.activityState = state;
     session.activityStateChangedAt = Date.now();
+    if (state === 'working') clearPersonStop(session); // new work (see setActivityState)
     this.logger.debug('Activity state changed', { sessionKey, state });
 
     // Notify dashboard WebSocket clients (was missing — caused stale dashboard state)
@@ -4367,13 +4372,11 @@ export class SessionRegistry {
         let sleptOnLoad = false;
         // Z 2026-11-23 — a person stopped this session after its last turn began (dashboard 중지, `!`). A crash
         // saves without notifyShutdown, so the persisted `working` would otherwise bring the stopped work back.
-        const stoppedByPerson =
-          serialized.activityState === 'working' &&
-          stoppedByPersonSinceTurnStart({
-            personStoppedWorkAt: finiteStamp(serialized.personStoppedWorkAt),
-            activeLegStartedAtMs: finiteStamp(serialized.activeLegStartedAtMs),
-            activityStateChangedAt: finiteStamp(serialized.activityStateChangedAt),
-          });
+        // A stop after notifyShutdown's snapshot wins over `wasWorkingAtShutdown` too.
+        const personStopped = stoppedByPersonSinceTurnStart({
+          personStoppedWorkAt: finiteStamp(serialized.personStoppedWorkAt),
+        });
+        const stoppedByPerson = serialized.activityState === 'working' && personStopped;
         // A starred session is kept alive across restarts too (SSOT 2026-10-30 T3).
         const starred = serialized.starred === true;
 
@@ -4752,7 +4755,7 @@ export class SessionRegistry {
             sessionKey: derivedKey,
             title: serialized.title,
             workflow: serialized.workflow,
-            shouldAutoResume: !sleptOnLoad && serialized.wasWorkingAtShutdown === true,
+            shouldAutoResume: !sleptOnLoad && serialized.wasWorkingAtShutdown === true && !personStopped,
             ...(stoppedAgents.length > 0 ? { stoppedAgents } : {}),
           });
         } else if (!sleptOnLoad && serialized.activityState && serialized.activityState !== 'idle') {

@@ -39,6 +39,7 @@ vi.mock(import('../env-paths'), async (importOriginal) => {
   };
 });
 
+import { markPersonStop, stoppedByPersonSinceTurnStart } from '@soma/slack/session-manager';
 import type { ClaudeHandler } from '../claude-handler';
 import { SessionRegistry } from '../session-registry';
 import { SessionUiManager } from '../slack/session-manager';
@@ -123,7 +124,7 @@ describe('Restart symmetry: notifyShutdown stamps recovery markers', () => {
   // Z 2026-11-23 (the customer dev host): three tasks stopped from the dashboard at 10:43–10:45 still read `working` — the stop could
   // not unwind their turn — so the 10:47 restart marked them working and the boot resumed all of them at 10:49.
   // A person's stop after the turn began is the last word: the restart does not resume that work.
-  it('a session a person stopped after its turn began is not marked working, whatever its activityState says', async () => {
+  it('a session a person stopped is not marked working while the stopped work is still its work', async () => {
     const { manager, sessions } = buildManager();
     const base = {
       userId: 'U1',
@@ -134,7 +135,7 @@ describe('Restart symmetry: notifyShutdown stamps recovery markers', () => {
       lastActivity: new Date(),
       activityState: 'working',
     };
-    // `personStoppedWorkAt`: the work the stop hit (its leg start, or its last state change before a leg began).
+    // `personStoppedWorkAt` is set by the stop and cleared when new work begins (a turn leg, a switch to working).
     const stoppedMidTurn = {
       ...base,
       threadTs: 't1',
@@ -149,42 +150,60 @@ describe('Restart symmetry: notifyShutdown stamps recovery markers', () => {
       activityStateChangedAt: 500,
       personStoppedWorkAt: 500,
     } as unknown as ConversationSession;
-    // A leg that began after the stop — even one that began in the very millisecond of the stop (review: a clock
-    // tie must not read new work as stopped).
-    const turnAfterTheStop = {
+    // Stopped once, then new work began (its mark cleared): resumed as before.
+    const newWorkAfterTheStop = {
       ...base,
       threadTs: 't3',
       lastPersonStopAtMs: 2_000,
-      personStoppedWorkAt: 1_000,
       activeLegStartedAtMs: 2_000,
     } as unknown as ConversationSession;
     const neverStopped = { ...base, threadTs: 't4', activeLegStartedAtMs: 1_000 } as unknown as ConversationSession;
-    // An old stop, then the session went working again without a turn leg yet (a button marks it working before its
-    // turn starts): new work — resumed (review: a missing leg must not make every later restart drop the work).
-    const workingAgainAfterOldStop = {
-      ...base,
-      threadTs: 't5',
-      lastPersonStopAtMs: 2_000,
-      personStoppedWorkAt: 500,
-      activityStateChangedAt: 3_000,
-    } as unknown as ConversationSession;
     sessions.set('k1', stoppedMidTurn);
     sessions.set('k2', stoppedBeforeTurnBegan);
-    sessions.set('k3', turnAfterTheStop);
+    sessions.set('k3', newWorkAfterTheStop);
     sessions.set('k4', neverStopped);
-    sessions.set('k5', workingAgainAfterOldStop);
 
     await manager.notifyShutdown();
 
     expect(stoppedMidTurn.wasWorkingAtShutdown).toBe(false);
     expect(stoppedBeforeTurnBegan.wasWorkingAtShutdown).toBe(false);
-    // A turn that began after the stop is new work — the restart resumes it as before.
-    expect(turnAfterTheStop.wasWorkingAtShutdown).toBe(true);
+    expect(newWorkAfterTheStop.wasWorkingAtShutdown).toBe(true);
     expect(neverStopped.wasWorkingAtShutdown).toBe(true);
-    expect(workingAgainAfterOldStop.wasWorkingAtShutdown).toBe(true);
     // Every one of them is still told about the restart.
-    for (const s of [stoppedMidTurn, stoppedBeforeTurnBegan, turnAfterTheStop, neverStopped]) {
+    for (const s of [stoppedMidTurn, stoppedBeforeTurnBegan, newWorkAfterTheStop, neverStopped]) {
       expect(s.shutdownNotificationSent).toBe(true);
+    }
+  });
+
+  // Review of Legends (26612e7): a clock tie or a clock that moves back must not tie new work to an old stop. New
+  // work clears the mark — checked through the real registry lifecycle with the clock frozen.
+  it('new work clears the stop mark — a leg that begins in the stop’s millisecond, or a switch to working', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now()); // one frozen millisecond (now, so the load does not expire it)
+    try {
+      const registry = new SessionRegistry();
+      const leg = registry.createSession('U1', 'U1', 'C-life', 'ts-leg');
+      registry.beginTurn(leg);
+      markPersonStop(leg, Date.now());
+      expect(stoppedByPersonSinceTurnStart(leg)).toBe(true);
+      registry.beginTurn(leg); // fresh work, same millisecond
+      expect(leg.personStoppedWorkAt).toBeUndefined();
+      expect(stoppedByPersonSinceTurnStart(leg)).toBe(false);
+
+      const answered = registry.createSession('U1', 'U1', 'C-life', 'ts-answer');
+      markPersonStop(answered, Date.now());
+      registry.setActivityStateByKey(registry.getSessionKey('C-life', 'ts-answer'), 'working'); // a button's answer
+      expect(answered.personStoppedWorkAt).toBeUndefined();
+
+      // Through a save and a crash load: the fresh work is resumed.
+      leg.sessionId = 'sess-leg';
+      leg.activityState = 'working';
+      registry.saveSessions();
+      const reloaded = new SessionRegistry();
+      reloaded.loadSessions();
+      const recovered = reloaded.getCrashRecoveredSessions().find((r) => r.threadTs === 'ts-leg');
+      expect(recovered?.shouldAutoResume).toBe(true);
+    } finally {
+      vi.restoreAllMocks();
     }
   });
 
@@ -503,13 +522,7 @@ describe('Restart symmetry: loadSessions honors shutdownNotificationSent marker'
           lastPersonStopAtMs: 2_000,
           personStoppedWorkAt: 1_000,
         }),
-        crashed({
-          key: 'C-crash-3',
-          threadTs: 'ts-new-turn',
-          activeLegStartedAtMs: 3_000,
-          lastPersonStopAtMs: 2_000,
-          personStoppedWorkAt: 1_000,
-        }),
+        crashed({ key: 'C-crash-3', threadTs: 'ts-new-turn', activeLegStartedAtMs: 3_000, lastPersonStopAtMs: 2_000 }),
       ]),
     );
 
@@ -523,6 +536,31 @@ describe('Restart symmetry: loadSessions honors shutdownNotificationSent marker'
     // A turn that began after the stop is new work: resumed as before.
     expect(byThread.get('ts-new-turn')?.shouldAutoResume).toBe(true);
     expect(registry.getSession('C-crash', 'ts-new-turn')?.activityState).toBe('working');
+  });
+
+  // Review of Legends (26612e7): notifyShutdown stamps `wasWorkingAtShutdown` before its post; a person's stop can
+  // land after that and before the final save. The stop wins, whatever the turn left as its state.
+  it('a stop after the shutdown snapshot wins over `wasWorkingAtShutdown`', async () => {
+    fs.writeFileSync(
+      path.join(TEST_DIR, 'sessions.json'),
+      JSON.stringify([
+        crashed({
+          key: 'C-crash-4',
+          threadTs: 'ts-snapshot-then-stop',
+          activityState: 'idle', // the stopped turn unwound before the save
+          shutdownNotificationSent: true,
+          wasWorkingAtShutdown: true,
+          shutdownNotifiedAt: Date.now(),
+          lastPersonStopAtMs: 2_000,
+          personStoppedWorkAt: 1_000,
+        }),
+      ]),
+    );
+    const registry = new SessionRegistry();
+    registry.loadSessions();
+    const recovered = registry.getCrashRecoveredSessions().find((r) => r.threadTs === 'ts-snapshot-then-stop');
+    expect(recovered).toBeDefined(); // still told about the restart
+    expect(recovered?.shouldAutoResume).toBe(false);
   });
 
   it('a person’s stop is saved with the session, so the next crash still honours it', async () => {

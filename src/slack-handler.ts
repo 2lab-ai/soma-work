@@ -27,7 +27,7 @@ import { OutputFlag } from '@soma/slack/output-flags';
 import { isLocalSlashCommand, shouldForwardAsLocalSlashCommand } from '@soma/slack/pipeline/local-slash-command';
 import { runWithTimeout } from '@soma/slack/pipeline/stream-executor-cleanup-helpers';
 import { buildSafeguardRefusalBlocks, decideSafeguardGate, safeguardRefusalNotice } from '@soma/slack/safeguard';
-import { currentWorkMarker } from '@soma/slack/session-manager';
+import { markPersonStop } from '@soma/slack/session-manager';
 import { sayPostSwitches } from '@soma/slack/stream-processor';
 import { HandoffAbortError, isZHandoffWorkflow } from 'somalib/model-commands/handoff-parser';
 import { getAdminUsers, isAdminUser } from './admin-utils';
@@ -7150,9 +7150,9 @@ export class SlackHandler {
     // A person's stop (dashboard 중지, `!`) — not a shutdown, not a close — is the one a restart and a turn still
     // being prepared must honour (Z 2026-11-23).
     if (reason === 'user-stop') {
-      session.lastPersonStopAtMs = now;
-      // Which work it stopped — a restart does not resume that same work (`stoppedByPersonSinceTurnStart`).
-      session.personStoppedWorkAt = currentWorkMarker(session);
+      // When, and which work it stopped — a restart does not resume it until new work begins
+      // (`stoppedByPersonSinceTurnStart`).
+      markPersonStop(session, now);
       this.personStopOrder.set(session, ++this.personStopCount);
     }
   }

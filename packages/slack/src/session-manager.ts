@@ -40,7 +40,11 @@ export interface ConversationSession {
   activityStateChangedAt?: number;
   /** When a person last stopped this session (dashboard 중지, `!`) — set by the host's stop observer, saved. */
   lastPersonStopAtMs?: number;
-  /** The work that stop hit: `activeLegStartedAtMs`, or `activityStateChangedAt` before a leg began (0 if neither). */
+  /**
+   * Set by a person's stop (the work it hit: `activeLegStartedAtMs`, or `activityStateChangedAt` before a leg began),
+   * cleared when new work begins (`clearPersonStop`: a turn leg, a switch to working). Present = the work a person
+   * stopped is still this session's work.
+   */
   personStoppedWorkAt?: number;
 }
 
@@ -48,23 +52,37 @@ export interface ConversationSession {
  * The work a session is on now: its turn leg's start, or — before a leg begins (a turn still being prepared, a button
  * that marks the session working first) — the moment it last changed state.
  */
-export function currentWorkMarker(
+function currentWorkMarker(
   session: Pick<ConversationSession, 'activeLegStartedAtMs' | 'activityStateChangedAt'>,
 ): number {
   return session.activeLegStartedAtMs ?? session.activityStateChangedAt ?? 0;
 }
 
+/** Z 2026-11-23 — a person stopped this session (dashboard 중지, `!`): record when, and which work it hit. */
+export function markPersonStop(
+  session: Pick<
+    ConversationSession,
+    'lastPersonStopAtMs' | 'personStoppedWorkAt' | 'activeLegStartedAtMs' | 'activityStateChangedAt'
+  >,
+  now: number,
+): void {
+  session.lastPersonStopAtMs = now;
+  session.personStoppedWorkAt = currentWorkMarker(session);
+}
+
+/** New work begins (a turn leg, a switch to working): the stop no longer speaks for this session's work. */
+export function clearPersonStop(session: Pick<ConversationSession, 'personStoppedWorkAt'>): void {
+  session.personStoppedWorkAt = undefined;
+}
+
 /**
- * Z 2026-11-23 — the work this session is on now is the work a person stopped (`personStoppedWorkAt`, recorded by
- * the stop). Its `working` is then only what the stop could not unwind (a turn stuck after its abort, or one still
- * starting), and a restart must not resume it. Any work that began after the stop — a new leg, a new state — is a
- * different marker: resumed as before, even when it began in the stop's millisecond.
+ * Z 2026-11-23 — a person stopped this session and no new work has begun since (`personStoppedWorkAt` is set by the
+ * stop and cleared by new work). Its `working` is then only what the stop could not unwind (a turn stuck after its
+ * abort, or one still starting), and a restart must not resume it. Cleared rather than compared by clock, so new work
+ * that begins in the stop's millisecond — or after the clock moved back — is never read as stopped.
  */
-export function stoppedByPersonSinceTurnStart(
-  session: Pick<ConversationSession, 'personStoppedWorkAt' | 'activeLegStartedAtMs' | 'activityStateChangedAt'>,
-): boolean {
-  const stoppedWork = session.personStoppedWorkAt;
-  return typeof stoppedWork === 'number' && stoppedWork === currentWorkMarker(session);
+export function stoppedByPersonSinceTurnStart(session: Pick<ConversationSession, 'personStoppedWorkAt'>): boolean {
+  return typeof session.personStoppedWorkAt === 'number';
 }
 
 export interface ClaudeSessionUiReader {
