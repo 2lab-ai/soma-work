@@ -101,7 +101,11 @@ function fakeSource(snap = snapshot([sessionA])) {
     snap,
     latest: vi.fn(() => snap),
     fresh: vi.fn(async () => snap),
-    control: vi.fn(async (input: any) => ({ ok: true as const, pid: input.pid, state: 'stopped' })),
+    control: vi.fn(async (input: any) => ({
+      ok: true as const,
+      pid: input.pid,
+      state: input.action === 'pause' ? 'stopped' : 'running',
+    })),
     onSample: vi.fn((l: (s: any) => void) => {
       listeners.add(l);
       return () => listeners.delete(l);
@@ -204,6 +208,14 @@ describe('Dashboard — the 프로세스 tab and the CPU · 메모리 chip', () 
       startToken: 'Mon Nov 23 10:00:00 2026',
       action: 'pause',
     });
+  });
+
+  it('POST resume continues through the monitor and answers the running state', async () => {
+    const src = fakeSource();
+    dashboard.setDashboardProcessSource(src);
+    const res = await control('resume', 300, { startToken: 'Mon Nov 23 10:00:00 2026' });
+    expect(JSON.parse(res.body)).toEqual({ ok: true, pid: 300, state: 'running' });
+    expect(src.control).toHaveBeenCalledWith(expect.objectContaining({ pid: 300, action: 'resume' }));
   });
 
   it('POST: owner yes; another user 403; admin only in admin mode; no CSRF 403', async () => {
@@ -317,8 +329,17 @@ describe('Dashboard — the 프로세스 tab and the CPU · 메모리 chip', () 
     expect(
       dashboard.procCardsToPush(pushed, snapshot([{ ...sessionA, cpuPercent: 43.9, rssBytes: 1.2e9 + 1e6 }])),
     ).toEqual([]);
-    // Another bucket: a push.
+    // Another bucket: a push. Memory alone moving 10 MB: a push. CPU alone under 10%, a whole point: a push.
     expect(dashboard.procCardsToPush(pushed, snapshot([{ ...sessionA, cpuPercent: 61 }]))).toEqual([KEY]);
+    expect(dashboard.procCardsToPush(pushed, snapshot([{ ...sessionA, cpuPercent: 61, rssBytes: 1.3e9 }]))).toEqual([
+      KEY,
+    ]);
+    expect(dashboard.procCardsToPush(pushed, snapshot([{ ...sessionA, cpuPercent: 3, rssBytes: 1.3e9 }]))).toEqual([
+      KEY,
+    ]);
+    expect(dashboard.procCardsToPush(pushed, snapshot([{ ...sessionA, cpuPercent: 4, rssBytes: 1.3e9 }]))).toEqual([
+      KEY,
+    ]);
     // A process paused: the chip changes.
     expect(dashboard.procCardsToPush(pushed, snapshot([{ ...sessionA, stoppedCount: 2 }]))).toEqual([KEY]);
     // Every process gone: one more push so the chip disappears, then nothing.
@@ -326,13 +347,16 @@ describe('Dashboard — the 프로세스 tab and the CPU · 메모리 chip', () 
     expect(dashboard.procCardsToPush(pushed, snapshot([]))).toEqual([]);
   });
 
-  it('wiring a source subscribes once and unwiring unsubscribes', () => {
+  it('a wired source’s samples push the changed cards; unwiring stops them', () => {
     const src = fakeSource();
-    dashboard.setDashboardProcessSource(src);
-    expect(src.onSample).toHaveBeenCalledTimes(1);
+    const pushCard = vi.fn();
+    dashboard.setDashboardProcessSource(src, pushCard);
+    src.emit(snapshot([sessionA]));
+    src.emit(snapshot([sessionA])); // nothing changed
+    src.emit(snapshot([])); // the last process exited
+    expect(pushCard.mock.calls).toEqual([[KEY], [KEY]]);
     dashboard.setDashboardProcessSource(null);
-    const again = fakeSource();
-    dashboard.setDashboardProcessSource(again);
-    expect(again.onSample).toHaveBeenCalledTimes(1);
+    src.emit(snapshot([sessionA]));
+    expect(pushCard).toHaveBeenCalledTimes(2);
   });
 });

@@ -236,17 +236,11 @@ export function usageForViewer<T extends { byUser: unknown; tokenRankings: unkno
 
 // ── Types ──────────────────────────────────────────────────────────
 
-/** A session's process tree in one line (`SessionProcessUsage` without the session key and the time). */
-export interface KanbanProcUsage {
-  nodeId: string;
-  /** Logical cores on that node — 100% CPU is one of them. */
-  cpuCount: number;
-  rootAlive: boolean;
-  processCount: number;
-  stoppedCount: number;
-  cpuPercent: number;
-  rssBytes: number;
-}
+/**
+ * A session's process tree in one line: `SessionProcessUsage` without the session key and the time, plus the node's
+ * logical cores (`cpuCount` — 100% CPU is one of them).
+ */
+export type KanbanProcUsage = Omit<SessionProcessUsage, 'sessionKey' | 'sampledAt'> & { cpuCount: number };
 
 export interface KanbanSession {
   key: string;
@@ -1264,14 +1258,18 @@ function procSignature(u: SessionProcessUsage): string {
  * whose last process exited, so the chip goes away — through the per-viewer single-card push (private tasks stay
  * with their viewers).
  */
-export function setDashboardProcessSource(source: DashboardProcessSource | null): void {
+export function setDashboardProcessSource(
+  source: DashboardProcessSource | null,
+  // Where a changed card goes: the per-viewer single-card push. A seam for the wiring test.
+  pushCard: (sessionKey: string) => void = scheduleLiveSessionUpdate,
+): void {
   _processUnsubscribe?.();
   _processUnsubscribe = null;
   _processSource = source;
   _procPushed.clear();
   if (!source) return;
   _processUnsubscribe = source.onSample((snapshot) => {
-    for (const key of procCardsToPush(_procPushed, snapshot)) scheduleLiveSessionUpdate(key);
+    for (const key of procCardsToPush(_procPushed, snapshot)) pushCard(key);
   });
 }
 
