@@ -67,6 +67,7 @@ src/
 ├── persona/         # 봇 페르소나
 ├── sandbox/         # 실행 샌드박스 게이트
 ├── metrics/         # 토큰/비용 텔레메트리
+├── process-monitor/ # 세션별 Claude Code 프로세스 트리 CPU·메모리 · 일시중지/재개 · 노드 가용량 (ADR 0003)
 ├── notification-channels/  # Slack·DM·Telegram·Webhook 출력 라우팅
 ├── cli/             # `somawork` 컨트롤러 (데몬과 별개 프로세스 — 아래 참조)
 │   ├── index.ts     # 라우터: 공개 커맨드 + 비공개 Slack 훅 라우트

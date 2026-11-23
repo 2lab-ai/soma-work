@@ -761,6 +761,35 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
     options.stderr?.('boom-2\n');
     expect(getStderrBuffer()).toBe('boom-1\nboom-2\n');
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'processOwner: the spawned Claude Code child is tracked under the session (the process monitor groups it)',
+    async () => {
+      const { getClaudeChildProcessRegistry } = await import('../claude-child-process-registry');
+      const deps = makeDeps();
+      const { options } = await buildStreamOptions(
+        { queryEnv: {}, abortController: new AbortController(), processOwner: { sessionKey: 'C1-111.222' } },
+        deps,
+      );
+      const child = options.spawnClaudeCodeProcess?.({
+        command: '/bin/sleep',
+        args: ['5'],
+        cwd: '/',
+        env: { PATH: '/bin:/usr/bin' },
+        signal: new AbortController().signal,
+      } as never) as unknown as import('node:child_process').ChildProcess;
+      try {
+        expect(getClaudeChildProcessRegistry().roots()).toContainEqual({
+          pid: child.pid,
+          sessionKey: 'C1-111.222',
+          turnId: expect.any(Number),
+        });
+      } finally {
+        child.kill('SIGKILL');
+        getClaudeChildProcessRegistry().resetForTests();
+      }
+    },
+  );
 });
 
 // env-access WU2 (#1210): an admin's session is sandboxed too, with the admin profile; only a host

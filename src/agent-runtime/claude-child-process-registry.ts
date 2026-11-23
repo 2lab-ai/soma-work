@@ -6,6 +6,23 @@ const DEFAULT_KILL_WAIT_MS = 1_000;
 
 export type TrackedClaudeProcess = SpawnedProcess & { readonly pid?: number };
 
+/** Who a Claude Code child runs for. Absent for one-shot helpers (title, dispatch, voice). */
+export interface ClaudeProcessOwner {
+  /** The work session (dashboard task card) the child runs a turn for. */
+  readonly sessionKey: string;
+}
+
+/** A live tracked child as the process monitor sees it. */
+export interface TrackedClaudeRootInfo {
+  readonly pid: number;
+  readonly sessionKey?: string;
+  /**
+   * This spawn's own number, unique in this daemon: the turn's identity. A pid is not one — the OS can give an exited
+   * child's pid to the next one, and a late abort of the first must not reach what the second paused.
+   */
+  readonly turnId: number;
+}
+
 export interface DrainOptions {
   readonly graceMs?: number;
   readonly killWaitMs?: number;
@@ -20,6 +37,11 @@ export interface DrainOptions {
  */
 export class ClaudeChildProcessRegistry {
   private readonly children = new Set<TrackedClaudeProcess>();
+  private readonly owners = new WeakMap<TrackedClaudeProcess, ClaudeProcessOwner>();
+  private readonly turnIds = new WeakMap<TrackedClaudeProcess, number>();
+  private nextTurnId = 0;
+  private readonly abortListeners = new Set<(root: TrackedClaudeRootInfo) => void>();
+  private readonly shutdownListeners = new Set<() => void>();
   private shutdownSignal: NodeJS.Signals | null = null;
   private changeWaiters = new Set<() => void>();
   private drainPromise: Promise<void> | null = null;
@@ -29,8 +51,10 @@ export class ClaudeChildProcessRegistry {
     return this.children.size;
   }
 
-  track(child: TrackedClaudeProcess): TrackedClaudeProcess {
+  track(child: TrackedClaudeProcess, owner?: ClaudeProcessOwner): TrackedClaudeProcess {
     this.children.add(child);
+    if (owner) this.owners.set(child, owner);
+    if (!this.turnIds.has(child)) this.turnIds.set(child, ++this.nextTurnId);
 
     const remove = () => {
       child.off('exit', onExit);
@@ -56,6 +80,64 @@ export class ClaudeChildProcessRegistry {
     return child;
   }
 
+  /** Live children that have a pid, with the session each runs for. */
+  roots(): TrackedClaudeRootInfo[] {
+    const out: TrackedClaudeRootInfo[] = [];
+    for (const child of this.children) {
+      if (child.pid === undefined || child.exitCode !== null) continue;
+      out.push(this.infoOf(child, child.pid));
+    }
+    return out;
+  }
+
+  private infoOf(child: TrackedClaudeProcess, pid: number): TrackedClaudeRootInfo {
+    const owner = this.owners.get(child);
+    const turnId = this.turnIds.get(child) ?? 0;
+    return owner ? { pid, sessionKey: owner.sessionKey, turnId } : { pid, turnId };
+  }
+
+  /**
+   * Called when a child's turn is aborted (stop button, steering abort). The
+   * process monitor resumes what it paused in that session, so an abort ends
+   * a paused tree instead of leaving it stopped forever.
+   */
+  onAbort(listener: (root: TrackedClaudeRootInfo) => void): () => void {
+    this.abortListeners.add(listener);
+    return () => this.abortListeners.delete(listener);
+  }
+
+  /**
+   * Called synchronously when the host starts shutting its children down (drain, crash kill). The process monitor
+   * continues every process it paused, so nothing is left stopped after the daemon is gone.
+   */
+  onShutdown(listener: () => void): () => void {
+    this.shutdownListeners.add(listener);
+    return () => this.shutdownListeners.delete(listener);
+  }
+
+  private notifyShutdown(): void {
+    for (const listener of [...this.shutdownListeners]) {
+      try {
+        listener();
+      } catch {
+        // One listener's failure must not keep the others (or the kill) from running.
+      }
+    }
+  }
+
+  /** @internal the spawner reports an aborted child here. */
+  notifyAborted(child: TrackedClaudeProcess): void {
+    if (child.pid === undefined) return;
+    const info = this.infoOf(child, child.pid);
+    for (const listener of [...this.abortListeners]) {
+      try {
+        listener(info);
+      } catch {
+        // A listener's failure must not keep the abort from reaching the others.
+      }
+    }
+  }
+
   async drain(options: DrainOptions = {}): Promise<void> {
     if (this.drainPromise) return this.drainPromise;
 
@@ -69,8 +151,11 @@ export class ClaudeChildProcessRegistry {
   }
 
   private async drainOnce(graceMs: number, killWaitMs: number): Promise<void> {
-    const deadline = Date.now() + graceMs;
     if (this.shutdownSignal !== 'SIGKILL') this.shutdownSignal = 'SIGTERM';
+    this.notifyShutdown();
+    // The grace period starts at the SIGTERM, after the shutdown listeners (the monitor's resume pass can take a while
+    // on a loaded host): the children get all of it.
+    const deadline = Date.now() + graceMs;
     this.killLiveChildren(this.shutdownSignal);
 
     while (this.hasLiveChildren() && this.shutdownSignal !== 'SIGKILL') {
@@ -95,6 +180,7 @@ export class ClaudeChildProcessRegistry {
   }
 
   killAllSync(signal: NodeJS.Signals): void {
+    this.notifyShutdown();
     for (const child of this.children) {
       if (child.exitCode === null) {
         this.kill(child, signal);
@@ -159,10 +245,24 @@ export class ClaudeChildProcessRegistry {
     } catch {
       if (child.exitCode === null) this.killFailures.add(child.pid);
     }
+    // A child the owner paused (SIGSTOP, the dashboard's 프로세스 tab) holds any other signal pending until it runs
+    // again: continue it so SIGTERM lands now instead of waiting out the grace for SIGKILL. Through the handle, so a
+    // child that already exited (and whose pid the OS may have reused) is never signalled.
+    if (signal !== 'SIGKILL' && child.exitCode === null) continueChild(child);
   }
 }
 
 const registry = new ClaudeChildProcessRegistry();
+
+/** SIGCONT through the child's own handle — never a bare pid, which the OS may have handed to another program. */
+function continueChild(child: TrackedClaudeProcess): void {
+  if (process.platform === 'win32' || child.exitCode !== null || child.signalCode) return;
+  try {
+    child.kill('SIGCONT');
+  } catch {
+    // Already gone: nothing to continue.
+  }
+}
 
 export function getClaudeChildProcessRegistry(): ClaudeChildProcessRegistry {
   return registry;
@@ -174,6 +274,7 @@ export function getClaudeChildProcessRegistry(): ClaudeChildProcessRegistry {
  */
 export function createTrackedClaudeProcessSpawner(
   onStderr?: (data: string) => void,
+  owner?: ClaudeProcessOwner,
 ): (options: SpawnOptions) => SpawnedProcess {
   return ({ command, args, cwd, env, signal }) => {
     const child = spawn(command, args, {
@@ -188,6 +289,20 @@ export function createTrackedClaudeProcessSpawner(
       onStderr?.(chunk.toString());
     });
 
-    return registry.track(child);
+    // Node sends the kill signal on abort first (its listener was added by spawn). A child the owner paused
+    // (SIGSTOP) holds that signal pending until it runs again, so continue it, and let the monitor continue
+    // the paused processes under it.
+    // The listener stays after the child exits: the SDK can abort after the CLI has already gone (close() with a
+    // grace), and the processes paused under it must still be continued. continueChild skips an exited child.
+    signal?.addEventListener(
+      'abort',
+      () => {
+        continueChild(child);
+        registry.notifyAborted(child);
+      },
+      { once: true },
+    );
+
+    return registry.track(child, owner);
   };
 }
