@@ -1,5 +1,6 @@
+import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
-import { parseProcStatCpuSeconds } from '../index';
+import { parseProcStatCpuSeconds, runReadOnly } from '../index';
 
 describe('parseProcStatCpuSeconds (Linux /proc/<pid>/stat)', () => {
   it('reads utime + stime after the parenthesised name, which may hold spaces and parentheses', () => {
@@ -12,5 +13,16 @@ describe('parseProcStatCpuSeconds (Linux /proc/<pid>/stat)', () => {
   it('answers null for anything else', () => {
     expect(parseProcStatCpuSeconds('')).toBeNull();
     expect(parseProcStatCpuSeconds('1 (x) S 1')).toBeNull();
+  });
+});
+
+describe.skipIf(process.platform !== 'darwin' && process.platform !== 'linux')('runReadOnly (real ps)', () => {
+  it('a -p pid that is gone is an empty answer, not an error', async () => {
+    const gone = spawnSync('/usr/bin/true').pid;
+    await expect(runReadOnly('ps', ['-o', 'pid=', '-p', String(gone)])).resolves.toBe('');
+  });
+
+  it('ps refusing its arguments is an error, not an empty answer', async () => {
+    await expect(runReadOnly('ps', ['-o', 'no-such-column-xyz=', '-p', String(process.pid)])).rejects.toBeTruthy();
   });
 });

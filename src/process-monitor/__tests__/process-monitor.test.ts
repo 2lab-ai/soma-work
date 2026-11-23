@@ -404,6 +404,78 @@ describe('LocalProcessMonitor', () => {
     expect(snap.sessions.map((s) => s.sessionKey).sort()).toEqual(['A', 'B']);
   });
 
+  it('an abort of another turn during the check does not block a pause; its own turn’s abort does', async () => {
+    const make = () => {
+      let release: () => void = () => {};
+      const gate = new Promise<void>((r) => {
+        release = r;
+      });
+      let held = false;
+      return {
+        release: () => release(),
+        runPs: (ps: FakePs) => async (a: readonly string[]) => {
+          if (!held) {
+            held = true;
+            await gate;
+          }
+          return ps.run(a);
+        },
+      };
+    };
+    const g1 = make();
+    const one = setup({ runPs: g1.runPs });
+    const p1 = one.monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' });
+    one.fireAbort({ pid: 199, sessionKey: 'A' }); // an earlier turn of A
+    g1.release();
+    expect(await p1).toMatchObject({ ok: true });
+
+    const g2 = make();
+    const two = setup({ runPs: g2.runPs });
+    const p2 = two.monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' });
+    two.fireAbort({ pid: 200, sessionKey: 'A' }); // 300's own turn
+    g2.release();
+    expect(await p2).toEqual({ ok: false, reason: 'not-found' });
+  });
+
+  it('an orphan keeps the turn it was seen under: that turn’s abort continues it, a later turn’s does not', async () => {
+    const { monitor, signals, fireAbort, ps, roots } = setup();
+    await monitor.sample(); // 300 seen under turn 200
+    // Turn 200 ends; bash 300 is re-parented by the OS; the next turn 201 starts.
+    ps.remove(200).reparent(300, 1).set(201, { ppid: 100, args: '/usr/local/bin/claude' });
+    roots.splice(0, 1, { pid: 201, sessionKey: 'A' });
+    await monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' });
+    fireAbort({ pid: 201, sessionKey: 'A' });
+    expect(signals).toEqual([[300, 'SIGSTOP']]);
+    fireAbort({ pid: 200, sessionKey: 'A' });
+    expect(signals).toEqual([
+      [300, 'SIGSTOP'],
+      [300, 'SIGCONT'],
+    ]);
+  });
+
+  it('two live turns in one session: each abort continues only its own tree’s pauses', async () => {
+    const { monitor, signals, fireAbort, ps, roots } = setup();
+    ps.set(210, { ppid: 100, args: '/usr/local/bin/claude' }).set(310, { ppid: 210, args: '/bin/bash -c b' });
+    roots.push({ pid: 210, sessionKey: 'A' });
+    await monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' });
+    await monitor.control({ sessionKey: 'A', pid: 310, startToken: start, action: 'pause' });
+    signals.length = 0;
+    fireAbort({ pid: 210, sessionKey: 'A' });
+    expect(signals).toEqual([[310, 'SIGCONT']]);
+  });
+
+  it('shutdown retries what it could not continue, a few times, before giving up', async () => {
+    let failing = 0;
+    const { monitor, signals, fireShutdown } = setup({
+      live: (_pid, fallback) => (failing-- > 0 ? undefined : fallback),
+    });
+    await monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' });
+    signals.length = 0;
+    failing = 2; // the first two identity reads fail; the third works
+    fireShutdown();
+    expect(signals).toEqual([[300, 'SIGCONT']]);
+  });
+
   it('fresh() reuses a recent sample and takes a new one when it is older', async () => {
     const { monitor, ps, tick } = setup();
     await monitor.sample();

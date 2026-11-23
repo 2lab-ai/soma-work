@@ -18,8 +18,9 @@ const PS_MAX_BUFFER = 8 * 1024 * 1024;
 
 /**
  * Run a fixed read-only binary (`ps`, `vm_stat`) with `LC_ALL=C` so column
- * formats do not change with the locale. ps exits 1 when one of the `-p` pids
- * is gone; its stdout still lists the others, so that case resolves.
+ * formats do not change with the locale. ps exits 1 with no message when one of
+ * the `-p` pids is gone; its stdout still lists the others, so that case
+ * resolves. Exit 1 with a message on stderr rejects.
  */
 export const runReadOnly: RunCommand = (cmd, args) =>
   new Promise((resolve, reject) => {
@@ -27,9 +28,11 @@ export const runReadOnly: RunCommand = (cmd, args) =>
       cmd,
       [...args],
       { timeout: PS_TIMEOUT_MS, maxBuffer: PS_MAX_BUFFER, env: { PATH: '/bin:/usr/bin', LC_ALL: 'C' } },
-      (error, stdout) => {
+      (error, stdout, stderr) => {
         if (!error) return resolve(stdout);
-        if ((error as { code?: unknown }).code === 1 && typeof stdout === 'string') {
+        // ps exits 1, silently, when a -p pid is gone (the others still print). Exit 1 with a message on stderr is a
+        // real failure (a bad option, a refused read), never an empty selection.
+        if ((error as { code?: unknown }).code === 1 && typeof stdout === 'string' && !String(stderr ?? '').trim()) {
           return resolve(stdout);
         }
         reject(error);

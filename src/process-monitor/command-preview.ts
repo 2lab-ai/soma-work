@@ -15,8 +15,9 @@ import { redactSecrets } from '@soma/common/logger';
  *     `--append-system-prompt`, `--mcp-config`, `-H`, `-d`, `-u`, `--token` …) cuts everything after it, to the end of
  *     the line — a value that may hold spaces has no end we can find;
  *   - a `NAME=value` whose name says secret cuts the rest of the line too; any other `NAME=value` shows `NAME=…`;
- *   - a plain word (`status`, `/work/repo`, `server.js`) shows only when it is short, path- or word-like and not a
- *     token run; URL credentials are cut from it.
+ *   - a plain word shows only when it is a path (`/work/repo`, `./dist/server.js`): short, containing `/`, not a token
+ *     run, URL credentials cut. Any other word — a subcommand, an operand, a positional password — is cut: a word
+ *     alone cannot be told apart from a secret.
  * The logger's shaped-token redaction runs over what is left.
  */
 
@@ -25,8 +26,7 @@ const MAX_TOTAL = 240;
 const CUT = '…';
 
 /** A word that marks a flag or a `NAME=` as carrying a secret. */
-const SECRET_WORD =
-  /(token|secret|passw|pwd|api[-_]?key|apikey|auth|credential|cookie|session|bearer|private[-_]?key|user)/i;
+const SECRET_WORD = /(token|secret|pass|phrase|pwd|pin|otp|key|auth|credential|cookie|session|bearer|user|login|sign)/i;
 /**
  * Flags whose value can be code, a prompt, a config, a header, a request body or a credential — and can hold spaces.
  * Everything after one is cut.
@@ -42,8 +42,8 @@ const MAX_NAME = 60;
 
 const basename = (p: string): string => posix.basename(p) || p;
 
-/** A script argument that is a file, not inline code: a path-like word with no quotes, spaces or brackets. */
-const SCRIPT_FILE = /^[\w./@+-]+$/;
+/** A script argument that is a file: path-like (a `/` or a script extension), with no quotes, spaces or brackets. */
+const SCRIPT_FILE = /^(?=[\w./@+-]+$)(?:.*\/.*|.*\.(?:js|mjs|cjs|ts|mts|py|rb|pl|sh|php|lua))$/;
 /**
  * Interpreter flags that take inline code, not a script (`python -c`, `node -e`, `perl -e`, `ruby -e`) — in every form:
  * separate (`-c code`), equals (`--eval=code`) or attached (`-cprint(1)`).
@@ -64,7 +64,8 @@ export function processName(argv: readonly string[]): string {
   let name = exe;
   if (/^(node|bun|deno|python[0-9.]*|ruby|perl|sh|bash|zsh)$/.test(exe)) {
     // Inline code (`sh -c '…'`, `python -c '…'`, `node -e '…'`) is not a script: the name stays the interpreter.
-    if (!argv.slice(1).some((a) => INLINE_CODE_FLAG.test(a))) {
+    // `-` (or `--` then nothing) is a script read from stdin: its next argument is data, not a file.
+    if (!argv.slice(1).some((a) => INLINE_CODE_FLAG.test(a) || a === '-')) {
       const script = argv.slice(1).find((a) => !a.startsWith('-'));
       if (script && SCRIPT_FILE.test(script)) name = `${exe} ${basename(script)}`;
     }
@@ -142,7 +143,7 @@ export function commandPreview(argv: readonly string[]): string {
       continue;
     }
     const word = arg.replace(URL_CREDENTIALS, `$1:${CUT}@`);
-    if (SAFE_WORD.test(word.replace(CUT, '')) && !HAS_LONG_TOKEN.test(word)) parts.push(word);
+    if (word.includes('/') && SAFE_WORD.test(word.replace(CUT, '')) && !HAS_LONG_TOKEN.test(word)) parts.push(word);
     else cut();
   }
   let line = String(redactSecrets(parts.join(' ')));

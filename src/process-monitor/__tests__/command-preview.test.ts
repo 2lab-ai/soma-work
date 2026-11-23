@@ -23,12 +23,16 @@ describe('processName', () => {
     // Equals and attached forms of inline code (round 4).
     expect(processName(splitArgs('node --eval=require("x") secret-script.js'))).toBe('node');
     expect(processName(splitArgs('python3 -cimport os secret-module.py'))).toBe('python3');
+    // A script read from stdin (`-`): the next argument is data. A bare word is not a script file.
+    expect(processName(splitArgs('python3 - S3cretArg'))).toBe('python3');
+    expect(processName(splitArgs('node S3cretWord'))).toBe('node');
   });
 });
 
 describe('commandPreview — shows the shape, never a value', () => {
-  it('keeps the program, flag names and plain words', () => {
-    expect(preview('/usr/bin/git -C /work/repo status --short')).toBe('git -C … status --short');
+  it('keeps the program, flag names and paths — no other word (a word alone cannot be told from a secret)', () => {
+    expect(preview('/usr/bin/git -C /work/repo status --short')).toBe('git -C … --short');
+    expect(preview('/usr/bin/git status /work/repo')).toBe('git … /work/repo');
     expect(preview('/usr/local/bin/claude --model opus --verbose')).toBe('claude --model … --verbose');
     expect(preview('/usr/bin/node /app/dist/server.js --port 3000')).toBe('node /app/dist/server.js --port …');
   });
@@ -42,8 +46,8 @@ describe('commandPreview — shows the shape, never a value', () => {
   });
 
   it('cuts JSON, quoted text and token runs', () => {
-    const out = preview('node x.js {"k":"v"} "quoted words" abcdefghijklmnopqrstuvwxyz0123456789');
-    expect(out).toBe('node x.js …');
+    const out = preview('node ./x.js {"k":"v"} "quoted words" abcdefghijklmnopqrstuvwxyz0123456789');
+    expect(out).toBe('node ./x.js …');
   });
 
   it('runs the shaped-token redaction over what is left', () => {
@@ -88,6 +92,12 @@ describe('commandPreview — every leak the reviews found (2026-11-23), through 
     ['python3 -cprint("swordfish")', ['swordfish']],
     ['tool -n5 then spilled words --x', ['spilled', 'words']],
     ['tool --level=a b c --x', ['b', 'c']],
+    // Positional and multi-operand values (round 5): a word that is not a path is never shown.
+    ['jq --arg name s3cretvalue .', ['s3cretvalue', 'name']],
+    ['mysql db S3cretPass', ['S3cretPass']],
+    ['tool --model claude opus extra', ['opus', 'extra']],
+    ['gpg --passphrase correct horse', ['correct', 'horse']],
+    ['openssl enc --pin 1234 --in /x', ['1234']],
   ];
   it.each(leaks)('%s', (line, secrets) => {
     const out = preview(line);
