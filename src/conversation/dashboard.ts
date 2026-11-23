@@ -1253,7 +1253,10 @@ const _procPushed = new Map<string, string>();
 
 /** What the card shows changes only at this grain: whole CPU percents, 10 MB of memory, the counts. */
 function procSignature(u: SessionProcessUsage): string {
-  return [Math.round(u.cpuPercent), Math.round(u.rssBytes / 10_000_000), u.processCount, u.stoppedCount, u.rootAlive].join('|');
+  // CPU in 5-point buckets (whole points under 10%): a busy tree's CPU moves every sample, and a push per sample per
+  // card to every viewer costs more than the chip's last few points are worth.
+  const cpu = u.cpuPercent < 10 ? Math.round(u.cpuPercent) : 10 + Math.round((u.cpuPercent - 10) / 5);
+  return [cpu, Math.round(u.rssBytes / 10_000_000), u.processCount, u.stoppedCount, u.rootAlive].join('|');
 }
 
 /**
@@ -4714,7 +4717,8 @@ export async function registerDashboardRoutes(
   // ── Process monitor routes (the 프로세스 tab) ──
 
   // The session's process tree now: every process, its CPU and memory, its state. Read by whoever may see the task
-  // (the private-task gate covers this prefix); commands are previews with secrets cut out (`command-preview.ts`).
+  // (the private-task gate covers this prefix). Commands — previews with secrets cut out (`command-preview.ts`) — only
+  // for the task's owner and admins.
   server.get<{ Params: { key: string } }>(
     '/api/dashboard/session/:key/processes',
     { preHandler: authMiddleware },
@@ -4727,8 +4731,15 @@ export async function registerDashboardRoutes(
       }
       try {
         const snapshot = await _processSource.fresh(2_000);
-        const session = snapshot.sessions.find((x) => x.sessionKey === originalKey) ?? null;
-        reply.send({ node: snapshot.node, sampledAt: snapshot.sampledAt, session });
+        const found = snapshot.sessions.find((x) => x.sessionKey === originalKey) ?? null;
+        // Commands carry the model's shell lines and paths: the work log's rule — the task's owner and admins only
+        // (admin = authContext.isAdmin, a read needs no admin mode). Everyone else sees the same rows without them.
+        const auth = (request as any).authContext;
+        const ownerId = _getSessionsFn?.()?.get(originalKey)?.ownerId;
+        const seesCommands = !!auth && (auth.isAdmin === true || (!!ownerId && auth.userId === ownerId));
+        const session =
+          found && !seesCommands ? { ...found, processes: found.processes.map((p) => ({ ...p, command: '' })) } : found;
+        reply.send({ node: snapshot.node, sampledAt: snapshot.sampledAt, session, commands: seesCommands });
       } catch (error) {
         logger.warn('Process sample failed', { error: error instanceof Error ? error.message : String(error) });
         reply.status(500).send({ error: 'Process sample failed' });

@@ -159,6 +159,24 @@ describe('Dashboard — the 프로세스 tab and the CPU · 메모리 chip', () 
     expect(src.fresh).toHaveBeenCalled();
   });
 
+  it('GET shows commands to the owner and admins only (the work log’s rule); others get the rows without them', async () => {
+    dashboard.setDashboardProcessSource(fakeSource());
+    const read = async (who: string) => JSON.parse((await get(await signIn(who))).body);
+    const owner = await read('U1');
+    expect(owner.commands).toBe(true);
+    expect(owner.session.processes[0].command).toBe('claude --model …');
+    const admin = await read('U_ADMIN');
+    expect(admin.session.processes[0].command).toBe('claude --model …');
+    const other = await read('U2');
+    expect(other.commands).toBe(false);
+    expect(other.session.processes.map((p: any) => [p.pid, p.command])).toEqual([
+      [200, ''],
+      [300, ''],
+    ]);
+    // The source's snapshot itself is untouched.
+    expect(sessionA.processes[0].command).toBe('claude --model …');
+  });
+
   it('GET answers session null when the task has no live process, 503 with no monitor', async () => {
     expect((await get()).statusCode).toBe(503);
     dashboard.setDashboardProcessSource(fakeSource(snapshot([])));
@@ -295,10 +313,12 @@ describe('Dashboard — the 프로세스 tab and the CPU · 메모리 chip', () 
   it('a sample pushes only cards whose chip changed, and once more when the last process exits', () => {
     const pushed = new Map<string, string>();
     expect(dashboard.procCardsToPush(pushed, snapshot([sessionA]))).toEqual([KEY]);
-    // Same whole CPU percent, same 10 MB: the chip reads the same — no push.
+    // Same 5-point CPU bucket (over 10%), same 10 MB: no push.
     expect(
-      dashboard.procCardsToPush(pushed, snapshot([{ ...sessionA, cpuPercent: 42.6, rssBytes: 1.2e9 + 1e6 }])),
+      dashboard.procCardsToPush(pushed, snapshot([{ ...sessionA, cpuPercent: 43.9, rssBytes: 1.2e9 + 1e6 }])),
     ).toEqual([]);
+    // Another bucket: a push.
+    expect(dashboard.procCardsToPush(pushed, snapshot([{ ...sessionA, cpuPercent: 61 }]))).toEqual([KEY]);
     // A process paused: the chip changes.
     expect(dashboard.procCardsToPush(pushed, snapshot([{ ...sessionA, stoppedCount: 2 }]))).toEqual([KEY]);
     // Every process gone: one more push so the chip disappears, then nothing.
