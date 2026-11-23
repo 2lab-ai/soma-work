@@ -140,8 +140,11 @@ describe('SlackHandler — a person’s stop holds (Z 2026-11-23)', () => {
     expect(registrySession.lastPersonStopAtMs).toBeUndefined();
     coordinator.abortSession(SESSION_KEY, 'session-close');
     expect(registrySession.lastPersonStopAtMs).toBeUndefined();
+    registrySession.activeLegStartedAtMs = 1_234;
     coordinator.abortSession(SESSION_KEY, 'user-stop');
     expect(registrySession.lastPersonStopAtMs).toBeTypeOf('number');
+    // The work it stopped: the running leg (a restart compares it with the work running then).
+    expect(registrySession.personStoppedWorkAt).toBe(1_234);
   });
 
   it('P2 a stop that lands while the turn is being prepared cancels it before the model sees the prompt', async () => {
@@ -173,6 +176,23 @@ describe('SlackHandler — a person’s stop holds (Z 2026-11-23)', () => {
     await new Promise((resolve) => setTimeout(resolve, 5));
     const outcome = await handlerAny.processMessage(message({ ts: '400.2' }), say);
     expect(outcome.result).not.toBe('interrupted');
+    expect(startWithContinuation).toHaveBeenCalledTimes(1);
+  });
+
+  it('P5 one frozen millisecond: a stop before the message lets it run; a stop while it is prepared cancels it', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1_800_000_000_000);
+    // A stop, then a message in the same millisecond: the message came after the stop — it runs.
+    handler.getRequestCoordinator().abortSession(SESSION_KEY, 'user-stop');
+    expect((await handlerAny.processMessage(message({ ts: '400.5' }), say)).result).not.toBe('interrupted');
+    expect(startWithContinuation).toHaveBeenCalledTimes(1);
+    // Still the same millisecond: a stop while the next message is prepared cancels it.
+    duringPreparation = () => {
+      handler.getRequestCoordinator().abortSession(SESSION_KEY, 'user-stop');
+    };
+    expect(await handlerAny.processMessage(message({ ts: '400.6' }), say)).toEqual({
+      result: 'interrupted',
+      reason: 'user-stop',
+    });
     expect(startWithContinuation).toHaveBeenCalledTimes(1);
   });
 

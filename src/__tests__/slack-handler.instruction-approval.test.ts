@@ -312,6 +312,17 @@ describe('SlackHandler — someone else’s instruction waits for the owner (#76
       expect(pause).not.toHaveBeenCalled();
     });
 
+    it('an admin’s `!` that is a verbatim prompt (a `/z goal` objective) is words, not a stop — still held', async () => {
+      const abort = vi.spyOn(handlerAny.requestCoordinator, 'abortSession');
+      await handler.handleMessage(
+        message({ user: 'U_ADMIN', ts: '303.8', text: '!', routeContext: { verbatimPrompt: true } }),
+        say,
+      );
+      expect(abort).not.toHaveBeenCalled();
+      expect(startWithContinuation).not.toHaveBeenCalled();
+      expect(approvals.pendingFor(SESSION_KEY)[0]).toMatchObject({ requesterId: 'U_ADMIN', count: 1 });
+    });
+
     it('a non-admin’s bare `!` is still held for the owner', async () => {
       const abort = vi.spyOn(handlerAny.requestCoordinator, 'abortSession');
       await handler.handleMessage(message({ user: 'U_OTHER', ts: '303.5', text: '!' }), say);

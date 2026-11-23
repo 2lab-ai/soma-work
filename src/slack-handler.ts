@@ -27,6 +27,7 @@ import { OutputFlag } from '@soma/slack/output-flags';
 import { isLocalSlashCommand, shouldForwardAsLocalSlashCommand } from '@soma/slack/pipeline/local-slash-command';
 import { runWithTimeout } from '@soma/slack/pipeline/stream-executor-cleanup-helpers';
 import { buildSafeguardRefusalBlocks, decideSafeguardGate, safeguardRefusalNotice } from '@soma/slack/safeguard';
+import { currentWorkMarker } from '@soma/slack/session-manager';
 import { sayPostSwitches } from '@soma/slack/stream-processor';
 import { HandoffAbortError, isZHandoffWorkflow } from 'somalib/model-commands/handoff-parser';
 import { getAdminUsers, isAdminUser } from './admin-utils';
@@ -7150,6 +7151,8 @@ export class SlackHandler {
     // being prepared must honour (Z 2026-11-23).
     if (reason === 'user-stop') {
       session.lastPersonStopAtMs = now;
+      // Which work it stopped — a restart does not resume that same work (`stoppedByPersonSinceTurnStart`).
+      session.personStoppedWorkAt = currentWorkMarker(session);
       this.personStopOrder.set(session, ++this.personStopCount);
     }
   }

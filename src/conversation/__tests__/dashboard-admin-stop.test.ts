@@ -48,20 +48,6 @@ vi.mock('../../session-archive', () => ({
   getArchiveStore: () => ({ listRecent: () => [] }),
 }));
 
-function liveSession(overrides: Record<string, any> = {}) {
-  return {
-    sessionId: 'sid1',
-    ownerId: 'U_OWNER',
-    channelId: 'C1',
-    threadTs: 't1',
-    model: 'claude-opus-5-5[1m]',
-    activityState: 'working',
-    state: 'MAIN',
-    lastActivity: new Date('2026-11-23T00:00:00Z'),
-    ...overrides,
-  };
-}
-
 describe('Dashboard — an admin stops anyone’s task (Z 2026-11-23)', () => {
   let stopWebServer: any;
   let injectWebServer: any;
@@ -79,7 +65,16 @@ describe('Dashboard — an admin stops anyone’s task (Z 2026-11-23)', () => {
     await webServer.startWebServer({ listen: false });
     // #1315 — other signed-in users read this task: its channel is a public one.
     await registerPublicChannel('C1');
-    session = liveSession();
+    session = {
+      sessionId: 'sid1',
+      ownerId: 'U_OWNER',
+      channelId: 'C1',
+      threadTs: 't1',
+      model: 'claude-opus-5-5[1m]',
+      activityState: 'working',
+      state: 'MAIN',
+      lastActivity: new Date('2026-11-23T00:00:00Z'),
+    };
     dashboard.setDashboardSessionAccessor(() => new Map([['C1:t1', session]]));
     stopHandler = vi.fn().mockResolvedValue(undefined);
     closeHandler = vi.fn().mockResolvedValue(undefined);

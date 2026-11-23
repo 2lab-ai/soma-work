@@ -995,11 +995,13 @@ export interface ConversationSession {
   autoCompactStoppedAtMs?: number;
   lastStopAtMs?: number;
   // When a PERSON last stopped the session — a `user-stop` abort (dashboard 중지, `!` in the thread), never a
-  // shutdown or a close. Saved with the session. A restart or a crash does not resume work a person stopped since
-  // its turn began (`stoppedByPersonSinceTurnStart`, @soma/slack/session-manager: notifyShutdown's snapshot and
-  // loadSessions), and a turn still being prepared when the stop lands does not reach the model
-  // (`processMessage`). Z 2026-11-23.
+  // shutdown or a close — and which work that stop hit: the running leg's start (`activeLegStartedAtMs`), or, before
+  // a leg began, the last state change (`activityStateChangedAt`). Saved with the session. A restart or a crash does
+  // not resume the work a person stopped — the same work still showing `working` (`stoppedByPersonSinceTurnStart`,
+  // @soma/slack/session-manager: notifyShutdown's snapshot and loadSessions). A marker, not a clock comparison, so a
+  // leg that begins in the stop's millisecond is still new work. Z 2026-11-23.
   lastPersonStopAtMs?: number;
+  personStoppedWorkAt?: number;
   /**
    * Session-scoped auto-compact threshold in TOKENS, set by `/autocompact
    * <tokens>` and cleared by `/autocompact reset`. Wins over the model's

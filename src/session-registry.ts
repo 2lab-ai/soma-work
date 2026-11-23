@@ -433,8 +433,9 @@ interface SerializedSession {
   activeLegStartedAtMs?: number;
   activeLegGoalId?: string;
   activeAccumulatedMs?: number;
-  /** When a person last stopped the session (Z 2026-11-23) — a crash or restart does not resume that work. */
+  /** When a person last stopped the session, and the work it hit (Z 2026-11-23) — a crash or restart does not resume that work. */
   lastPersonStopAtMs?: number;
+  personStoppedWorkAt?: number;
   summaryTitle?: string;
   summaryTitleTurnId?: string;
   summaryTitleLastUpdatedAtMs?: number;
@@ -3986,6 +3987,7 @@ export class SessionRegistry {
             activeLegGoalId: session.activeLegGoalId,
             activeAccumulatedMs: session.activeAccumulatedMs,
             lastPersonStopAtMs: session.lastPersonStopAtMs,
+            personStoppedWorkAt: session.personStoppedWorkAt,
             summaryTitle: session.summaryTitle,
             summaryTitleTurnId: session.summaryTitleTurnId,
             summaryTitleLastUpdatedAtMs: session.summaryTitleLastUpdatedAtMs,
@@ -4368,7 +4370,7 @@ export class SessionRegistry {
         const stoppedByPerson =
           serialized.activityState === 'working' &&
           stoppedByPersonSinceTurnStart({
-            lastPersonStopAtMs: finiteStamp(serialized.lastPersonStopAtMs),
+            personStoppedWorkAt: finiteStamp(serialized.personStoppedWorkAt),
             activeLegStartedAtMs: finiteStamp(serialized.activeLegStartedAtMs),
             activityStateChangedAt: finiteStamp(serialized.activityStateChangedAt),
           });
@@ -4606,6 +4608,7 @@ export class SessionRegistry {
           activeLegGoalId: serialized.activeLegGoalId,
           activeAccumulatedMs: typeof serialized.activeAccumulatedMs === 'number' ? serialized.activeAccumulatedMs : 0,
           lastPersonStopAtMs: finiteStamp(serialized.lastPersonStopAtMs),
+          personStoppedWorkAt: finiteStamp(serialized.personStoppedWorkAt),
           summaryTitle: serialized.summaryTitle,
           summaryTitleTurnId: serialized.summaryTitleTurnId,
           summaryTitleLastUpdatedAtMs: serialized.summaryTitleLastUpdatedAtMs,

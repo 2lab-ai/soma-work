@@ -40,22 +40,31 @@ export interface ConversationSession {
   activityStateChangedAt?: number;
   /** When a person last stopped this session (dashboard 중지, `!`) — set by the host's stop observer, saved. */
   lastPersonStopAtMs?: number;
+  /** The work that stop hit: `activeLegStartedAtMs`, or `activityStateChangedAt` before a leg began (0 if neither). */
+  personStoppedWorkAt?: number;
 }
 
 /**
- * Z 2026-11-23 — a person stopped this session at or after the moment its current work began: the turn leg's start,
- * or — before a leg begins (a turn still being prepared, a button that marks the session working first) — the moment
- * the session last changed state. Its `working` is then only what the stop could not unwind (a turn stuck after its
- * abort, or one still starting), and a restart must not resume work a person stopped. Work that began after the
- * stop is new work.
+ * The work a session is on now: its turn leg's start, or — before a leg begins (a turn still being prepared, a button
+ * that marks the session working first) — the moment it last changed state.
+ */
+export function currentWorkMarker(
+  session: Pick<ConversationSession, 'activeLegStartedAtMs' | 'activityStateChangedAt'>,
+): number {
+  return session.activeLegStartedAtMs ?? session.activityStateChangedAt ?? 0;
+}
+
+/**
+ * Z 2026-11-23 — the work this session is on now is the work a person stopped (`personStoppedWorkAt`, recorded by
+ * the stop). Its `working` is then only what the stop could not unwind (a turn stuck after its abort, or one still
+ * starting), and a restart must not resume it. Any work that began after the stop — a new leg, a new state — is a
+ * different marker: resumed as before, even when it began in the stop's millisecond.
  */
 export function stoppedByPersonSinceTurnStart(
-  session: Pick<ConversationSession, 'lastPersonStopAtMs' | 'activeLegStartedAtMs' | 'activityStateChangedAt'>,
+  session: Pick<ConversationSession, 'personStoppedWorkAt' | 'activeLegStartedAtMs' | 'activityStateChangedAt'>,
 ): boolean {
-  const stoppedAt = session.lastPersonStopAtMs;
-  if (typeof stoppedAt !== 'number') return false;
-  const workBeganAt = session.activeLegStartedAtMs ?? session.activityStateChangedAt ?? 0;
-  return stoppedAt >= workBeganAt;
+  const stoppedWork = session.personStoppedWorkAt;
+  return typeof stoppedWork === 'number' && stoppedWork === currentWorkMarker(session);
 }
 
 export interface ClaudeSessionUiReader {

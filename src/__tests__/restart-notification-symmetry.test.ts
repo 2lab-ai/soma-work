@@ -134,22 +134,29 @@ describe('Restart symmetry: notifyShutdown stamps recovery markers', () => {
       lastActivity: new Date(),
       activityState: 'working',
     };
+    // `personStoppedWorkAt`: the work the stop hit (its leg start, or its last state change before a leg began).
     const stoppedMidTurn = {
       ...base,
       threadTs: 't1',
       activeLegStartedAtMs: 1_000,
       lastPersonStopAtMs: 2_000,
+      personStoppedWorkAt: 1_000,
     } as unknown as ConversationSession;
     const stoppedBeforeTurnBegan = {
       ...base,
       threadTs: 't2',
       lastPersonStopAtMs: 2_000,
+      activityStateChangedAt: 500,
+      personStoppedWorkAt: 500,
     } as unknown as ConversationSession;
+    // A leg that began after the stop — even one that began in the very millisecond of the stop (review: a clock
+    // tie must not read new work as stopped).
     const turnAfterTheStop = {
       ...base,
       threadTs: 't3',
       lastPersonStopAtMs: 2_000,
-      activeLegStartedAtMs: 3_000,
+      personStoppedWorkAt: 1_000,
+      activeLegStartedAtMs: 2_000,
     } as unknown as ConversationSession;
     const neverStopped = { ...base, threadTs: 't4', activeLegStartedAtMs: 1_000 } as unknown as ConversationSession;
     // An old stop, then the session went working again without a turn leg yet (a button marks it working before its
@@ -158,6 +165,7 @@ describe('Restart symmetry: notifyShutdown stamps recovery markers', () => {
       ...base,
       threadTs: 't5',
       lastPersonStopAtMs: 2_000,
+      personStoppedWorkAt: 500,
       activityStateChangedAt: 3_000,
     } as unknown as ConversationSession;
     sessions.set('k1', stoppedMidTurn);
@@ -488,8 +496,20 @@ describe('Restart symmetry: loadSessions honors shutdownNotificationSent marker'
     fs.writeFileSync(
       path.join(TEST_DIR, 'sessions.json'),
       JSON.stringify([
-        crashed({ key: 'C-crash-2', threadTs: 'ts-stopped', activeLegStartedAtMs: 1_000, lastPersonStopAtMs: 2_000 }),
-        crashed({ key: 'C-crash-3', threadTs: 'ts-new-turn', activeLegStartedAtMs: 3_000, lastPersonStopAtMs: 2_000 }),
+        crashed({
+          key: 'C-crash-2',
+          threadTs: 'ts-stopped',
+          activeLegStartedAtMs: 1_000,
+          lastPersonStopAtMs: 2_000,
+          personStoppedWorkAt: 1_000,
+        }),
+        crashed({
+          key: 'C-crash-3',
+          threadTs: 'ts-new-turn',
+          activeLegStartedAtMs: 3_000,
+          lastPersonStopAtMs: 2_000,
+          personStoppedWorkAt: 1_000,
+        }),
       ]),
     );
 
@@ -510,13 +530,20 @@ describe('Restart symmetry: loadSessions honors shutdownNotificationSent marker'
     const session = registry.createSession('U1', 'U1', 'C-save', 'ts-save');
     session.sessionId = 'sess-save';
     session.lastPersonStopAtMs = 2_000;
+    session.personStoppedWorkAt = 1_000;
     registry.saveSessions();
     const saved = JSON.parse(fs.readFileSync(path.join(TEST_DIR, 'sessions.json'), 'utf8'));
-    expect(saved.find((s: any) => s.threadTs === 'ts-save')?.lastPersonStopAtMs).toBe(2_000);
+    expect(saved.find((s: any) => s.threadTs === 'ts-save')).toMatchObject({
+      lastPersonStopAtMs: 2_000,
+      personStoppedWorkAt: 1_000,
+    });
 
     const reloaded = new SessionRegistry();
     reloaded.loadSessions();
-    expect(reloaded.getSession('C-save', 'ts-save')?.lastPersonStopAtMs).toBe(2_000);
+    expect(reloaded.getSession('C-save', 'ts-save')).toMatchObject({
+      lastPersonStopAtMs: 2_000,
+      personStoppedWorkAt: 1_000,
+    });
   });
 });
 
