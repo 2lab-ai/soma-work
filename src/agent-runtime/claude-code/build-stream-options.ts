@@ -76,7 +76,7 @@ import type { SessionRegistry } from '../../session-registry';
 import { isPlanPending } from '../../task-turn/task-plan';
 import type { ConversationSession, WorkflowType } from '../../types';
 import { DEFAULT_THINKING_ENABLED, userSettingsStore } from '../../user-settings-store';
-import { createTrackedClaudeProcessSpawner } from '../claude-child-process-registry';
+import { type ClaudeProcessOwner, createTrackedClaudeProcessSpawner } from '../claude-child-process-registry';
 import { type ExecutionContext, executionContextFromSlack } from '../execution-context';
 import { approvalRecordPaths, secretStoreDenyRules } from '../policy/devops-secret-guard';
 import { createNativeWriteCheck } from '../policy/native-write-boundary';
@@ -257,6 +257,8 @@ export interface BuildStreamOptionsInput {
   workingDirectory?: string;
   /** The turn's Slack event: its user is the context the turn runs under (#597); none → no tools, no bypass. */
   slackContext?: SlackContext;
+  /** The work session the spawned Claude Code process runs for — the process monitor groups its tree under it. */
+  processOwner?: ClaudeProcessOwner;
 }
 
 export interface BuildStreamOptionsResult {
@@ -277,7 +279,7 @@ export async function buildStreamOptions(
   input: BuildStreamOptionsInput,
   deps: BuildStreamOptionsDeps,
 ): Promise<BuildStreamOptionsResult> {
-  const { queryEnv, session, abortController, slackContext } = input;
+  const { queryEnv, session, abortController, slackContext, processOwner } = input;
   const { logger } = deps;
 
   const workingDirectory = input.workingDirectory;
@@ -309,7 +311,7 @@ export async function buildStreamOptions(
         onEvidence: deps.onIncidentEvidence,
       },
     );
-    return attachStderrCapture(incidentOptions, logger);
+    return attachStderrCapture(incidentOptions, logger, processOwner);
   }
 
   // agent-mailbox: the session's own address, so `mailbox send` from this session is from it and answers return here
@@ -1094,7 +1096,7 @@ export async function buildStreamOptions(
     options.plugins = launchers.plugins;
   }
 
-  return attachStderrCapture(options, logger);
+  return attachStderrCapture(options, logger, processOwner);
 }
 
 /**
@@ -1108,13 +1110,17 @@ export async function buildStreamOptions(
  * stderr policy. Nothing here touches evidence or the auth env — the buffer
  * carries the child's stderr only.
  */
-function attachStderrCapture(options: Options, logger: BuildStreamOptionsDeps['logger']): BuildStreamOptionsResult {
+function attachStderrCapture(
+  options: Options,
+  logger: BuildStreamOptionsDeps['logger'],
+  processOwner?: ClaudeProcessOwner,
+): BuildStreamOptionsResult {
   let stderrBuffer = '';
   options.stderr = (data: string) => {
     stderrBuffer += data;
     handleClaudeStderrChunk(logger, data);
   };
-  options.spawnClaudeCodeProcess = createTrackedClaudeProcessSpawner(options.stderr);
+  options.spawnClaudeCodeProcess = createTrackedClaudeProcessSpawner(options.stderr, processOwner);
 
   return {
     options,

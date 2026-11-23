@@ -16,6 +16,7 @@ ADR은 repo 전반에 영향을 주고 되돌리기 어려운 결정을 기록�
 |----|--------|------|----------|
 | [0001](./0001-documentation-system-of-record.md) | Accepted | 2026-05-18 | `docs/README.md`, dated research, completion ledger, ADR index를 문서 system-of-record로 둔다. |
 | [0002](./0002-agent-runtime-port-pass1.md) | Accepted | 2026-05-26 | `src/agent-runtime/`에 Claude Code SDK 호출 포트를 두고, one-shot 헬퍼는 포트만 의존. ACP 마이그레이션 다중-패스 1단계. |
+| [0003](./0003-session-process-monitor.md) | Accepted | 2026-11-23 | 세션의 Claude Code 프로세스 트리를 SDK spawn 훅에서 세션에 묶고, 노드 단위 스냅샷(`ProcessHost`)으로 보고한다 — 워커 노드 분배의 입력. |
 
 ## Embedded Decision Sources
 

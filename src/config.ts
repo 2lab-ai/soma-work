@@ -189,6 +189,22 @@ export function getSandboxOffAllowed(): boolean {
 }
 
 /**
+ * Typed accessor for `SOMA_NODE_ID` — the ONLY read of that variable (`rules/config.md`). The name this
+ * node reports in its process snapshots (`src/process-monitor`). Unset ⇒ `undefined` and the caller uses
+ * the host name. Set it when several nodes report to one dashboard and their host names are not the
+ * names people use. Only letters, digits, `.`, `_` and `-`, up to 64 characters; anything else is ignored.
+ */
+export function getProcessMonitorNodeId(): string | undefined {
+  const raw = process.env.SOMA_NODE_ID?.trim();
+  if (!raw) return undefined;
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(raw)) {
+    logger.warn('SOMA_NODE_ID is not a valid node id — using the host name');
+    return undefined;
+  }
+  return raw;
+}
+
+/**
  * Backend auth backend selector (#llmux). See {@link config.auth}.
  */
 export type AuthMode = 'ccp' | 'llmux';

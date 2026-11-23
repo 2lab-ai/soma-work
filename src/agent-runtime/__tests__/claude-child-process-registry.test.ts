@@ -7,12 +7,12 @@ import {
   type TrackedClaudeProcess,
 } from '../claude-child-process-registry';
 
-function fakeProcess(options: { exitOnSigkill?: boolean } = {}): TrackedClaudeProcess & EventEmitter {
+function fakeProcess(options: { exitOnSigkill?: boolean; pid?: number } = {}): TrackedClaudeProcess & EventEmitter {
   const process = new EventEmitter() as TrackedClaudeProcess & EventEmitter;
   process.stdin = new PassThrough();
   process.stdout = new PassThrough();
   Object.defineProperties(process, {
-    pid: { value: 1234 },
+    pid: { value: options.pid ?? 1234 },
     killed: { value: false, writable: true },
     exitCode: { value: null, writable: true },
   });
@@ -161,5 +161,35 @@ describe('ClaudeChildProcessRegistry', () => {
 
     expect(first.kill).toHaveBeenCalledWith('SIGKILL');
     expect(second.kill).toHaveBeenCalledWith('SIGKILL');
+  });
+
+  it('names the session each live child runs for (the process monitor reads it)', () => {
+    const registry = new ClaudeChildProcessRegistry();
+    const owned = fakeProcess();
+    const helper = fakeProcess({ pid: 4321 });
+    registry.track(owned, { sessionKey: 'C1-1700000000.000100' });
+    registry.track(helper);
+
+    expect(registry.roots()).toEqual([{ pid: 1234, sessionKey: 'C1-1700000000.000100' }, { pid: 4321 }]);
+
+    owned.emit('exit', 0, null);
+    expect(registry.roots()).toEqual([{ pid: 4321 }]);
+  });
+
+  it('tells abort listeners which session a child was aborted in, and survives a throwing listener', () => {
+    const registry = new ClaudeChildProcessRegistry();
+    const child = fakeProcess();
+    registry.track(child, { sessionKey: 'K' });
+    const seen: unknown[] = [];
+    registry.onAbort(() => {
+      throw new Error('boom');
+    });
+    const off = registry.onAbort((root) => seen.push(root));
+
+    registry.notifyAborted(child);
+    off();
+    registry.notifyAborted(child);
+
+    expect(seen).toEqual([{ pid: 1234, sessionKey: 'K' }]);
   });
 });

@@ -1478,7 +1478,15 @@ export class ClaudeHandler implements TurnSteeringPort {
       const llmuxTenant = await userTenantKey(tenantUserId);
       const { env: queryEnv } = buildQueryEnv(lease, { llmuxTenant });
       const { options, getStderrBuffer } = await buildStreamOptions(
-        { queryEnv, session, abortController, workingDirectory, slackContext },
+        {
+          queryEnv,
+          session,
+          abortController,
+          workingDirectory,
+          slackContext,
+          // The process monitor files this turn's Claude Code process tree under the session (dashboard card).
+          ...(sessionKey ? { processOwner: { sessionKey } } : {}),
+        },
         {
           logger: this.logger,
           getEffectivePluginPaths: () => this.getEffectivePluginPaths(),

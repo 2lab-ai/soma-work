@@ -6,6 +6,18 @@ const DEFAULT_KILL_WAIT_MS = 1_000;
 
 export type TrackedClaudeProcess = SpawnedProcess & { readonly pid?: number };
 
+/** Who a Claude Code child runs for. Absent for one-shot helpers (title, dispatch, voice). */
+export interface ClaudeProcessOwner {
+  /** The work session (dashboard task card) the child runs a turn for. */
+  readonly sessionKey: string;
+}
+
+/** A live tracked child as the process monitor sees it. */
+export interface TrackedClaudeRootInfo {
+  readonly pid: number;
+  readonly sessionKey?: string;
+}
+
 export interface DrainOptions {
   readonly graceMs?: number;
   readonly killWaitMs?: number;
@@ -20,6 +32,8 @@ export interface DrainOptions {
  */
 export class ClaudeChildProcessRegistry {
   private readonly children = new Set<TrackedClaudeProcess>();
+  private readonly owners = new WeakMap<TrackedClaudeProcess, ClaudeProcessOwner>();
+  private readonly abortListeners = new Set<(root: TrackedClaudeRootInfo) => void>();
   private shutdownSignal: NodeJS.Signals | null = null;
   private changeWaiters = new Set<() => void>();
   private drainPromise: Promise<void> | null = null;
@@ -29,8 +43,9 @@ export class ClaudeChildProcessRegistry {
     return this.children.size;
   }
 
-  track(child: TrackedClaudeProcess): TrackedClaudeProcess {
+  track(child: TrackedClaudeProcess, owner?: ClaudeProcessOwner): TrackedClaudeProcess {
     this.children.add(child);
+    if (owner) this.owners.set(child, owner);
 
     const remove = () => {
       child.off('exit', onExit);
@@ -54,6 +69,41 @@ export class ClaudeChildProcessRegistry {
     }
     this.notifyChange();
     return child;
+  }
+
+  /** Live children that have a pid, with the session each runs for. */
+  roots(): TrackedClaudeRootInfo[] {
+    const out: TrackedClaudeRootInfo[] = [];
+    for (const child of this.children) {
+      if (child.pid === undefined || child.exitCode !== null) continue;
+      const owner = this.owners.get(child);
+      out.push(owner ? { pid: child.pid, sessionKey: owner.sessionKey } : { pid: child.pid });
+    }
+    return out;
+  }
+
+  /**
+   * Called when a child's turn is aborted (stop button, steering abort). The
+   * process monitor resumes what it paused in that session, so an abort ends
+   * a paused tree instead of leaving it stopped forever.
+   */
+  onAbort(listener: (root: TrackedClaudeRootInfo) => void): () => void {
+    this.abortListeners.add(listener);
+    return () => this.abortListeners.delete(listener);
+  }
+
+  /** @internal the spawner reports an aborted child here. */
+  notifyAborted(child: TrackedClaudeProcess): void {
+    if (child.pid === undefined) return;
+    const owner = this.owners.get(child);
+    const info: TrackedClaudeRootInfo = owner ? { pid: child.pid, sessionKey: owner.sessionKey } : { pid: child.pid };
+    for (const listener of [...this.abortListeners]) {
+      try {
+        listener(info);
+      } catch {
+        // A listener's failure must not keep the abort from reaching the others.
+      }
+    }
   }
 
   async drain(options: DrainOptions = {}): Promise<void> {
@@ -164,6 +214,15 @@ export class ClaudeChildProcessRegistry {
 
 const registry = new ClaudeChildProcessRegistry();
 
+function resumeAfterAbort(pid: number | undefined): void {
+  if (pid === undefined || process.platform === 'win32') return;
+  try {
+    process.kill(pid, 'SIGCONT');
+  } catch {
+    // Already gone: nothing to continue.
+  }
+}
+
 export function getClaudeChildProcessRegistry(): ClaudeChildProcessRegistry {
   return registry;
 }
@@ -174,6 +233,7 @@ export function getClaudeChildProcessRegistry(): ClaudeChildProcessRegistry {
  */
 export function createTrackedClaudeProcessSpawner(
   onStderr?: (data: string) => void,
+  owner?: ClaudeProcessOwner,
 ): (options: SpawnOptions) => SpawnedProcess {
   return ({ command, args, cwd, env, signal }) => {
     const child = spawn(command, args, {
@@ -188,6 +248,18 @@ export function createTrackedClaudeProcessSpawner(
       onStderr?.(chunk.toString());
     });
 
-    return registry.track(child);
+    // Node sends the kill signal on abort first (its listener was added by spawn). A child the owner paused
+    // (SIGSTOP) holds that signal pending until it runs again, so continue it, and let the monitor continue
+    // the paused processes under it.
+    if (signal) {
+      const onAbort = () => {
+        resumeAfterAbort(child.pid);
+        registry.notifyAborted(child);
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+      child.once('exit', () => signal.removeEventListener('abort', onAbort));
+    }
+
+    return registry.track(child, owner);
   };
 }
