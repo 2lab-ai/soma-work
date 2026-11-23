@@ -27,7 +27,11 @@ interface Harness {
 }
 
 function harness(
-  opts: { ledger?: UserTaskLedger; startThrows?: boolean; stop?: 'stopped' | 'pending' | 'gone' } = {},
+  opts: {
+    ledger?: UserTaskLedger;
+    startThrows?: boolean | ((entry: UserTaskEntry) => boolean);
+    stop?: 'stopped' | 'pending' | 'gone';
+  } = {},
 ): Harness {
   const running = new Map<string, RunningTask[]>();
   const limits = new Map<string, number>();
@@ -56,7 +60,8 @@ function harness(
     limitFor: (user) => limits.get(user) ?? 1,
     runningTasks: (user) => running.get(user) ?? [],
     start: (entry) => {
-      if (opts.startThrows) throw new Error('session gone');
+      const fails = typeof opts.startThrows === 'function' ? opts.startThrows(entry) : opts.startThrows;
+      if (fails) throw new Error('session gone');
       started.push(entry);
     },
     interrupt: (task) => {
@@ -249,12 +254,14 @@ describe('UserTaskQueue.release', () => {
   });
 
   it('a start that fails drops the entry and moves on to the next', () => {
-    const h = harness({ startThrows: true });
+    const h = harness({ startThrows: (e) => e.sessionKey === 'C1:2.0' });
     h.running.set('U1', [taskA]);
     h.queue.gate(input());
+    h.queue.gate(input({ sessionKey: 'C1:3.0', threadTs: '3.0' }));
     h.running.set('U1', []);
     h.queue.release('U1');
-    expect(h.queue.snapshot().entries).toEqual([]);
+    expect(h.started.map((e) => e.sessionKey)).toEqual(['C1:3.0']);
+    expect(h.queue.snapshot().entries.map((e) => [e.sessionKey, e.state])).toEqual([['C1:3.0', 'admitted']]);
   });
 
   it('release with no user looks at everyone who waits', () => {

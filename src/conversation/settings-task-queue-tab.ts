@@ -261,13 +261,20 @@ function tqSave(knob, delay) {
   }, delay);
 }
 var _tqWriteSeq = {};
+var _tqWriteChain = {};
 async function tqPut(id, limit) {
   var u = tqUser(id);
   var who = (u && u.name) || id;
-  // Writes go out in order; an answer to one that a later write replaced moves nothing.
+  // One person's writes reach the server one after another, in the order they were made — the last one made is the
+  // one that stays; an answer to one that a later write replaced moves nothing on the page.
   var seq = (_tqWriteSeq[id] || 0) + 1;
   _tqWriteSeq[id] = seq;
-  var r = await apiWrite('PUT', '/api/settings/task-limits/' + encodeURIComponent(id), { limit: limit });
+  var before = _tqWriteChain[id] || Promise.resolve();
+  var write = before.then(function() {
+    return apiWrite('PUT', '/api/settings/task-limits/' + encodeURIComponent(id), { limit: limit });
+  });
+  _tqWriteChain[id] = write.catch(function() {});
+  var r = await write;
   if (_tqWriteSeq[id] !== seq) return;
   if (!r.ok) {
     tqStatus(who + ' 한도를 저장하지 못했습니다 — ' + r.error, true);

@@ -18,7 +18,7 @@ function clientFn(name: string): string {
   return ALL_JS.slice(start + 1, end + 2);
 }
 const VARS =
-  'var TQ_MAX = 10; var TQ_SWEEP = 270; var TQ_PX_PER_STEP = 14; var _tq = null; var _tqSaveTimers = { U1: 7 }; var _tqWriteSeq = {};';
+  'var TQ_MAX = 10; var TQ_SWEEP = 270; var TQ_PX_PER_STEP = 14; var _tq = null; var _tqSaveTimers = { U1: 7 }; var _tqWriteSeq = {}; var _tqWriteChain = {};';
 function load<T>(fns: string[], inject: Record<string, unknown> = {}): T {
   const names = Object.keys(inject);
   const body = `${VARS}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')}, setTq: function (v) { _tq = v; } };`;
@@ -161,6 +161,36 @@ describe('writes in order', () => {
     expect(tqPut).toHaveBeenCalledWith('U1', null);
   });
 
+  it('one person’s writes reach the server in the order they were made', async () => {
+    const order: unknown[] = [];
+    let resolveFirst!: (v: unknown) => void;
+    const apiWrite = vi.fn((_m: string, _u: string, body: { limit: unknown }) => {
+      order.push(body.limit);
+      return order.length === 1
+        ? new Promise((r) => (resolveFirst = r))
+        : Promise.resolve({
+            ok: true,
+            data: { user: { id: 'U1', name: 'Alice', limit: 2, setting: 2, defaultLimit: 1 } },
+          });
+    });
+    const k = load<any>(['tqPut', 'tqUser', 'tqLabel', 'tqStepOf'], {
+      apiWrite,
+      tqStatus: vi.fn(),
+      tqRefreshRow: vi.fn(),
+      encodeURIComponent,
+    });
+    k.setTq({ users: [{ id: 'U1', name: 'Alice', limit: 1 }] });
+    const first = k.tqPut('U1', 5);
+    const second = k.tqPut('U1', 2);
+    await new Promise((r) => setTimeout(r, 0));
+    // The second write waits for the first to be answered.
+    expect(order).toEqual([5]);
+    resolveFirst({ ok: true, data: { user: { id: 'U1', name: 'Alice', limit: 5, setting: 5, defaultLimit: 1 } } });
+    await first;
+    await second;
+    expect(order).toEqual([5, 2]);
+  });
+
   it('an answer to a write a later one replaced moves nothing', async () => {
     let resolveFirst!: (v: unknown) => void;
     const apiWrite = vi
@@ -180,9 +210,11 @@ describe('writes in order', () => {
     });
     k.setTq({ users: [{ id: 'U1', name: 'Alice', limit: 1 }] });
     const first = k.tqPut('U1', 5);
-    await k.tqPut('U1', null);
+    const second = k.tqPut('U1', null);
+    await new Promise((r) => setTimeout(r, 0));
     resolveFirst({ ok: true, data: { user: { id: 'U1', name: 'Alice', limit: 5, setting: 5, defaultLimit: 1 } } });
     await first;
+    await second;
     expect(tqStatus).toHaveBeenCalledTimes(1);
     expect(tqStatus.mock.calls[0][0]).toContain('기본값');
   });

@@ -320,4 +320,15 @@ describe('SlackHandler — per-user task queue gate', () => {
     expect(startWithContinuation).toHaveBeenCalledTimes(2);
     expect(ledger.entries).toEqual([]);
   });
+  it('two first messages in two new threads in the same tick: the second waits (no session exists yet)', async () => {
+    sessions.clear();
+    const gate = deferred<any>();
+    startWithContinuation.mockImplementationOnce(() => gate.promise);
+    const first = handler.handleMessage(message('500.0', { ts: '500.01' }), vi.fn().mockResolvedValue({ ts: 'x' }));
+    const second = handler.handleMessage(message('600.0', { ts: '600.01' }), vi.fn());
+    await second;
+    expect(ledger.entries.map((e) => e.sessionKey)).toEqual(['C123:600.0']);
+    gate.resolve({ hasPendingChoice: false });
+    await first;
+  });
 });
