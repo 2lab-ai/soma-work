@@ -195,7 +195,7 @@ updates inside its terminal-cleanup boundary, including setup failures.
 - 대시보드: `KanbanSession.procUsage`(카드의 `proc` foot 칩, `faceFootMetrics`) — 샘플마다 칩이 바뀐 카드만 `scheduleLiveSessionUpdate`로 per-viewer
   푸시(`procCardsToPush`). 디테일 카드 `procs` 탭(`renderPanelProcs`)은 `GET /api/dashboard/session/:key/processes`(비공개 작업 게이트 적용)를 3초마다,
   `POST …/processes/:pid/:op`(pause · resume, body `{startToken}`, owner 또는 admin mode admin + CSRF)로 `SIGSTOP`/`SIGCONT`. 서버가 그 순간 다시 샘플해
-  트리 소속과 시작 시각을 확인한 뒤에만 신호를 보낸다. 명령줄(비밀 제거 미리보기)은 작업 소유자와 어드민에게만 내준다(작업 로그 규칙).
+  트리 소속과 시작 시각을 확인한 뒤에만 신호를 보낸다. 명령줄은 미리보기로만, 작업 소유자와 어드민에게만 내준다(작업 로그 규칙). 미리보기는 허용 목록이다: 프로그램(과 인터프리터의 스크립트) 이름과 `SHOWN_FLAGS`의 플래그 이름만 보이고, 값과 모르는 첫 단어부터는 `…`다(ADR 0003).
   턴 abort는 멈춘 루트를 `SIGCONT`하고(spawner, 루트가 이미 끝난 뒤의 abort 포함) 모니터가 그 세션에서 멈춘 것을 모두 이어 실행한다.
   데몬 종료(drain · crash kill)는 레지스트리 `onShutdown`으로 모니터가 멈춘 것을 모두 이어 실행한 뒤 죽인다 — 멈춘 채 남는 프로세스가 없다.
   `GET /api/dashboard/nodes`(admin)는 스케줄러용 노드 뷰.
