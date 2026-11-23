@@ -131,6 +131,7 @@ import { createSessionWorkLogAppender } from './conversation/session-work-log';
 import { setSettingsRegistry } from './conversation/settings-routes';
 import { setSkillsEnvRegistrySource } from './conversation/skills-routes';
 import { createSlackDirectoryLookup } from './conversation/slack-directory-lookup';
+import { isPrivateTask } from './conversation/task-visibility';
 import { flushWorkLog, readWorkLog, setOnWorkLogAppendedCallback, type WorkLogInput } from './conversation/work-log';
 import { CronScheduler, type SyntheticMessageEvent, setActiveCronScheduler } from './cron-scheduler';
 import { forceMigrateOpus1m } from './deploy/force-migrate-opus-1m';
@@ -268,6 +269,9 @@ import { getTokenManager } from './token-manager';
 import { buildThreadPermalink } from './turn-notifier';
 import type { ConversationSession } from './types';
 import { productionSettingsRegistry } from './user-settings-registry-production';
+import { getActiveUserTaskQueue, setActiveUserTaskQueue } from './user-task-queue/active';
+import { createUserTaskQueueHost } from './user-task-queue/host';
+import { registerUserTaskQueueActions } from './user-task-queue/slack-surface';
 import { setActiveWorkQueueHost, WorkQueueHost } from './work-queue/host';
 import { waitsOnHost } from './work-queue/host-wait';
 
@@ -1287,7 +1291,10 @@ async function start() {
         getUserName: (userId) => slackHandler.getSlackApi().getUserName(userId),
         handleMessage: (event, say) => slackHandler.handleMessage(event as any, say),
         getSessionKey: (channel, threadTs) => claudeHandler.getSessionKey(channel, threadTs),
-        hasSession: (sessionKey) => !!claudeHandler.getSessionRegistry().getSessionByKey(sessionKey),
+        // A task that waits in its owner's task queue (the user task queue) was taken too: its card is on the board.
+        hasSession: (sessionKey) =>
+          !!claudeHandler.getSessionRegistry().getSessionByKey(sessionKey) ||
+          !!getActiveUserTaskQueue()?.queue.waitingEntryFor(sessionKey),
         listUserSessions: (userId) => {
           const out: Array<{ channelId: string; lastActivity: number }> = [];
           for (const session of claudeHandler.getAllSessions().values()) {
@@ -2417,6 +2424,47 @@ async function start() {
     } else {
       logger.warn('Work queue off: this Node has no node:sqlite (needs >= 22.5)');
     }
+    // The per-user task queue: a person runs as many tasks (threads) at once as their limit (1, an admin none, the
+    // settings knob per person); a request over it waits in their queue and starts when a running task ends.
+    try {
+      const userTaskHost = createUserTaskQueueHost({
+        dataDir: DATA_DIR,
+        isAdmin: isAdminUser,
+        runningTasksOf: (userId) => slackHandler.runningTasksOf(userId),
+        isTaskRunning: (key) => slackHandler.isTaskRunning(key),
+        isTurnBusy: (key) => slackHandler.isFollowupTurnBusy(key),
+        sessionAlive: (key) => {
+          const s = claudeHandler.getSessionRegistry().getSessionByKey(key);
+          return !!s && !s.terminated;
+        },
+        handleMessage: (event, say) => slackHandler.handleMessage(event as any, say),
+        makeSay,
+        abort: (key) => slackHandler.getRequestCoordinator().abortSession(key, 'user-interrupted'),
+        slackApi: slackHandler.getSlackApi(),
+        onChange: () => broadcastSessionUpdate(),
+        isShuttingDown: () => slackHandler.isShuttingDown(),
+        // A DM or a private channel: its task is named in no other thread (the dashboard's #1315 rule).
+        isPrivateChannel: (channel) => isPrivateTask(channel),
+      });
+      slackHandler.setUserTaskQueue(userTaskHost.queue, () => userTaskHost.scheduleRelease());
+      setActiveUserTaskQueue({
+        queue: userTaskHost.queue,
+        limits: userTaskHost.limits,
+        release: (userId) => userTaskHost.release(userId),
+      });
+      registerUserTaskQueueActions(app, {
+        queue: () => userTaskHost.queue,
+        isAdmin: isAdminUser,
+        slackApi: slackHandler.getSlackApi(),
+      });
+      userTaskHost.start();
+      timing('User task queue started');
+    } catch (error) {
+      logger.error('User task queue not started — every request runs at once', {
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
+
     setStreamExecutorProviders({
       handOffEnvironmentSkill: createEnvSkillHandoffHost({
         handler: new SkillForceHandler(undefined, {

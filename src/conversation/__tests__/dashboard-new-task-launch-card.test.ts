@@ -536,7 +536,8 @@ describe('T1 — the board draws the launch cards: 시작 중 first in RUNNING, 
     expect(reset).toBeGreaterThan(0);
     expect(place).toBeGreaterThan(reset);
     expect(render).toContain("keys: pending.working.concat(keys(rest.working, 'working', kb))");
-    expect(render).toContain("keys: pending.waiting.concat(keys(rest.waiting, 'waiting', kb))");
+    // NEEDS YOU: the launches lead the cards that need an answer (under the 대기큐, when anything waits in line).
+    expect(render).toContain("var needsKeys = pending.waiting.concat(keys(uq.needs, 'waiting', kb));");
     expect(render.trimEnd().endsWith('ntOpenArrivals();\n}')).toBe(true);
   });
 });

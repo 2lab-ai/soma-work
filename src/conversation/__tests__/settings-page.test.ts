@@ -82,6 +82,8 @@ describe('settings page shell', () => {
       // listed for admins only — the page script filters it on /auth/me (secret-access WU1)
       { id: 'secrets', label: '비밀', icon: 'lock', adminOnly: true },
       { id: 'server-tools', label: '서버 도구', icon: 'shield', adminOnly: true },
+      // how many tasks each person may run at once — a knob per person (the per-user task queue)
+      { id: 'task-queue', label: '작업 큐', icon: 'list', adminOnly: true },
       { id: 'layout', label: '대시보드 화면', icon: 'board' },
       { id: 'dictation', label: '받아쓰기', icon: 'mic' },
     ]);

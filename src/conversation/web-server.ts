@@ -66,6 +66,7 @@ import { registerSkillsRoutes } from './skills-routes';
 import { canViewTask } from './task-visibility';
 import type { ConversationMeta, ConversationTurn } from './types';
 import { registerUserMediaRoutes } from './user-media-routes';
+import { registerUserTaskLimitsRoutes } from './user-task-limits-routes';
 import { renderConversationListPage, renderConversationViewPage } from './viewer';
 import { registerWorkLogRoutes } from './work-log-routes';
 
@@ -770,6 +771,8 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   registerServerToolsRoutes(server, authMiddleware, csrfMiddleware);
   // Agent mailbox main session (대표 세션): an admin reads and re-points it (src/mailbox/main-session.ts).
   registerMailboxRoutes(server, authMiddleware, csrfMiddleware);
+  // The per-user task queue's limits — the settings page 작업 큐 tab: an admin turns each person's knob.
+  registerUserTaskLimitsRoutes(server, authMiddleware, csrfMiddleware);
 
   // Health check
   server.get('/health', async (_request, reply) => {

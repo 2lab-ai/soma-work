@@ -27,6 +27,7 @@ import { OutputFlag } from '@soma/slack/output-flags';
 import { isLocalSlashCommand, shouldForwardAsLocalSlashCommand } from '@soma/slack/pipeline/local-slash-command';
 import { runWithTimeout } from '@soma/slack/pipeline/stream-executor-cleanup-helpers';
 import { buildSafeguardRefusalBlocks, decideSafeguardGate, safeguardRefusalNotice } from '@soma/slack/safeguard';
+import { markPersonStop } from '@soma/slack/session-manager';
 import { sayPostSwitches } from '@soma/slack/stream-processor';
 import { HandoffAbortError, isZHandoffWorkflow } from 'somalib/model-commands/handoff-parser';
 import { getAdminUsers, isAdminUser } from './admin-utils';
@@ -173,6 +174,7 @@ import { TodoManager } from './todo-manager';
 import { TurnNotifier } from './turn-notifier';
 import type { ConversationSession, SessionGoal, SessionGoalStall, SessionIncidentRequest } from './types';
 import { userSettingsStore } from './user-settings-store';
+import type { GateInput, RunningTask, UserTaskGatePort } from './user-task-queue/user-task-queue';
 import { waitsOnHost } from './work-queue/host-wait';
 import { WorkingDirectoryManager } from './working-directory-manager';
 
@@ -469,6 +471,14 @@ export class SlackHandler {
    */
   private readonly nestedAutoCompactStops = new Map<string, number>();
   /**
+   * Z 2026-11-23 — the order of people's stops (`user-stop`) in this process: a count, and the count each session
+   * was last stopped at. A turn compares it with the count when it began to be prepared (`stoppedWhilePreparing`);
+   * a clock could not order a stop and a message that land in the same millisecond. The saved stop time
+   * (`lastPersonStopAtMs`) is for the next boot.
+   */
+  private personStopCount = 0;
+  private readonly personStopOrder = new WeakMap<object, number>();
+  /**
    * Files downloaded for a message that was STEERED into a running turn, keyed
    * by the uuid it was pushed under (06 §3.2/D2). They must survive until the
    * turn settles that uuid — the model reads them from disk at a later tool
@@ -724,7 +734,7 @@ export class SlackHandler {
         // After the freeze (a refused freeze refuses the stop): the stop is
         // recorded even with an empty queue, where the freeze records nothing,
         // so a pending auto-compact continuation can see it.
-        this.noteSessionStop(sessionKey);
+        this.noteSessionStop(sessionKey, reason);
       },
     });
     this.toolTracker = new ToolTracker();
@@ -1942,6 +1952,12 @@ export class SlackHandler {
     const hasSlackMessage = Boolean(event.ts);
     if (!hasSlackMessage) event = { ...event, ts: mintEventTs() };
 
+    // The per-user task queue started this message (a held request, or the turn that carries a stopped task on):
+    // its admission is taken first, once, whatever happens to the message below — a replay that is parked for a
+    // shutdown, or queued behind a busy slot, has used its entry and is never replayed a second time. And it is no
+    // Slack redelivery: the goal-command dedupe below saw this very ts when it was queued.
+    const userTaskAdmitted = this.takeUserTaskAdmission(event, this.resolveFollowupSessionKey(event));
+
     // First admission point: restored items are only trustworthy once the
     // startup reconcile has run against the registry.
     this.warnIfReconcileSkipped();
@@ -1966,7 +1982,7 @@ export class SlackHandler {
     // of the same event must not run it a second time, whichever path the
     // first delivery took. The verbatim opening turn a goal command admits
     // reuses the command's `ts` and is exempt.
-    if (this.isRedeliveredGoalCommand(event)) {
+    if (!userTaskAdmitted && this.isRedeliveredGoalCommand(event)) {
       this.logger.info('Goal command redelivered — already handled, ignored', {
         channel: event.channel,
         ts: event.ts,
@@ -2110,12 +2126,29 @@ export class SlackHandler {
       return;
     }
 
+    // The per-user task queue: a person at their limit (another thread of theirs runs) does not start this one now —
+    // it waits in their queue and the host starts it when a running task ends. Synchronous, inside the fence.
+    const userTask = this.gateUserTask(event, sessionKey, userTaskAdmitted);
+    if (userTask === 'drop') {
+      this.logger.info('Turn dropped — its thread (or its cron job) already waits in the user task queue', {
+        sessionKey,
+      });
+      this.holdDroppedGoalContinuation(sessionKey, event);
+      return;
+    }
+    if (userTask === 'queued') {
+      // Durably stored, like a follow-up behind a busy slot: a host waiting for the receipt hears it now.
+      this.noteTurnAccepted(event.channel, event.ts);
+      return;
+    }
+
     // Bolt's `say` cannot ride inside the dispatch request (the dispatcher
     // clones the message as JSON), so it is handed over here. The dispatch hook
     // consumes it synchronously — `runInitial` calls it before its first await
     // (`followup-dispatcher.ts:329`, `:567`) — so this never leaks across runs.
     this.rememberInitialSay(sessionKey, say);
     const started = dispatcher.runInitial(sessionKey, event, this.captureFollowupContext(event));
+    if (started.status === 'dispatched') this.noteUserTaskSlot(sessionKey, event);
     // --- end of fence ---
 
     if (started.status !== 'dispatched') {
@@ -2231,6 +2264,11 @@ export class SlackHandler {
   ): Promise<DispatchOutcome> {
     const { channel, thread_ts, ts } = event;
     const originalThreadTs = thread_ts || ts;
+    // Z 2026-11-23 — the person-stop count when this turn began to be prepared. A person's stop after it, which lands
+    // before the turn's controller exists (nothing to abort), still stops this turn before the model sees the prompt
+    // (`stoppedWhilePreparing`). A count, not a clock: a stop and a message in the same millisecond stay ordered.
+    // A `!{prompt}` takes the count again after its own stop.
+    let preparingSinceStop = this.personStopCount;
 
     // Eagle incident turns. `incidentTurn` is set ONLY by the ingress
     // (`@soma/slack/event-router`) after the contract verified the sender, so
@@ -2367,6 +2405,10 @@ export class SlackHandler {
     const trimmedText = (event.text || '').trim();
     if (!verbatimPrompt && trimmedText.startsWith('!')) {
       const sessionKey = this.claudeHandler.getSessionKey(channel, originalThreadTs);
+      // Z 2026-11-23 — an admin's bare `!` in someone else's thread: a running goal would start its next turn and the
+      // stop would not hold, so the goal is paused first, in the same tick as the abort (the dashboard's 중지 asks
+      // the same). The owner's own `!` keeps its meaning.
+      this.pauseGoalForAdminStop(event, sessionKey);
       let aborted: boolean;
       try {
         aborted = this.requestCoordinator.abortSession(sessionKey);
@@ -2399,6 +2441,8 @@ export class SlackHandler {
           });
         }
         event.text = followUpPrompt;
+        // Its own stop is behind it: only a later one stops the turn it starts.
+        preparingSinceStop = this.personStopCount;
       } else {
         // "!" only — abort and stop pipeline
         await this.slackApi.removeReaction(channel, ts, 'eyes');
@@ -3079,6 +3123,20 @@ export class SlackHandler {
         activeThreadTs !== originalThreadTs ? originalThreadTs : sessionResult.session.sourceThread?.threadTs;
       const sourceChannel = activeChannel !== channel ? channel : sessionResult.session.sourceThread?.channel;
 
+      // The last host-side point before the model sees the prompt. A person stopped the session while this turn
+      // was being prepared — before its controller existed, so the stop had nothing to abort (the customer dev host, 2026-11-23:
+      // three dashboard stops during a restart resume, the turns ran minutes later anyway). The stop wins.
+      const preparedSession = sessionResult.session as ConversationSession;
+      if (this.stoppedWhilePreparing(preparedSession, preparingSinceStop)) {
+        this.requestCoordinator.removeController(sessionResult.sessionKey, sessionResult.abortController);
+        this.releaseStoppedPreparation(sessionResult.sessionKey, preparedSession);
+        await this.slackApi.removeReaction(channel, ts, 'brain');
+        this.logger.info('Turn not started — a person stopped the session while it was being prepared', {
+          sessionKey: sessionResult.sessionKey,
+          user: event.user,
+        });
+        return { result: 'interrupted', reason: 'user-stop' };
+      }
       // The last host-side point before the model sees the prompt: a goal
       // deleted or replaced during the awaits above (reactions, session
       // init, panel) must not have its opening turn run after all.
@@ -3766,7 +3824,8 @@ export class SlackHandler {
    *
    * Every message is held — a turn's words and a command alike: a control
    * (`!`, `goal pause`, `%model`, `model …`) changes the owner's session too,
-   * and most of them have no owner check of their own (trinity R1). A host
+   * and most of them have no owner check of their own (trinity R1). The one
+   * exception is an admin's bare `!` (Z 2026-11-23): it stops, nothing runs. A host
    * turn (cron, goal, resume, a post-compact replay) is the owner's. A
    * top-level message starts its own session, which its writer owns. Called at the entry, before the
    * queue fence — a held message is never queued, never steered into the
@@ -3791,6 +3850,10 @@ export class SlackHandler {
     if (!(event.text ?? '').trim() && !event.files?.length) return undefined;
     const session = this.claudeHandler?.getSession?.(event.channel, event.thread_ts);
     if (!session?.ownerId || session.ownerId === event.user) return undefined;
+    // Z 2026-11-23 ("어드민이면 다른 사람 작업 중지할수 있게"): an admin's bare `!` is the brake, not an instruction —
+    // it runs at once and stops the work (`processMessage`'s abort branch). Only the bare stop: `!{prompt}`
+    // starts a turn in the owner's session, and stays held like any other words.
+    if (this.isAdminBareStop(event)) return undefined;
     const sessionKey = this.claudeHandler.getSessionKey(event.channel, event.thread_ts);
     const approvalId = (event.routeContext as { instructionApprovalId?: string } | undefined)?.instructionApprovalId;
     if (
@@ -3799,6 +3862,13 @@ export class SlackHandler {
       return undefined;
     }
     return { approvals, sessionKey, session };
+  }
+
+  /** A person in ADMIN_USERS sent a bare `!` (no words after it, no files) — a stop, nothing to run. */
+  private isAdminBareStop(event: MessageEvent): boolean {
+    if (event.synthetic || isVerbatimPrompt(event) || event.files?.length) return false;
+    if ((event.text ?? '').trim() !== '!') return false;
+    return !!event.user && getAdminUsers().has(event.user);
   }
 
   /** Hold the message for the owner (`ownerApprovalHold` decided it): ask, tell the thread. */
@@ -6985,6 +7055,14 @@ export class SlackHandler {
    * `Send now` / Resume / Retry click runs): heard only when nothing of the chain is in flight.
    */
   private noteChainSettled(sessionKey: string, outcome: RunReport['outcome'] | undefined): void {
+    // The per-user task queue: a task of someone ended (or stopped to ask) — a waiting one of theirs may start now.
+    if (!this.followupDispatcher?.isBusy(sessionKey)) {
+      try {
+        this.userTaskChainSettled?.(sessionKey);
+      } catch (error) {
+        this.logger.warn('User task queue release hook raised', { error: (error as Error)?.message ?? String(error) });
+      }
+    }
     // #917 — the chain is over: a follow-up its Executive Summary left is asked now. A session with an active goal
     // waits for its loop instead (it continues, or asks; `onRunSettled` hands the rest back here).
     if (outcome && !this.followupDispatcher?.isBusy(sessionKey)) {
@@ -7052,10 +7130,63 @@ export class SlackHandler {
     }
   }
 
+  /** A person stopped `session` after the stop count was `since` — see `processMessage`'s last check before the model. */
+  private stoppedWhilePreparing(session: ConversationSession | undefined, since: number): boolean {
+    const stop = session ? this.personStopOrder.get(session) : undefined;
+    return stop !== undefined && stop > since;
+  }
+
+  /** See the `!` branch of `processMessage`: an admin's bare `!` on someone else's session pauses its running goal. */
+  private pauseGoalForAdminStop(event: MessageEvent, sessionKey: string): void {
+    if (!this.isAdminBareStop(event)) return;
+    const session = this.claudeHandler.getSessionByKey?.(sessionKey);
+    if (!session?.ownerId || session.ownerId === event.user) return;
+    const goal = session.goal;
+    if (goal?.status !== 'active' || typeof goal.goalId !== 'string') return;
+    try {
+      const paused = this.pauseGoalForStop(sessionKey, goal.goalId, 'slack');
+      this.logger.info('Admin stop: paused the running goal first', { sessionKey, admin: event.user, ...paused });
+    } catch (error) {
+      // The stop itself still happens — it is the brake; the goal may start its next turn, as before this change.
+      this.logger.warn('Admin stop: the running goal could not be paused', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
+  }
+
+  /**
+   * The turn a person stopped while it was being prepared never ran: a `working` it left must not stay on the card
+   * (the stop would read as not having worked). Set directly, as `handBackFailedRestartResume` does — the idle
+   * transition's hooks (the goal loop, queued cron fires) would start work the person just stopped.
+   */
+  private releaseStoppedPreparation(sessionKey: string, session: ConversationSession): void {
+    // Only a stale `working`: a session waiting on its owner's answer keeps waiting (its NEEDS YOU).
+    if (this.requestCoordinator.isRequestActive(sessionKey) || session.activityState !== 'working') return;
+    session.activityState = 'idle';
+    this.claudeHandler.saveSessions?.();
+    this.claudeHandler.broadcastSessionUpdate?.();
+  }
+
+  /** A person stopped the session after the stop count was `since`. */
+  private personStoppedSince(sessionKey: string, since: number): boolean {
+    return this.stoppedWhilePreparing(this.claudeHandler.getSessionByKey?.(sessionKey) ?? undefined, since);
+  }
+
   /** Record a stop-class abort on the session (`beforeAbort`). */
-  private noteSessionStop(sessionKey: string): void {
+  private noteSessionStop(sessionKey: string, reason: string): void {
     const session = this.claudeHandler?.getSessionByKey?.(sessionKey);
-    if (session) session.lastStopAtMs = Date.now();
+    if (!session) return;
+    const now = Date.now();
+    session.lastStopAtMs = now;
+    // A person's stop (dashboard 중지, `!`) — not a shutdown, not a close — is the one a restart and a turn still
+    // being prepared must honour (Z 2026-11-23).
+    if (reason === 'user-stop') {
+      // When, and which work it stopped — a restart does not resume it until new work begins
+      // (`stoppedByPersonSinceTurnStart`).
+      markPersonStop(session, now);
+      this.personStopOrder.set(session, ++this.personStopCount);
+    }
   }
 
   /** The host turn that resumes the work an `auto-compact` stop interrupted. */
@@ -8387,8 +8518,17 @@ export class SlackHandler {
         }
         // This resume continues the turn the restart cut — it may take that turn's follow-up over.
         this.noteFollowupResume(session.sessionKey, 'restart');
+        const resumeSinceStop = this.personStopCount;
         this.autoResumeSession(session, notificationTs)
           .then((taken) => {
+            if (!taken && this.personStoppedSince(session.sessionKey, resumeSinceStop)) {
+              // Z 2026-11-23 — a person stopped the session while the resume was being prepared: that is the stop,
+              // not a failed resume. Handing the session back would let the goal loop start the stopped work again.
+              this.logger.info('Auto-resume stopped by a person — the session is not handed back', {
+                sessionKey: session.sessionKey,
+              });
+              return;
+            }
             if (!taken) {
               // #966 — returned without running: no turn carries the session, so hand it back.
               this.logger.warn('Auto-resume returned without taking its turn — handing the session back', {
@@ -9039,6 +9179,164 @@ export class SlackHandler {
   }
   private goalLoopActing?: (sessionKey: string) => boolean;
 
+  /** The per-user task queue (wired in index.ts). Absent: every message runs as before. */
+  setUserTaskQueue(queue: UserTaskGatePort | undefined, onChainSettled?: (sessionKey: string) => void): void {
+    this.userTaskQueue = queue;
+    this.userTaskChainSettled = onChainSettled;
+  }
+  private userTaskQueue?: UserTaskGatePort;
+  private userTaskChainSettled?: (sessionKey: string) => void;
+
+  /** The thread's task runs: its turn holds the slot, or its goal loop is about to run the next one. */
+  isTaskRunning(sessionKey: string): boolean {
+    return this.isFollowupTurnBusy(sessionKey) || this.goalLoopActing?.(sessionKey) === true;
+  }
+
+  /**
+   * The slots this ingress opened, by the person whose task each is — known at `runInitial`, before the session
+   * exists (a first message creates it only after several awaits) and before a bot-thread migration re-keys it. An
+   * entry counts while its slot is held ({@link isFollowupTurnBusy}); a stale one is dropped when read.
+   */
+  private readonly userTaskSlots = new Map<
+    string,
+    { userId: string; channel: string; threadTs: string; startedAt: number }
+  >();
+
+  /** Whose task a thread is: its session's owner, or — for a thread with no session yet — the sender. */
+  private userTaskOwnerOf(sessionKey: string, event: MessageEvent): string | undefined {
+    const session =
+      typeof this.claudeHandler?.getSessionByKey === 'function'
+        ? this.claudeHandler.getSessionByKey(sessionKey)
+        : undefined;
+    return session?.ownerId || event.user || undefined;
+  }
+
+  private takeUserTaskAdmission(event: MessageEvent, sessionKey: string | undefined): boolean {
+    const id = event.routeContext?.userTaskEntryId;
+    if (!id || !sessionKey || !this.userTaskQueue) return false;
+    try {
+      return this.userTaskQueue.takeAdmission(id, sessionKey);
+    } catch (error) {
+      this.logger.warn('User task queue: admission could not be taken', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      });
+      return false;
+    }
+  }
+
+  /**
+   * The per-user task queue's gate, at the idle dispatch point. `run` — start now; `queued` — the message waits in
+   * the person's queue (the queue posted the notice); `drop` — a goal continuation of a thread that waits in line.
+   * A queue that fails lets the message run: a broken queue must not stop the bot.
+   */
+  private gateUserTask(event: MessageEvent, sessionKey: string, admitted: boolean): 'run' | 'queued' | 'drop' {
+    const queue = this.userTaskQueue;
+    if (!queue) return 'run';
+    const userId = this.userTaskOwnerOf(sessionKey, event);
+    if (!userId) return 'run';
+    const route = event.routeContext;
+    const continuation: GateInput['continuation'] = route?.goalContinuation
+      ? 'drop'
+      : route?.hostTurn || route?.autoResume || route?.compactRedispatch || event.epicChild
+        ? 'pass'
+        : 'none';
+    try {
+      const result = queue.gate({
+        userId,
+        sessionKey,
+        channel: event.channel,
+        threadTs: event.thread_ts || event.ts,
+        text: event.text,
+        message: JSON.parse(JSON.stringify(event)) as Record<string, unknown>,
+        continuation,
+        admitted,
+      });
+      if (result.action === 'queued') {
+        this.logger.info('User task queue: message waits for the person to have a free slot', {
+          sessionKey,
+          userId,
+          entry: result.entry.id,
+          position: result.position,
+          limit: result.limit,
+        });
+      }
+      return result.action;
+    } catch (error) {
+      this.logger.error('User task queue gate failed — the message runs', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      });
+      return 'run';
+    }
+  }
+
+  private noteUserTaskSlot(sessionKey: string, event: MessageEvent): void {
+    const userId = this.userTaskOwnerOf(sessionKey, event);
+    if (!userId) return;
+    this.userTaskSlots.set(sessionKey, {
+      userId,
+      channel: event.channel,
+      threadTs: event.thread_ts || event.ts,
+      startedAt: Date.now(),
+    });
+  }
+
+  /**
+   * The person's tasks that run right now: a thread whose turn holds its slot (from the ingress map, or any session
+   * of theirs whose slot is held — a drain, a Send now), or whose goal loop is about to run its next turn. One entry
+   * per slot: a migrated thread's work key and source key are the same task.
+   */
+  runningTasksOf(userId: string): RunningTask[] {
+    const out: RunningTask[] = [];
+    const seen = new Set<string>();
+    const slotOf = (key: string) => this.followupMigration?.byCanonical.get(key) ?? key;
+    const titleOf = (key: string) => {
+      const s =
+        typeof this.claudeHandler?.getSessionByKey === 'function' ? this.claudeHandler.getSessionByKey(key) : undefined;
+      return s?.title || undefined;
+    };
+    for (const [key, slot] of this.userTaskSlots) {
+      if (!this.isFollowupTurnBusy(key)) {
+        this.userTaskSlots.delete(key);
+        continue;
+      }
+      if (slot.userId !== userId) continue;
+      seen.add(slotOf(key));
+      // After a bot-thread migration the task is the work thread's: its key, channel and thread (a resume or a
+      // notice addressed to the source thread would land on the session the migration ended).
+      const canonical = this.followupMigration?.bySlot.get(key) ?? key;
+      const work =
+        canonical !== key && typeof this.claudeHandler?.getSessionByKey === 'function'
+          ? this.claudeHandler.getSessionByKey(canonical)
+          : undefined;
+      out.push({
+        sessionKey: canonical,
+        channel: work?.channelId || slot.channel,
+        threadTs: work?.threadTs || slot.threadTs,
+        title: titleOf(canonical) ?? titleOf(key),
+        startedAt: slot.startedAt,
+      });
+    }
+    const sessions =
+      typeof this.claudeHandler?.getAllSessions === 'function' ? this.claudeHandler.getAllSessions() : undefined;
+    for (const [key, s] of sessions ?? []) {
+      if (s.ownerId !== userId || s.terminated || !s.channelId) continue;
+      if (seen.has(slotOf(key)) || seen.has(key)) continue;
+      const busy = this.isFollowupTurnBusy(key) || this.goalLoopActing?.(key) === true;
+      if (!busy) continue;
+      seen.add(slotOf(key));
+      out.push({
+        sessionKey: key,
+        channel: s.channelId,
+        threadTs: s.threadTs || '',
+        title: s.title || undefined,
+        startedAt: Number(s.activityStateChangedAt) || undefined,
+      });
+    }
+    return out;
+  }
+
   /**
    * #917 (trinity R2 fable P2) — the host lets the agent act again on its own (goal resume, an objective update, a
    * resumed goal): the follow-up question it asked no longer applies, and while open it keeps the session `waiting`,
@@ -9555,6 +9853,7 @@ export class SlackHandler {
   pauseGoalForStop(
     sessionKey: string,
     goalId: string,
+    via: 'dashboard' | 'slack' = 'dashboard',
   ): { outcome: 'paused'; inPlace: boolean } | { outcome: 'not-running' } {
     const live = this.liveGoalSession(sessionKey);
     const current = live.goal;
@@ -9568,13 +9867,14 @@ export class SlackHandler {
     this.persistHostGoalMutation(live);
     this.claudeHandler.broadcastSessionUpdate?.();
     if (live.channelId && live.threadTs) {
+      const where = via === 'slack' ? 'by an admin in this thread' : 'from the dashboard';
       void this.postGoalNoticeBestEffort(
         live.channelId,
         live.threadTs,
         `⏸️ Goal paused: ${formatGoalObjectiveForSlack(paused.objective)}\n` +
           (inPlace
-            ? '_The work was stopped from the dashboard. The queued goals wait behind it — resume it to go on._'
-            : '_The work was stopped from the dashboard. Resume the goal to start it again._'),
+            ? `_The work was stopped ${where}. The queued goals wait behind it — resume it to go on._`
+            : `_The work was stopped ${where}. Resume the goal to start it again._`),
       );
     }
     return { outcome: 'paused', inPlace: inPlace === true };

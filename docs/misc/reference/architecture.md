@@ -74,9 +74,11 @@ soma-work (Slack multi-tenant AI Assistant) 아키텍처 문서. 2026-06-10 기�
 ## Core Request Flow
 
 ```
-Slack Event (Socket Mode)
+Slack Event (Socket Mode) · 대시보드 지시/새 작업 · 크론
   → SlackHandler (src/slack-handler.ts, 1.5k)
       EventRouter · CommandRouter · Actions(9) · Commands(20+)
+      handleMessage 유휴 디스패치 직전: 유저 작업 큐 게이트 (src/user-task-queue/)
+        한도 초과(다른 스레드가 진행 중) → 대기열 + Slack 안내, 진행 중 작업 끝나면 호스트가 재생
   → Stream Pipeline (src/slack/pipeline/)
       input-processor → session-initializer → stream-executor
       ├ SessionRegistry.getOrCreate (src/session-registry.ts, 2.2k)
@@ -327,6 +329,8 @@ updates inside its terminal-cleanup boundary, including setup failures.
 | `pr-watch.json` (+`.bak`) | 세션 PR 감시가 PR마다 마지막으로 알린 CI head와 결론(#929), 리뷰·코멘트 커서와 봇 리뷰 깨움 횟수(#930) (`src/session-pr-watch.ts` `createFilePrWatchStore`) — 재시작 뒤 같은 것을 다시 보내지 않게 |
 | `session-archive/` | 크래시/복구 세션 스냅샷 |
 | `session-lifecycle.json` (+`.bak`) | 세션 수명 정책 — Sleeping 전환·Archive 전환·대시보드 Archive 표시 기간 (`src/session-lifecycle-policy.ts`, 대시보드 admin `PUT /api/dashboard/lifecycle`) |
+| `user-task-queue.json` (+`.bak`) | 유저 작업 큐의 대기열 — 사람마다 한도(기본 1, 관리자 무제한)를 넘은 요청(원문 이벤트)과 먼저 진행으로 멈춘 작업(`resume`), 줄 순서대로. `admitted` = 시작돼 턴으로 가는 중(재시작하면 다시 대기). 게이트는 `SlackHandler.handleMessage` 유휴 디스패치 직전, 재생·이어하기·틱은 `src/user-task-queue/host.ts` |
+| `user-task-limits.json` (+`.bak`) | 관리자가 정한 사람별 동시 작업 한도(1~10 또는 `unlimited`) — 대시보드 설정 작업 큐 탭의 노브(`PUT /api/settings/task-limits/:userId`) |
 | `last-command-channels.json` (+`.bak`) | 유저별 마지막 명령 채널 — 대시보드 새 작업의 기본 채널 (`src/last-command-channel-store.ts`, 비-synthetic 채널 메시지마다 기록) |
 
 외부 스토어(선택, MCP 경유): ClickHouse(메트릭), MongoDB, Redis, MySQL.

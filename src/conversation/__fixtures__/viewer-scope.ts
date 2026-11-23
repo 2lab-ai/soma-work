@@ -1,7 +1,7 @@
 /**
  * The page's viewer predicates (SSOT 2026-11-02) for the client harnesses that
  * cut functions out of renderDashboardPage()'s template: `viewerOwns`,
- * `viewerCanManage` and `viewerCanInstruct` read the signed-in viewer
+ * `viewerCanManage`, `viewerCanInstruct` and `viewerCanStop` read the signed-in viewer
  * (`_viewerUserId`), `_viewerIsAdmin` and 관리자 모드 (`_isAdminModeOn`).
  *
  * A harness that loads a function using them gets them too. Unless a test names
@@ -11,7 +11,7 @@
  * read-only words the test injected. The predicates themselves are pinned by
  * dashboard-task-permissions-client.test.ts.
  */
-export const VIEWER_FNS = ['viewerOwns', 'viewerCanManage', 'viewerCanInstruct'] as const;
+export const VIEWER_FNS = ['viewerOwns', 'viewerCanManage', 'viewerCanInstruct', 'viewerCanStop'] as const;
 /**
  * #1021 — what `cardOf` itself reads for an epic's family (@2lab.ai/ui 0.37.0): an epic's children on its face
  * (`epicFamilyOf` — the cached epic's whole bundle, `_sessionCache`, empty unless a test names one — →
@@ -89,6 +89,7 @@ export function viewerScope(
     _viewerUserId: typeof inject.currentUserId === 'string' ? inject.currentUserId : '',
     _viewerIsAdmin: false,
     OWNER_ONLY_MSG: inject.READ_ONLY_MSG ?? '소유자나 관리자 모드를 켠 관리자만 할 수 있어요',
+    STOP_OWNER_ONLY_MSG: inject.READ_ONLY_MSG ?? '소유자나 관리자만 중지할 수 있어요',
   };
   if (!fns.includes('_isAdminModeOn')) defaults._isAdminModeOn = () => false;
   // The page's repaint after the viewer or 관리자 모드 changes: a seam here (the board and panel are not loaded).
