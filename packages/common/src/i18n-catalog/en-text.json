@@ -2390,5 +2390,9 @@
   "막대 = 그 계정 한도 중 남은 비율": "bar = share of that account's limit left",
   "플랜 뒤 * = 설정이 없어 Max x20으로 가정": "* after a plan = not configured, counted as Max x20",
   "\"다시 차는 시각\" = 막힘은 풀리는 시각, 그 밖에는 7일 한도 리셋": "\"Refills at\" = when a block lifts, otherwise the 7-day reset",
-  "측정 앞 노란 세모 = 하루 넘게 갱신되지 않음": "yellow triangle before the age = not refreshed for over a day"
+  "측정 앞 노란 세모 = 하루 넘게 갱신되지 않음": "yellow triangle before the age = not refreshed for over a day",
+  "CPU · 메모리": "CPU · memory",
+  "Claude Code와 자식 프로세스 — 돌고 있을 때만": "Claude Code and its child processes — only while they run",
+  "프로세스": "Processes",
+  "프로세스별 CPU · 메모리 — 일시중지 · 재개": "CPU · memory per process — pause · resume"
 }

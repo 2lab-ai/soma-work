@@ -195,10 +195,38 @@ function faceFootMetrics(card, model, foot, effort, asked) {
       // 'unknown' is the server's placeholder for a model it does not know — no name to show.
       var md = model && model !== 'unknown' ? String(model) : '';
       if (md) m = modelChipOf(md, effort, asked);
-    }
+    } else if (chip.id === 'proc') m = procChipOf(c.procUsage);
     if (m) out.push(m);
   }
   return out;
+}
+// Memory for people: 340MB, 1.2GB (decimal units, as Activity Monitor and top print them).
+function procBytesText(n) {
+  n = Math.max(0, Number(n) || 0);
+  if (n >= 1e9) return (n / 1e9).toFixed(n >= 1e10 ? 0 : 1) + 'GB';
+  if (n >= 1e6) return Math.round(n / 1e6) + 'MB';
+  return Math.max(1, Math.round(n / 1e3)) + 'KB';
+}
+// CPU as top prints it: 100% is one core, so a busy tree on many cores reads over 100%.
+function procCpuText(p) {
+  p = Math.max(0, Number(p) || 0);
+  return (p < 10 && p > 0 ? p.toFixed(1) : String(Math.round(p))) + '%';
+}
+// The card's CPU · 메모리 chip (detail.foot 'proc'): what the session's Claude Code process and every process under it
+// use now — none while nothing of it is alive. Paused processes lead the chip in the wait tone.
+function procChipOf(u) {
+  if (!u || !(Number(u.processCount) > 0)) return null;
+  var n = Number(u.processCount);
+  var stopped = Number(u.stoppedCount) || 0;
+  var text = 'CPU ' + procCpuText(u.cpuPercent) + ' · ' + procBytesText(u.rssBytes);
+  if (stopped) text = '일시중지 ' + stopped + ' · ' + text;
+  var who = u.rootAlive ? 'Claude Code와 그 아래 프로세스 ' + n + '개' : 'Claude Code는 끝났고 남은 프로세스 ' + n + '개';
+  var cores = Number(u.cpuCount) > 0 ? ', 이 노드 코어 ' + Number(u.cpuCount) + '개' : '';
+  var title = who + '\nCPU ' + procCpuText(u.cpuPercent) + ' (100% = 코어 1개' + cores + ') · 메모리 ' + procBytesText(u.rssBytes)
+    + (stopped ? '\n일시중지 ' + stopped + '개' : '');
+  var m = { text: text, title: title, label: text };
+  if (stopped) m.tone = 'wait';
+  return m;
 }
 // The effort levels the face's gauge draws (@2lab.ai/ui 0.22.0), in Korean for the chip's title and name.
 var MODEL_EFFORT_KO = { low: '낮음', medium: '보통', high: '높음', xhigh: '매우 높음', max: '최대', ultra: '울트라' };

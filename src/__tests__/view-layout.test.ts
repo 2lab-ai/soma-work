@@ -60,7 +60,8 @@ describe('L1 — built-in presets', () => {
     expect(m1.card.rows[0].opt).toBe('asks');
     expect(m1.card.rows.find((r) => r.id === 'arts')!.opt).toBe('3');
     // SSOT 2026-11-05: every built-in face leads its foot with where the work happens — 레포 · 채널.
-    expect(shown(m1.card.foot)).toEqual(['repo', 'channel', 'cost', 'model']);
+    // 2026-11-23: every built-in face ends its foot with the CPU · 메모리 chip (`proc`, shown only while a process lives).
+    expect(shown(m1.card.foot)).toEqual(['repo', 'channel', 'cost', 'model', 'proc']);
     expect(shown(m1.open.parts)).toEqual(['refs', 'model']);
     expect(m1.open.star).toBe(false);
     expect([m1.detail.tasks, m1.detail.tasksMax, m1.detail.open]).toEqual(['list', 34, false]);
@@ -71,14 +72,15 @@ describe('L1 — built-in presets', () => {
       'arts',
       'cost',
       'model',
+      'proc',
     ]);
     expect(BUILTIN_PRESETS['2'].minimal.detail).toMatchObject({ tasks: 'list', tasksMax: 50, controls: true });
-    expect(shown(BUILTIN_PRESETS['3'].minimal.card.foot)).toEqual(['repo', 'channel', 'cost', 'model']);
+    expect(shown(BUILTIN_PRESETS['3'].minimal.card.foot)).toEqual(['repo', 'channel', 'cost', 'model', 'proc']);
     expect(BUILTIN_PRESETS['3'].minimal.detail.tasks).toBe('line');
     // advanced 2안 원본: the ✦, no model, the ☆ button, every section unfolded.
     const a2 = BUILTIN_PRESETS['2'].advanced;
     expect(a2.card.kind).toBe(false);
-    expect(shown(a2.card.foot)).toEqual(['repo', 'channel', 'steps', 'ctx', 'media']);
+    expect(shown(a2.card.foot)).toEqual(['repo', 'channel', 'steps', 'ctx', 'media', 'proc']);
     expect(a2.open.star).toBe(true);
     expect(a2.detail.open).toBe(true);
     expect(a2.open.byCol?.work).toEqual(['tasks', 'agents', 'io', 'goal', 'refs', 'model']);
@@ -161,6 +163,8 @@ describe('L2 — a saved document is checked', () => {
       ['arts', true],
       ['cost', true],
       ['model', true],
+      // `proc` (2026-11-23) was not in the saved list either: after its built-in neighbour (model), on.
+      ['proc', true],
       ['ctx', false],
       ['media', false],
       ['pr', false],
@@ -398,13 +402,14 @@ describe('L8 — 상세 카드 세 구역: title bar · 입력 필요 · tab bar
     }
   });
 
-  it('the tab bar: 목표 · 작업 · 에이전트 · 산출물 in every built-in, 세부 (the full record) in advanced', () => {
+  it('the tab bar: 목표 · 작업 · 에이전트 · 산출물 · 프로세스 in every built-in, 세부 (the full record) in advanced', () => {
     for (const p of PRESET_IDS) {
       expect(shown(BUILTIN_PRESETS[p].minimal.detail.tabs), `${p} minimal`).toEqual([
         'goal',
         'tasks',
         'agents',
         'artifacts',
+        'procs',
       ]);
       expect(shown(BUILTIN_PRESETS[p].advanced.detail.tabs), `${p} advanced`).toEqual([...DETAIL_TABS]);
     }
@@ -440,7 +445,8 @@ describe('L8 — 상세 카드 세 구역: title bar · 입력 필요 · tab bar
     expect(d.head.find((x) => x.id === 'cost')!.on).toBe(true);
     expect(d.tabs.findIndex((x) => x.id === 'agents')).toBeLessThan(d.tabs.findIndex((x) => x.id === 'goal'));
     expect(d.tabs.find((x) => x.id === 'goal')!.on).toBe(false);
-    expect(shown(d.tabs).sort()).toEqual(['agents', 'artifacts', 'tasks']);
+    // 프로세스 (2026-11-23) was not saved: it takes the preset's state (on).
+    expect(shown(d.tabs).sort()).toEqual(['agents', 'artifacts', 'procs', 'tasks']);
   });
 
   it('a detail card saved before the tab bar gets its preset’s title bar and tabs; a hidden task list is the 작업 tab off', () => {
@@ -464,7 +470,7 @@ describe('L8 — 상세 카드 세 구역: title bar · 입력 필요 · tab bar
     const d = normalizeLayoutDoc({ v: 1, presets: { '2': { minimal: { detail: legacy } } } }).presets!['2']!.minimal!
       .detail!;
     expect(d.head).toEqual(BUILTIN_PRESETS['2'].minimal.detail.head);
-    expect(shown(d.tabs)).toEqual(['goal', 'agents', 'artifacts']);
+    expect(shown(d.tabs)).toEqual(['goal', 'agents', 'artifacts', 'procs']);
     expect(d.tasks).toBe('list');
     expect(d.tasksMax).toBe(50);
     expect(d.controls).toBe(false);

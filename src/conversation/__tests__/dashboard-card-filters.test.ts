@@ -368,7 +368,8 @@ describe('F1 — the face: 레포 · 채널 foot chips, on in every built-in lay
     };
     const doc = normalizeLayoutDoc({ v: 1, presets: { '1': { minimal: { card: saved } } } });
     const foot = doc.presets!['1']!.minimal!.card!.foot;
-    expect(foot.filter((c) => c.on).map((c) => c.id)).toEqual(['repo', 'channel', 'cost']);
+    // 2026-11-23: the CPU · 메모리 chip (`proc`) arrived later still — on, at the preset's place (after model).
+    expect(foot.filter((c) => c.on).map((c) => c.id)).toEqual(['repo', 'channel', 'cost', 'proc']);
   });
 
   it('cardOf hands the face its where; faceOf draws the chips in the layout’s order, with the full name as the title', () => {

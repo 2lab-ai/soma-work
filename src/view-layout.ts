@@ -37,12 +37,13 @@ export const CARD_CHIPS = [
   'cost',
   'tokens',
   'model',
+  'proc',
 ] as const;
 export const OPEN_PARTS = ['tasks', 'agents', 'io', 'arts', 'goal', 'refs', 'model'] as const;
 /** The detail card's title bar: what follows the status and the time, in order (SSOT 2026-11-03). */
 export const DETAIL_HEAD = ['model', 'cost', 'tokens', 'speed', 'ctx', 'owner', 'workflow'] as const;
 /** The detail card's tab bar under the title bar: a tab's content shows only while it is pressed (SSOT 2026-11-03). */
-export const DETAIL_TABS = ['goal', 'tasks', 'agents', 'artifacts', 'info'] as const;
+export const DETAIL_TABS = ['goal', 'tasks', 'agents', 'artifacts', 'info', 'procs'] as const;
 export const THREAD_INFO = ['owner', 'workflow', 'model', 'ctx', 'cost', 'tokens', 'task', 'steps'] as const;
 export const THREAD_NAV = ['dashboardLink', 'linkhistory', 'links', 'status'] as const;
 
@@ -168,12 +169,14 @@ const DETAIL_HEAD_OF = (all: boolean): LayoutItem<DetailHeadId>[] => [
   it('workflow', all),
 ];
 // The tab bar: 목표 · 작업 · 에이전트 · 산출물 everywhere (a closed tab costs one word); 어드밴스드 adds 세부.
+// 프로세스 (the session's Claude Code process tree, its CPU and memory, pause · resume) sits right of 세부, everywhere.
 const DETAIL_TABS_OF = (all: boolean): LayoutItem<DetailTabId>[] => [
   it('goal', true),
   it('tasks', true),
   it('agents', true),
   it('artifacts', true),
   it('info', all),
+  it('procs', true),
 ];
 const DETAIL_ALL: Omit<DetailLayout, 'tasks' | 'tasksMax' | 'open'> = {
   head: DETAIL_HEAD_OF(true),
@@ -242,6 +245,7 @@ export const BUILTIN_PRESETS: Record<PresetId, PresetLayouts> = {
           it('pr', false),
           it('cost', true),
           it('model', true),
+          it('proc', true),
           it('steps', false),
           it('ctx', false),
           it('media', false),
@@ -277,6 +281,7 @@ export const BUILTIN_PRESETS: Record<PresetId, PresetLayouts> = {
           it('media', true),
           it('pr', false),
           it('model', true),
+          it('proc', true),
           it('arts', false),
           it('cost', false),
           it('tokens', false),
@@ -308,6 +313,7 @@ export const BUILTIN_PRESETS: Record<PresetId, PresetLayouts> = {
           it('arts', true),
           it('cost', true),
           it('model', true),
+          it('proc', true),
           it('ctx', false),
           it('media', false),
           it('pr', false),
@@ -341,6 +347,7 @@ export const BUILTIN_PRESETS: Record<PresetId, PresetLayouts> = {
           it('steps', true),
           it('ctx', true),
           it('media', true),
+          it('proc', true),
           it('pr', false),
           it('arts', false),
           it('cost', false),
@@ -372,6 +379,7 @@ export const BUILTIN_PRESETS: Record<PresetId, PresetLayouts> = {
           it('channel', true),
           it('cost', true),
           it('model', true),
+          it('proc', true),
           it('steps', false),
           it('ctx', false),
           it('media', false),
@@ -416,6 +424,7 @@ export const BUILTIN_PRESETS: Record<PresetId, PresetLayouts> = {
           it('pr', false),
           it('cost', true),
           it('model', true),
+          it('proc', true),
           it('media', false),
           it('tokens', false),
         ],
@@ -499,6 +508,7 @@ export const LAYOUT_CATALOG = {
       { id: 'cost', label: '비용', hint: 'API 환산 비용' },
       { id: 'tokens', label: '토큰', hint: '총 토큰' },
       { id: 'model', label: '모델', hint: '회사 아이콘과 이름' },
+      { id: 'proc', label: 'CPU · 메모리', hint: 'Claude Code와 자식 프로세스 — 돌고 있을 때만', slack: false },
     ],
   },
   open: {
@@ -538,6 +548,7 @@ export const LAYOUT_CATALOG = {
       { id: 'agents', label: '에이전트', hint: '서브에이전트 수 — 볼 에이전트 고르기' },
       { id: 'artifacts', label: '산출물', hint: '만든 파일 · 지시 첨부' },
       { id: 'info', label: '세부', hint: '세션 정보 전체 — 토큰 내역 · 링크 · 컨텍스트' },
+      { id: 'procs', label: '프로세스', hint: '프로세스별 CPU · 메모리 — 일시중지 · 재개' },
     ],
     tasks: [
       { value: 'runs', label: '실행 표 (전부)' },
