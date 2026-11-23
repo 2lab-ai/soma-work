@@ -36,6 +36,11 @@ vi.mock('../viewer', () => ({
 vi.mock('../../session-archive', () => ({
   getArchiveStore: () => ({ listRecent: () => [] }),
 }));
+// C… channels are public, D… are DMs (private) — what the channel registry would say.
+vi.mock('../../channel-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../channel-registry')>()),
+  getChannel: (id: string) => (id.startsWith('C') ? { id, isPrivate: false } : undefined),
+}));
 
 const AUTH_HEADER = { Authorization: 'Bearer test-token' };
 
@@ -183,6 +188,46 @@ describe('Dashboard — the per-user task queue (대기큐)', () => {
       headers: AUTH_HEADER,
     });
     expect(bad.statusCode).toBe(404);
+  });
+
+  it('a thread that still works stays RUNNING though it has an entry in line', async () => {
+    dashboard.setDashboardSessionAccessor(
+      () =>
+        new Map([
+          ['C1:t1', session({ activityState: 'working' })],
+          ['C1:t2', session({ sessionId: 'sid2', threadTs: 't2', title: 'second', activityState: 'working' })],
+        ]),
+    );
+    const res = await injectWebServer({ method: 'GET', url: '/api/dashboard/sessions', headers: AUTH_HEADER });
+    const b = JSON.parse(res.body).board;
+    expect(b.working.map((c: any) => c.threadTs).sort()).toEqual(['t1', 't2']);
+    expect(b.waiting).toHaveLength(0);
+  });
+
+  it('an entry everyone may see does not name its owner’s private running task', async () => {
+    const { UserTaskQueue } = await import('../../user-task-queue/user-task-queue');
+    const { setActiveUserTaskQueue } = await import('../../user-task-queue/active');
+    const queue = new UserTaskQueue({
+      store: { load: () => undefined, save: () => undefined },
+      limitFor: () => 1,
+      runningTasks: () => [{ sessionKey: 'D9:t1', channel: 'D9', threadTs: 't1', title: '비밀 프로젝트 X' }],
+      start: () => undefined,
+      interrupt: () => true,
+    });
+    queue.gate({
+      userId: 'U1',
+      sessionKey: 'C1:t2',
+      channel: 'C1',
+      threadTs: 't2',
+      text: 'public request',
+      message: {},
+      continuation: 'none',
+      admitted: false,
+    });
+    setActiveUserTaskQueue({ queue, limits: {} as any, release: vi.fn() });
+    const b = await board();
+    expect(b.userQueue[0].running).toEqual([{ key: 'D9:t1', title: '비공개 작업' }]);
+    expect(JSON.stringify(b.userQueue)).not.toContain('비밀 프로젝트 X');
   });
 
   it('without the queue wired the board has no 대기큐', async () => {

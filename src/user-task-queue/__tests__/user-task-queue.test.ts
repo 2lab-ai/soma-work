@@ -166,6 +166,18 @@ describe('UserTaskQueue.gate', () => {
     if (host.action === 'queued') expect(host.position).toBe(2);
   });
 
+  it('a scheduled job whose fire already waits does not line up a second fire', () => {
+    const h = harness();
+    h.running.set('U1', [taskA]);
+    const cron = { user: 'U1', channel: 'C1', ts: '5.0', text: 'daily', cron: { jobId: 'job-1', jobName: 'daily' } };
+    expect(h.queue.gate(input({ sessionKey: 'C1:5.0', threadTs: '5.0', message: cron })).action).toBe('queued');
+    expect(h.queue.gate(input({ sessionKey: 'C1:6.0', threadTs: '6.0', message: { ...cron, ts: '6.0' } }))).toEqual({
+      action: 'drop',
+    });
+    const other = { ...cron, ts: '7.0', cron: { jobId: 'job-2', jobName: 'weekly' } };
+    expect(h.queue.gate(input({ sessionKey: 'C1:7.0', threadTs: '7.0', message: other })).action).toBe('queued');
+  });
+
   it('an admitted replay runs even over the limit', () => {
     const h = harness();
     h.running.set('U1', [taskA, { ...taskA, sessionKey: 'C1:1.5' }]);

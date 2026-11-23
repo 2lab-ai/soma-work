@@ -90,6 +90,38 @@ describe('createUserTaskSlackNotifier', () => {
     expect(JSON.stringify(slackApi.updateMessage.mock.calls[0][3])).toContain('<https://slack/C1/1.0|첫 일>');
   });
 
+  it('a private task is not named in another thread: no title, no link', async () => {
+    const slackApi = api();
+    const notifier = createUserTaskSlackNotifier({
+      slackApi,
+      isPrivateChannel: (c) => c.startsWith('D'),
+      queue: () => ({ setNotice: vi.fn(), viewFor: () => ({ waiting: [] }) as any, entry: () => undefined }),
+    });
+    notifier.queued(entry, {
+      position: 1,
+      limit: 1,
+      running: [{ sessionKey: 'D1:1.0', channel: 'D1', threadTs: '1.0', title: '비밀 프로젝트 X' }],
+    });
+    await flush();
+    const body = JSON.stringify(slackApi.postMessage.mock.calls[0][2].blocks);
+    expect(body).not.toContain('비밀 프로젝트 X');
+    expect(body).not.toContain('https://slack/D1');
+    expect(body).toContain('비공개 작업');
+    // The stopped public thread is not told what the private request says either.
+    notifier.deferred(
+      { sessionKey: 'C1:1.0', channel: 'C1', threadTs: '1.0', title: 'public' },
+      {
+        ...entry,
+        channel: 'D2',
+        threadTs: '9.0',
+        preview: 'DM에서 한 비밀 요청',
+      },
+    );
+    await flush();
+    const deferredPost = slackApi.postMessage.mock.calls.find((c) => c[2]?.threadTs === '1.0');
+    expect(JSON.stringify(deferredPost?.[2].blocks)).not.toContain('DM에서 한 비밀 요청');
+  });
+
   it('a Slack failure never throws into the queue', async () => {
     const slackApi = api();
     slackApi.postMessage.mockRejectedValue(new Error('rate limited'));

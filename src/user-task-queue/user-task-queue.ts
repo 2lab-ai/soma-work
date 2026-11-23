@@ -65,6 +65,7 @@ export interface GateInput extends UserTaskThread {
    * `none` — a person's request (or a scheduled one): a new task.
    * `pass` — a host continuation of a task that already runs (a host wake, auto-resume, a compact replay).
    * `drop` — a goal continuation: passes like `pass`, but is dropped when its thread waits in line.
+   * (A scheduled fire whose job already has a fire waiting is dropped as well.)
    */
   continuation: 'none' | 'pass' | 'drop';
   /** The message carried an admission that `takeAdmission` took. */
@@ -139,6 +140,12 @@ export type UserTaskGatePort = Pick<UserTaskQueue, 'gate' | 'takeAdmission'>;
 export type QueueActionResult = { ok: true; deferred?: RunningTask } | { ok: false; reason: QueueActionRefusal };
 export type QueueActionRefusal = 'not-found' | 'not-waiting' | 'forbidden';
 
+/** The cron job behind a scheduled fire (`MessageEvent.cron`), if the message is one. */
+function cronJobOf(message: Record<string, unknown> | undefined): string | undefined {
+  const cron = message?.cron as { jobId?: unknown } | undefined;
+  return typeof cron?.jobId === 'string' && cron.jobId ? cron.jobId : undefined;
+}
+
 function previewOf(text: string | undefined): string {
   const flat = (text ?? '').replace(/\s+/g, ' ').trim();
   if (flat.length <= PREVIEW_MAX) return flat;
@@ -174,6 +181,12 @@ export class UserTaskQueue {
       );
     }
     if (input.continuation !== 'none') return { action: 'run' };
+    // A scheduled job whose last fire still waits: this fire would only line up behind it (a frequent job of a person
+    // at their limit would fill the line). It is dropped; the waiting fire runs.
+    const cronJob = cronJobOf(input.message);
+    if (cronJob && waitingOf(this.ledger, input.userId).some((e) => cronJobOf(e.message) === cronJob)) {
+      return { action: 'drop' };
+    }
 
     const running = this.othersRunning(input.userId, input.sessionKey);
     const holding = running.length + this.admittedElsewhere(input.userId, input.sessionKey);

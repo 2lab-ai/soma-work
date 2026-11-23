@@ -2434,5 +2434,7 @@
   "🚫 *대기를 취소했습니다* — 이 요청은 실행되지 않습니다. 다시 하려면 메시지를 다시 보내세요.": "🚫 *Removed from the queue* — this request will not run. Send the message again to run it.",
   "🚫 *이어서 하기를 취소했습니다* — 이 작업은 멈춘 채로 둡니다. 이어서 하려면 메시지를 보내세요.": "🚫 *Resume cancelled* — this task stays paused. Send a message to carry it on.",
   "🚫 대기를 취소했습니다 — 이 요청은 실행되지 않습니다.": "🚫 Removed from the queue — this request will not run.",
-  "🚫 이어서 하기를 취소했습니다 — 이 작업은 멈춘 채로 둡니다.": "🚫 Resume cancelled — this task stays paused."
+  "🚫 이어서 하기를 취소했습니다 — 이 작업은 멈춘 채로 둡니다.": "🚫 Resume cancelled — this task stays paused.",
+  "비공개 작업": "Private task",
+  "작업 큐": "Task queue"
 }

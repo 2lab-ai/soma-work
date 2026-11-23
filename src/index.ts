@@ -130,6 +130,7 @@ import { createSessionWorkLogAppender } from './conversation/session-work-log';
 import { setSettingsRegistry } from './conversation/settings-routes';
 import { setSkillsEnvRegistrySource } from './conversation/skills-routes';
 import { createSlackDirectoryLookup } from './conversation/slack-directory-lookup';
+import { isPrivateTask } from './conversation/task-visibility';
 import { flushWorkLog, readWorkLog, setOnWorkLogAppendedCallback, type WorkLogInput } from './conversation/work-log';
 import { CronScheduler, type SyntheticMessageEvent, setActiveCronScheduler } from './cron-scheduler';
 import { forceMigrateOpus1m } from './deploy/force-migrate-opus-1m';
@@ -2435,6 +2436,9 @@ async function start() {
         abort: (key) => slackHandler.getRequestCoordinator().abortSession(key, 'user-interrupted'),
         slackApi: slackHandler.getSlackApi(),
         onChange: () => broadcastSessionUpdate(),
+        isShuttingDown: () => slackHandler.isShuttingDown(),
+        // A DM or a private channel: its task is named in no other thread (the dashboard's #1315 rule).
+        isPrivateChannel: (channel) => isPrivateTask(channel),
       });
       slackHandler.setUserTaskQueue(userTaskHost.queue, () => userTaskHost.scheduleRelease());
       setActiveUserTaskQueue({

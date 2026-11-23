@@ -265,4 +265,47 @@ describe('SlackHandler — per-user task queue gate', () => {
     expect(handlerAny.getFollowupQueue().list('C123:100.0')).toHaveLength(1);
     await a.settle();
   });
+  it('an admitted replay is no Slack redelivery: the goal-command dedupe does not drop it', async () => {
+    const a = await startBusy('100.0');
+    await handler.handleMessage(message('200.0', { ts: '200.01', text: 'goal 두 번째' }), vi.fn());
+    expect(ledger.entries).toHaveLength(1);
+    await a.settle();
+    // The first arrival recorded this ts as a goal intake: a redelivery of it is dropped …
+    handlerAny.isRedeliveredGoalCommand = vi.fn().mockReturnValue(true);
+    await handler.handleMessage(message('300.0', { ts: '300.01' }), vi.fn());
+    expect(startWithContinuation).toHaveBeenCalledTimes(1);
+    // … but the queue's replay of it carries its admission and runs.
+    queue.release(OWNER);
+    await tick();
+    await tick();
+    expect(startWithContinuation).toHaveBeenCalledTimes(2);
+    expect(ledger.entries).toEqual([]);
+  });
+
+  it('a replay parked for a shutdown has used its entry: it is never replayed a second time', async () => {
+    const a = await startBusy('100.0');
+    await handler.handleMessage(message('200.0', { ts: '200.01' }), vi.fn());
+    await a.settle();
+    handlerAny.followupShutdownPreparing = true;
+    handlerAny.parkDuringShutdownPreparation = vi.fn().mockResolvedValue(undefined);
+    queue.release(OWNER);
+    await tick();
+    expect(handlerAny.parkDuringShutdownPreparation).toHaveBeenCalledTimes(1);
+    expect(ledger.entries).toEqual([]);
+    handlerAny.followupShutdownPreparing = false;
+  });
+
+  it('after a bot-thread migration the running task is the work thread: its key, channel and thread', async () => {
+    const a = await startBusy('100.0');
+    sessions.set('C123:900.0', { ownerId: OWNER, channelId: 'C9', threadTs: '900.0', title: 'work thread' });
+    handlerAny.followupMigration = {
+      bySlot: new Map([['C123:100.0', 'C123:900.0']]),
+      byCanonical: new Map([['C123:900.0', 'C123:100.0']]),
+    };
+    const running = handler.runningTasksOf(OWNER);
+    expect(running).toHaveLength(1);
+    expect(running[0]).toMatchObject({ sessionKey: 'C123:900.0', channel: 'C9', threadTs: '900.0' });
+    handlerAny.followupMigration = undefined;
+    await a.settle();
+  });
 });

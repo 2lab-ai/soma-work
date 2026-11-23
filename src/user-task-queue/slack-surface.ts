@@ -41,15 +41,20 @@ export interface UserTaskSlackNotifierDeps {
   slackApi: UserTaskSlackApi;
   /** The queue (to remember notices, count the line). Read lazily: the notifier is built before the queue. */
   queue: () => Pick<UserTaskQueue, 'setNotice' | 'viewFor' | 'entry'> | undefined;
+  /** A private channel (a DM, a private channel): its tasks are named in no other thread. */
+  isPrivateChannel?(channel: string): boolean;
   logger?: Logger;
 }
+
+/** What a notice in another thread may say about a task: a private task's title and link stay in its own channel. */
+export const PRIVATE_TASK_TITLE = '비공개 작업';
 
 export function createUserTaskSlackNotifier(deps: UserTaskSlackNotifierDeps): UserTaskQueueNotifier {
   const logger = deps.logger ?? new Logger('UserTaskQueueSlack');
   /** Posts on their way, by entry: a rewrite waits for the post it rewrites. */
   const posting = new Map<string, Promise<{ channel: string; ts: string } | undefined>>();
   /** What a bypass stopped, by the entry that went first (named in its started notice). */
-  const deferredBy = new Map<string, NoticeTask>();
+  const deferredBy = new Map<string, Promise<NoticeTask>>();
 
   const link = async (channel: string, threadTs: string): Promise<string | undefined> => {
     if (!channel || !threadTs) return undefined;
@@ -59,10 +64,13 @@ export function createUserTaskSlackNotifier(deps: UserTaskSlackNotifierDeps): Us
       return undefined;
     }
   };
-  const noticeTask = async (task: RunningTask): Promise<NoticeTask> => ({
-    title: task.title,
-    link: await link(task.channel, task.threadTs),
-  });
+  const hidden = (channel: string, inChannel: string) =>
+    channel !== inChannel && (deps.isPrivateChannel?.(channel) ?? false);
+  /** The task as a notice posted in `inChannel` names it. */
+  const noticeTask = async (task: RunningTask, inChannel: string): Promise<NoticeTask> =>
+    hidden(task.channel, inChannel)
+      ? { title: PRIVATE_TASK_TITLE }
+      : { title: task.title, link: await link(task.channel, task.threadTs) };
   const fail = (what: string) => (error: unknown) => {
     logger.warn(`User task queue: ${what} failed`, { error: (error as Error)?.message ?? String(error) });
     return undefined;
@@ -72,11 +80,16 @@ export function createUserTaskSlackNotifier(deps: UserTaskSlackNotifierDeps): Us
     if (pending) return pending;
     return deps.queue()?.entry(entry.id)?.notice ?? entry.notice;
   };
-  const rewrite = (entry: UserTaskEntry, notice: { text: string; blocks: any[] }, what: string) => {
+  const rewrite = (
+    entry: UserTaskEntry,
+    build: () => Promise<{ text: string; blocks: any[] }> | { text: string; blocks: any[] },
+    what: string,
+  ) => {
     void (async () => {
       const ref = await noticeOf(entry);
       posting.delete(entry.id);
       if (!ref) return;
+      const notice = await build();
       await deps.slackApi.updateMessage(ref.channel, ref.ts, notice.text, notice.blocks);
     })().catch(fail(what));
   };
@@ -86,7 +99,7 @@ export function createUserTaskSlackNotifier(deps: UserTaskSlackNotifierDeps): Us
   return {
     queued(entry, ctx) {
       const job = (async () => {
-        const running = await Promise.all(ctx.running.map(noticeTask));
+        const running = await Promise.all(ctx.running.map((t) => noticeTask(t, entry.channel)));
         const waitingCount = deps
           .queue()
           ?.viewFor(entry.userId)
@@ -129,7 +142,7 @@ export function createUserTaskSlackNotifier(deps: UserTaskSlackNotifierDeps): Us
       }
       const deferred = deferredBy.get(entry.id);
       deferredBy.delete(entry.id);
-      rewrite(entry, buildStartedNotice(how, deferred), 'started notice');
+      rewrite(entry, async () => buildStartedNotice(how, deferred ? await deferred : undefined), 'started notice');
     },
     cancelled(entry) {
       if (entry.kind === 'resume') {
@@ -152,18 +165,17 @@ export function createUserTaskSlackNotifier(deps: UserTaskSlackNotifierDeps): Us
         );
         return;
       }
-      rewrite(entry, buildCancelledNotice(), 'cancelled notice');
+      rewrite(entry, () => buildCancelledNotice(), 'cancelled notice');
     },
     deferred(victim, first) {
+      // Named in the first one's notice (its rewrite waits for this); the first one named in the stopped thread —
+      // neither leaks a private task.
+      deferredBy.set(first.id, noticeTask(victim, first.channel));
       void (async () => {
-        deferredBy.set(first.id, await noticeTask(victim));
-        const firstLink = await link(first.channel, first.threadTs);
-        await post(
-          victim.channel,
-          victim.threadTs,
-          buildDeferredNotice({ title: first.preview, link: firstLink }),
-          'deferred notice',
-        );
+        const firstTask = hidden(first.channel, victim.channel)
+          ? { title: PRIVATE_TASK_TITLE }
+          : { title: first.preview, link: await link(first.channel, first.threadTs) };
+        await post(victim.channel, victim.threadTs, buildDeferredNotice(firstTask), 'deferred notice');
       })().catch(fail('deferred notice'));
     },
   };

@@ -1943,6 +1943,12 @@ export class SlackHandler {
     const hasSlackMessage = Boolean(event.ts);
     if (!hasSlackMessage) event = { ...event, ts: mintEventTs() };
 
+    // The per-user task queue started this message (a held request, or the turn that carries a stopped task on):
+    // its admission is taken first, once, whatever happens to the message below — a replay that is parked for a
+    // shutdown, or queued behind a busy slot, has used its entry and is never replayed a second time. And it is no
+    // Slack redelivery: the goal-command dedupe below saw this very ts when it was queued.
+    const userTaskAdmitted = this.takeUserTaskAdmission(event, this.resolveFollowupSessionKey(event));
+
     // First admission point: restored items are only trustworthy once the
     // startup reconcile has run against the registry.
     this.warnIfReconcileSkipped();
@@ -1967,7 +1973,7 @@ export class SlackHandler {
     // of the same event must not run it a second time, whichever path the
     // first delivery took. The verbatim opening turn a goal command admits
     // reuses the command's `ts` and is exempt.
-    if (this.isRedeliveredGoalCommand(event)) {
+    if (!userTaskAdmitted && this.isRedeliveredGoalCommand(event)) {
       this.logger.info('Goal command redelivered — already handled, ignored', {
         channel: event.channel,
         ts: event.ts,
@@ -2001,9 +2007,6 @@ export class SlackHandler {
     }
 
     const sessionKey = this.resolveFollowupSessionKey(event);
-    // The per-user task queue started this message (a held request, or the turn that carries a stopped task on):
-    // its admission is taken here, once, whichever path the message takes below — busy or idle.
-    const userTaskAdmitted = sessionKey !== undefined && this.takeUserTaskAdmission(event, sessionKey);
 
     // A36 — the thread panel stays at the tail by learning what landed below it.
     // Bot writes report themselves inside the api helper; an INBOUND reply never
@@ -2118,7 +2121,9 @@ export class SlackHandler {
     // it waits in their queue and the host starts it when a running task ends. Synchronous, inside the fence.
     const userTask = this.gateUserTask(event, sessionKey, userTaskAdmitted);
     if (userTask === 'drop') {
-      this.logger.info('Goal continuation dropped — its thread waits in the user task queue', { sessionKey });
+      this.logger.info('Turn dropped — its thread (or its cron job) already waits in the user task queue', {
+        sessionKey,
+      });
       this.holdDroppedGoalContinuation(sessionKey, event);
       return;
     }
@@ -9098,9 +9103,9 @@ export class SlackHandler {
     return session?.ownerId || event.user || undefined;
   }
 
-  private takeUserTaskAdmission(event: MessageEvent, sessionKey: string): boolean {
+  private takeUserTaskAdmission(event: MessageEvent, sessionKey: string | undefined): boolean {
     const id = event.routeContext?.userTaskEntryId;
-    if (!id || !this.userTaskQueue) return false;
+    if (!id || !sessionKey || !this.userTaskQueue) return false;
     try {
       return this.userTaskQueue.takeAdmission(id, sessionKey);
     } catch (error) {
@@ -9190,11 +9195,17 @@ export class SlackHandler {
       }
       if (slot.userId !== userId) continue;
       seen.add(slotOf(key));
+      // After a bot-thread migration the task is the work thread's: its key, channel and thread (a resume or a
+      // notice addressed to the source thread would land on the session the migration ended).
       const canonical = this.followupMigration?.bySlot.get(key) ?? key;
+      const work =
+        canonical !== key && typeof this.claudeHandler?.getSessionByKey === 'function'
+          ? this.claudeHandler.getSessionByKey(canonical)
+          : undefined;
       out.push({
         sessionKey: canonical,
-        channel: slot.channel,
-        threadTs: slot.threadTs,
+        channel: work?.channelId || slot.channel,
+        threadTs: work?.threadTs || slot.threadTs,
         title: titleOf(canonical) ?? titleOf(key),
         startedAt: slot.startedAt,
       });

@@ -3286,7 +3286,7 @@ function placeOnBoard(board: KanbanBoard, kanban: KanbanSession, session: { stat
   }
   // The per-user task queue: a thread whose request waits for its owner's free slot is 응답 필요 (under 대기큐),
   // whatever it last did.
-  if (kanban.userQueue) {
+  if (kanban.userQueue && kanban.activityState !== 'working') {
     board.waiting.push(kanban);
     return;
   }
@@ -3529,15 +3529,23 @@ function userQueueItems(userId?: string): KanbanUserQueueItem[] {
     const view = active.queue.viewFor(owner);
     if (view.waiting.length === 0) continue;
     const ownerName = ownerNameOf(owner, sessions);
-    const running = view.running.map((t) => {
+    const runningOf = (t: (typeof view.running)[number]) => {
       const s = sessions.get(t.sessionKey);
       return {
         key: composeSessionKey(t.sessionKey),
         title: (s ? displayTitle(s) : t.title) || t.title || '진행 중인 작업',
         slackThreadUrl: t.channel && t.threadTs ? (buildThreadPermalink(t.channel, t.threadTs) ?? undefined) : undefined,
       };
-    });
+    };
     for (const w of view.waiting) {
+      // #1315 — an entry everyone may see names no private task of its owner (a DM's, a private channel's): only that
+      // a task runs. An entry that is itself private is shown to its owner and admins only.
+      const entryPrivate = isPrivateTask(w.channel);
+      const running = view.running.map((t) =>
+        !entryPrivate && t.channel !== w.channel && isPrivateTask(t.channel)
+          ? { key: composeSessionKey(t.sessionKey), title: '비공개 작업' }
+          : runningOf(t),
+      );
       out.push({
         key: composeSessionKey(w.sessionKey),
         entryId: w.id,
@@ -3553,7 +3561,7 @@ function userQueueItems(userId?: string): KanbanUserQueueItem[] {
         limit: view.limit,
         running,
         slackThreadUrl: buildThreadPermalink(w.channel, w.threadTs) ?? undefined,
-        privateTask: isPrivateTask(w.channel),
+        privateTask: entryPrivate,
       });
     }
   }

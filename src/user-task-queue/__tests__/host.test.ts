@@ -159,4 +159,46 @@ describe('createUserTaskQueueHost', () => {
     expect(handleMessage).toHaveBeenCalledTimes(1);
     expect(h.queue.snapshot().entries).toEqual([]);
   });
+  it('먼저 진행 on a turn that is still starting keeps trying to stop it until it lands', () => {
+    vi.useFakeTimers();
+    let abortable = false;
+    const abort = vi.fn(() => abortable);
+    const { h, running } = host({ abort, isTaskRunning: () => true, abortRetryMs: 100, abortRetryForMs: 5_000 });
+    running.set('U1', [{ sessionKey: 'C1:1.0', channel: 'C1', threadTs: '1.0' }]);
+    const queued = h.queue.gate(gateInput('C1:2.0', '2.0'));
+    if (queued.action !== 'queued') throw new Error('expected queued');
+    expect(h.queue.bypass(queued.entry.id, 'U1')).toMatchObject({ ok: true });
+    // The stopped task is carried on later: its resume entry is in line.
+    expect(h.queue.snapshot().entries.some((e) => e.kind === 'resume')).toBe(true);
+    vi.advanceTimersByTime(300);
+    const tries = abort.mock.calls.length;
+    expect(tries).toBeGreaterThan(1);
+    abortable = true;
+    vi.advanceTimersByTime(100);
+    const landed = abort.mock.calls.length;
+    vi.advanceTimersByTime(1_000);
+    expect(abort.mock.calls.length).toBe(landed);
+  });
+
+  it('a task that already ended is not stopped and not carried on', () => {
+    const { h, running } = host({ abort: vi.fn(() => false), isTaskRunning: () => false });
+    running.set('U1', [{ sessionKey: 'C1:1.0', channel: 'C1', threadTs: '1.0' }]);
+    const queued = h.queue.gate(gateInput('C1:2.0', '2.0'));
+    if (queued.action !== 'queued') throw new Error('expected queued');
+    h.queue.bypass(queued.entry.id, 'U1');
+    expect(h.queue.snapshot().entries.some((e) => e.kind === 'resume')).toBe(false);
+  });
+
+  it('nothing starts while the host shuts down', () => {
+    let down = true;
+    const { h, running, handleMessage } = host({ isShuttingDown: () => down });
+    running.set('U1', [{ sessionKey: 'C1:1.0', channel: 'C1', threadTs: '1.0' }]);
+    h.queue.gate(gateInput('C1:2.0', '2.0'));
+    running.set('U1', []);
+    h.release('U1');
+    expect(handleMessage).not.toHaveBeenCalled();
+    down = false;
+    h.release('U1');
+    expect(handleMessage).toHaveBeenCalledTimes(1);
+  });
 });
