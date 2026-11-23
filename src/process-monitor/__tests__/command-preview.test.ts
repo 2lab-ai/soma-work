@@ -92,7 +92,7 @@ describe('commandPreview — a known prefix of the command, never a value', () =
     const programs = ['node', '/usr/bin/python3', 'claude', 'jq', 'git'];
     let seed = 7;
     const next = (n: number) => {
-      seed = (seed * 1103515245 + 12345) % 2147483648;
+      seed = (Math.imul(seed, 1103515245) + 12345) >>> 0; // 32-bit LCG, exact in integer arithmetic
       return seed % n;
     };
     for (let c = 0; c < 500; c++) {

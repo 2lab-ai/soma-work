@@ -156,7 +156,10 @@ describe.skipIf(!posix)('process monitor on the real OS', () => {
     // SIGTERM would end even a stopped process, and prove nothing here).
     child = spawn({
       command: process.execPath,
-      args: ['-e', "process.on('SIGTERM', () => process.exit(0)); setInterval(() => {}, 1000)"],
+      args: [
+        '-e',
+        "process.on('SIGTERM', () => process.exit(0)); process.stdout.write('ready\\n'); setInterval(() => {}, 1000)",
+      ],
       cwd: '/',
       env: { PATH: '/bin:/usr/bin' },
       signal: controller.signal,
@@ -164,7 +167,8 @@ describe.skipIf(!posix)('process monitor on the real OS', () => {
     const exited = new Promise<void>((resolve) => child?.once('exit', () => resolve()));
     child.on('error', () => {});
     const pid = child.pid as number;
-    await new Promise((r) => setTimeout(r, 300)); // its SIGTERM handler is installed
+    // It says so once its SIGTERM handler is installed.
+    await new Promise<void>((resolve) => child?.stdout?.on('data', (d) => String(d).includes('ready') && resolve()));
     // Stopped from outside — not by a monitor, so only the spawner's own SIGCONT can let the abort's SIGTERM land.
     process.kill(pid, 'SIGSTOP');
     await until(async () => {

@@ -33,7 +33,11 @@ same snapshot, and work will be placed by each node's free CPU and memory.
    remembered by (pid, start time). A process re-parented after its parent exits stays with the session. A
    remembered pid with another start time is a reused pid and is dropped, together with its children. A new pid whose
    parent differs between the two `ps` calls was reused in between and is dropped too. A process born and orphaned
-   between two samples is not seen. This is the known limit.
+   between two samples is not seen. This is the known limit. A remembered process still in the parent map whose detail
+   row is missing (ps skipped it) stays remembered, so an orphan is not lost to one bad row. Details are read in
+   batches of 200 pids, and a failing batch costs only its rows. Start times have one-second resolution (`lstart`), so
+   a pid reused within the same second would pass the identity check. On macOS (pid max 99999) that needs about 100k
+   forks a second.
 3. **CPU from cumulative CPU time.** CPU is the change in cumulative CPU time between two samples divided by the wall
    time between them (100% = one core). This means the same on macOS and Linux, unlike `ps %cpu`. On Linux the time
    comes from `/proc/<pid>/stat` (clock ticks), because `ps time` there has whole-second resolution.
@@ -48,7 +52,9 @@ same snapshot, and work will be placed by each node's free CPU and memory.
    retried on every sample until it lands. A turn is its spawn's number in the registry (`turnId`), not the Claude Code
    pid, which the OS can hand to the next turn. A process keeps the turn it was seen under after it is orphaned, and
    what an orphan starts inherits it. A pause is refused only when its own turn is aborted during the check. A pause
-   missing from a sample is dropped only when its live start time says the process is gone. Shutdown retries a few times and logs whatever it could
+   missing from a sample is dropped only when its live start time says the process is gone. A pause in a turn whose
+   abort already ran is refused, because nothing would continue it. Shutdown retries a few times within a 5-second
+   probe budget and logs whatever it could
    not continue. The route allows the owner, or an admin in admin mode, with CSRF. Aborting a turn continues
    the paused root (in the spawner) and everything the monitor paused in that session, so a stop still lands. The
    same holds when the abort arrives after the root has exited. On shutdown (drain, crash kill) the registry first tells

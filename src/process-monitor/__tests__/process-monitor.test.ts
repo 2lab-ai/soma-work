@@ -24,6 +24,7 @@ function setup(
     kill?: (pid: number, signal: NodeJS.Signals) => void;
     runPs?: (ps: FakePs) => (a: readonly string[]) => Promise<string>;
     readCapacity?: () => Promise<NodeCapacity>;
+    logger?: { info(msg: string, meta?: unknown): void; warn(msg: string, meta?: unknown): void };
   } = {},
 ) {
   const ps = new FakePs()
@@ -73,6 +74,7 @@ function setup(
     platform: opts.platform ?? 'darwin',
     now: () => now,
     readCapacity: opts.readCapacity ?? (async () => capacity),
+    logger: opts.logger,
   });
   return {
     ps,
@@ -592,6 +594,105 @@ describe('LocalProcessMonitor', () => {
     failCapacity = false;
     const next = await monitor.sample();
     expect(next.sessions.map((x) => x.sessionKey).sort()).toEqual(['A', 'B']);
+  });
+
+  it('refuses a pause in a turn whose abort already ran (nothing would continue it); another turn still pauses', async () => {
+    const { monitor, signals, fireAbort, ps, roots } = setup();
+    ps.set(210, { ppid: 100, args: '/usr/local/bin/claude' }).set(310, { ppid: 210, args: '/bin/bash -c b' });
+    roots.push({ pid: 210, sessionKey: 'A' });
+    fireAbort({ pid: 200, sessionKey: 'A' }); // turn 200 is stopping; its Claude Code has not exited yet
+    expect(await monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' })).toEqual({
+      ok: false,
+      reason: 'not-found',
+    });
+    expect(await monitor.control({ sessionKey: 'A', pid: 310, startToken: start, action: 'pause' })).toMatchObject({
+      ok: true,
+    });
+    expect(signals).toEqual([[310, 'SIGSTOP']]);
+  });
+
+  it('an orphan keeps its turn across a sample that missed its row', async () => {
+    let hide = false;
+    const { monitor, signals, fireAbort, ps, roots, tick } = setup({
+      runPs: (fake) => async (a) => {
+        const out = await fake.run(a);
+        if (!hide || a[0] === '-A') return out;
+        return out
+          .split('\n')
+          .filter((line) => line.trim().split(/\s+/)[0] !== '300')
+          .join('\n');
+      },
+    });
+    await monitor.sample(); // 300 under turn 200
+    ps.remove(200).reparent(300, 1).set(201, { ppid: 100, args: '/usr/local/bin/claude' });
+    roots.splice(0, 1, { pid: 201, sessionKey: 'A' });
+    hide = true;
+    tick(1);
+    await monitor.sample(); // 300's row is missing
+    hide = false;
+    tick(1);
+    expect(await monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' })).toMatchObject({
+      ok: true,
+    });
+    fireAbort({ pid: 201, sessionKey: 'A' }); // the next turn's abort: not 300's
+    expect(signals).toEqual([[300, 'SIGSTOP']]);
+    fireAbort({ pid: 200, sessionKey: 'A' }); // its own turn's
+    expect(signals).toEqual([
+      [300, 'SIGSTOP'],
+      [300, 'SIGCONT'],
+    ]);
+  });
+
+  it('shutdown spends a bounded time on identity probes, then reports what is left', async () => {
+    let probes = 0;
+    let probing = false;
+    const warn = vi.fn();
+    const { monitor, ps, roots, fireShutdown, tick } = setup({
+      live: (_pid, fallback) => {
+        if (!probing) return fallback;
+        probes++;
+        tick(2_000); // each probe times out after 2 s
+        return undefined;
+      },
+      logger: { info: () => {}, warn },
+    });
+    ps.set(310, { ppid: 200, args: '/bin/sleep 1' }).set(320, { ppid: 200, args: '/bin/sleep 2' });
+    roots.length = 1;
+    for (const pid of [300, 310, 320]) {
+      await monitor.control({ sessionKey: 'A', pid, startToken: start, action: 'pause' });
+      tick(1);
+    }
+    probing = true;
+    fireShutdown();
+    expect(probes).toBe(3); // 5 s budget: probes at 0, 2 and 4 s — not 3 tries × 3 processes
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('shutdown could not continue'), {
+      pids: [300, 310, 320],
+    });
+  });
+
+  it('the timer skips an idle node and starts sampling when a turn appears', async () => {
+    vi.useFakeTimers();
+    try {
+      const { monitor, ps, roots } = setup();
+      const saved = roots.splice(0);
+      monitor.start();
+      await vi.advanceTimersByTimeAsync(5_000); // first tick: one empty sample (no ps: nothing tracked)
+      await vi.advanceTimersByTimeAsync(5_000); // idle: skipped
+      expect(ps.calls).toEqual([]);
+      expect(monitor.latest()?.sessions).toEqual([]);
+      roots.push(...saved);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(ps.calls.some((c) => c[0] === '-A')).toBe(true);
+      expect(
+        monitor
+          .latest()
+          ?.sessions.map((x) => x.sessionKey)
+          .sort(),
+      ).toEqual(['A', 'B']);
+      monitor.stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('two live turns in one session: each abort continues only its own tree’s pauses', async () => {

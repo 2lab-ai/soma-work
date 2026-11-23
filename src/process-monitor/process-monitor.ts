@@ -135,6 +135,13 @@ export class LocalProcessMonitor implements ProcessHost {
   private readonly turnOf = new Map<string, number>();
   /** How many times a shutdown pass retries what it could not continue (an unreadable identity, a refused signal). */
   private static readonly SHUTDOWN_TRIES = 3;
+  /** The most a shutdown pass spends on identity probes (each can take up to 2 s on a loaded host). */
+  private static readonly SHUTDOWN_BUDGET_MS = 5_000;
+  /**
+   * Turns (`turnId`s) whose abort already ran: a pause in one is refused, as nothing would continue it. Kept while a
+   * live Claude Code process or a remembered process still carries the turn.
+   */
+  private readonly abortedTurnIds = new Set<number>();
   /** Set when the host starts shutting down: no pause is accepted after the final resume pass. */
   private shuttingDown = false;
   private readonly listeners = new Set<Listener>();
@@ -187,9 +194,13 @@ export class LocalProcessMonitor implements ProcessHost {
    */
   resumeAllPaused(): void {
     this.shuttingDown = true;
-    for (let i = 0; i < LocalProcessMonitor.SHUTDOWN_TRIES && this.paused.size > 0; i++) {
+    const until = this.now() + LocalProcessMonitor.SHUTDOWN_BUDGET_MS;
+    for (let i = 0; i < LocalProcessMonitor.SHUTDOWN_TRIES && this.paused.size > 0 && this.now() < until; i++) {
       for (const [sessionKey, mine] of this.paused) {
-        for (const [pid, entry] of mine) if (this.continueIfSame(pid, entry.startToken)) mine.delete(pid);
+        for (const [pid, entry] of mine) {
+          if (this.now() >= until) break;
+          if (this.continueIfSame(pid, entry.startToken)) mine.delete(pid);
+        }
         if (mine.size === 0) this.paused.delete(sessionKey);
       }
     }
@@ -299,7 +310,8 @@ export class LocalProcessMonitor implements ProcessHost {
     if (input.action === 'pause' && proc) {
       const since = check.abortedTurns;
       const turn = this.turnOf.get(`${proc.pid}:${proc.startToken}`);
-      if (this.shuttingDown || (since.length > 0 && (turn === undefined || since.includes(turn)))) {
+      const turnAborted = turn !== undefined && this.abortedTurnIds.has(turn);
+      if (this.shuttingDown || turnAborted || (since.length > 0 && (turn === undefined || since.includes(turn)))) {
         return { ok: false, reason: 'not-found' };
       }
     }
@@ -342,6 +354,7 @@ export class LocalProcessMonitor implements ProcessHost {
   /** An aborted turn must end: continue every process this monitor paused in that session. */
   private resumeAfterAbort(root: TrackedClaudeRootInfo): void {
     if (!root.sessionKey) return;
+    this.abortedTurnIds.add(root.turnId);
     for (const check of this.pendingPauses) {
       if (check.sessionKey === root.sessionKey) check.abortedTurns.push(root.turnId);
     }
@@ -384,7 +397,15 @@ export class LocalProcessMonitor implements ProcessHost {
         if (turn !== undefined) this.turnOf.set(key, turn);
       }
     }
-    for (const key of this.turnOf.keys()) if (!live.has(key)) this.turnOf.delete(key);
+    // A process missing from this sample but still remembered by the sampler (its row was skipped) keeps its turn.
+    for (const key of this.turnOf.keys()) {
+      if (live.has(key)) continue;
+      const colon = key.indexOf(':');
+      if (!this.sampler.rememberedAnywhere(Number(key.slice(0, colon)), key.slice(colon + 1))) this.turnOf.delete(key);
+    }
+    // An aborted turn is forgotten once nothing carries it: no live Claude Code process, no remembered process.
+    const carried = new Set<number>([...turnIdOf.values(), ...this.turnOf.values()]);
+    for (const id of this.abortedTurnIds) if (!carried.has(id)) this.abortedTurnIds.delete(id);
   }
 
   /** An aborted turn's pause that could not be continued then is tried again on every sample. */

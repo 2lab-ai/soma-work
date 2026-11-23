@@ -159,6 +159,75 @@ describe('TreeSampler', () => {
     expect(out.sessions[0].processes.find((p) => p.pid === 400)?.cpuPercent).toBe(7.4);
   });
 
+  it('an orphan whose detail row is missing once is still remembered, and comes back with its session (round 8)', async () => {
+    const ps = machine();
+    let hide = false;
+    const run = async (a: readonly string[]) => {
+      const out = await ps.run(a);
+      if (!hide || a[0] === '-A') return out;
+      return out
+        .split('\n')
+        .filter((line) => line.trim().split(/\s+/)[0] !== '300')
+        .join('\n');
+    };
+    let now = 1_000;
+    const sampler = new TreeSampler(run, () => now);
+    await sampler.sample([{ pid: 200, sessionKey: 'A' }], 'n1');
+    // Claude Code exits; bash 300 is re-parented. One sample loses 300's row (ps skipped it).
+    ps.remove(200).reparent(300, 1);
+    hide = true;
+    now += 5_000;
+    const gap = await sampler.sample([], 'n1');
+    expect(gap.sessions.find((s) => s.sessionKey === 'A')?.processes.map((p) => p.pid) ?? []).not.toContain(300);
+    expect(sampler.rememberedAnywhere(300, 'Mon Nov 23 10:00:00 2026')).toBe(true);
+    hide = false;
+    now += 5_000;
+    const back = await sampler.sample([], 'n1');
+    expect(back.sessions.find((s) => s.sessionKey === 'A')?.processes.map((p) => [p.pid, p.role])).toEqual([
+      [300, 'orphan'],
+      [400, 'child'],
+    ]);
+  });
+
+  it('a remembered process that left the parent map is gone and not carried', async () => {
+    const ps = machine();
+    let now = 1_000;
+    const sampler = new TreeSampler(ps.run, () => now);
+    await sampler.sample([{ pid: 200, sessionKey: 'A' }], 'n1');
+    ps.remove(200).remove(300).remove(400);
+    now += 5_000;
+    await sampler.sample([], 'n1');
+    expect(sampler.rememberedAnywhere(300, 'Mon Nov 23 10:00:00 2026')).toBe(false);
+    expect(sampler.hasWork([])).toBe(false);
+  });
+
+  it('reads details in batches: a failing batch costs only its rows; all failing fails the sample', async () => {
+    const ps = new FakePs().set(100, { ppid: 1, args: 'node soma' }).set(200, { ppid: 100, args: 'claude' });
+    for (let i = 0; i < 450; i++) ps.set(1_000 + i, { ppid: 200, args: '/bin/sleep 9' });
+    let failFirst = false;
+    let failAll = false;
+    let batch = 0;
+    const run = async (a: readonly string[]) => {
+      if (a[0] !== '-A') {
+        batch++;
+        if (failAll || (failFirst && batch === 1)) throw new Error('ps: output too large');
+      }
+      return ps.run(a);
+    };
+    const sampler = new TreeSampler(run, () => 1_000);
+    const full = await sampler.sample([{ pid: 200, sessionKey: 'A' }], 'n1');
+    expect(batch).toBe(3); // 451 pids, 200 per call
+    expect(full.sessions[0].processCount).toBe(451);
+
+    failFirst = true;
+    batch = 0;
+    const partial = await sampler.sample([{ pid: 200, sessionKey: 'A' }], 'n1');
+    expect(partial.sessions[0].processCount).toBe(251);
+
+    failAll = true;
+    await expect(sampler.sample([{ pid: 200, sessionKey: 'A' }], 'n1')).rejects.toThrow('output too large');
+  });
+
   it('reports stopped processes', async () => {
     const ps = machine();
     (ps.procs.get(400) as { stat: string }).stat = 'T';

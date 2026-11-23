@@ -4,6 +4,9 @@ import { DETAIL_COLUMNS, type PsRow, parseDetailRows, parseParentMap, stateOf } 
 import type { NodeCapacity, ProcessSample, SessionProcessDetail } from './types';
 
 /** A Claude Code process the SDK spawned, as the child registry knows it (pid + the session it runs for, if any). */
+/** Pids per detail `ps` call. */
+const DETAIL_BATCH = 200;
+
 export type TrackedRoot = Pick<TrackedClaudeRootInfo, 'pid' | 'sessionKey'>;
 
 /** Runs `ps` with these arguments and returns stdout. Must resolve with partial stdout when ps exits 1 because a pid vanished. */
@@ -85,11 +88,21 @@ export class TreeSampler {
     for (const m of membership.values()) for (const pid of m.keys()) wanted.add(pid);
     const rows = new Map<number, PsRow>();
     if (wanted.size > 0) {
-      const out = await this.runPs(['-ww', '-o', DETAIL_COLUMNS, '-p', [...wanted].join(',')]);
-      const fine = this.readCpuSeconds
-        ? await this.readCpuSeconds([...wanted]).catch(() => new Map<number, number>())
-        : null;
-      for (const row of parseDetailRows(out)) {
+      // In batches: one oversized or failing batch costs only its own rows (a missing row is handled below), and the
+      // `-p` list stays short. Only when every batch fails is the sample a failure.
+      const pids = [...wanted];
+      const outs: string[] = [];
+      let failure: unknown = null;
+      for (let i = 0; i < pids.length; i += DETAIL_BATCH) {
+        try {
+          outs.push(await this.runPs(['-ww', '-o', DETAIL_COLUMNS, '-p', pids.slice(i, i + DETAIL_BATCH).join(',')]));
+        } catch (err) {
+          failure ??= err;
+        }
+      }
+      if (outs.length === 0) throw failure;
+      const fine = this.readCpuSeconds ? await this.readCpuSeconds(pids).catch(() => new Map<number, number>()) : null;
+      for (const row of outs.flatMap((out) => parseDetailRows(out))) {
         // A pid whose parent differs between the two ps calls exited and was reused in between: not the process the
         // tree walk found, so it is not counted (nor remembered, nor offered for pause) — unless it is a process
         // already remembered with this start time, which the OS just re-parented in that window.
@@ -109,6 +122,7 @@ export class TreeSampler {
     const sessions: SessionProcessDetail[] = [];
     const unattributed = { processCount: 0, cpuPercent: 0, rssBytes: 0 };
     const liveCpuKeys = new Set<string>();
+    const previous = new Map(this.remembered);
     this.remembered.clear();
 
     for (const [owner, members] of membership) {
@@ -160,12 +174,27 @@ export class TreeSampler {
       });
     }
 
+    // A remembered process still in the parent map whose detail row is missing (ps skipped or could not read it) is
+    // not gone: keep remembering it, or an orphan — whose parent is gone — could never be found again. A pid reused
+    // meanwhile is caught by the start-time check of the next sample.
+    const claimedNow = new Set<number>();
+    for (const m of membership.values()) for (const pid of m.keys()) if (rows.has(pid)) claimedNow.add(pid);
+    for (const [owner, seen] of previous) {
+      for (const [pid, entry] of seen) {
+        if (!parentOf.has(pid) || rows.has(pid) || claimedNow.has(pid)) continue;
+        const memory = this.remembered.get(owner) ?? new Map<number, Remembered>();
+        memory.set(pid, entry);
+        this.remembered.set(owner, memory);
+      }
+    }
+
     for (const key of this.prevCpu.keys()) if (!liveCpuKeys.has(key)) this.prevCpu.delete(key);
     unattributed.cpuPercent = round1(unattributed.cpuPercent);
     return { sessions, unattributed };
   }
 
-  private rememberedAnywhere(pid: number, startToken: string): boolean {
+  /** Whether this process (pid and start time) is remembered under any owner — seen, or carried over a missing row. */
+  rememberedAnywhere(pid: number, startToken: string): boolean {
     for (const m of this.remembered.values()) if (m.get(pid)?.startToken === startToken) return true;
     return false;
   }
