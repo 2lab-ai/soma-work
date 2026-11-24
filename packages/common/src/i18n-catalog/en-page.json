@@ -1991,5 +1991,6 @@
   " disabled title=\"관리자 모드를 켜야 바꿀 수 있습니다\"": " disabled title=\"Turn on admin mode to change it\"",
   "<span>지금 ": "<span>now ",
   " CPU 한도를 저장하지 못했습니다 — ": " — could not save the CPU cap — ",
-  ": 작업 하나의 CPU 한도 ": ": CPU cap per task "
+  ": 작업 하나의 CPU 한도 ": ": CPU cap per task ",
+  "(으)로 저장했습니다": " saved"
 }

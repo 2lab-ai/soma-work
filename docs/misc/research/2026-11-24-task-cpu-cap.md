@@ -50,6 +50,11 @@ controller; it would replace the throttler there, not sit beside it.
   wide tree under a small cap: its processes run in a burst, then wait. A probe test holds every combination of 1–64
   one-core workers, caps of 25–400%, identity reads of 0–150 ms and parent scans of 0–800 ms within 0.5–1.35× its
   cap (102 cases).
+- **A counter in ticks.** Linux `/proc` CPU time moves in 10 ms ticks, so a short run part can read as no increase.
+  A window with no increase keeps its baseline and its share until the counter moves (or 2 s pass: then the tree is
+  idle and its share doubles, a step at a time) — resetting the share on it let a 32-core tree under 50% run at 1610%
+  in the simulated test.
+- **A cap that changes** replans at once: what the old cap holds is continued and the tree is metered afresh.
 - **An aborted turn.** Its processes are never metered again: not by a sample that was in flight when the turn
   aborted (the abort released them), nor by later samples while its workers clean up. The session's next turn is.
 - **What it cannot see.** A process that starts and exits between two periods is never read; it runs uncapped for its

@@ -50,6 +50,11 @@ const MIN_SHARE = 0.002;
  * again (well under, not merely at it: a tree held to its cap reads at its cap).
  */
 const IDLE_PERIODS = 8;
+/**
+ * A window this long with no CPU increase reads as idle. Shorter ones keep their baseline: a counter that moves in
+ * whole ticks (Linux /proc: 10 ms) reads a short run as none, and resetting the share on it lets a wide tree run free.
+ */
+const QUIET_WINDOW_S = 2;
 /** How long a hold's interval is kept for reading a monitor sample taken during it. */
 const INTERVAL_KEEP_MS = 30_000;
 /** Shutdown's passes over holds it could not continue yet, within this budget. */
@@ -178,6 +183,7 @@ export class CpuThrottler {
   update(sessions: readonly SessionProcessDetail[], capFor: (sessionKey: string) => number | null): void {
     if (this.disposed) return;
     const seen = new Set<string>();
+    let replanned = false;
     for (const s of sessions) {
       seen.add(s.sessionKey);
       const cap = capFor(s.sessionKey);
@@ -192,7 +198,12 @@ export class CpuThrottler {
         if (cur) this.release(s.sessionKey);
         continue;
       }
-      if (cur) {
+      if (cur && cur.cap !== cap) {
+        // A new cap replans at once: what the old one holds is continued (a long period could keep it stopped for
+        // seconds), and the tree is metered afresh against the new one if it is over it.
+        this.release(s.sessionKey);
+        replanned = true;
+      } else if (cur) {
         cur.cap = cap;
         // Keep what a period discovered that the sample has not seen yet (it is in the next sample).
         cur.members = withMembers(
@@ -213,6 +224,8 @@ export class CpuThrottler {
       });
     }
     for (const key of [...this.sessions.keys()]) if (!seen.has(key)) this.release(key);
+    // A replanned tree does not wait out the period under way.
+    if (replanned) this.cancelTimer();
     this.schedule(0);
   }
 
@@ -222,9 +235,13 @@ export class CpuThrottler {
    */
   holds(sessionKey: string, pid: number, startToken: string, window?: { from: number; to: number }): boolean {
     const h = this.held.get(pid);
-    if (h && h.sessionKey === sessionKey && h.startToken === startToken) return true;
+    const mine = h !== undefined && h.sessionKey === sessionKey && h.startToken === startToken;
+    if (!window) return mine;
+    // For a sample: the hold must overlap the ps run that read the `T` — one that began after it read a stop of
+    // someone else's.
     const iv = this.intervals.get(`${pid}:${startToken}`);
-    if (!iv || !window) return false;
+    if (!iv) return false;
+    if (h && !mine) return false;
     return iv.from <= window.to && (iv.to === null || iv.to >= window.from);
   }
 
@@ -330,14 +347,11 @@ export class CpuThrottler {
   }
 
   /** Children (any depth) of the members this period verified, that are not members yet. */
-  private discover(verified: readonly Member[], known: ReadonlySet<number>, parents: Map<number, number>): number[] {
-    const childrenOf = new Map<number, number[]>();
-    for (const [pid, ppid] of parents) {
-      if (pid === ppid) continue;
-      const list = childrenOf.get(ppid);
-      if (list) list.push(pid);
-      else childrenOf.set(ppid, [pid]);
-    }
+  private discover(
+    verified: readonly Member[],
+    known: ReadonlySet<number>,
+    childrenOf: ReadonlyMap<number, readonly number[]>,
+  ): number[] {
     const seen = new Set(known);
     const found: number[] = [];
     const queue = verified.map((m) => m.pid);
@@ -446,10 +460,18 @@ export class CpuThrottler {
     // lend its children), then read themselves.
     const discovered = new Map<string, number[]>();
     if (parents) {
+      // The whole host's parent map, indexed once per period for every metered tree.
+      const childrenOf = new Map<number, number[]>();
+      for (const [pid, ppid] of parents) {
+        if (pid === ppid) continue;
+        const list = childrenOf.get(ppid);
+        if (list) list.push(pid);
+        else childrenOf.set(ppid, [pid]);
+      }
       const all = new Set<number>(pids);
       for (const [key, s] of this.sessions) {
         const verified = s.members.filter((m) => read.get(m.pid)?.startToken === m.startToken);
-        const found = this.discover(verified, all, parents);
+        const found = this.discover(verified, all, childrenOf);
         for (const pid of found) all.add(pid);
         if (found.length > 0) discovered.set(key, found);
       }
@@ -459,7 +481,8 @@ export class CpuThrottler {
         // it fails, their identities are unknown here and the continue reads them live.
         const heldPids = [...this.held.keys()];
         const more = await this.timedRead([...extra, ...heldPids]).catch(() => null);
-        for (const pid of heldPids) if (!more?.has(pid)) read.delete(pid);
+        // Every hold now — those that landed while this read was out too — is answered by this read or read live.
+        for (const pid of this.held.keys()) if (!more?.has(pid)) read.delete(pid);
         if (more) for (const [pid, r] of more) read.set(pid, r);
       }
       if (this.disposed) return;
@@ -513,12 +536,22 @@ export class CpuThrottler {
       // Members that are gone, or whose pid now names another process, leave the tree.
       s.members = s.members.filter((m) => read.get(m.pid)?.startToken === m.startToken);
       const elapsed = s.prevAt > 0 ? (at - s.prevAt) / 1000 : 0;
-      s.prev = next;
-      s.prevAt = at;
       let rate = Number.NaN;
-      if (elapsed > 0) {
-        rate = (used / elapsed) * 100;
-        s.share = rate > 0 ? Math.max(MIN_SHARE, Math.min(1, (s.share * s.cap) / rate)) : 1;
+      if (s.prevAt === 0 || used > 0 || elapsed >= QUIET_WINDOW_S) {
+        s.prev = next;
+        s.prevAt = at;
+        if (elapsed > 0 && used > 0) {
+          rate = (used / elapsed) * 100;
+          s.share = Math.max(MIN_SHARE, Math.min(1, (s.share * s.cap) / rate));
+        } else if (elapsed > 0) {
+          // Idle for a whole quiet window: let it run more, a step at a time.
+          rate = 0;
+          s.share = Math.min(1, s.share * 2);
+        }
+      } else {
+        // No increase over a short window: a counter that moves in whole ticks (Linux /proc: 10 ms) cannot tell a
+        // short run from none. Keep the baseline and the share until the counter moves or the window is long.
+        for (const [pid, cpu] of next) if (!s.prev.has(pid)) s.prev.set(pid, cpu);
       }
       // The run part of this period: what the cap held (it read stopped just now, which is the cap's stop) continues.
       const heldHere = new Set([...this.held].filter(([, h]) => h.sessionKey === key).map(([pid]) => pid));

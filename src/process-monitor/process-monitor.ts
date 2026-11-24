@@ -342,12 +342,15 @@ export class LocalProcessMonitor implements ProcessHost {
         // The span the tree's ps ran in: a `T` it read is the CPU cap's only if a cap hold overlapped it.
         const window = { from: this.now(), to: 0 };
         const [treeRead, nodeRead] = await Promise.allSettled([
-          this.sampler.sample(roots, this.nodeId),
+          // The window ends when the tree read does, not when a slower capacity read settles.
+          this.sampler.sample(roots, this.nodeId).then((tree) => {
+            window.to = this.now();
+            return tree;
+          }),
           this.readCapacity(),
         ]);
         if (treeRead.status === 'rejected') throw treeRead.reason;
         const tree = treeRead.value;
-        window.to = this.now();
         // The cap is enforced from the tree read alone: a failing capacity read (telemetry) must not stop it.
         const sessions = this.applyCpuCaps(tree.sessions, window, new Map(roots.map((r) => [r.pid, r.turnId])));
         if (nodeRead.status === 'rejected') throw nodeRead.reason;

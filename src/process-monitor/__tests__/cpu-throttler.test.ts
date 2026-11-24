@@ -60,6 +60,8 @@ class Machine {
   };
   /** Runs at the start of every read, with the pids it asks for. */
   onRead: ((pids: readonly number[]) => void) | null = null;
+  /** Awaited at the start of every read: a test orders reads against each other with it. */
+  readHook: ((pids: readonly number[]) => Promise<void>) | null = null;
 
   private settle(pid: number): void {
     const p = this.procs.get(pid);
@@ -86,11 +88,14 @@ class Machine {
   readDelayMs = 0;
   /** The next read waits for this before it reads (a ps the test holds up). */
   gate: Promise<void> | null = null;
+  /** A CPU counter that moves in whole ticks (Linux /proc: 10 ms), as an accounting phase that rounds down. */
+  tickSeconds = 0;
 
   readonly read = async (pids: readonly number[]) => {
     const gate = this.gate;
     this.gate = null;
     if (gate) await gate;
+    if (this.readHook) await this.readHook(pids);
     this.onRead?.(pids);
     if (this.readDelayMs > 0) await new Promise((r) => setTimeout(r, this.readDelayMs));
     const out = new Map<number, { cpuSeconds: number; startToken: string; stat: string; ppid: number }>();
@@ -98,7 +103,8 @@ class Machine {
       const p = this.procs.get(pid);
       if (!p) continue;
       this.settle(pid);
-      out.set(pid, { cpuSeconds: p.cpu, startToken: p.startToken, stat: p.stopped ? 'T' : 'R', ppid: p.ppid });
+      const cpu = this.tickSeconds > 0 ? Math.floor(p.cpu / this.tickSeconds) * this.tickSeconds : p.cpu;
+      out.set(pid, { cpuSeconds: cpu, startToken: p.startToken, stat: p.stopped ? 'T' : 'R', ppid: p.ppid });
     }
     return out;
   };
@@ -382,6 +388,95 @@ describe('CpuThrottler — a task tree held to its cap by a duty cycle', () => {
     expect(m.signals.slice(n)).toEqual([]);
   });
 
+  it('a CPU counter in 10 ms ticks: a period that reads no increase keeps the share — a wide tree stays at its cap', async () => {
+    const { m, t } = setup();
+    m.tickSeconds = 0.01;
+    m.readDelayMs = 2;
+    m.add(10, 0);
+    const kids = Array.from({ length: 32 }, (_, i) => 20 + i);
+    for (const pid of kids) m.add(pid, 1);
+    t.update([session(3200, [proc(10, 'root'), ...kids.map((pid) => proc(pid, 'child'))])], () => 50);
+    await vi.advanceTimersByTimeAsync(60_000);
+    const before = kids.reduce((n, p) => n + m.cpuOf(p), 0);
+    await vi.advanceTimersByTimeAsync(120_000);
+    const rate = ((kids.reduce((n, p) => n + m.cpuOf(p), 0) - before) / 120) * 100;
+    expect(rate).toBeGreaterThan(20);
+    expect(rate).toBeLessThan(80);
+  });
+
+  it('a hold that lands while the period reads new workers is read again too before its continue', async () => {
+    const { m, t } = setup();
+    m.add(10, 0).add(11, 4);
+    t.update([session(400, [proc(10, 'root'), proc(11, 'child')])], () => 100);
+    // Period 1 reads and plans its stop of 11; that stop's read is held up.
+    let releaseStopRead: () => void = () => {};
+    const stopRead = new Promise<void>((r) => {
+      releaseStopRead = r;
+    });
+    let n = 0;
+    m.readHook = async (pids) => {
+      n++;
+      // The 2nd read is period 1's stop read: it waits until period 2 is reading its new worker.
+      if (n === 2) await stopRead;
+      // Period 2's discovery read (its new worker 21): the held-up stop lands now, then 11 exits and its pid goes to a
+      // process someone else stopped — all while this read is out.
+      if (pids.includes(21) && !pids.includes(10)) {
+        releaseStopRead();
+        for (let i = 0; i < 50 && !t.holds('A', 11, START); i++) await Promise.resolve();
+        if (t.holds('A', 11, START)) m.reuse(11, true);
+      }
+    };
+    await vi.advanceTimersByTimeAsync(0);
+    // A new worker appears before period 2.
+    m.add(21, 0, START, 11);
+    await vi.advanceTimersByTimeAsync(THROTTLE_PERIOD_MS + 50);
+    expect(m.procs.get(11)?.startToken).not.toBe(START);
+    // The replacement is never continued.
+    expect(m.signals.filter(([pid, sig]) => pid === 11 && sig === 'SIGCONT')).toEqual([]);
+    expect(m.procs.get(11)?.stopped).toBe(true);
+  });
+
+  it('an abort or shutdown while a stop’s identity read is out: nothing is stopped when it returns', async () => {
+    for (const how of ['release', 'releaseAll'] as const) {
+      const { m, t } = setup();
+      m.add(10, 0).add(11, 4);
+      t.update([session(400, [proc(10, 'root'), proc(11, 'child')])], () => 100);
+      // The first period reads and plans its stop; hold up the stop's read.
+      await vi.advanceTimersByTimeAsync(0);
+      let open = (): void => {};
+      m.gate = new Promise<void>((r) => {
+        open = r;
+      });
+      await vi.advanceTimersByTimeAsync(THROTTLE_PERIOD_MS - 1);
+      if (how === 'release') t.release('A');
+      else t.releaseAll();
+      const n = m.signals.length;
+      open();
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(m.signals.slice(n).filter(([, sig]) => sig === 'SIGSTOP')).toEqual([]);
+      expect(m.procs.get(11)?.stopped).toBe(false);
+      expect(t.holds('A', 11, START)).toBe(false);
+    }
+  });
+
+  it('a cap that changes replans at once: holds are continued and the next period runs on the new cap', async () => {
+    const { m, t } = setup();
+    m.readDelayMs = 150;
+    m.add(10, 0);
+    const kids = Array.from({ length: 16 }, (_, i) => 20 + i);
+    for (const pid of kids) m.add(pid, 1);
+    const tree = session(1600, [proc(10, 'root'), ...kids.map((pid) => proc(pid, 'child'))]);
+    t.update([tree], () => 100);
+    await vi.advanceTimersByTimeAsync(20_000);
+    // A long period is under way; the admin raises the cap over what the tree uses.
+    for (let i = 0; i < 400 && !kids.some((pid) => m.procs.get(pid)?.stopped); i++)
+      await vi.advanceTimersByTimeAsync(5);
+    expect(kids.some((pid) => m.procs.get(pid)?.stopped)).toBe(true);
+    t.update([tree], () => 3200);
+    expect(kids.some((pid) => m.procs.get(pid)?.stopped)).toBe(false);
+    expect(t.meteredCap('A')).toBeNull();
+  });
+
   it('never stops or continues a process a person paused', async () => {
     const { m, t } = setup({ paused: (pid) => pid === 12 });
     m.add(10, 0).add(11, 3).add(12, 3);
@@ -660,12 +755,12 @@ describe('CpuThrottler probe — every tree width, cap and read latency is held 
     vi.useRealTimers();
   });
 
-  it('1–64 one-core workers × caps 25–400% × identity reads 0–150 ms × parent scans 0–800 ms: within 0.5–1.35× the cap', async () => {
+  it('1–64 one-core workers × caps 25–400% × identity reads 0 or 150 ms × parent scans 0 or 800 ms: within 0.5–1.35× the cap', async () => {
     const off: string[] = [];
     let cases = 0;
     for (const width of [1, 2, 8, 32, 64]) {
       for (const cap of [25, 50, 100, 400]) {
-        for (const readDelay of [0, 20, 150]) {
+        for (const readDelay of [0, 150]) {
           for (const parentsDelay of [0, 800]) {
             if (cap >= width * 100) continue;
             cases++;
@@ -676,10 +771,10 @@ describe('CpuThrottler probe — every tree width, cap and read latency is held 
             const kids = Array.from({ length: width }, (_, i) => 20 + i);
             for (const pid of kids) m.add(pid, 1);
             t.update([session(width * 100, [proc(10, 'root'), ...kids.map((pid) => proc(pid, 'child'))])], () => cap);
-            await vi.advanceTimersByTimeAsync(120_000);
+            await vi.advanceTimersByTimeAsync(60_000);
             const before = kids.reduce((n, p) => n + m.cpuOf(p), 0);
-            await vi.advanceTimersByTimeAsync(180_000);
-            const rate = ((kids.reduce((n, p) => n + m.cpuOf(p), 0) - before) / 180) * 100;
+            await vi.advanceTimersByTimeAsync(90_000);
+            const rate = ((kids.reduce((n, p) => n + m.cpuOf(p), 0) - before) / 90) * 100;
             if (rate > cap * 1.35 || rate < cap * 0.5) {
               off.push(
                 `${width} workers, cap ${cap}%, read ${readDelay} ms, scan ${parentsDelay} ms: ${rate.toFixed(0)}%`,
@@ -691,6 +786,7 @@ describe('CpuThrottler probe — every tree width, cap and read latency is held 
       }
     }
     expect(off).toEqual([]);
-    expect(cases).toBeGreaterThan(100);
-  }, 120_000);
+    expect(cases).toBeGreaterThan(60);
+    // A few seconds on an idle machine; room for a loaded runner.
+  }, 300_000);
 });

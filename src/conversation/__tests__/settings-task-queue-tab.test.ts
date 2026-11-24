@@ -268,31 +268,74 @@ describe('the CPU cap', () => {
 
   it('a change writes the cap (null for 기본값, a number, or unlimited) and says what it saved', async () => {
     const writes: Array<[string, string, unknown]> = [];
-    let status = '';
-    const k = load<any>([...KNOB, 'tqUser', 'tqCpuChange'], {
-      apiWrite: async (m: string, u: string, b: unknown) => {
+    const statuses: string[] = [];
+    // The server's row for each request: what it now enforces.
+    const rowFor = (cpu: unknown) =>
+      cpu === null
+        ? { limit: 100, setting: null, defaultLimit: 100 }
+        : cpu === 'unlimited'
+          ? { limit: null, setting: 'unlimited', defaultLimit: 100 }
+          : { limit: cpu, setting: cpu, defaultLimit: 100 };
+    const k = load<any>([...KNOB, 'tqUser', 'tqCpuChange', 'tqCpuLabel'], {
+      apiWrite: async (m: string, u: string, b: { cpu: unknown }) => {
         writes.push([m, u, b]);
-        return {
-          ok: true,
-          data: { user: { id: 'U1', name: 'Alice', cpu: { limit: 400, setting: 400, defaultLimit: 100 } } },
-        };
+        return { ok: true, data: { user: { id: 'U1', name: 'Alice', cpu: rowFor(b.cpu) } } };
       },
       tqStatus: (t: string) => {
-        status = t;
+        statuses.push(t);
       },
       tqRefreshRow: () => {},
     });
-    k.setTq({ users: [{ id: 'U1', name: 'Alice' }] });
+    const tq = { users: [{ id: 'U1', name: 'Alice' }] as Array<{ id: string; name: string; cpu?: unknown }> };
+    k.setTq(tq);
     const sel = (value: string) => ({ value, getAttribute: () => 'U1' });
     await k.tqCpuChange(sel('400'));
+    expect(statuses[statuses.length - 1]).toBe('Alice: 작업 하나의 CPU 한도 400%(으)로 저장했습니다');
+    expect(tq.users[0].cpu).toEqual(rowFor(400));
     await k.tqCpuChange(sel(''));
+    expect(statuses[statuses.length - 1]).toBe('Alice: 작업 하나의 CPU 한도 100% (기본값)(으)로 저장했습니다');
+    expect(tq.users[0].cpu).toEqual(rowFor(null));
     await k.tqCpuChange(sel('unlimited'));
+    expect(statuses[statuses.length - 1]).toBe('Alice: 작업 하나의 CPU 한도 무제한(으)로 저장했습니다');
+    expect(tq.users[0].cpu).toEqual(rowFor('unlimited'));
     expect(writes).toEqual([
       ['PUT', '/api/settings/cpu-limits/U1', { cpu: 400 }],
       ['PUT', '/api/settings/cpu-limits/U1', { cpu: null }],
       ['PUT', '/api/settings/cpu-limits/U1', { cpu: 'unlimited' }],
     ]);
-    expect(status).toContain('Alice: 작업 하나의 CPU 한도 400%');
+  });
+
+  it('a later change that fails falls back to the last one the server took, not to what the page loaded with', async () => {
+    let n = 0;
+    const refreshed: unknown[] = [];
+    const tq = {
+      users: [{ id: 'U1', name: 'Alice', cpu: { limit: 100, setting: null, defaultLimit: 100 } }] as Array<{
+        id: string;
+        name: string;
+        cpu?: unknown;
+      }>,
+    };
+    const k = load<any>([...KNOB, 'tqUser', 'tqCpuChange', 'tqCpuLabel'], {
+      apiWrite: async (_m: string, _u: string, b: { cpu: unknown }) => {
+        n++;
+        if (n === 1)
+          return { ok: true, data: { user: { id: 'U1', name: 'Alice', cpu: { limit: 400, setting: 400 } } } };
+        void b;
+        return { ok: false, error: 'HTTP 500' };
+      },
+      tqStatus: () => {},
+      tqRefreshRow: () => {
+        refreshed.push(JSON.parse(JSON.stringify(tq.users[0].cpu)));
+      },
+    });
+    k.setTq(tq);
+    const sel = (value: string) => ({ value, getAttribute: () => 'U1' });
+    const first = k.tqCpuChange(sel('400'));
+    const second = k.tqCpuChange(sel('50'));
+    await Promise.all([first, second]);
+    // The 400% write was replaced on the page by the 50% one, which failed: the row shows 400% (what is enforced).
+    expect(tq.users[0].cpu).toEqual({ limit: 400, setting: 400 });
+    expect(refreshed[refreshed.length - 1]).toEqual({ limit: 400, setting: 400 });
   });
 
   it('changes for one person are written in the order they were made: a slow first write never lands last', async () => {

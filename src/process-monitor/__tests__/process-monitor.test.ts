@@ -464,6 +464,40 @@ describe('LocalProcessMonitor — the CPU cap on each task', () => {
     expect(a?.processes.find((x) => x.pid === 300)).not.toHaveProperty('throttled');
   });
 
+  it('a stop someone else made, read by the tree’s ps, stays a stop even if the cap holds it while capacity is read', async () => {
+    let gate: () => void = () => {};
+    let gated = false;
+    const { monitor, ps, runOne, tick } = setup({
+      readCapacity: () =>
+        gated
+          ? new Promise((r) => {
+              gate = () => r(capacity);
+            })
+          : Promise.resolve(capacity),
+    });
+    ps.set(300, { ppid: 200, args: '/bin/bash -c make', psCpu: 400 });
+    monitor.setCpuCaps(() => 100);
+    await monitor.sample();
+    // Job control stops 300; the tree's ps reads that T; the capacity read is slow.
+    const p = ps.procs.get(300);
+    if (p) p.stat = 'T';
+    gated = true;
+    const sampling = monitor.sample();
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    // After the tree read, job control continues it and the cap's period stops it — still before capacity answers.
+    if (p) p.stat = 'S';
+    tick(100);
+    await runOne();
+    await runOne();
+    expect(ps.procs.get(300)?.stat).toBe('T');
+    gate();
+    const a = (await sampling).sessions.find((x) => x.sessionKey === 'A');
+    // The T the ps read was someone else's: the cap's hold began after that read ended.
+    expect(a?.processes.find((x) => x.pid === 300)).toMatchObject({ state: 'stopped' });
+    expect(a?.processes.find((x) => x.pid === 300)).not.toHaveProperty('throttled');
+    monitor.dispose();
+  });
+
   it('a person’s pause in a metered task still reads stopped and counts as paused', async () => {
     const { monitor, ps } = setup();
     ps.set(300, { ppid: 200, args: '/bin/bash -c make', psCpu: 400 });

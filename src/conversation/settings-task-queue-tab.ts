@@ -167,14 +167,12 @@ function tqCpuHtml(u, editable) {
   var choices = (_tq && _tq.cpuChoices) || [50, 100, 200, 400, 800];
   var cur = c.setting === null || c.setting === undefined ? '' : String(c.setting);
   var opts = '<option value=""' + (cur === '' ? ' selected' : '') + '>기본값 (' + esc(tqCpuLabel(c.defaultLimit)) + ')</option>';
-  var seen = false;
   for (var i = 0; i < choices.length; i++) {
     var v = String(choices[i]);
-    if (v === cur) seen = true;
     opts += '<option value="' + v + '"' + (v === cur ? ' selected' : '') + '>' + v + '%</option>';
   }
   // A cap set to a value the list does not offer (set through the API) still shows as itself.
-  if (cur && cur !== 'unlimited' && !seen) opts += '<option value="' + escAttr(cur) + '" selected>' + esc(cur) + '%</option>';
+  if (cur && cur !== 'unlimited' && choices.map(String).indexOf(cur) < 0) opts += '<option value="' + escAttr(cur) + '" selected>' + esc(cur) + '%</option>';
   opts += '<option value="unlimited"' + (cur === 'unlimited' ? ' selected' : '') + '>무제한</option>';
   return '<label class="tq-cpu">CPU 한도 <select data-user="' + escAttr(u.id) + '" aria-label="' + escAttr(name + ' 작업 하나의 CPU 한도') + '"'
     + (editable ? ' onchange="tqCpuChange(this)"' : ' disabled title="관리자 모드를 켜야 바꿀 수 있습니다"') + '>' + opts + '</select>'
@@ -198,17 +196,19 @@ async function tqCpuChange(sel) {
   });
   _tqCpuChain[id] = write.catch(function() {});
   var r = await write;
+  // Every write the server took is what it now enforces, a later one replaced or not: keep it, so a failing later
+  // write falls back to it, not to what the page loaded with.
+  var row = r.ok && r.data && r.data.user;
+  if (row && _tq && _tq.users) {
+    for (var i = 0; i < _tq.users.length; i++) if (_tq.users[i].id === id) _tq.users[i] = row;
+  }
   if (_tqCpuSeq[id] !== seq) return;
   if (!r.ok) {
     tqStatus(who + ' CPU 한도를 저장하지 못했습니다 — ' + r.error, true);
     tqRefreshRow(id);
     return;
   }
-  var row = r.data && r.data.user;
-  if (row && _tq && _tq.users) {
-    for (var i = 0; i < _tq.users.length; i++) if (_tq.users[i].id === id) _tq.users[i] = row;
-  }
-  tqStatus(who + ': 작업 하나의 CPU 한도 ' + tqCpuLabel(row && row.cpu ? row.cpu.limit : cpu) + (cpu === null ? ' (기본값)' : '') + '로 저장했습니다');
+  tqStatus(who + ': 작업 하나의 CPU 한도 ' + tqCpuLabel(row && row.cpu ? row.cpu.limit : cpu) + (cpu === null ? ' (기본값)' : '') + '(으)로 저장했습니다');
   tqRefreshRow(id);
 }
 function tqBanner() {
