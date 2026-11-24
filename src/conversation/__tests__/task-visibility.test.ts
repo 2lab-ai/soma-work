@@ -11,7 +11,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as jwt from 'jsonwebtoken';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { boardForViewer, canViewCard, canViewTask, cardForViewer, isPrivateTask } from '../task-visibility';
 
 const VIEWER_TOKEN = 'test-token';
@@ -327,7 +327,7 @@ describe('task-visibility — board, live pushes and routes', () => {
     const scoped = (c: { messages: any[] }) =>
       c.messages
         .filter((m) => m.type !== 'session_update' && m.type !== 'hello')
-        .map((m) => `${m.type}:${m.sessionKey ?? m.session?.conversationId ?? m.conversationId}`);
+        .map((m) => `${m.type}:${m.sessionKey ?? m.session?.conversationId ?? m.conversationId ?? m.key}`);
     expect(scoped(other)).toEqual([`summaryTitleChanged:${keyOf('pub')}`]);
     for (const c of [owner, admin]) {
       expect(scoped(c)).toEqual([
@@ -335,11 +335,85 @@ describe('task-visibility — board, live pushes and routes', () => {
         `task_update:${key}`,
         `summaryTitleChanged:${key}`,
         'artifact_update:conv-priv',
-        // The artifact re-pushes the live card so its face row grows.
-        'sessionUpdated:conv-priv',
+        // The artifact re-pushes the live card so its face row grows — as the fields that changed (card-push.ts);
+        // here the artifact store holds nothing of it, so the card is as the socket has it and nothing is re-sent.
         `summaryTitleChanged:${keyOf('pub')}`,
       ]);
     }
+  });
+
+  it('the socket: a card push carries only what changed since this socket’s copy, or nothing (dashboard perf 2026-11-24)', async () => {
+    const owner = await connect(AS.owner);
+    const ownerSocket = sockets[sockets.length - 1];
+    const stranger = await connect(AS.other);
+    await vi.waitFor(() =>
+      [owner, stranger].forEach((c) => expect(c.messages.some((m) => m.type === 'session_update')).toBe(true)),
+    );
+    const pushes = (c: { messages: any[] }) =>
+      c.messages.filter((m) => m.type === 'sessionUpdated' || m.type === 'sessionPatch');
+    const lastPush = (c: { messages: any[] }) => pushes(c)[pushes(c).length - 1];
+    // The clock stands still: a slow run must not reach the 30 s whole-card refresh (CARD_KEYFRAME_MS) by itself.
+    const frozen = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(frozen);
+    onTestFinished(() => clock.mockRestore());
+    const key = keyOf('pub');
+    dashboard.broadcastSingleSessionUpdate(key);
+    dashboard.broadcastSingleSessionUpdate(key); // the card as the sockets have it: nothing
+    sessions.get(key).title = 'Renamed';
+    dashboard.broadcastSingleSessionUpdate(key);
+    await flushAll([owner, stranger]);
+    for (const c of [owner, stranger]) {
+      const [whole, patch, ...rest] = pushes(c);
+      expect(rest).toEqual([]);
+      expect(whole.type).toBe('sessionUpdated');
+      expect(whole.session.title).toBe('Task pub');
+      expect(patch.type).toBe('sessionPatch');
+      expect(patch.key).toBe(whole.session.key);
+      expect(patch.set.title).toBe('Renamed');
+      // What did not change stays home.
+      expect('conversationId' in patch.set).toBe(false);
+    }
+    // The board push replaced the page's cards: the next push of the card is whole again.
+    dashboard.broadcastSingleSessionUpdate(key);
+    await flushAll([owner]);
+    expect(pushes(owner).map((m) => m.type)).toEqual(['sessionUpdated', 'sessionPatch', 'sessionUpdated']);
+    // That board push (flushAll) reset it again: whole once more, then a change is a patch again…
+    dashboard.broadcastSingleSessionUpdate(key);
+    sessions.get(key).title = 'Before poll';
+    dashboard.broadcastSingleSessionUpdate(key);
+    await vi.waitFor(() => expect(pushes(owner)).toHaveLength(5));
+    expect(
+      pushes(owner)
+        .slice(3)
+        .map((m) => m.type),
+    ).toEqual(['sessionUpdated', 'sessionPatch']);
+    // …until the page repaints from a board poll and says so (resync): the next push of the card is whole.
+    ownerSocket.send('{"type":"resync"}');
+    sessions.get(key).title = 'After resync';
+    await vi.waitFor(() => {
+      dashboard.broadcastSingleSessionUpdate(key);
+      expect(lastPush(owner)?.type).toBe('sessionUpdated');
+    });
+    expect(lastPush(owner)?.session.title).toBe('After resync');
+    // Patches before the resync arrived, then the whole card — never a whole card without it.
+    expect(
+      pushes(owner)
+        .slice(5)
+        .every((m, i, all) => m.type === 'sessionPatch' || i === all.length - 1),
+    ).toBe(true);
+    // A private card's push still reaches only who may see it, whole or patched.
+    const priv = keyOf('priv');
+    dashboard.broadcastSingleSessionUpdate(priv);
+    sessions.get(priv).title = 'Secret renamed';
+    dashboard.broadcastSingleSessionUpdate(priv);
+    await flushAll([owner, stranger]);
+    expect(pushes(stranger).some((m) => (m.session?.conversationId ?? '') === 'conv-priv')).toBe(false);
+    expect(JSON.stringify(stranger.messages)).not.toContain('Secret renamed');
+    expect(
+      pushes(owner)
+        .slice(-2)
+        .map((m) => m.type),
+    ).toEqual(['sessionUpdated', 'sessionPatch']);
   });
 
   it('the socket: a private task’s turns do not follow a non-owner who instructed it from Slack; a public task’s do', async () => {

@@ -3771,7 +3771,8 @@ export class SlackHandler {
   getFollowupView(sessionKey: string): FollowupQueueView | undefined {
     const queue = this.followupQueue;
     if (!queue) return undefined;
-    return queue.snapshot().sessions.find((session) => session.sessionKey === sessionKey);
+    // One session's copy: the board reads this per card, and a whole-queue snapshot per card held the event loop.
+    return queue.sessionSnapshot(sessionKey);
   }
 
   /**
@@ -3815,12 +3816,11 @@ export class SlackHandler {
   getFollowupSurfaceView(sessionKey: string): FollowupQueueView | undefined {
     const queue = this.followupQueue;
     if (!queue) return undefined;
-    const sessions = queue.snapshot().sessions;
-    const own = sessions.find((session) => session.sessionKey === sessionKey);
+    const own = queue.sessionSnapshot(sessionKey);
 
     const slotKey = this.boundFollowupSlot(sessionKey);
     if (slotKey !== undefined) {
-      const slotEpoch = sessions.find((session) => session.sessionKey === slotKey)?.turnEpoch;
+      const slotEpoch = queue.sessionSnapshot(slotKey)?.turnEpoch;
       return { ...(own ?? { sessionKey, items: [] }), turnEpoch: slotEpoch };
     }
 

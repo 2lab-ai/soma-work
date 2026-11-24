@@ -172,6 +172,12 @@ function sanitizeKey(sessionKey: string): string {
   return sessionKey.replace(/[^a-zA-Z0-9._-]/g, '-');
 }
 
+/** The archive time an append-only archive name carries (`{sanitizedKey}_{archivedAt}.json`), or undefined. */
+function archivedAtOfName(file: string): number | undefined {
+  const m = /_(\d{13})\.json$/.exec(file);
+  return m ? Number(m[1]) : undefined;
+}
+
 /**
  * Convert a ConversationSession to an ArchivedSession snapshot.
  */
@@ -369,9 +375,63 @@ export class SessionArchiveStore {
    * Trace: Scenario 3 Section 3b
    */
   listRecent(maxAgeMs: number): ArchivedSession[] {
-    const cutoff = Date.now() - maxAgeMs;
-    return this.listWithFilter((archived) => archived.archivedAt >= cutoff, cutoff);
+    const now = Date.now();
+    const cutoff = now - maxAgeMs;
+    const results: ArchivedSession[] = [];
+    try {
+      if (!fs.existsSync(this.archiveDir)) return results;
+      const files = fs.readdirSync(this.archiveDir);
+      // Kept while a caller's window can still ask for it, and while its file is there.
+      this.recentWindowMs = Math.max(this.recentWindowMs, maxAgeMs);
+      const present = new Set(files);
+      const keepFrom = now - this.recentWindowMs;
+      for (const [file, archived] of this.recentByFile) {
+        if (!present.has(file) || archived.archivedAt < keepFrom) this.recentByFile.delete(file);
+      }
+      for (const file of files) {
+        if (!file.endsWith('.json')) continue;
+        // The name carries the archive's time (`filePath`): an older one is skipped unread, unstat'ed.
+        const named = archivedAtOfName(file);
+        if (named !== undefined && named < cutoff) continue;
+        let archived = this.recentByFile.get(file);
+        if (!archived) {
+          const filePath = path.join(this.archiveDir, file);
+          // A name without its time (written before the append-only names): its age is the file's.
+          if (named === undefined) {
+            try {
+              if (fs.statSync(filePath).mtimeMs < cutoff) continue;
+            } catch {
+              continue;
+            }
+          }
+          try {
+            archived = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as ArchivedSession;
+          } catch (err) {
+            logger.warn(`Failed to parse archive file: ${file}`, err);
+            continue;
+          }
+          // Only a timed name is never written again (`archive` writes a new one each time).
+          if (named !== undefined && archived && typeof archived.archivedAt === 'number') {
+            this.recentByFile.set(file, archived);
+          }
+        }
+        if (archived && archived.archivedAt >= cutoff) results.push(archived);
+      }
+    } catch (err) {
+      logger.error('Failed to list archives', err);
+    }
+    return results;
   }
+
+  /**
+   * Recent archives already read, by file name (dashboard perf 2026-11-24). Every board build, board poll and cron
+   * lane listed the folder, stat'ed every file and parsed every recent archive again — on dev 1,656 stats and 148
+   * parses (8 MB) per cron lane, on the event loop. An archive is written once under a name that carries its time and
+   * never rewritten, so a name read once is that archive until its file goes. Shared: callers read it, never change it.
+   */
+  private readonly recentByFile = new Map<string, ArchivedSession>();
+  /** The widest window a caller has listed: an entry older than it is no caller's any more. */
+  private recentWindowMs = 0;
 
   /**
    * The exact archive a board card names (`archived_<sessionKey>_<archivedAt>`),

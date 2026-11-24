@@ -280,6 +280,66 @@ describe('SessionArchiveStore', () => {
     const recent = store.listRecent(48 * 60 * 60 * 1000);
     expect(recent).toEqual([]);
   });
+
+  // Dashboard perf 2026-11-24 — every board build and cron lane re-read and re-parsed each recent archive.
+  describe('listRecent reads an archive once', () => {
+    const HOUR = 60 * 60 * 1000;
+    const write = (name: string, archived: Partial<ArchivedSession>) =>
+      fs.writeFileSync(path.join(TEST_ARCHIVES_DIR, name), JSON.stringify(archived));
+
+    it('a timed archive read once is not read again — an archive name is never rewritten', () => {
+      const at = Date.now() - HOUR;
+      write(`C1-1.1_${at}.json`, { sessionKey: 'C1-1.1', archivedAt: at, title: 'first read' });
+      const store = new SessionArchiveStore(TEST_ARCHIVES_DIR);
+      expect(store.listRecent(48 * HOUR).map((a) => a.title)).toEqual(['first read']);
+
+      // Same name, other bytes: the store answers from what it read (a re-read would say "second read").
+      write(`C1-1.1_${at}.json`, { sessionKey: 'C1-1.1', archivedAt: at, title: 'second read' });
+      expect(store.listRecent(48 * HOUR).map((a) => a.title)).toEqual(['first read']);
+    });
+
+    it('an archive written after the first listing joins the next one', () => {
+      const store = new SessionArchiveStore(TEST_ARCHIVES_DIR);
+      expect(store.listRecent(48 * HOUR)).toEqual([]);
+      store.archive(makeTestSession({ title: 'new' }), 'C1-2.2', 'terminated');
+      expect(store.listRecent(48 * HOUR).map((a) => a.sessionKey)).toEqual(['C1-2.2']);
+    });
+
+    it('an archive whose file is gone leaves the listing', () => {
+      const at = Date.now() - HOUR;
+      write(`C1-3.3_${at}.json`, { sessionKey: 'C1-3.3', archivedAt: at });
+      const store = new SessionArchiveStore(TEST_ARCHIVES_DIR);
+      expect(store.listRecent(48 * HOUR)).toHaveLength(1);
+      fs.unlinkSync(path.join(TEST_ARCHIVES_DIR, `C1-3.3_${at}.json`));
+      expect(store.listRecent(48 * HOUR)).toEqual([]);
+    });
+
+    it('a timed name older than the window is skipped unread, even when its file is fresh', () => {
+      const old = Date.now() - 49 * HOUR;
+      // Not JSON: a read would log a parse failure; the name alone rules it out.
+      fs.writeFileSync(path.join(TEST_ARCHIVES_DIR, `C1-4.4_${old}.json`), 'not json');
+      const store = new SessionArchiveStore(TEST_ARCHIVES_DIR);
+      expect(store.listRecent(48 * HOUR)).toEqual([]);
+      // A wider window still reads it (and finds it unreadable — not listed).
+      expect(store.listRecent(72 * HOUR)).toEqual([]);
+    });
+
+    it('each window gets exactly its archives, in any order of asking', () => {
+      const recent = Date.now() - HOUR;
+      const older = Date.now() - 10 * 24 * HOUR;
+      write(`C1-5.5_${recent}.json`, { sessionKey: 'C1-5.5', archivedAt: recent });
+      write(`C1-6.6_${older}.json`, { sessionKey: 'C1-6.6', archivedAt: older });
+      const store = new SessionArchiveStore(TEST_ARCHIVES_DIR);
+      const keys = (ms: number) =>
+        store
+          .listRecent(ms)
+          .map((a) => a.sessionKey)
+          .sort();
+      expect(keys(14 * 24 * HOUR)).toEqual(['C1-5.5', 'C1-6.6']);
+      expect(keys(48 * HOUR)).toEqual(['C1-5.5']);
+      expect(keys(14 * 24 * HOUR)).toEqual(['C1-5.5', 'C1-6.6']);
+    });
+  });
 });
 
 describe('SessionArchiveStore.latestByTaskId — an epic tree’s spend lookup (#854, review #872 fable P2-3)', () => {

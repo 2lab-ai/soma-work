@@ -596,6 +596,16 @@ export class FollowupQueue {
     return cloneJson(this.state);
   }
 
+  /**
+   * One session's persistable state (defensive clone), or undefined when the queue has never held it. A reader of one
+   * session asks this, not {@link snapshot}: the dashboard reads a session per card and the thread surface one per
+   * render, and copying every session's queue for each (~0.5 MB on dev, 2026-11-24) held the event loop for seconds.
+   */
+  sessionSnapshot(sessionKey: string): FollowupSessionSnapshot | undefined {
+    const session = this.findSession(this.state, sessionKey);
+    return session ? cloneJson(session) : undefined;
+  }
+
   /** Why the session is frozen, for the UI to show alongside the paused items (A17). */
   freezeReason(sessionKey: string): string | undefined {
     return this.findSession(this.state, sessionKey)?.freeze?.reason;

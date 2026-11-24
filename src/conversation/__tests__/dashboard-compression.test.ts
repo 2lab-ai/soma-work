@@ -154,6 +154,16 @@ describe('dashboard first-load compression (#477)', () => {
     expect(res.rawPayload.length).toBeLessThan(plain.rawPayload.length / 3);
   });
 
+  it('GET /dashboard/ui/*.js?v=<installed version> — the URL the page loads — is kept a year (dashboard perf 2026-11-24)', async () => {
+    const { UI_LIB_VERSION } = await import('../ui-lib');
+    const versioned = await injectWebServer({ method: 'GET', url: `/dashboard/ui/agent-inbox.js?v=${UI_LIB_VERSION}` });
+    expect(versioned.statusCode).toBe(200);
+    expect(versioned.headers['cache-control']).toBe('public, max-age=31536000, immutable');
+    // Another version's URL (a page from before an upgrade) is not this file's bytes for a year.
+    const stale = await injectWebServer({ method: 'GET', url: '/dashboard/ui/agent-inbox.js?v=0.0.0-old' });
+    expect(stale.headers['cache-control']).toBe('public, max-age=3600');
+  });
+
   it('opt-in only: other routes are untouched (byte-range routes keep their semantics)', async () => {
     const res = await injectWebServer({
       method: 'GET',
