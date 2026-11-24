@@ -109,7 +109,7 @@ same snapshot, and work will be placed by each node's free CPU and memory.
    systemd; macOS has none), so the monitor holds a task over its cap with a duty cycle (`cpu-throttler.ts`): each
    period (250 ms, up to 30 s — long enough that its run part holds the identity read before each stop and its
    stopped part the period's reads) it reads the tree's CPU time, sets the share of the period the tree may run
-   (share × cap / rate, at least 1%), runs it that long and stops it (`SIGSTOP`) the rest. A new worker joins the
+   (share × cap / rate, at least 0.2%), runs it that long and stops it (`SIGSTOP`) the rest. A new worker joins the
    tree only if the read that gives its identity names a parent in it; an aborted turn's processes are never metered
    again. It never stops the Claude Code process itself, never continues what it did not stop (a person's pause
    becomes theirs), never signals a reused pid, and continues everything it holds on an abort, a cap change and

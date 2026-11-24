@@ -33,7 +33,7 @@ controller; it would replace the throttler there, not sit beside it.
   `ps -o pid=,ppid=,stat=,lstart=,time=` reads every member (Linux: `/proc/<pid>/stat` ticks over ps's whole seconds);
   a new worker is adopted only if that read, which gives its identity, names a parent already in the tree — a pid
   that changed hands since the parent map is someone else's. The tree's rate since the last period sets the share of
-  the period it may run: `share = share × cap / rate`, at least 1% (a tree up to 100 times its cap is held to it).
+  the period it may run: `share = share × cap / rate`, at least 0.2% (a tree up to 500 times its cap is held to it — 128 cores under the smallest cap, 25%).
   Everything held is continued — each only if a read shows the same start time it was stopped with (a pid no read
   answers for is checked with one batched `ps`, and kept held while unknown; a held pid is read again with any
   later read of the period). The candidates are read once more and stopped at the share's end, each only if it is
@@ -47,7 +47,9 @@ controller; it would replace the throttler there, not sit beside it.
   under 50% with 150 ms reads 121% → under 90% (a 14 s period); a 400% tree under 100% with a 1.2 s parent scan
   210% → ~100%. The stop's read starts early so the stop lands at the share's end; a stop whose read comes back after
   the next period already continued is dropped (it would hold the tree a whole period). A long period is the price of a
-  wide tree under a small cap: its processes run in a burst, then wait.
+  wide tree under a small cap: its processes run in a burst, then wait. A probe test holds every combination of 1–64
+  one-core workers, caps of 25–400%, identity reads of 0–150 ms and parent scans of 0–800 ms within 0.5–1.35× its
+  cap (102 cases).
 - **An aborted turn.** Its processes are never metered again: not by a sample that was in flight when the turn
   aborted (the abort released them), nor by later samples while its workers clean up. The session's next turn is.
 - **What it cannot see.** A process that starts and exits between two periods is never read; it runs uncapped for its

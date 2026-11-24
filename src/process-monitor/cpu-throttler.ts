@@ -40,10 +40,11 @@ const MAX_PERIOD_MS = 30_000;
 const READS_PER_PERIOD = 6;
 const READ_MARGIN = 1.5;
 /**
- * The smallest share of a period a capped tree runs (so a runaway tree still makes progress): a tree up to 100 times
- * its cap is held to it (64 cores under a 64% cap); a wider one runs at 1% of its own rate.
+ * The smallest share of a period a capped tree runs (so a runaway tree still makes progress): a tree up to 500 times
+ * its cap is held to it — 128 cores under the smallest cap a person can be given (25%); a wider one runs at 0.2% of
+ * its own rate. A small share asks for a long period (its run part holds the stop's identity read).
  */
-const MIN_SHARE = 0.01;
+const MIN_SHARE = 0.002;
 /**
  * A tree that stayed under half its cap this many periods in a row is let go until a sample finds it over its cap
  * again (well under, not merely at it: a tree held to its cap reads at its cap).

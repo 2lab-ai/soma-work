@@ -650,3 +650,47 @@ describe('parseThrottleRows', () => {
     expect(rows.size).toBe(2);
   });
 });
+
+describe('CpuThrottler probe — every tree width, cap and read latency is held near its cap', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-24T00:00:00Z'));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('1–64 one-core workers × caps 25–400% × identity reads 0–150 ms × parent scans 0–800 ms: within 0.5–1.35× the cap', async () => {
+    const off: string[] = [];
+    let cases = 0;
+    for (const width of [1, 2, 8, 32, 64]) {
+      for (const cap of [25, 50, 100, 400]) {
+        for (const readDelay of [0, 20, 150]) {
+          for (const parentsDelay of [0, 800]) {
+            if (cap >= width * 100) continue;
+            cases++;
+            const { m, t } = setup();
+            m.readDelayMs = readDelay;
+            m.parentsDelayMs = parentsDelay;
+            m.add(10, 0);
+            const kids = Array.from({ length: width }, (_, i) => 20 + i);
+            for (const pid of kids) m.add(pid, 1);
+            t.update([session(width * 100, [proc(10, 'root'), ...kids.map((pid) => proc(pid, 'child'))])], () => cap);
+            await vi.advanceTimersByTimeAsync(120_000);
+            const before = kids.reduce((n, p) => n + m.cpuOf(p), 0);
+            await vi.advanceTimersByTimeAsync(180_000);
+            const rate = ((kids.reduce((n, p) => n + m.cpuOf(p), 0) - before) / 180) * 100;
+            if (rate > cap * 1.35 || rate < cap * 0.5) {
+              off.push(
+                `${width} workers, cap ${cap}%, read ${readDelay} ms, scan ${parentsDelay} ms: ${rate.toFixed(0)}%`,
+              );
+            }
+            t.releaseAll();
+          }
+        }
+      }
+    }
+    expect(off).toEqual([]);
+    expect(cases).toBeGreaterThan(100);
+  }, 120_000);
+});
