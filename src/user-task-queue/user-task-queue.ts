@@ -53,6 +53,11 @@ export interface RunningTask extends UserTaskThread {
   title?: string;
   /** When its current turn (or chain) started — the newest one is stopped first by 먼저 진행. */
   startedAt?: number;
+  /**
+   * Why 먼저 진행 must not stop it (a deploy or QA lane it holds, an environment hand-off it waits on): stopping it
+   * halfway could leave a deploy half done. Never picked as the task to stop.
+   */
+  guard?: string;
 }
 
 export interface GateInput extends UserTaskThread {
@@ -81,6 +86,8 @@ export interface QueuedNoticeContext {
   position: number;
   limit: number;
   running: RunningTask[];
+  /** The person's entry right ahead of this one (from the second place on): what starts before it. */
+  ahead?: UserTaskEntry;
 }
 
 /** The Slack side of the queue. Every call is fire-and-forget: a notice that fails never touches the queue. */
@@ -89,7 +96,8 @@ export interface UserTaskQueueNotifier {
   queued(entry: UserTaskEntry, ctx: QueuedNoticeContext): void;
   /** Its turn came: `turn` — a running task ended; `bypass` — the person let it go first. */
   started(entry: UserTaskEntry, how: 'turn' | 'bypass'): void;
-  cancelled(entry: UserTaskEntry): void;
+  /** It left the line: `person` — 대기 취소; `closed` — its thread's session was closed. */
+  cancelled(entry: UserTaskEntry, why?: 'person' | 'closed'): void;
   /** `victim` was stopped so `first` could go first; it carries on after. */
   deferred(victim: RunningTask, first: UserTaskEntry): void;
 }
@@ -139,14 +147,16 @@ export interface UserQueueView {
 }
 
 /** What the ingress needs of the queue (`SlackHandler.handleMessage`). */
-export type UserTaskGatePort = Pick<UserTaskQueue, 'gate' | 'takeAdmission'>;
+export type UserTaskGatePort = Pick<UserTaskQueue, 'gate' | 'takeAdmission' | 'dropSession'>;
 
 export type StopOutcome = 'stopped' | 'pending' | 'gone';
 
 export type QueueActionResult =
   | { ok: true; deferred?: RunningTask; pending?: boolean }
-  | { ok: false; reason: QueueActionRefusal };
-export type QueueActionRefusal = 'not-found' | 'not-waiting' | 'forbidden';
+  | { ok: false; reason: Exclude<QueueActionRefusal, 'protected'> }
+  | { ok: false; reason: 'protected'; guard: string };
+/** `protected` — every task that runs holds a deploy/QA lane or an environment hand-off: none may be stopped. */
+export type QueueActionRefusal = 'not-found' | 'not-waiting' | 'forbidden' | 'protected';
 
 /** The cron job behind a scheduled fire (`MessageEvent.cron`), if the message is one. */
 function cronJobOf(message: Record<string, unknown> | undefined): string | undefined {
@@ -237,7 +247,12 @@ export class UserTaskQueue {
       return { ok: true };
     }
 
-    const victim = [...running].sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))[0];
+    // A task holding a deploy/QA lane (or waiting on an environment hand-off) is never stopped halfway.
+    const stoppable = running.filter((t) => !t.guard);
+    if (running.length > 0 && stoppable.length === 0) {
+      return { ok: false, reason: 'protected', guard: running[0].guard as string };
+    }
+    const victim = [...stoppable].sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))[0];
     if (!victim) {
       // Over the limit only by admissions on their way: go first in line, the next release starts it.
       this.commit(putFirst(this.ledger, entry));
@@ -308,9 +323,37 @@ export class UserTaskQueue {
     if (entry.userId !== by && !opts.admin) return { ok: false, reason: 'forbidden' };
     if (entry.state !== 'waiting') return { ok: false, reason: 'not-waiting' };
     this.commit(remove(this.ledger, entryId));
-    this.safe(() => this.deps.notify?.cancelled(entry));
+    this.safe(() => this.deps.notify?.cancelled(entry, 'person'));
     this.release(entry.userId);
     return { ok: true };
+  }
+
+  /**
+   * The thread's session was closed: what of it waits leaves the line (replaying it would bring the closed work back —
+   * a shared dev host, 2026-11-24, a CI message for a merged PR started a new session in the thread its owner had closed).
+   * Returns how many entries left. Never throws into the caller's teardown.
+   */
+  dropSession(sessionKey: string): number {
+    const gone = this.ledger.entries.filter((e) => e.sessionKey === sessionKey && e.state === 'waiting');
+    if (gone.length === 0) return 0;
+    let next = this.ledger;
+    for (const e of gone) next = remove(next, e.id);
+    this.commit(next);
+    for (const e of gone) this.safe(() => this.deps.notify?.cancelled(e, 'closed'));
+    for (const user of new Set(gone.map((e) => e.userId))) this.release(user);
+    return gone.length;
+  }
+
+  /**
+   * A host event of the person's (a pr-watch CI or review message) may start now: they are under their limit and
+   * nothing of theirs waits (their requests go first). The thread itself does not count against its own event.
+   */
+  hasFreeSlot(userId: string, sessionKey: string): boolean {
+    const limit = this.deps.limitFor(userId);
+    if (limit === UNLIMITED) return true;
+    if (waitingOf(this.ledger, userId).some((e) => e.sessionKey !== sessionKey)) return false;
+    const holding = this.othersRunning(userId, sessionKey).length + this.admittedElsewhere(userId, sessionKey);
+    return holding < limit;
   }
 
   /** Remember where the entry's Slack notice is (to rewrite it later). */
@@ -375,7 +418,9 @@ export class UserTaskQueue {
     };
     this.commit(append(this.ledger, entry));
     const position = positionOf(this.ledger, entry.id);
-    if (announce) this.safe(() => this.deps.notify?.queued(entry, { position, limit, running }));
+    const line = waitingOf(this.ledger, input.userId);
+    const ahead = position > 1 ? line[position - 2] : undefined;
+    if (announce) this.safe(() => this.deps.notify?.queued(entry, { position, limit, running, ahead }));
     return { action: 'queued', entry, position, limit, running };
   }
 

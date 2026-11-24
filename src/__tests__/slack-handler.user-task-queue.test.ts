@@ -4,6 +4,12 @@ vi.mock('../slack/autoskill-fire', () => ({
   buildAutoskillFire: vi.fn(() => null),
 }));
 
+const hostWait = vi.hoisted(() => ({ fn: vi.fn((_c?: string, _t?: string): any => undefined) }));
+vi.mock('../work-queue/host-wait', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../work-queue/host-wait')>()),
+  hostWaitFor: (channel?: string, threadTs?: string) => hostWait.fn(channel, threadTs),
+}));
+
 import { getMetricsEmitter } from '../metrics/event-emitter';
 import { SlackHandler } from '../slack-handler';
 import { userSettingsStore } from '../user-settings-store';
@@ -56,8 +62,12 @@ describe('SlackHandler — per-user task queue gate', () => {
   let ledger: UserTaskLedger;
 
   const keyOf = (channel: string, threadTs?: string) => `${channel}:${threadTs}`;
+  let beforeDelete: ((key: string, session: any, reason: 'terminated' | 'sleep-expired') => void) | undefined;
 
   beforeEach(() => {
+    hostWait.fn.mockReset();
+    hostWait.fn.mockReturnValue(undefined);
+    beforeDelete = undefined;
     vi.restoreAllMocks();
     vi.spyOn(getMetricsEmitter(), 'emitFollowupQueue').mockResolvedValue(undefined);
     vi.spyOn(userSettingsStore, 'getUserAutoGoalEnabled').mockReturnValue(false);
@@ -91,6 +101,11 @@ describe('SlackHandler — per-user task queue gate', () => {
       setActivityStateByKey: vi.fn(),
       broadcastSessionUpdate: vi.fn(),
       setSteerSignals: vi.fn(),
+      getSessionRegistry: () => ({
+        setBeforeSessionDelete: (cb: typeof beforeDelete) => {
+          beforeDelete = cb;
+        },
+      }),
     };
     const store = { load: () => undefined, save: () => undefined, recoveryWarning: undefined };
     const app = { client: {}, assistant: vi.fn() } as any;
@@ -330,5 +345,46 @@ describe('SlackHandler — per-user task queue gate', () => {
     expect(ledger.entries.map((e) => e.sessionKey)).toEqual(['C123:600.0']);
     gate.resolve({ hasPendingChoice: false });
     await first;
+  });
+
+  // a shared dev host (2026-11-24) — the three gaps a live board showed.
+  it('a pr-watch event the host held for a free slot (userTaskReady) passes even while another task runs', async () => {
+    const a = await startBusy('100.0');
+    await handler.handleMessage(
+      message('300.0', { ts: '', synthetic: true, routeContext: { skipAutoBotThread: true, userTaskReady: true } }),
+      vi.fn(),
+    );
+    expect(ledger.entries).toEqual([]);
+    expect(startWithContinuation).toHaveBeenCalledTimes(2);
+    await a.settle();
+  });
+
+  it("closing a thread's session takes its waiting entry out of line; a sleep expiry does not", async () => {
+    const a = await startBusy('100.0');
+    await handler.handleMessage(message('200.0', { ts: '200.01' }), vi.fn());
+    await handler.handleMessage(message('300.0', { ts: '300.01' }), vi.fn());
+    expect(ledger.entries.map((e) => e.sessionKey)).toEqual(['C123:200.0', 'C123:300.0']);
+    expect(beforeDelete).toBeTypeOf('function');
+    beforeDelete?.('C123:300.0', { ownerId: OWNER }, 'sleep-expired');
+    expect(ledger.entries).toHaveLength(2);
+    beforeDelete?.('C123:200.0', { ownerId: OWNER }, 'terminated');
+    expect(ledger.entries.map((e) => e.sessionKey)).toEqual(['C123:300.0']);
+    await a.settle();
+  });
+
+  it('a running task that holds a deploy/QA lane or waits on an environment hand-off is guarded', async () => {
+    const a = await startBusy('100.0');
+    hostWait.fn.mockImplementation((_c?: string, t?: string) =>
+      t === '100.0' ? { kind: 'running', queue: 'deploy:dev2', since: 1 } : undefined,
+    );
+    expect(handler.runningTasksOf(OWNER)).toEqual([
+      expect.objectContaining({ sessionKey: 'C123:100.0', guard: 'deploy:dev2' }),
+    ]);
+    hostWait.fn.mockImplementation(() => ({ kind: 'env', owner: 'env:qa', since: 1 }));
+    expect(handler.runningTasksOf(OWNER)[0].guard).toBe('env:qa');
+    // Waiting in a lane's line is not holding it: that task may be stopped.
+    hostWait.fn.mockImplementation(() => ({ kind: 'queued', queue: 'deploy:dev2', position: 2, since: 1 }));
+    expect(handler.runningTasksOf(OWNER)[0].guard).toBeUndefined();
+    await a.settle();
   });
 });

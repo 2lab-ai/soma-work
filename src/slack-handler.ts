@@ -175,7 +175,7 @@ import { TurnNotifier } from './turn-notifier';
 import type { ConversationSession, SessionGoal, SessionGoalStall, SessionIncidentRequest } from './types';
 import { userSettingsStore } from './user-settings-store';
 import type { GateInput, RunningTask, UserTaskGatePort } from './user-task-queue/user-task-queue';
-import { waitsOnHost } from './work-queue/host-wait';
+import { hostWaitFor, waitsOnHost } from './work-queue/host-wait';
 import { WorkingDirectoryManager } from './working-directory-manager';
 
 interface SlackPermalinkTarget {
@@ -1391,6 +1391,19 @@ export class SlackHandler {
       // #950 — the goal driver's bookkeeping for this key goes with it: a new
       // session on the same key must not inherit a held driver or a spent resume.
       this.forgetGoalDriverState(sessionKey);
+      // The per-user task queue: what of the thread still waits leaves the line when its owner closed it — a replay
+      // would bring the closed work back (a shared dev host, 2026-11-24). A sleep expiry keeps it: the request then starts a
+      // fresh session, as a new message to that thread would. Best effort — never refuses the deletion.
+      if (reason === 'terminated') {
+        try {
+          this.userTaskQueue?.dropSession(sessionKey);
+        } catch (error) {
+          this.logger.warn('User task queue: dropping a closed thread failed', {
+            sessionKey,
+            error: (error as Error)?.message ?? String(error),
+          });
+        }
+      }
     });
   }
 
@@ -9238,7 +9251,7 @@ export class SlackHandler {
     const route = event.routeContext;
     const continuation: GateInput['continuation'] = route?.goalContinuation
       ? 'drop'
-      : route?.hostTurn || route?.autoResume || route?.compactRedispatch || event.epicChild
+      : route?.hostTurn || route?.autoResume || route?.compactRedispatch || route?.userTaskReady || event.epicChild
         ? 'pass'
         : 'none';
     try {
@@ -9289,6 +9302,18 @@ export class SlackHandler {
    */
   runningTasksOf(userId: string): RunningTask[] {
     const out: RunningTask[] = [];
+    // 먼저 진행 must not stop a task halfway through a deploy or QA lane it holds, or an environment hand-off it
+    // waits on (a shared dev host, 2026-11-24: a go-first stopped a dev2 deploy). Waiting in a lane's line holds nothing.
+    const guardOf = (channel?: string, threadTs?: string): { guard?: string } => {
+      try {
+        const wait = hostWaitFor(channel, threadTs);
+        if (wait?.kind === 'running') return { guard: wait.queue };
+        if (wait?.kind === 'env') return { guard: wait.owner };
+      } catch {
+        // Unknown is not protected: the person may still stop it.
+      }
+      return {};
+    };
     const seen = new Set<string>();
     const slotOf = (key: string) => this.followupMigration?.byCanonical.get(key) ?? key;
     const titleOf = (key: string) => {
@@ -9310,12 +9335,15 @@ export class SlackHandler {
         canonical !== key && typeof this.claudeHandler?.getSessionByKey === 'function'
           ? this.claudeHandler.getSessionByKey(canonical)
           : undefined;
+      const channel = work?.channelId || slot.channel;
+      const threadTs = work?.threadTs || slot.threadTs;
       out.push({
         sessionKey: canonical,
-        channel: work?.channelId || slot.channel,
-        threadTs: work?.threadTs || slot.threadTs,
+        channel,
+        threadTs,
         title: titleOf(canonical) ?? titleOf(key),
         startedAt: slot.startedAt,
+        ...guardOf(channel, threadTs),
       });
     }
     const sessions =
@@ -9332,6 +9360,7 @@ export class SlackHandler {
         threadTs: s.threadTs || '',
         title: s.title || undefined,
         startedAt: Number(s.activityStateChangedAt) || undefined,
+        ...guardOf(s.channelId, s.threadTs),
       });
     }
     return out;

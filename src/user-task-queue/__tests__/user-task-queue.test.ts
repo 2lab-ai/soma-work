@@ -44,12 +44,13 @@ function harness(
   const notify: UserTaskQueueNotifier = {
     queued: (entry, ctx) => {
       notices.push(`queued:${entry.id}:${ctx.position}:${ctx.running.map((r) => r.sessionKey).join(',')}`);
+      if (ctx.ahead) notices.push(`ahead:${entry.id}:${ctx.ahead.sessionKey}`);
     },
     started: (entry, how) => {
       notices.push(`started:${entry.id}:${how}`);
     },
-    cancelled: (entry) => {
-      notices.push(`cancelled:${entry.id}`);
+    cancelled: (entry, why) => {
+      notices.push(why === 'closed' ? `cancelled:${entry.id}:closed` : `cancelled:${entry.id}`);
     },
     deferred: (victim, first) => {
       notices.push(`deferred:${victim.sessionKey}:for:${first.sessionKey}`);
@@ -483,5 +484,78 @@ describe('UserTaskQueue.cancel and reads', () => {
     h.queue.gate(input());
     h.queue.setNotice('t1', { channel: 'C1', ts: '2.1' });
     expect(h.queue.snapshot().entries[0].notice).toEqual({ channel: 'C1', ts: '2.1' });
+  });
+});
+
+// a shared dev host (2026-11-24): a pr-watch CI message for a thread whose session its owner then closed waited in line as a
+// person's request and was replayed into the closed thread ten minutes later, after its PR had merged.
+describe('host events and closed threads', () => {
+  it("hasFreeSlot: a host event of the person's runs only with a free slot and nothing of theirs waiting", () => {
+    const h = harness();
+    expect(h.queue.hasFreeSlot('U1', 'C1:9.0')).toBe(true);
+    h.running.set('U1', [taskA]);
+    expect(h.queue.hasFreeSlot('U1', 'C1:9.0')).toBe(false);
+    // The running thread's own host event is no second task.
+    expect(h.queue.hasFreeSlot('U1', 'C1:1.0')).toBe(true);
+    h.limits.set('U1', 2);
+    expect(h.queue.hasFreeSlot('U1', 'C1:9.0')).toBe(true);
+    // Two run, a request waits; one ends — the waiting request goes first, not the host event.
+    h.running.set('U1', [taskA, { ...taskA, sessionKey: 'C1:5.0', threadTs: '5.0' }]);
+    expect(h.queue.gate(input()).action).toBe('queued');
+    h.running.set('U1', [taskA]);
+    expect(h.queue.hasFreeSlot('U1', 'C1:9.0')).toBe(false);
+    h.limits.set('U1', UNLIMITED);
+    expect(h.queue.hasFreeSlot('U1', 'C1:9.0')).toBe(true);
+  });
+
+  it('dropSession: a closed thread leaves the line, and its notice says why', () => {
+    const h = harness();
+    h.running.set('U1', [taskA]);
+    h.queue.gate(input());
+    h.queue.gate(input({ sessionKey: 'C1:3.0', threadTs: '3.0', text: 'third' }));
+    expect(h.queue.dropSession('C1:2.0')).toBe(1);
+    expect(h.queue.snapshot().entries.map((e) => e.sessionKey)).toEqual(['C1:3.0']);
+    expect(h.notices).toContain('cancelled:t1:closed');
+    expect(h.queue.dropSession('C1:2.0')).toBe(0);
+    // What is left moves up.
+    expect(h.queue.viewFor('U1').waiting.map((w) => w.position)).toEqual([1]);
+  });
+
+  it('the queued notice names the entry right ahead of a second one', () => {
+    const h = harness();
+    h.running.set('U1', [taskA]);
+    h.queue.gate(input());
+    h.queue.gate(input({ sessionKey: 'C1:3.0', threadTs: '3.0', text: 'third' }));
+    expect(h.notices).toContain('queued:t2:2:C1:1.0');
+    expect(h.notices).toContain('ahead:t2:C1:2.0');
+    expect(h.notices.some((n) => n.startsWith('ahead:t1:'))).toBe(false);
+  });
+});
+
+describe('먼저 진행 never stops a guarded task', () => {
+  const guarded: RunningTask = {
+    ...taskA,
+    sessionKey: 'C1:7.0',
+    threadTs: '7.0',
+    startedAt: 900,
+    guard: 'deploy:dev2',
+  };
+
+  it('the newest unguarded task is stopped, even when a guarded one started later', () => {
+    const h = harness();
+    h.running.set('U1', [taskA, guarded]);
+    h.limits.set('U1', 2);
+    h.queue.gate(input());
+    expect(h.queue.bypass('t1', 'U1')).toMatchObject({ ok: true, deferred: taskA });
+    expect(h.interrupted.map((t) => t.sessionKey)).toEqual(['C1:1.0']);
+  });
+
+  it('every running task guarded: refused, nothing stopped, the entry keeps its place', () => {
+    const h = harness();
+    h.running.set('U1', [guarded]);
+    h.queue.gate(input());
+    expect(h.queue.bypass('t1', 'U1')).toEqual({ ok: false, reason: 'protected', guard: 'deploy:dev2' });
+    expect(h.interrupted).toEqual([]);
+    expect(h.queue.snapshot().entries.map((e) => [e.id, e.state])).toEqual([['t1', 'waiting']]);
   });
 });

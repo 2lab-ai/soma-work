@@ -29,6 +29,8 @@ export interface QueuedNoticeInput {
   running: NoticeTask[];
   /** How many of the person's tasks wait, this one included. */
   waitingCount: number;
+  /** The person's entry right ahead of this one (from the second place on). */
+  ahead?: NoticeTask;
 }
 
 export interface SlackNotice {
@@ -64,15 +66,22 @@ export function buildQueuedNotice(input: QueuedNoticeInput): SlackNotice {
   const runningLines = input.running.length
     ? input.running.map((t) => `• 진행 중: ${taskRef(t)}`).join('\n')
     : '• 진행 중인 작업이 곧 끝납니다';
+  // From the second place on, what runs is not what this one waits for last: name what is ahead of it too.
+  const aheadLine =
+    input.position > 1
+      ? `\n• 앞에서 기다리는 작업 ${input.position - 1}개${input.ahead ? ` — 바로 앞: ${taskRef(input.ahead)}` : ''}`
+      : '';
   const startsAfter =
-    input.running.length > 1 || input.position > 1
-      ? '앞의 작업이 끝나면 차례대로 이 요청을 자동으로 시작합니다.'
-      : '그 작업이 끝나면 이 요청을 자동으로 시작합니다.';
+    input.position > 1
+      ? '진행 중인 작업과 앞에서 기다리는 작업이 차례로 끝나면 이 요청을 자동으로 시작합니다.'
+      : input.running.length > 1
+        ? '진행 중인 작업 하나가 끝나면 이 요청을 자동으로 시작합니다.'
+        : '그 작업이 끝나면 이 요청을 자동으로 시작합니다.';
   const text = `⏳ 작업 대기열에 들어갔습니다 (${place}) — 진행 중인 작업이 끝나면 자동으로 시작합니다.`;
   const blocks = [
     section(`⏳ *작업 대기열에 들어갔습니다 — ${place}*`),
     section(
-      `동시에 진행할 수 있는 작업은 *${input.limit}개*입니다. 지금 진행 중인 작업:\n${runningLines}\n` +
+      `한 사람이 한 번에 진행할 수 있는 작업은 *${input.limit}개*입니다. 지금 진행 중인 작업:\n${runningLines}${aheadLine}\n` +
         `${startsAfter} 따로 하실 일은 없습니다.`,
     ),
     section(
@@ -123,7 +132,19 @@ export function buildStartedNotice(how: 'turn' | 'bypass', deferred?: NoticeTask
   return { text, blocks: [section('▶️ *차례가 와서 시작했습니다* — 앞의 작업이 끝났습니다.')] };
 }
 
-export function buildCancelledNotice(): SlackNotice {
+/** It left the line: `person` — 대기 취소; `closed` — the thread's session was closed while it waited. */
+export function buildCancelledNotice(why: 'person' | 'closed' = 'person'): SlackNotice {
+  if (why === 'closed') {
+    const text = '🚫 대기에서 뺐습니다 — 이 스레드의 세션이 종료돼 이 요청은 실행되지 않습니다.';
+    return {
+      text,
+      blocks: [
+        section(
+          '🚫 *대기에서 뺐습니다* — 이 스레드의 세션이 종료돼 이 요청은 실행되지 않습니다. 다시 하려면 메시지를 보내세요.',
+        ),
+      ],
+    };
+  }
   const text = '🚫 대기를 취소했습니다 — 이 요청은 실행되지 않습니다.';
   return {
     text,

@@ -902,8 +902,10 @@ export interface KanbanUserQueueItem {
   enqueuedAt: number;
   /** Tasks the owner may run at once (`null` = no limit). */
   limit: number | null;
-  /** What the owner runs now (what this entry waits for). */
-  running: Array<{ key: string; title: string; slackThreadUrl?: string }>;
+  /** What the owner runs now (what this entry waits for); `guard` — 먼저 진행 may not stop it (a deploy/QA lane). */
+  running: Array<{ key: string; title: string; slackThreadUrl?: string; guard?: string }>;
+  /** From the second place on: the owner's entry right ahead of this one, and how many wait ahead in all. */
+  ahead?: { title: string; count: number };
   slackThreadUrl?: string;
   privateTask: boolean;
 }
@@ -3649,7 +3651,13 @@ function userQueueItems(userId?: string): KanbanUserQueueItem[] {
         key: composeSessionKey(t.sessionKey),
         title: (s ? displayTitle(s) : t.title) || t.title || '진행 중인 작업',
         slackThreadUrl: t.channel && t.threadTs ? (buildThreadPermalink(t.channel, t.threadTs) ?? undefined) : undefined,
+        ...(t.guard ? { guard: t.guard } : {}),
       };
+    };
+    const line = view.waiting.filter((x) => x.state === 'waiting');
+    const titleOf = (x: (typeof view.waiting)[number]) => {
+      const s = sessions.get(x.sessionKey);
+      return (s ? displayTitle(s) : '') || x.preview || '대기 중인 작업';
     };
     for (const w of view.waiting) {
       // #1315 — an entry everyone may see names no private task of its owner (a DM's, a private channel's): only that
@@ -3657,9 +3665,19 @@ function userQueueItems(userId?: string): KanbanUserQueueItem[] {
       const entryPrivate = isPrivateTask(w.channel);
       const running = view.running.map((t) =>
         !entryPrivate && t.channel !== w.channel && isPrivateTask(t.channel)
-          ? { key: composeSessionKey(t.sessionKey), title: '비공개 작업' }
+          ? { key: composeSessionKey(t.sessionKey), title: '비공개 작업', ...(t.guard ? { guard: t.guard } : {}) }
           : runningOf(t),
       );
+      // What waits right ahead of it (the same privacy rule as what runs).
+      const at = line.indexOf(w);
+      const before = at > 0 ? line[at - 1] : undefined;
+      const ahead = before
+        ? {
+            title:
+              !entryPrivate && before.channel !== w.channel && isPrivateTask(before.channel) ? '비공개 작업' : titleOf(before),
+            count: at,
+          }
+        : undefined;
       out.push({
         key: composeSessionKey(w.sessionKey),
         entryId: w.id,
@@ -3674,6 +3692,7 @@ function userQueueItems(userId?: string): KanbanUserQueueItem[] {
         enqueuedAt: w.enqueuedAt,
         limit: view.limit,
         running,
+        ...(ahead ? { ahead } : {}),
         slackThreadUrl: buildThreadPermalink(w.channel, w.threadTs) ?? undefined,
         privateTask: entryPrivate,
       });
@@ -4980,7 +4999,11 @@ export async function registerDashboardRoutes(
       const result =
         action === 'bypass' ? active.queue.bypass(entryId, entry.userId) : active.queue.cancel(entryId, entry.userId);
       if (!result.ok) {
-        reply.status(result.reason === 'not-found' ? 404 : 409).send({ error: result.reason });
+        const error =
+          result.reason === 'protected'
+            ? `진행 중인 작업이 ${result.guard}을(를) 잡고 있어 중간에 멈출 수 없습니다 — 그 작업이 끝나면 자동으로 시작합니다`
+            : result.reason;
+        reply.status(result.reason === 'not-found' ? 404 : 409).send({ error });
         return;
       }
       logger.info('Dashboard: user queue action', { entryId, action, by });
@@ -12760,23 +12783,49 @@ function uqCardOf(item, session) {
   var title = (session && (session.displayHeadline || session.title)) || item.preview || '대기 중인 작업';
   var word = item.state === 'admitted' ? '시작 중' : item.kind === 'resume' ? '이어서 하기 대기' : '대기중';
   var place = item.state === 'waiting' && item.position > 0 ? word + ' · ' + item.position + '번째' : word;
-  var running = (item.running || [])
-    .map(function(r) {
-      return r && r.title ? String(r.title) : '';
-    })
-    .filter(Boolean);
+  var runs = (item.running || []).filter(function(r) { return r && r.title; });
+  var running = runs.map(function(r) { return String(r.title); });
+  var lead = running[0] || '진행 중인 작업';
+  // What waits ahead of it in its owner's line (from the second place on): it starts after those, not right after
+  // the running task (a shared dev host, 2026-11-24 — the second entry read as if it were next).
+  var aheadCount = item.ahead && Number(item.ahead.count) > 0 ? Number(item.ahead.count) : 0;
+  var aheadTitle = item.ahead && item.ahead.title ? String(item.ahead.title) : '앞 순서';
+  var who = item.ownerName ? String(item.ownerName) + ' · ' : '';
+  var summary;
+  if (item.state === 'admitted') summary = who + '시작 중 — 곧 이 스레드에서 시작합니다';
+  else if (item.kind === 'resume') summary = who + '멈춘 작업 — 차례가 오면 멈춘 지점부터 이어서';
+  else if (aheadCount > 0) summary = who + '앞에 ' + aheadCount + '개 먼저 — 바로 앞: ' + aheadTitle;
+  else summary = who + '다음 차례 — ' + lead + ' 끝나면 바로 시작';
   var limit = item.limit === null || item.limit === undefined ? '무제한' : String(item.limit) + '개';
+  // 먼저 진행 never stops a task that holds a deploy/QA lane (or an environment hand-off); the newest other one stops.
+  var stoppable = runs.filter(function(r) { return !r.guard; });
+  var guarded = runs.length > 0 && stoppable.length === 0 ? String(runs[0].guard) : '';
   var details = [];
-  if (running.length) details.push({ label: '진행 중: ' + running.join(', '), meta: '끝나면 자동으로 시작' });
-  else details.push('진행 중인 작업이 끝나면 자동으로 시작합니다');
+  if (running.length) {
+    details.push({ label: '진행 중: ' + running.join(', '), meta: aheadCount > 0 ? '끝나면 앞 순서부터' : '끝나면 이 작업 시작' });
+  } else {
+    details.push('진행 중인 작업이 끝나면 자동으로 시작합니다');
+  }
+  if (aheadCount > 0) {
+    details.push({
+      label: '앞에서 기다림: ' + aheadTitle + (aheadCount > 1 ? ' 외 ' + (aheadCount - 1) + '개' : ''),
+      meta: '그다음 이 작업',
+    });
+  }
+  details.push('한 번에 ' + limit + ' 진행 — 관리자가 사람마다 정한 한도');
   if (item.kind === 'resume') details.push('다른 작업을 먼저 하느라 멈춘 작업 — 차례가 오면 멈춘 지점부터 이어서 합니다');
   if (item.state === 'waiting') {
-    details.push({ label: '먼저 진행: 진행 중인 작업을 멈추고 이 작업을 바로 시작', meta: '멈춘 작업은 끝난 뒤 이어서' });
+    if (guarded) {
+      details.push({ label: '먼저 진행 불가: 진행 중인 작업이 ' + guarded + '을(를) 잡고 있어 중간에 멈출 수 없음', meta: '끝나면 자동으로 시작' });
+    } else {
+      var stopTitle = stoppable.length ? String(stoppable[stoppable.length - 1].title) : '진행 중인 작업';
+      details.push({ label: '먼저 진행: ' + stopTitle + '을(를) 멈추고 이 작업을 바로 시작', meta: '멈춘 작업은 이 작업이 끝난 뒤 이어서' });
+    }
   }
   var card = {
     id: uqCardKey(item),
     title: String(title),
-    summary: (item.kind === 'resume' ? '멈춘 작업' : '대기 중인 요청') + ' · 동시 ' + limit + (running.length ? ' · ' + running[0] + ' 다음' : ''),
+    summary: summary,
     status: 'idle',
     statusText: place,
     bodyMode: 'steps',
@@ -12788,7 +12837,8 @@ function uqCardOf(item, session) {
     // As the server allows (#716): the entry's owner, or an admin with admin mode on; anyone else sees why not.
     var may = typeof viewerCanManage === 'function' ? viewerCanManage(item) : true;
     var why = may ? false : typeof OWNER_ONLY_MSG === 'string' ? OWNER_ONLY_MSG : true;
-    card.primary = { id: 'uq-bypass', label: '먼저 진행', disabled: why };
+    var stopWhy = guarded ? '진행 중인 작업이 ' + guarded + '을(를) 잡고 있어 멈출 수 없습니다 — 끝나면 자동으로 시작' : false;
+    card.primary = { id: 'uq-bypass', label: '먼저 진행', disabled: why || stopWhy };
     card.actions = [{ id: 'uq-cancel', label: '대기 취소', disabled: why }];
   }
   return card;

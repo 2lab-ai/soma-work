@@ -21,3 +21,17 @@ export function setActiveUserTaskQueue(next: ActiveUserTaskQueue | undefined): v
 export function getActiveUserTaskQueue(): ActiveUserTaskQueue | undefined {
   return active;
 }
+
+/**
+ * Whether a host event of `userId`'s in `sessionKey` (a pr-watch CI or review message) may start now: they have a
+ * free slot and nothing of theirs waits (`UserTaskQueue.hasFreeSlot`). Free when no queue is wired, the owner is not
+ * known, or the queue cannot say — a host event is never held forever by the queue failing.
+ */
+export function userTaskSlotFree(userId: string | undefined, sessionKey: string): boolean {
+  if (!active || !userId) return true;
+  try {
+    return active.queue.hasFreeSlot(userId, sessionKey);
+  } catch {
+    return true;
+  }
+}
