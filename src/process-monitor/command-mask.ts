@@ -9,8 +9,10 @@ import { splitArgs } from './command-preview';
  * the task's owner and admins only, so it shows the whole line and masks what a value can hide a secret in:
  *   - JSON — everything between braces or brackets (`--mcp-config {…}` carries MCP servers' env and headers);
  *   - the value of a flag or `NAME=` whose name says secret (`--token x`, `--api-key=x`, `GITHUB_TOKEN=x`, mysql `-px`),
- *     or a program's own credential flag (curl `-u user:x`); on a space-joined `ps` line, a secret flag's value runs to
- *     the next option, since ps lost where the argument ended (`--pass correct horse battery`);
+ *     or a program's own credential flag or operand (curl `-u user:x`, `redis-cli -a x`, `docker login -p x`, `zip -P x`,
+ *     `vault login x`, the value after a secret key in `npm config set` / `aws configure set`, an npmrc
+ *     `…:_authToken=x`) — each command of a shell line is followed; on a space-joined `ps` line, a secret flag's
+ *     value runs to the next option, since ps lost where the argument ended (`--pass correct horse battery`);
  *   - an HTTP credential (`Authorization: Bearer x`, `Authorization:Bearer x`, `Cookie: x`, `Basic x`);
  *   - a URL's password (`https://user:x@host`) and a secret-named query value (`?token=x`);
  *   - every token shape the logger knows plus common provider keys (GitHub, AWS, Google, npm, JWT, `sk-…`);
@@ -42,13 +44,50 @@ const FLAG = /^-{1,2}[A-Za-z][\w.-]*$/;
 /** mysql-family `-p<password>` (the password attached to the flag). */
 const MYSQL_PROGRAM = /^(mysql|mysqldump|mysqladmin|mariadb|mariadb-dump)$/;
 /**
- * Flags whose value is a credential for one program only (elsewhere `-u` and `-p` mean other things): curl's
- * `user:password`, sshpass's password. Separate (`-u x`), `=`-joined (`--user=x`) or attached (`-ux`).
+ * Flags whose value is a credential for one program (or `program subcommand`) only — elsewhere `-u`, `-p`, `-a`, `-k`
+ * mean other things (`docker run -p 8080:80`). Separate (`-u x`), `=`-joined (`--user=x`) or attached (`-ux`).
  */
 const PROGRAM_SECRET_FLAGS: Readonly<Record<string, readonly string[]>> = {
   curl: ['-u', '--user', '-U', '--proxy-user'],
   sshpass: ['-p'],
+  'redis-cli': ['-a'],
+  openssl: ['-k'],
+  smbclient: ['-U'],
+  ldapsearch: ['-w'],
+  ldapmodify: ['-w'],
+  ldapadd: ['-w'],
+  ldapdelete: ['-w'],
+  ldapwhoami: ['-w'],
+  ldappasswd: ['-w', '-s'],
+  zip: ['-P'],
+  unzip: ['-P'],
+  '7z': ['-p'],
+  '7za': ['-p'],
+  '7zz': ['-p'],
+  rar: ['-p'],
+  unrar: ['-p'],
+  'docker login': ['-p'],
+  'podman login': ['-p'],
+  'nerdctl login': ['-p'],
+  'helm registry': ['-p'],
 };
+/** A subcommand whose first operand is a credential: `vault login <token>`. */
+const SECRET_OPERAND = new Set(['vault login']);
+/** Config writers: the word after a key whose name says secret is its value (`npm config set …:_authToken x`). */
+const CONFIG_WRITERS = new Set([
+  'git config',
+  'npm config',
+  'yarn config',
+  'pnpm config',
+  'aws configure',
+  'gh config',
+  'pip config',
+  'poetry config',
+  'composer config',
+  'gcloud config',
+]);
+/** A config key as one word (`aws_secret_access_key`, `//registry.npmjs.org/:_authToken`). */
+const CONFIG_KEY = /^[\w.:/@-]+$/;
 /** Words that run the next word as the command (`env A=1 curl …`, `sudo curl …`). */
 const COMMAND_WRAPPERS = new Set(['env', 'sudo', 'nohup', 'exec', 'time', 'nice', 'command', 'xargs']);
 /** An HTTP header that carries a credential, as its own word (`Authorization:`) or inline. */
@@ -71,7 +110,7 @@ const URL_PASSWORD = /\b([a-z][a-z0-9+.-]*:\/\/[^\s/@:]*):[^\s/@]+@/gi;
 /** A shell word that separates commands (a `bash -c` line is read word by word). */
 const SHELL_SEPARATOR = /^(;|&&|\|\||\||&)$/;
 /** A query parameter (`?name=value`, `&name=value`): masked when its name says secret. Bounded name, linear scan. */
-const QUERY_PARAM = /([?&;])([^=&\s#?;]{1,64})=([^&\s#;]*)/g;
+const QUERY_PARAM = /([?&;#])([^=&\s#?;]{1,64})=([^&\s#;]*)/g;
 const SECRET_QUERY_NAME = /token|key|secret|sig|signature|password|passwd|auth|credential/i;
 /** Provider key shapes the logger does not know. */
 const PROVIDER_KEYS: readonly RegExp[] = [
@@ -174,6 +213,9 @@ export function maskCommandLine(input: { readonly argv: readonly string[]; reado
   // The program of the command a word belongs to: the first word, or the first after a shell separator
   // (`cd /w && curl -u …`), past `env`/`sudo` and `NAME=value` prefixes.
   let program = '';
+  // Its subcommand (`docker login`, `npm config`): the first word after the program that is not a flag.
+  let sub = '';
+  let operandDone = false;
   let expectCmd = true;
   const out: string[] = [];
   // The value after a secret flag, a credential header or an auth scheme word: one word — or, when it opens with a
@@ -221,11 +263,21 @@ export function maskCommandLine(input: { readonly argv: readonly string[]; reado
       if (lead) return leadClosed ? '' : lead;
       return /^["']/.test(v) && !(v.length > 1 && v.endsWith(v[0])) ? v[0] : '';
     };
+    let isSub = false;
     if (atCmd && !expectCmd) {
       const base = (word.split('/').pop() ?? '').toLowerCase();
       if (COMMAND_WRAPPERS.has(base) || ASSIGNMENT.test(word) || word.startsWith('-')) expectCmd = true;
-      else program = base;
+      else {
+        program = base;
+        sub = '';
+        operandDone = false;
+        isSub = true;
+      }
+    } else if (program && !sub && !word.startsWith('-') && !expectCmd) {
+      sub = word.toLowerCase();
+      isSub = true;
     }
+    const cmd = sub ? `${program} ${sub}` : program;
     const flag = FLAG_WITH_VALUE.exec(word);
     if (flag && SECRET_NAME.test(flag[1])) {
       out.push(`${lead}${flag[1]}=${MASK}${leadClosed ? lead : ''}`);
@@ -254,7 +306,7 @@ export function maskCommandLine(input: { readonly argv: readonly string[]; reado
       out.push(`${lead}-p${MASK}`);
       continue;
     }
-    const own = PROGRAM_SECRET_FLAGS[program];
+    const own = PROGRAM_SECRET_FLAGS[cmd] ?? PROGRAM_SECRET_FLAGS[program];
     if (own) {
       // One word: `user:password`, a password.
       if (own.includes(word)) {
@@ -300,6 +352,26 @@ export function maskCommandLine(input: { readonly argv: readonly string[]; reado
       out.push(raw);
       value = { header: false, closing: '', schemeSeen: true, runOn: false };
       continue;
+    }
+    if (!isSub && !operandDone && SECRET_OPERAND.has(cmd) && !word.startsWith('-')) {
+      operandDone = true;
+      out.push(`${lead}${MASK}`);
+      continue;
+    }
+    if (!isSub && CONFIG_WRITERS.has(cmd) && CONFIG_KEY.test(word) && SECRET_NAME.test(word)) {
+      out.push(raw);
+      value = { header: false, closing: '', schemeSeen: true, runOn: false };
+      continue;
+    }
+    // `key=value` whose key (the last name before `=`) says secret, written into a longer word: an npmrc line
+    // (`//registry.npmjs.org/:_authToken=x`), `-Dspring.datasource.password=x`. Not a URL (its query is masked above).
+    const eq = word.indexOf('=');
+    if (eq > 0 && !word.includes('://') && !word.includes('?')) {
+      const key = /[\w.-]+$/.exec(word.slice(0, eq))?.[0] ?? '';
+      if (key && SECRET_NAME.test(key)) {
+        out.push(`${lead}${maskWord(word.slice(0, eq))}=${MASK}`);
+        continue;
+      }
     }
     out.push(input.exact ? quoted(maskWord(raw)) : maskWord(raw));
   }

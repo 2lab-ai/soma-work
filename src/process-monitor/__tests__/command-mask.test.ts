@@ -188,6 +188,60 @@ describe('maskCommandLine', () => {
     expect(joined('ps -u root -p 1')).toBe('ps -u root -p 1');
   });
 
+  it('real credential-bearing commands show no secret, joined (macOS ps) or exact (Linux argv)', () => {
+    const lines = [
+      'psql postgresql://app:hunter2@db:5432/app',
+      'mongosh mongodb+srv://u:hunter2@c.example.net/x',
+      'redis-cli -a hunter2 ping',
+      'redis-cli -h h -a hunter2',
+      'mysql --password hunter2 db',
+      'docker login -u bot -p hunter2 registry.example.com',
+      'docker login --password hunter2',
+      'podman login -p hunter2 r',
+      'git clone https://x-access-token:hunter2@github.com/o/r',
+      'curl -H X-Api-Key:hunter2 https://h',
+      'curl -H "X-API-KEY: hunter2" https://h',
+      'curl --oauth2-bearer hunter2 https://h',
+      'wget --http-password=hunter2 https://h',
+      'aws configure set aws_secret_access_key hunter2',
+      'export OPENAI_API_KEY=hunter2',
+      'node app.js --db-password hunter2',
+      'java -Djavax.net.ssl.keyStorePassword=hunter2 -jar a.jar',
+      'npm config set //registry.npmjs.org/:_authToken hunter2',
+      'npm config set //registry.npmjs.org/:_authToken=hunter2',
+      'git -c http.extraHeader="AUTHORIZATION: bearer hunter2" clone https://h/r',
+      'gh auth login --with-token hunter2',
+      'openssl enc -k hunter2 -in a',
+      'openssl pkcs12 -passin pass:hunter2 -in a',
+      'smbclient //h/s -U user%hunter2',
+      'ldapsearch -w hunter2 -D cn=admin',
+      'PGPASSWORD=hunter2 psql',
+      'kubectl --token=hunter2 get pods',
+      'kubectl --token hunter2 get pods',
+      'vault login hunter2',
+      'rclone --webdav-pass hunter2',
+      'curl "https://h/x?api_key=hunter2"',
+      'curl https://h/x#access_token=hunter2',
+      'x --client-secret hunter2',
+      'zip -P hunter2 a.zip f',
+      '7z a -phunter2 a.7z f',
+      'unzip -P hunter2 a.zip',
+      'cd /w && docker login -p hunter2 r',
+    ];
+    for (const line of lines) {
+      expect(joined(line), line).not.toContain('hunter2');
+      expect(exact(...line.split(' ')), line).not.toContain('hunter2');
+    }
+    // What is not a credential stays in view.
+    expect(joined('docker run -p 8080:80 nginx')).toBe('docker run -p 8080:80 nginx');
+    expect(joined('git checkout -b token-refresh main')).toBe('git checkout -b token-refresh main');
+    expect(joined('vault status')).toBe('vault status');
+    expect(joined('zip -r a.zip src')).toBe('zip -r a.zip src');
+    expect(joined('npm config get registry')).toBe('npm config get registry');
+    expect(joined('curl https://h/x#section-2')).toBe('curl https://h/x#section-2');
+    expect(joined('vault login -method=github')).toBe('vault login -method=github');
+  });
+
   it('a URL password with no user name is masked (redis://:pw@host)', () => {
     expect(joined('redis-cli -u redis://:hunter2@localhost:6379')).toBe(`redis-cli -u redis://:${MASK}@localhost:6379`);
     expect(joined('x https://h:8080/p@x')).toBe('x https://h:8080/p@x');
