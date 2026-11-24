@@ -29,16 +29,21 @@ import type { SessionProcessDetail } from './types';
 
 /** One period of the duty cycle: the shortest, on a host where `ps` answers fast. */
 export const THROTTLE_PERIOD_MS = 250;
-/** The longest period, when `ps` is slow. */
-const MAX_PERIOD_MS = 1_000;
+/** The longest period: for a slow `ps` or a small share. */
+const MAX_PERIOD_MS = 4_000;
 /**
- * A period is at least this many reads long. The tree runs through the read before each stop (the stop needs the
- * process's identity read first), so a slow `ps` would otherwise set a floor under the share: a 150 ms read in a
- * 250 ms period lets a tree run 60% of it whatever its cap.
+ * A period is at least this many reads long, and its run part at least this many reads (`READ_MARGIN`): the tree runs
+ * through the read before each stop (the stop needs the process's identity read first), so that read sets a floor
+ * under the share — a 150 ms read in a 250 ms period lets a tree run 60% of it whatever its cap, and a 6% share needs
+ * a period of 2.5 s to hold a 150 ms read.
  */
 const READS_PER_PERIOD = 6;
-/** The smallest share of a period a capped tree runs (so a runaway tree still makes progress, and stops are short). */
-const MIN_SHARE = 0.05;
+const READ_MARGIN = 1.5;
+/**
+ * The smallest share of a period a capped tree runs (so a runaway tree still makes progress): a tree up to 100 times
+ * its cap is held to it (64 cores under a 64% cap); a wider one runs at 1% of its own rate.
+ */
+const MIN_SHARE = 0.01;
 /**
  * A tree that stayed under half its cap this many periods in a row is let go until a sample finds it over its cap
  * again (well under, not merely at it: a tree held to its cap reads at its cap).
@@ -54,6 +59,8 @@ const SHUTDOWN_BUDGET_MS = 5_000;
 export interface ThrottleRead {
   readonly cpuSeconds: number;
   readonly startToken: string;
+  /** Its parent, read with its identity: a worker is adopted only under a parent in the tree. */
+  readonly ppid: number;
   /** `ps stat` (`T` = stopped). */
   readonly stat: string;
 }
@@ -127,6 +134,8 @@ export class CpuThrottler {
   private readonly intervals = new Map<string, { from: number; to: number | null }>();
   /** Stops the OS refused, said once each. */
   private readonly refused = new Set<string>();
+  /** Continues the OS refused, said once each (the hold is kept and tried again every period). */
+  private readonly refusedContinue = new Set<string>();
   private timer: unknown = null;
   private ticking = false;
   /** Counts periods. */
@@ -269,10 +278,17 @@ export class CpuThrottler {
    * or a continue the OS refused: kept, and tried again next period.
    */
   private continueHolds(which: (h: Hold) => boolean, read?: Map<number, ThrottleRead>): void {
+    const at = this.deps.now();
+    /** A hold that ends without a continue (gone, reused, a person's pause): its interval closes now. */
+    const drop = (pid: number, h: Hold): void => {
+      this.held.delete(pid);
+      const iv = this.intervals.get(`${pid}:${h.startToken}`);
+      if (iv && iv.to === null) iv.to = at;
+    };
     const picked = [...this.held].filter(([pid, h]) => {
       if (!which(h)) return false;
       if (this.deps.userPaused(h.sessionKey, pid, h.startToken)) {
-        this.held.delete(pid);
+        drop(pid, h);
         return false;
       }
       return true;
@@ -280,21 +296,29 @@ export class CpuThrottler {
     if (picked.length === 0) return;
     const unanswered = picked.filter(([pid]) => !read?.has(pid)).map(([pid]) => pid);
     const live = unanswered.length > 0 ? this.deps.liveStartTokens(unanswered) : new Map<number, string | null>();
-    const at = this.deps.now();
     for (const [pid, h] of picked) {
       const token = read?.has(pid) ? read.get(pid)?.startToken : live?.has(pid) ? live.get(pid) : undefined;
       if (token === undefined) continue;
       if (token !== h.startToken) {
-        this.held.delete(pid);
+        drop(pid, h);
         continue;
       }
+      const id = `${pid}:${h.startToken}`;
       try {
         this.deps.kill(pid, 'SIGCONT');
         this.held.delete(pid);
-        const iv = this.intervals.get(`${pid}:${h.startToken}`);
+        const iv = this.intervals.get(id);
         if (iv) iv.to = at;
       } catch (err) {
-        if ((err as NodeJS.ErrnoException)?.code === 'ESRCH') this.held.delete(pid);
+        if ((err as NodeJS.ErrnoException)?.code === 'ESRCH') drop(pid, h);
+        else if (!this.refusedContinue.has(id)) {
+          this.refusedContinue.add(id);
+          this.deps.logger?.warn('cpu cap: the OS refused to continue a held process; it is tried again every period', {
+            sessionKey: h.sessionKey,
+            pid,
+            error: String(err),
+          });
+        }
       }
     }
   }
@@ -338,9 +362,18 @@ export class CpuThrottler {
     }
   }
 
-  /** The period's length now: `THROTTLE_PERIOD_MS`, longer while `ps` is slow (at most `MAX_PERIOD_MS`). */
+  /**
+   * The period's length now: `THROTTLE_PERIOD_MS`; longer while `ps` is slow, and while a share is so small that its
+   * run part would not hold the read before the stop (at most `MAX_PERIOD_MS`).
+   */
   periodMs(): number {
-    return Math.min(MAX_PERIOD_MS, Math.max(THROTTLE_PERIOD_MS, Math.round(READS_PER_PERIOD * this.readMs)));
+    let share = 1;
+    for (const s of this.sessions.values()) share = Math.min(share, s.share);
+    const forShare = share < 1 ? (READ_MARGIN * this.readMs) / share : 0;
+    return Math.min(
+      MAX_PERIOD_MS,
+      Math.max(THROTTLE_PERIOD_MS, Math.round(READS_PER_PERIOD * this.readMs), Math.round(forShare)),
+    );
   }
 
   /** `deps.read`, timed: how long reads take sets the period's length. */
@@ -384,8 +417,12 @@ export class CpuThrottler {
       }
       const extra = [...discovered.values()].flat();
       if (extra.length > 0) {
-        const more = await this.deps.read(extra).catch(() => new Map<number, ThrottleRead>());
-        for (const [pid, r] of more) read.set(pid, r);
+        // This read awaits: what is held is read again with it, so a held pid reused meanwhile is not continued. If
+        // it fails, their identities are unknown here and the continue reads them live.
+        const heldPids = [...this.held.keys()];
+        const more = await this.timedRead([...extra, ...heldPids]).catch(() => null);
+        for (const pid of heldPids) if (!more?.has(pid)) read.delete(pid);
+        if (more) for (const [pid, r] of more) read.set(pid, r);
       }
       if (this.disposed) return;
     }
@@ -400,9 +437,13 @@ export class CpuThrottler {
     for (const [key, s] of [...this.sessions]) {
       const fresh = new Set<number>();
       const added: Member[] = [];
+      // A worker is adopted only if the read of its identity names a parent in the tree (parents first, as found): a
+      // pid that changed hands since the parent map is someone else's process.
+      const owners = new Set(s.members.filter((m) => read.get(m.pid)?.startToken === m.startToken).map((m) => m.pid));
       for (const pid of discovered.get(key) ?? []) {
         const r = read.get(pid);
-        if (!r) continue;
+        if (!r || !owners.has(r.ppid)) continue;
+        owners.add(pid);
         added.push({ pid, startToken: r.startToken, root: false });
         fresh.add(pid);
       }
@@ -494,16 +535,17 @@ export class CpuThrottler {
   }
 }
 
-/** `ps -o pid=,stat=,lstart=,time=` rows → pid → its read. Malformed lines are skipped. */
+/** `ps -o pid=,ppid=,stat=,lstart=,time=` rows → pid → its read. Malformed lines are skipped. */
 export function parseThrottleRows(out: string): Map<number, ThrottleRead> {
   const rows = new Map<number, ThrottleRead>();
   for (const line of out.split('\n')) {
     const t = line.trim().split(/\s+/);
-    if (t.length < 8) continue;
+    if (t.length < 9) continue;
     const pid = /^\d+$/.test(t[0]) ? Number(t[0]) : Number.NaN;
-    const cpu = parseCpuTime(t[7]);
-    if (!Number.isSafeInteger(pid) || cpu === null) continue;
-    rows.set(pid, { stat: t[1], startToken: t.slice(2, 7).join(' '), cpuSeconds: cpu });
+    const ppid = /^\d+$/.test(t[1]) ? Number(t[1]) : Number.NaN;
+    const cpu = parseCpuTime(t[8]);
+    if (!Number.isSafeInteger(pid) || !Number.isSafeInteger(ppid) || cpu === null) continue;
+    rows.set(pid, { ppid, stat: t[2], startToken: t.slice(3, 8).join(' '), cpuSeconds: cpu });
   }
   return rows;
 }
@@ -515,7 +557,7 @@ export function parseThrottleRows(out: string): Map<number, ThrottleRead> {
 export function createThrottleReader(runPs: RunPs, readCpuSeconds?: ReadCpuSeconds): ReadThrottle {
   return async (pids) => {
     if (pids.length === 0) return new Map();
-    const rows = parseThrottleRows(await runPs(['-o', 'pid=,stat=,lstart=,time=', '-p', pids.join(',')]));
+    const rows = parseThrottleRows(await runPs(['-o', 'pid=,ppid=,stat=,lstart=,time=', '-p', pids.join(',')]));
     if (!readCpuSeconds) return rows;
     const fine = await readCpuSeconds([...rows.keys()]).catch(() => new Map<number, number>());
     for (const [pid, cpu] of fine) {

@@ -203,7 +203,7 @@ describe.skipIf(!posix)('process monitor on the real OS', () => {
       off();
     }
   });
-  it('holds a task over its CPU cap to the cap: a spinning child runs at about 20% under a 20% cap', async (ctx) => {
+  it('holds a task over its CPU cap to the cap: a spinning child capped at half its free rate runs at about the cap', async (ctx) => {
     const spawn = createTrackedClaudeProcessSpawner(undefined, { sessionKey: 'capped-session' });
     child = spawn({
       command: '/bin/sh',
@@ -220,8 +220,6 @@ describe.skipIf(!posix)('process monitor on the real OS', () => {
       // As production wires it: Linux ps time has whole-second resolution, /proc ticks do not.
       readCpuSeconds: process.platform === 'linux' ? readLinuxCpuSeconds : undefined,
     });
-    // 20%: under the cap even on a busy host, where a spinner gets a third of a core rather than a whole one.
-    monitor.setCpuCaps(() => 20);
     const cpuOf = (pid: number): number => {
       if (process.platform === 'linux') return parseProcStatCpuSeconds(readFileSync(`/proc/${pid}/stat`, 'utf8')) ?? 0;
       return (
@@ -234,11 +232,24 @@ describe.skipIf(!posix)('process monitor on the real OS', () => {
     };
     let spinnerPid = 0;
     try {
+      // A loaded host can take seconds to start node: wait longer than the other cases do.
       const spinner = await until(async () => {
         const s = (await monitor.sample()).sessions.find((x) => x.sessionKey === 'capped-session');
         return s?.processes.find((p) => p.name === 'node');
-      });
+      }, 20_000);
       spinnerPid = spinner.pid;
+      // Its free rate, measured apart from the monitor (a daemon's child on a busy host may get a tenth of a core): the
+      // cap is half of it, and the capped rate must come down from it to about the cap.
+      const rateOver = async (ms: number): Promise<number> => {
+        const t0 = Date.now();
+        const c0 = cpuOf(spinner.pid);
+        await new Promise((r) => setTimeout(r, ms));
+        return ((cpuOf(spinner.pid) - c0) / ((Date.now() - t0) / 1000)) * 100;
+      };
+      const free = await rateOver(1_500);
+      if (free < 10) ctx.skip();
+      const cap = Math.max(5, Math.min(50, Math.round(free / 2)));
+      monitor.setCpuCaps(() => cap);
       // The next samples measure the spinner over the cap, so the cap starts holding it (a second apart: a sample's
       // rate is over the time since the one before).
       let metered: { throttling?: boolean; cpuPercent: number } | undefined;
@@ -246,18 +257,15 @@ describe.skipIf(!posix)('process monitor on the real OS', () => {
         await new Promise((r) => setTimeout(r, 1_000));
         metered = (await monitor.sample()).sessions.find((x) => x.sessionKey === 'capped-session');
       }
-      // A host so busy that a spinner gets no more than the cap gives the cap nothing to hold: nothing to measure.
-      if (!metered?.throttling && (metered?.cpuPercent ?? 0) <= 20) ctx.skip();
-      expect(metered).toMatchObject({ cpuCapPercent: 20, throttling: true });
+      expect(metered).toMatchObject({ cpuCapPercent: cap, throttling: true });
       // Let the share settle, then measure 4 s of the spinner's own CPU time.
       await new Promise((r) => setTimeout(r, 1_500));
-      const t0 = Date.now();
-      const c0 = cpuOf(spinner.pid);
-      await new Promise((r) => setTimeout(r, 4_000));
-      const rate = ((cpuOf(spinner.pid) - c0) / ((Date.now() - t0) / 1000)) * 100;
-      // Under the cap, with room for a busy host (which only lowers it); a tree held stopped would read near 0.
-      expect(rate, `capped rate ${rate.toFixed(1)}%`).toBeGreaterThan(3);
-      expect(rate, `capped rate ${rate.toFixed(1)}%`).toBeLessThan(40);
+      const rate = await rateOver(4_000);
+      const msg = `free ${free.toFixed(1)}%, cap ${cap}%, capped ${rate.toFixed(1)}%`;
+      // Near the cap and well under its free rate; a tree held stopped would read near 0.
+      expect(rate, msg).toBeGreaterThan(cap * 0.2);
+      expect(rate, msg).toBeLessThan(cap * 1.6);
+      expect(rate, msg).toBeLessThan(free * 0.8);
     } finally {
       monitor.dispose();
     }
@@ -267,5 +275,5 @@ describe.skipIf(!posix)('process monitor on the real OS', () => {
         .toString()
         .trim(),
     ).not.toMatch(/^T/);
-  }, 40_000);
+  }, 60_000);
 });

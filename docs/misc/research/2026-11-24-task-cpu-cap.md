@@ -28,22 +28,26 @@ controller; it would replace the throttler there, not sit beside it.
 - **When.** The monitor samples every 5 s. A task whose tree used more than its cap over a sample starts being
   metered. A metered task that runs under half its cap for 8 periods in a row (2 s on an idle host) is let go; one
   held to its cap reads at its cap, so it stays metered.
-- **Each period (250 ms, longer while `ps` is slow).** The parent map (`ps -A -o pid=,ppid=`) finds what the tree
-  started since the sample — only under members whose start time this period's read matched, so a member pid reused
-  by another program lends no children. One `ps -o pid=,stat=,lstart=,time=` reads every member (Linux:
-  `/proc/<pid>/stat` ticks over ps's whole seconds). The tree's rate since the last period sets the share of the
-  period it may run: `share = share × cap / rate`, at least 5%. Everything held is continued — each only if the read
-  shows the same start time it was stopped with (a pid the read did not answer for is checked with one batched `ps`
-  for all of them, and kept held while unknown); the candidates are read once more and stopped at the share's end,
-  each only if it is still that process, running, and not a person's pause. A failed read skips one period, never the
-  loop.
-- **Slow `ps`.** The tree runs through the read before each stop, so that read sets a floor under the share: a 150 ms
-  `ps` in a 250 ms period let a tree run 60% of it whatever its cap (a 400% tree under a 100% cap read 163% in the
-  simulated test). So a period is at least six reads long (the read time is smoothed; at most 1 s), the stop's read
-  starts early so the stop lands at the share's end, and a stop whose read comes back after the next period already
-  continued is dropped — it would hold the tree a whole period.
+- **Each period (250 ms; up to 4 s, see below).** The parent map (`ps -A -o pid=,ppid=`) finds what the tree started
+  since the sample — only under members whose start time this period's read matched. One
+  `ps -o pid=,ppid=,stat=,lstart=,time=` reads every member (Linux: `/proc/<pid>/stat` ticks over ps's whole seconds);
+  a new worker is adopted only if that read, which gives its identity, names a parent already in the tree — a pid
+  that changed hands since the parent map is someone else's. The tree's rate since the last period sets the share of
+  the period it may run: `share = share × cap / rate`, at least 1% (a tree up to 100 times its cap is held to it).
+  Everything held is continued — each only if a read shows the same start time it was stopped with (a pid no read
+  answers for is checked with one batched `ps`, and kept held while unknown; a held pid is read again with any
+  later read of the period). The candidates are read once more and stopped at the share's end, each only if it is
+  still that process, running, and not a person's pause. A failed read skips one period, never the loop.
+- **The period's length.** The tree runs through the read before each stop, so that read sets a floor under the
+  share: a 150 ms `ps` in a 250 ms period let a tree run 60% of it whatever its cap, and a 16-core tree under a 100%
+  cap (a 6% share) read 274% in the simulated test with a 900 ms period. So a period is at least six reads long and
+  its run part at least 1.5 reads (`period ≥ 1.5 × read ÷ share`, the read time smoothed), at most 4 s; the stop's
+  read starts early so the stop lands at the share's end; a stop whose read comes back after the next period already
+  continued is dropped (it would hold the tree a whole period).
+- **An aborted turn.** Its processes are never metered again: not by a sample that was in flight when the turn
+  aborted (the abort released them), nor by later samples while its workers clean up. The session's next turn is.
 - **What it cannot see.** A process that starts and exits between two periods is never read; it runs uncapped for its
-  short life (under 250 ms–1 s).
+  short life.
 - **Measured:** a two-thread spinner at 184–190% free runs at 102–105% under a 100% cap (owner-mac, 4 s windows); a
   one-thread spinner under a 20% cap ran at 18.0–19.6% on owner-mac at a load average of 13–30 (the real-OS test
   allows 5–40% on macOS and Linux CI).

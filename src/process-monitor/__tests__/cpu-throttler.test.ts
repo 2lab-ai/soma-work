@@ -37,7 +37,15 @@ class Machine {
   readonly liveStartTokens = (pids: readonly number[]): Map<number, string | null> | undefined =>
     this.unknown ? undefined : new Map(pids.map((pid) => [pid, this.procs.get(pid)?.startToken ?? null]));
 
-  readonly readParents = async () => new Map([...this.procs].map(([pid, p]) => [pid, p.ppid]));
+  /** Runs right after the parent map is read (a pid can change hands between that map and the next read). */
+  afterParents: (() => void) | null = null;
+  readonly readParents = async () => {
+    const map = new Map([...this.procs].map(([pid, p]) => [pid, p.ppid]));
+    this.afterParents?.();
+    return map;
+  };
+  /** Runs at the start of every read, with the pids it asks for. */
+  onRead: ((pids: readonly number[]) => void) | null = null;
 
   private settle(pid: number): void {
     const p = this.procs.get(pid);
@@ -67,13 +75,14 @@ class Machine {
     const gate = this.gate;
     this.gate = null;
     if (gate) await gate;
+    this.onRead?.(pids);
     if (this.readDelayMs > 0) await new Promise((r) => setTimeout(r, this.readDelayMs));
-    const out = new Map<number, { cpuSeconds: number; startToken: string; stat: string }>();
+    const out = new Map<number, { cpuSeconds: number; startToken: string; stat: string; ppid: number }>();
     for (const pid of pids) {
       const p = this.procs.get(pid);
       if (!p) continue;
       this.settle(pid);
-      out.set(pid, { cpuSeconds: p.cpu, startToken: p.startToken, stat: p.stopped ? 'T' : 'R' });
+      out.set(pid, { cpuSeconds: p.cpu, startToken: p.startToken, stat: p.stopped ? 'T' : 'R', ppid: p.ppid });
     }
     return out;
   };
@@ -113,6 +122,7 @@ const session = (cpuPercent: number, processes: ProcessSample[], key = 'A'): Ses
 
 function setup(opts: { paused?: (pid: number) => boolean } = {}) {
   const m = new Machine();
+  const warnings: string[] = [];
   const t = new CpuThrottler({
     kill: m.kill,
     read: m.read,
@@ -120,8 +130,9 @@ function setup(opts: { paused?: (pid: number) => boolean } = {}) {
     liveStartTokens: m.liveStartTokens,
     now: () => Date.now(),
     userPaused: (_k, pid) => opts.paused?.(pid) ?? false,
+    logger: { warn: (msg: string) => warnings.push(msg) },
   });
-  return { m, t };
+  return { m, t, warnings };
 }
 
 describe('CpuThrottler — a task tree held to its cap by a duty cycle', () => {
@@ -193,6 +204,98 @@ describe('CpuThrottler — a task tree held to its cap by a duty cycle', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(m.signals.slice(n)).toEqual([]);
     expect(m.procs.get(11)?.stopped).toBe(false);
+  });
+
+  it('a wide tree under a slow ps is held to its cap: the period grows until the read before a stop fits its share', async () => {
+    const { m, t } = setup();
+    // 16 workers at a core each (1600%) under 100%: a 6% share. A 150 ms read in a 900 ms period would let it run 17%.
+    m.readDelayMs = 150;
+    m.add(10, 0);
+    const kids = Array.from({ length: 16 }, (_, i) => 20 + i);
+    for (const pid of kids) m.add(pid, 1);
+    t.update([session(1600, [proc(10, 'root'), ...kids.map((pid) => proc(pid, 'child'))])], () => 100);
+    await vi.advanceTimersByTimeAsync(20_000);
+    const before = kids.reduce((n, p) => n + m.cpuOf(p), 0);
+    await vi.advanceTimersByTimeAsync(20_000);
+    const rate = ((kids.reduce((n, p) => n + m.cpuOf(p), 0) - before) / 20) * 100;
+    expect(rate).toBeGreaterThan(60);
+    expect(rate).toBeLessThan(140);
+    expect(t.periodMs()).toBeLessThanOrEqual(4_000);
+  });
+
+  it('a tree 64 times its cap is held to it: the share goes down to 1% of a period', async () => {
+    const { m, t } = setup();
+    m.add(10, 0);
+    const kids = Array.from({ length: 32 }, (_, i) => 20 + i);
+    for (const pid of kids) m.add(pid, 1);
+    t.update([session(3200, [proc(10, 'root'), ...kids.map((pid) => proc(pid, 'child'))])], () => 50);
+    await vi.advanceTimersByTimeAsync(10_000);
+    const before = kids.reduce((n, p) => n + m.cpuOf(p), 0);
+    await vi.advanceTimersByTimeAsync(10_000);
+    const rate = ((kids.reduce((n, p) => n + m.cpuOf(p), 0) - before) / 10) * 100;
+    expect(rate).toBeGreaterThan(25);
+    expect(rate).toBeLessThan(90);
+  });
+
+  it('a pid found in the parent map is adopted only if the read of its identity names a parent in the tree', async () => {
+    const { m, t } = setup();
+    m.add(10, 0).add(11, 4).add(20, 1, START, 11);
+    // Between the parent map and the read, 20 exits and its pid goes to a process outside the task.
+    let once = false;
+    m.afterParents = () => {
+      if (once) return;
+      once = true;
+      m.reuse(20);
+      const p = m.procs.get(20);
+      if (p) p.demand = 1;
+    };
+    t.update([session(400, [proc(10, 'root'), proc(11, 'child')])], () => 100);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(m.signals.some(([pid]) => pid === 20)).toBe(false);
+    expect(m.signals.some(([pid]) => pid === 11)).toBe(true);
+  });
+
+  it('a held pid reused while the period reads new workers is not continued (its identity is read again)', async () => {
+    const { m, t } = setup();
+    m.add(10, 0).add(11, 4);
+    t.update([session(400, [proc(10, 'root'), proc(11, 'child')])], () => 100);
+    for (let i = 0; i < 100 && !t.holds('A', 11, START); i++) await vi.advanceTimersByTimeAsync(5);
+    expect(t.holds('A', 11, START)).toBe(true);
+    // A new worker appears; while the period reads it, 11 exits and its pid goes to a process someone else stopped.
+    m.add(21, 0, START, 11);
+    let reused = false;
+    m.onRead = (pids) => {
+      if (reused || !pids.includes(21)) return;
+      reused = true;
+      m.reuse(11, true);
+    };
+    const n = m.signals.length;
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(reused).toBe(true);
+    expect(m.signals.slice(n).filter(([pid]) => pid === 11)).toEqual([]);
+    expect(m.procs.get(11)?.stopped).toBe(true);
+  });
+
+  it('a held process that is gone closes its hold: a later stop of that pid is not read as the cap’s', async () => {
+    const { m, t } = setup();
+    m.add(10, 0).add(11, 4);
+    t.update([session(400, [proc(10, 'root'), proc(11, 'child')])], () => 100);
+    for (let i = 0; i < 100 && !t.holds('A', 11, START); i++) await vi.advanceTimersByTimeAsync(5);
+    m.procs.delete(11);
+    await vi.advanceTimersByTimeAsync(1_000);
+    const later = Date.now() + 1_000;
+    expect(t.holds('A', 11, START, { from: later, to: later + 500 })).toBe(false);
+  });
+
+  it('a continue the OS refuses is said once (a held process it cannot release is not silent)', async () => {
+    const { m, t, warnings } = setup();
+    m.add(10, 0).add(11, 4);
+    t.update([session(400, [proc(10, 'root'), proc(11, 'child')])], () => 100);
+    for (let i = 0; i < 100 && !t.holds('A', 11, START); i++) await vi.advanceTimersByTimeAsync(5);
+    m.refuse.add(11);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(warnings.filter((w) => /refused to continue/.test(w))).toHaveLength(1);
+    expect(t.holds('A', 11, START)).toBe(true);
   });
 
   it('never stops or continues a process a person paused', async () => {
@@ -456,10 +559,10 @@ describe('CpuThrottler — a task tree held to its cap by a duty cycle', () => {
 describe('parseThrottleRows', () => {
   it('reads pid, stat, the 5-token start time and the CPU time; skips what it cannot read', () => {
     const rows = parseThrottleRows(
-      '  4242 R+   Tue Nov 24 15:50:48 2026     1:02.50\n 17 T Mon Nov  3 09:05:01 2026 0:00.01\nbad line\n',
+      '  4242   200 R+   Tue Nov 24 15:50:48 2026     1:02.50\n 17 1 T Mon Nov  3 09:05:01 2026 0:00.01\nbad line\n',
     );
-    expect(rows.get(4242)).toEqual({ stat: 'R+', startToken: 'Tue Nov 24 15:50:48 2026', cpuSeconds: 62.5 });
-    expect(rows.get(17)).toEqual({ stat: 'T', startToken: 'Mon Nov 3 09:05:01 2026', cpuSeconds: 0.01 });
+    expect(rows.get(4242)).toEqual({ ppid: 200, stat: 'R+', startToken: 'Tue Nov 24 15:50:48 2026', cpuSeconds: 62.5 });
+    expect(rows.get(17)).toEqual({ ppid: 1, stat: 'T', startToken: 'Mon Nov 3 09:05:01 2026', cpuSeconds: 0.01 });
     expect(rows.size).toBe(2);
   });
 });

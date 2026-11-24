@@ -353,7 +353,7 @@ export class LocalProcessMonitor implements ProcessHost {
         const snapshot: NodeProcessSnapshot = {
           node,
           sampledAt: this.now(),
-          sessions: this.applyCpuCaps(tree.sessions, window),
+          sessions: this.applyCpuCaps(tree.sessions, window, new Map(roots.map((r) => [r.pid, r.turnId]))),
           unattributed: tree.unattributed,
         };
         this.snapshot = snapshot;
@@ -534,9 +534,16 @@ export class LocalProcessMonitor implements ProcessHost {
   private applyCpuCaps(
     sessions: readonly SessionProcessDetail[],
     window: { from: number; to: number },
+    turnIdOf: ReadonlyMap<number, number>,
   ): SessionProcessDetail[] {
     const capFor = this.cpuCapFor;
-    if (capFor) this.throttler.update(sessions, capFor);
+    // An aborted turn's processes are never metered again — not by a sample that was in flight when it aborted (the
+    // abort released them already), nor by later samples while its workers clean up. The session's next turn is.
+    if (capFor)
+      this.throttler.update(
+        sessions.map((s) => this.withoutAbortedTurns(s, turnIdOf)),
+        capFor,
+      );
     return sessions.map((s) => {
       const cap = capFor ? capFor(s.sessionKey) : null;
       const metered = this.throttler.meteredCap(s.sessionKey) !== null;
@@ -563,6 +570,19 @@ export class LocalProcessMonitor implements ProcessHost {
         ...(cap !== null || metered ? { throttling: metered } : {}),
       };
     });
+  }
+
+  /** The session's tree without the processes of a turn that was aborted (its CPU no longer counts toward a cap). */
+  private withoutAbortedTurns(s: SessionProcessDetail, turnIdOf: ReadonlyMap<number, number>): SessionProcessDetail {
+    if (this.abortedTurnIds.size === 0) return s;
+    const turns = turnsIn(s, this.turnOf, turnIdOf);
+    const processes = s.processes.filter((p) => {
+      const turn = turns.get(p.pid);
+      return turn === undefined || !this.abortedTurnIds.has(turn);
+    });
+    if (processes.length === s.processes.length) return s;
+    const cpuPercent = processes.reduce((n, p) => n + Math.max(0, p.cpuPercent), 0);
+    return { ...s, processes, cpuPercent };
   }
 
   /** An aborted turn must end: continue every process this monitor paused in that session. */

@@ -107,14 +107,15 @@ same snapshot, and work will be placed by each node's free CPU and memory.
    none for an admin, an admin's choice per person in the settings page's 작업 큐 tab (`DATA_DIR/user-cpu-limits.json`,
    `cpu-limits.ts`). Neither OS gives an unprivileged quota on a running tree (Linux cgroup `cpu.max` needs delegated
    systemd; macOS has none), so the monitor holds a task over its cap with a duty cycle (`cpu-throttler.ts`): each
-   period (250 ms, up to 1 s while `ps` is slow — a period is at least six reads long, since the tree runs through the
-   identity read before each stop) it reads the tree's CPU time, sets the share of the period the tree may run
-   (share × cap / rate), runs it that long and stops it (`SIGSTOP`) the rest. It never stops the Claude Code process
-   itself, never continues what it did not stop (a person's pause becomes theirs), never signals a reused pid, and
-   continues everything it holds on an abort, a cap change and shutdown (before the monitor's own resume pass). A held
-   process reads as
-   running with `throttled`, not as paused; a session says its `cpuCapPercent` and whether the cap is `throttling`.
-   Research: [2026-11-24 task CPU cap](../misc/research/2026-11-24-task-cpu-cap.md).
+   period (250 ms, up to 4 s — at least six reads long, and long enough that its run part holds the identity read
+   before each stop) it reads the tree's CPU time, sets the share of the period the tree may run (share × cap / rate,
+   at least 1%), runs it that long and stops it (`SIGSTOP`) the rest. A new worker joins the tree only if the read
+   that gives its identity names a parent in it; an aborted turn's processes are never metered again. It never stops
+   the Claude Code process itself, never continues what it did not stop (a person's pause becomes theirs), never
+   signals a reused pid, and continues everything it holds on an abort, a cap change and shutdown (before the
+   monitor's own resume pass). A held process reads as running with `throttled`, not as paused; a session says its
+   `cpuCapPercent` and whether the cap is `throttling`. Research: [2026-11-24 task CPU
+   cap](../misc/research/2026-11-24-task-cpu-cap.md).
 
 ## Consequences
 
