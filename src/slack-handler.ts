@@ -2152,6 +2152,15 @@ export class SlackHandler {
       this.holdDroppedGoalContinuation(sessionKey, event);
       return;
     }
+    if (userTask === 'duplicate') {
+      // Slack resent a message already in line (or just started from it): one entry, one notice, one receipt.
+      this.logger.info('User task queue: Slack redelivery of a message already in line ignored', {
+        sessionKey,
+        ts: event.ts,
+      });
+      this.noteTurnAccepted(event.channel, event.ts);
+      return;
+    }
     if (userTask === 'queued') {
       // Durably stored, like a follow-up behind a busy slot: a host waiting for the receipt hears it now.
       this.noteTurnAccepted(event.channel, event.ts);
@@ -9246,7 +9255,11 @@ export class SlackHandler {
    * the person's queue (the queue posted the notice); `drop` — a goal continuation of a thread that waits in line.
    * A queue that fails lets the message run: a broken queue must not stop the bot.
    */
-  private gateUserTask(event: MessageEvent, sessionKey: string, admitted: boolean): 'run' | 'queued' | 'drop' {
+  private gateUserTask(
+    event: MessageEvent,
+    sessionKey: string,
+    admitted: boolean,
+  ): 'run' | 'queued' | 'drop' | 'duplicate' {
     const queue = this.userTaskQueue;
     if (!queue) return 'run';
     const userId = this.userTaskOwnerOf(sessionKey, event);
