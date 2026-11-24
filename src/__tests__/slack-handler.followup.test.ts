@@ -2065,16 +2065,13 @@ describe('SlackHandler — follow-up queue host', () => {
       // A reply parked under the work key, so the work session itself exists and
       // only the SLOT's counter is missing below.
       await handler.handleMessage(message({ ts: '333.555', thread_ts: '999.000', text: '작업 스레드 후속' }), say());
-      const real = queue().snapshot.bind(queue());
-      const snapshot = vi.spyOn(queue(), 'snapshot');
+      // The surface reads one session at a time (sessionSnapshot — dashboard perf 2026-11-24).
+      const real = queue().sessionSnapshot.bind(queue());
+      const snapshot = vi.spyOn(queue(), 'sessionSnapshot');
       try {
         expect(await lands(1)).toBe(true);
 
-        snapshot.mockImplementation(() => {
-          const state = real();
-          state.sessions = state.sessions.filter((session: any) => session.sessionKey !== SESSION_KEY);
-          return state;
-        });
+        snapshot.mockImplementation((key: string) => (key === SESSION_KEY ? undefined : real(key)));
         expect(surfaceView(WORK_KEY)?.turnEpoch).toBeUndefined();
         expect(await lands(1), 'slot session missing = unverifiable, never "the work key\'s own 0"').toBe(false);
 

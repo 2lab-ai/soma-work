@@ -147,6 +147,7 @@ import { backfillArtifactsFromWorkLog } from './artifact-capture';
 import { type ArtifactSummary, boardArtifact, getArtifactStore, type SessionArtifact } from './artifacts';
 import { buildCapacityView, type CapacityView, readSaveMode } from './capacity-view';
 import { type CardLink, cardLinksOf, followupLinksOf, settledLinkUrlsOf } from './card-links';
+import { cardFields, cardPushMessage, type SentCards } from './card-push';
 import { archivedCardClocks, cardWhereOf, liveCardClocks } from './card-where';
 import { isClientRef } from './client-ref';
 import { type ComposerMenuWhere, type ComposerTriggerRow, composerTriggers } from './composer-menus';
@@ -3842,6 +3843,8 @@ type WsClient = {
   slackAdmin?: boolean;
   /** Epoch ms the connection's sign-in stops being valid (JWT expiry / absolute lifetime). */
   authUntil?: number;
+  /** What this socket was last sent of each card: a card's next push carries only what changed (card-push.ts). */
+  sentCards?: SentCards;
 };
 const wsClients = new Set<WsClient>();
 
@@ -3917,6 +3920,8 @@ export function broadcastSessionUpdate(): void {
       }
       try {
         client.send(payload);
+        // The whole board replaced the page's cards: the next push of each card is whole again (card-push.ts).
+        client.sentCards?.clear();
       } catch {
         wsClients.delete(client);
       }
@@ -4118,14 +4123,27 @@ export function broadcastSingleSessionUpdate(sessionKey: string): void {
     // E4 ⑧ — a child's card lives in its epic's bundle: push the epic's card, which carries it.
     const [key, shown] = bundlingEpicOf(session) ?? [sessionKey, session];
     const kanban = sessionToKanban(key, shown);
-    const payload = JSON.stringify({ type: 'sessionUpdated', session: kanban });
+    const nowMs = Date.now();
+    // Serialised once per variant of the card, field by field (card-push.ts).
+    const fieldsOf = new Map<object, Map<string, string>>();
     // #1315 — the card as each socket may see it: none for a private task's stranger, an epic without its private
-    // children.
+    // children. Each socket gets only what changed since its own last copy of the card, or nothing.
     for (const client of wsClients) {
       const card = cardForViewer(kanban, client);
-      if (!card) continue;
+      if (!card) {
+        client.sentCards?.delete(kanban.key);
+        continue;
+      }
+      let fields = fieldsOf.get(card);
+      if (!fields) {
+        fields = cardFields(card);
+        fieldsOf.set(card, fields);
+      }
+      client.sentCards ??= new Map();
+      const payload = cardPushMessage(client.sentCards, kanban.key, fields, nowMs);
+      if (payload === undefined) continue;
       try {
-        client.send(card === kanban ? payload : JSON.stringify({ type: 'sessionUpdated', session: card }));
+        client.send(payload);
       } catch {
         wsClients.delete(client);
       }
@@ -6467,17 +6485,21 @@ export async function registerDashboardRoutes(
   // else. Public library code — no session data — so no auth. Compressed like the first load (#969): a cold load
   // makes ~60 requests for these files, ~1.4 MB as they are (~0.4 MB in brotli), which held a phone's first
   // screen for seconds (≈25 ms of CPU per cold load; the browser keeps them an hour).
-  server.get<{ Params: { file: string } }>(
+  // Asked for by the installed version (`?v=` — every module the page itself loads): that URL never changes its
+  // bytes, so the browser keeps it a year and a reload asks nothing (the 40 modules took 1.3-2.3 s each on dev,
+  // 2026-11-24). A module the kit imports by bare name keeps the hour.
+  server.get<{ Params: { file: string }; Querystring: { v?: string } }>(
     '/dashboard/ui/:file',
     { compress: FIRST_LOAD_COMPRESSION },
     async (request, reply) => {
       const file = String(request.params.file || '');
       const dir = uiLibDistDir();
       if (!dir || !UI_LIB_FILE.test(file)) return reply.code(404).send();
+      const versioned = encodeURIComponent(String(request.query?.v ?? '')) === UI_LIB_VERSION;
       try {
         const body = await readFile(join(dir, file));
         return reply
-          .header('Cache-Control', 'public, max-age=3600')
+          .header('Cache-Control', versioned ? 'public, max-age=31536000, immutable' : 'public, max-age=3600')
           .header('X-Content-Type-Options', 'nosniff')
           .type('text/javascript; charset=utf-8')
           .send(body);
@@ -6512,7 +6534,11 @@ export async function registerDashboardRoutes(
   // ── WebSocket ──
 
   try {
-    await server.register(await import('@fastify/websocket'));
+    // permessage-deflate (dashboard perf 2026-11-24): the socket's board is ~3.6 MB of JSON and was sent raw — the
+    // HTTP board goes compressed. Messages under 1 KB stay raw; zlib runs on libuv's pool, not the event loop.
+    await server.register(await import('@fastify/websocket'), {
+      options: { perMessageDeflate: { threshold: 1024 } },
+    });
 
     const MAX_WS_CLIENTS = 100;
 
@@ -21178,6 +21204,17 @@ function onServerBuild(serverBuild) {
 }
 
 // ── WebSocket ──
+// A card push as its changed fields (sessionPatch — card-push.ts, dashboard perf 2026-11-24): this page's copy of the
+// card with the changed fields set and the ones that left removed, as a new object like a whole push. Null when this
+// page holds no copy: the card's next whole push or the board poll brings it.
+function patchedSession(held, msg) {
+  if (!held) return null;
+  var merged = Object.assign({}, held, msg.set || {});
+  var gone = Array.isArray(msg.unset) ? msg.unset : [];
+  for (var i = 0; i < gone.length; i++) delete merged[gone[i]];
+  return merged;
+}
+
 function connectWs() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(proto + '//' + location.host + '/ws/dashboard');
@@ -21201,6 +21238,12 @@ function connectWs() {
   ws.onmessage = function(ev) {
     try {
       const msg = JSON.parse(ev.data);
+      // A card's changed fields: the card they make goes down the sessionUpdated path below, like a whole push.
+      if (msg.type === 'sessionPatch') {
+        msg.session = patchedSession(_sessionCache[msg.key], msg);
+        if (!msg.session) return;
+        msg.type = 'sessionUpdated';
+      }
       // The server's build, first on every connection (build skew).
       if (msg.type === 'hello') {
         onServerBuild(msg.build);
@@ -21235,7 +21278,9 @@ function connectWs() {
           // SSOT 2026-10-29 T5: the work no task got rides with the list.
           if ('tasksOutside' in msg) _sessionCache[msg.sessionKey].tasksOutside = msg.tasksOutside || undefined;
         }
-        loadSessions();
+        // The card redraws from that copy. Not a board poll: every TodoWrite of any session made every open tab fetch
+        // the whole board, and the server build it for each (dashboard perf 2026-11-24).
+        if (_cardHost[msg.sessionKey]) refreshCard(msg.sessionKey);
         // The panel repaints through the node it shows: the cache now holds the
         // main agent's new list, and a subagent's panel reads its own (spec 12).
         if (panelOpen && panelSessionKey === msg.sessionKey) repaintPanelSession();

@@ -239,6 +239,26 @@ describe('FollowupQueue persistence boundary', () => {
 
     expect(queue.list(SESSION)[0].state).toBe('queued');
   });
+
+  it('sessionSnapshot() is that one session of snapshot(), as a defensive clone (dashboard perf 2026-11-24)', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    queue.enqueue(OTHER_SESSION, event({ ts: '1.2' }));
+    queue.beginTurn(OTHER_SESSION);
+    queue.freeze(OTHER_SESSION, 'stopped');
+
+    for (const key of [SESSION, OTHER_SESSION]) {
+      expect(queue.sessionSnapshot(key)).toEqual(queue.snapshot().sessions.find((s) => s.sessionKey === key));
+    }
+    expect(queue.sessionSnapshot('C1:never')).toBeUndefined();
+
+    const copy = queue.sessionSnapshot(SESSION);
+    if (!copy) throw new Error('missing session');
+    copy.items[0].state = 'cancelled';
+    copy.turnEpoch = 99;
+    expect(queue.list(SESSION)[0].state).toBe('queued');
+    expect(queue.sessionSnapshot(SESSION)?.turnEpoch).toBe(0);
+  });
 });
 
 describe('FollowupQueue constructor validation (fail closed, never silently repaired)', () => {
