@@ -255,9 +255,12 @@ describe('LocalProcessMonitor.inspect — one process in depth, a snapshot', () 
     await new Promise((r) => setTimeout(r, 5));
     const late = ask();
     tick(11_000);
+    const started = inspectProcess.mock.calls.length;
     hold();
     expect((await busy).ok).toBe(true);
     expect(await late).toEqual({ ok: false, reason: 'busy' });
+    // Turned away before it ran: the inspector (ps, lsof, socket tables) is never called for it.
+    expect(inspectProcess.mock.calls.length).toBe(started);
   });
 
   it('detail reads run one at a time on a node (a burst of clicks does not multiply ps / lsof)', async () => {

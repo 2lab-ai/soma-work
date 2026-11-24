@@ -552,6 +552,15 @@ describe('P6 — the tree: guides, folds, CPU levels, where · what', () => {
     expect(CSS).toContain('.pp-cpu.is-hot .pp-v, .pp-cpu-sum.is-hot { color: color-mix(in srgb, var(--st-fail)');
     expect(CSS).toContain('.pp-table tr.pp-row.is-hot td { background:');
   });
+
+  it('in high contrast every meter is one solid system colour — the busy and hot rules do not outrank it', () => {
+    const forced = CSS.slice(CSS.indexOf('@media (forced-colors: active) {\n  .pp-bar'));
+    const rule = forced.slice(0, forced.indexOf('}') + 1);
+    for (const sel of ['.pp-bar > i', '.pp-cpu.is-busy .pp-bar > i', '.pp-cpu.is-hot .pp-bar > i']) {
+      expect(rule).toContain(sel);
+    }
+    expect(rule).toContain('background: CanvasText;');
+  });
 });
 
 describe('P7 — the detail: one process’s snapshot, read once', () => {
@@ -924,6 +933,37 @@ describe('P7 — the detail: one process’s snapshot, read once', () => {
     });
     expect(details()).toHaveLength(2);
     expect(control).toHaveBeenCalledWith('pause', 3, 'T3');
+  });
+
+  it('a body that never arrives after the headers is given up too — read as no answer, not as an HTTP 200', async () => {
+    vi.useFakeTimers();
+    try {
+      let n = 0;
+      const { e, el } = env((_url, init) => {
+        n++;
+        if (n === 1) {
+          // The headers came in time; the body read is aborted by the timeout.
+          return Promise.resolve({
+            status: 200,
+            json: () =>
+              new Promise((_resolve, reject) => {
+                init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+              }),
+          });
+        }
+        return Promise.resolve({ status: 200, json: async () => ({ ok: true, detail }) });
+      });
+      e.__get('_procs').key = 'C1:t1';
+      e.procsOpenDetail(2, S);
+      await vi.advanceTimersByTimeAsync(e.__get('PROCS_CONTROL_TIMEOUT_MS'));
+      expect(e.__get('_procDetail').status).toBe(-1);
+      expect(el._html).toContain('답하지 않았어요');
+      e.procDetailRetake();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(el._html).toContain('/opt/homebrew/bin/node');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('a read that never answers is given up after its timeout and says so; 다시 찍기 then shows the snapshot', async () => {

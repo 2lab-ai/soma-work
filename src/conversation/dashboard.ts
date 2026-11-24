@@ -7797,7 +7797,11 @@ html[data-pdragging], html[data-pdragging] * { cursor: grabbing !important; user
 .pp-pid, .pp-st { margin-right: 8px; color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
 .pp-table tr.pp-row.is-hot td { background: color-mix(in srgb, var(--st-fail) calc(10% * var(--chroma, 1)), transparent); }
 .pp-table tr.pp-row.is-hot td:first-child { box-shadow: inset 3px 0 0 var(--st-fail); }
-@media (forced-colors: active) { .pp-bar > i { background: CanvasText; } .pp-cores { border: 1px solid CanvasText; } }
+/* High contrast: one solid system colour for every meter — as specific as the busy and hot rules, so it wins. */
+@media (forced-colors: active) {
+  .pp-bar > i, .pp-cpu.is-busy .pp-bar > i, .pp-cpu.is-hot .pp-bar > i { background: CanvasText; }
+  .pp-cores { border: 1px solid CanvasText; }
+}
 /* The detail (a snapshot): sections of term · value, the command line in mono and wrapping. */
 .proc-detail-dialog .px-body { display: grid; gap: 14px; font-size: 13px; }
 .px-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
@@ -17044,7 +17048,10 @@ function procsOpenDetail(pid, start, key) {
   var timer = setTimeout(function() { ctrl.abort(); }, PROCS_CONTROL_TIMEOUT_MS);
   fetch('/api/dashboard/session/' + encodeURIComponent(key) + '/processes/' + pid + '/detail?start=' + encodeURIComponent(start), { signal: ctrl.signal })
     .then(function(r) {
-      return r.json().catch(function() { return null; }).then(function(j) { return { status: r.status, body: j }; });
+      // Headers can arrive before the timeout and the body after it: an aborted body read is no answer, not a 200.
+      return r.json().then(function(j) { return { status: r.status, body: j }; }, function() {
+        return ctrl.signal.aborted ? { status: -1, body: null } : { status: r.status, body: null };
+      });
     }, function() { return { status: -1, body: null }; })
     .then(function(res) {
       clearTimeout(timer);
