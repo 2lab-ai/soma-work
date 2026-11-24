@@ -70,6 +70,7 @@ describe('Dashboard — the per-user task queue (대기큐)', () => {
   let dashboard: any;
   let active: any;
   let interrupted: string[];
+  let running: any[];
   let startedIds: string[];
 
   beforeEach(async () => {
@@ -83,7 +84,7 @@ describe('Dashboard — the per-user task queue (대기큐)', () => {
     const { setActiveUserTaskQueue } = await import('../../user-task-queue/active');
     interrupted = [];
     startedIds = [];
-    let running = [{ sessionKey: 'C1:t1', channel: 'C1', threadTs: 't1', title: 'first task', startedAt: 5 }];
+    running = [{ sessionKey: 'C1:t1', channel: 'C1', threadTs: 't1', title: 'first task', startedAt: 5 }];
     const queue = new UserTaskQueue({
       store: { load: () => undefined, save: () => undefined },
       limitFor: () => 1,
@@ -152,6 +153,23 @@ describe('Dashboard — the per-user task queue (대기큐)', () => {
     ]);
     expect(b.userQueue[0]).toMatchObject({ ownerId: 'U1', ownerName: 'Zed', limit: 1, key: 'C1:t2' });
     expect(b.userQueue[0].running).toEqual([expect.objectContaining({ key: 'C1:t1', title: 'first task' })]);
+    // a shared dev host (2026-11-24): the second entry names what waits right ahead of it; the first has nothing ahead.
+    expect(b.userQueue[0].ahead).toBeUndefined();
+    expect(b.userQueue[1].ahead).toEqual({ title: 'second', count: 1 }); // t2's session title, as its own card shows it
+  });
+
+  it('a running task that holds a deploy lane carries its guard; 먼저 진행 on it is refused and says why', async () => {
+    running[0] = { ...running[0], guard: 'deploy:dev2' };
+    const b = await board();
+    expect(b.userQueue[0].running[0]).toMatchObject({ key: 'C1:t1', guard: 'deploy:dev2' });
+    const res = await injectWebServer({
+      method: 'POST',
+      url: '/api/dashboard/user-queue/q1/bypass',
+      headers: AUTH_HEADER,
+    });
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).error).toContain('deploy:dev2');
+    expect(interrupted).toEqual([]);
   });
 
   it('먼저 진행 stops the running task and starts the entry; the stopped one is first in line', async () => {
@@ -214,9 +232,22 @@ describe('Dashboard — the per-user task queue (대기큐)', () => {
     const queue = new UserTaskQueue({
       store: { load: () => undefined, save: () => undefined },
       limitFor: () => 1,
-      runningTasks: () => [{ sessionKey: 'D9:t1', channel: 'D9', threadTs: 't1', title: '비밀 프로젝트 X' }],
+      runningTasks: () => [
+        { sessionKey: 'D9:t1', channel: 'D9', threadTs: 't1', title: '비밀 프로젝트 X', guard: 'deploy:secret-env' },
+      ],
       start: () => undefined,
       interrupt: () => 'stopped' as const,
+    });
+    // A private request (a DM) waits ahead of the public one: the public card counts it, never names it.
+    queue.gate({
+      userId: 'U1',
+      sessionKey: 'D9:t3',
+      channel: 'D9',
+      threadTs: 't3',
+      text: '비밀 요청 Y',
+      message: {},
+      continuation: 'none',
+      admitted: false,
     });
     queue.gate({
       userId: 'U1',
@@ -230,8 +261,14 @@ describe('Dashboard — the per-user task queue (대기큐)', () => {
     });
     setActiveUserTaskQueue({ queue, limits: {} as any, release: vi.fn() });
     const b = await board();
-    expect(b.userQueue[0].running).toEqual([{ key: 'D9:t1', title: '비공개 작업' }]);
-    expect(JSON.stringify(b.userQueue)).not.toContain('비밀 프로젝트 X');
+    const pub = b.userQueue.find((q: any) => q.threadTs === 't2');
+    // Its guard is kept only as a generic marker: the lane would tell what the private task deploys.
+    expect(pub.running).toEqual([{ key: 'D9:t1', title: '비공개 작업', guard: '보호된 작업' }]);
+    expect(pub.ahead).toEqual({ title: '비공개 작업', count: 1 });
+    const json = JSON.stringify(pub);
+    expect(json).not.toContain('비밀 프로젝트 X');
+    expect(json).not.toContain('비밀 요청 Y');
+    expect(json).not.toContain('secret-env');
   });
 
   it('without the queue wired the board has no 대기큐', async () => {

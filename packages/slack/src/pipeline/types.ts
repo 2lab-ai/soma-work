@@ -260,6 +260,12 @@ export interface MessageEvent {
      * the message is gated like any other.
      */
     userTaskEntryId?: string;
+    /**
+     * The host held this event until its owner had a free slot (`UserTaskQueue.hasFreeSlot` — pr-watch's settled
+     * delivery): the per-user task queue lets it through instead of lining it up as a person's request, where it would
+     * outlive its own staleness checks (a merged PR, a closed session).
+     */
+    userTaskReady?: boolean;
   };
   files?: Array<{
     id: string;

@@ -67,6 +67,8 @@ export interface SyntheticMessageEvent {
      * drops gives it back while that goal and epoch are still live.
      */
     goalContinuationSpent?: { goalId: string; epoch: number };
+    /** Held by the host until its owner had a free slot (pr-watch): the per-user task queue lets it through. */
+    userTaskReady?: boolean;
   };
 }
 

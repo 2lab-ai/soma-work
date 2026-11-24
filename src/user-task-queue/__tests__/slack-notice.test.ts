@@ -80,3 +80,34 @@ describe('the other notices', () => {
     expect(parseQueueActionValue(undefined)).toBeUndefined();
   });
 });
+
+// a shared dev host (2026-11-24): two entries of one person both read "[running task] 다음" — the second did not say that
+// another waited ahead of it.
+describe('a second place names what is ahead of it', () => {
+  it('first place: the running task ends, then this one starts', () => {
+    const n = buildQueuedNotice({ entryId: 'e1', position: 1, limit: 1, running: [{ title: 'A' }], waitingCount: 1 });
+    const body = JSON.stringify(n.blocks);
+    expect(body).toContain('그 작업이 끝나면 이 요청을 자동으로 시작합니다');
+    expect(body).not.toContain('앞에서 기다리는 작업');
+  });
+
+  it('second place: the running task, then the one right ahead, then this one', () => {
+    const n = buildQueuedNotice({
+      entryId: 'e2',
+      position: 2,
+      limit: 1,
+      running: [{ title: 'A' }],
+      waitingCount: 2,
+      ahead: { title: 'B', link: 'https://x/b' },
+    });
+    const body = JSON.stringify(n.blocks);
+    expect(body).toContain('앞에서 기다리는 작업 1개 — 바로 앞: <https://x/b|B>');
+    expect(body).toContain('진행 중인 작업과 앞에서 기다리는 작업이 차례로 끝나면');
+    expect(body).not.toContain('그 작업이 끝나면 이 요청을');
+  });
+
+  it('a closed thread: the notice says the session ended, not that someone cancelled', () => {
+    expect(buildCancelledNotice('closed').text).toContain('세션이 종료돼');
+    expect(buildCancelledNotice().text).toContain('대기를 취소했습니다');
+  });
+});

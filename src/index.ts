@@ -271,6 +271,7 @@ import type { ConversationSession } from './types';
 import { productionSettingsRegistry } from './user-settings-registry-production';
 import { getActiveUserTaskQueue, setActiveUserTaskQueue } from './user-task-queue/active';
 import { createUserTaskQueueHost } from './user-task-queue/host';
+import { prWatchDeliveryPorts } from './user-task-queue/pr-watch-ports';
 import { registerUserTaskQueueActions } from './user-task-queue/slack-surface';
 import { setActiveWorkQueueHost, WorkQueueHost } from './work-queue/host';
 import { waitsOnHost } from './work-queue/host-wait';
@@ -2196,26 +2197,13 @@ async function start() {
       // A host turn is injected only into a settled session — a synthetic turn that meets a held dispatch slot is
       // dropped, and onIdle fires before the slot is released (#929 review). Dashboard tasks have no thread: gone.
       const delivery = createSettledDelivery({
-        state: (sessionKey) => {
-          const s = prWatchRegistry.getSessionByKey(sessionKey);
-          if (!s?.channelId || s.terminated) return 'gone';
-          if (s.activityState && s.activityState !== 'idle') return 'busy';
-          return slackHandler.isHostTurnFree(s.channelId, s.threadTs) ? 'ready' : 'busy';
-        },
-        inject: async (sessionKey, text) => {
-          const s = prWatchRegistry.getSessionByKey(sessionKey);
-          if (!s?.channelId) return;
-          await messageInjector({
-            user: s.ownerId,
-            channel: s.channelId,
-            thread_ts: s.threadTs,
-            ts: `${Date.now() / 1000}`,
-            text,
-            synthetic: true,
-            skipDispatch: true,
-            routeContext: { skipAutoBotThread: true },
-          });
-        },
+        // The per-user task queue: a CI or review message of another task of the owner's waits here — where a merged
+        // PR or a closed session still drops it — until the owner has a free slot, which it reserves as it is sent.
+        ...prWatchDeliveryPorts({
+          getSession: (sessionKey) => prWatchRegistry.getSessionByKey(sessionKey) ?? undefined,
+          isHostTurnFree: (channel, threadTs) => slackHandler.isHostTurnFree(channel, threadTs),
+          inject: (event) => messageInjector(event),
+        }),
         logger,
       });
       prWatchDelivery = delivery;

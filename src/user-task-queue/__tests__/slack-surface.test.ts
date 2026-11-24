@@ -90,6 +90,27 @@ describe('createUserTaskSlackNotifier', () => {
     expect(JSON.stringify(slackApi.updateMessage.mock.calls[0][3])).toContain('<https://slack/C1/1.0|첫 일>');
   });
 
+  it('a private request waiting ahead is counted in a public notice, never named or linked', async () => {
+    const slackApi = api();
+    const notifier = createUserTaskSlackNotifier({
+      slackApi,
+      isPrivateChannel: (c) => c.startsWith('D'),
+      queue: () => ({ setNotice: vi.fn(), viewFor: () => ({ waiting: [] }) as any, entry: () => undefined }),
+    });
+    notifier.queued(entry, {
+      position: 2,
+      limit: 1,
+      running: [{ sessionKey: 'C1:1.0', channel: 'C1', threadTs: '1.0', title: '첫 일' }],
+      ahead: { ...entry, id: 'e0', sessionKey: 'D3:4.0', channel: 'D3', threadTs: '4.0', preview: 'DM의 비밀 요청' },
+    });
+    await flush();
+    const body = JSON.stringify(slackApi.postMessage.mock.calls[0][2].blocks);
+    expect(body).toContain('앞에서 기다리는 작업 1개');
+    expect(body).toContain('비공개 작업');
+    expect(body).not.toContain('DM의 비밀 요청');
+    expect(body).not.toContain('https://slack/D3');
+  });
+
   it('a private task is not named in another thread: no title, no link', async () => {
     const slackApi = api();
     const notifier = createUserTaskSlackNotifier({

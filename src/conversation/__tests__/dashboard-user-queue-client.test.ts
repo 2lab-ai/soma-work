@@ -69,22 +69,59 @@ describe('uqSplitWaiting', () => {
 describe('uqCardOf', () => {
   const { uqCardOf } = load<any>(['uqCardOf', 'uqCardKey', 'uqSibling'], { SELF_INSTANCE_NAME: 'dev' });
 
-  it('a waiting request: 대기중 · n번째, what runs before it, and both buttons', () => {
-    const card = uqCardOf(item({ position: 2 }), undefined);
+  it('first in line: whose it is, that it starts when the running task ends, and both buttons', () => {
+    const card = uqCardOf(item(), undefined);
     expect(card).toMatchObject({
       id: 'uq:q1',
       title: '두 번째 일',
       status: 'idle',
-      statusText: '대기중 · 2번째',
+      statusText: '대기중 · 1번째',
       since: 1000,
       bodyMode: 'steps',
       primary: { id: 'uq-bypass', label: '먼저 진행' },
       actions: [{ id: 'uq-cancel', label: '대기 취소' }],
     });
-    expect(card.summary).toContain('동시 1개');
-    expect(card.summary).toContain('첫 일 다음');
-    expect(JSON.stringify(card.details)).toContain('진행 중: 첫 일');
-    expect(JSON.stringify(card.details)).toContain('멈춘 작업은 끝난 뒤 이어서');
+    expect(card.summary).toBe('Zed · 다음 차례 — 첫 일 끝나면 바로 시작');
+    const details = JSON.stringify(card.details);
+    expect(details).toContain('진행 중: 첫 일');
+    expect(details).toContain('끝나면 이 작업 시작');
+    expect(details).toContain('한 번에 1개');
+    expect(details).toContain('먼저 진행: 첫 일을(를) 멈추고 이 작업을 바로 시작');
+    expect(details).toContain('멈춘 작업은 이 작업이 끝난 뒤 이어서');
+  });
+
+  // a shared dev host (2026-11-24): the second entry read "첫 일 다음" too — as if nothing waited ahead of it.
+  it('second in line: what waits right ahead of it, not "next after the running task"', () => {
+    const card = uqCardOf(item({ entryId: 'q2', position: 2, ahead: { title: '두 번째 일', count: 1 } }), undefined);
+    expect(card.statusText).toBe('대기중 · 2번째');
+    expect(card.summary).toBe('Zed · 앞에 1개 먼저 — 바로 앞: 두 번째 일');
+    const details = JSON.stringify(card.details);
+    expect(details).toContain('끝나면 앞 순서부터');
+    expect(details).toContain('앞에서 기다림: 두 번째 일');
+    expect(details).not.toContain('끝나면 이 작업 시작');
+    const third = uqCardOf(item({ entryId: 'q3', position: 3, ahead: { title: 'B', count: 2 } }), undefined);
+    expect(JSON.stringify(third.details)).toContain('앞에서 기다림: B 외 1개');
+  });
+
+  // #1413 review: the card names the task 먼저 진행 will stop as the server picked it (the newest unguarded one).
+  it('names the task the server marked as the one 먼저 진행 stops', () => {
+    const card = uqCardOf(
+      item({
+        // Board order is not newest-first: the marked one comes second here.
+        running: [
+          { key: 'C1:b', title: '오래된 작업' },
+          { key: 'C1:a', title: '새 작업', stops: true },
+        ],
+      }),
+      undefined,
+    );
+    expect(JSON.stringify(card.details)).toContain('먼저 진행: 새 작업을(를) 멈추고');
+  });
+
+  it('a running task that may not be stopped (a deploy lane): 먼저 진행 is inert and says why', () => {
+    const card = uqCardOf(item({ running: [{ key: 'C1:t1', title: '배포', guard: 'deploy:dev2' }] }), undefined);
+    expect(card.primary.disabled).toContain('deploy:dev2');
+    expect(JSON.stringify(card.details)).toContain('먼저 진행 불가');
   });
 
   it('the thread’s own title wins when it has a session', () => {
@@ -94,6 +131,7 @@ describe('uqCardOf', () => {
   it('a stopped task says it carries on; one on its way has no buttons', () => {
     const resume = uqCardOf(item({ kind: 'resume' }), undefined);
     expect(resume.statusText).toBe('이어서 하기 대기 · 1번째');
+    expect(resume.summary).toBe('Zed · 멈춘 작업 — 차례가 오면 멈춘 지점부터 이어서');
     const admitted = uqCardOf(item({ state: 'admitted', position: 0 }), undefined);
     expect(admitted.statusText).toBe('시작 중');
     expect(admitted.primary).toBeUndefined();
@@ -120,7 +158,7 @@ describe('uqCardOf', () => {
   it('a sibling instance’s entry shows no buttons here; no limit reads 무제한', () => {
     const card = uqCardOf(item({ environment: { instanceName: 'main' }, limit: null }), undefined);
     expect(card.primary).toBeUndefined();
-    expect(card.summary).toContain('무제한');
+    expect(JSON.stringify(card.details)).toContain('한 번에 무제한');
   });
 });
 

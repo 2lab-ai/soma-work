@@ -100,6 +100,9 @@ export function createUserTaskSlackNotifier(deps: UserTaskSlackNotifierDeps): Us
     queued(entry, ctx) {
       const job = (async () => {
         const running = await Promise.all(ctx.running.map((t) => noticeTask(t, entry.channel)));
+        const ahead = ctx.ahead
+          ? await noticeTask({ ...ctx.ahead, title: ctx.ahead.preview }, entry.channel)
+          : undefined;
         const waitingCount = deps
           .queue()
           ?.viewFor(entry.userId)
@@ -110,6 +113,7 @@ export function createUserTaskSlackNotifier(deps: UserTaskSlackNotifierDeps): Us
           limit: ctx.limit,
           running,
           waitingCount: waitingCount ?? ctx.position,
+          ahead,
         });
         const posted = await deps.slackApi.postMessage(entry.channel, notice.text, {
           threadTs: entry.threadTs,
@@ -144,8 +148,10 @@ export function createUserTaskSlackNotifier(deps: UserTaskSlackNotifierDeps): Us
       deferredBy.delete(entry.id);
       rewrite(entry, async () => buildStartedNotice(how, deferred ? await deferred : undefined), 'started notice');
     },
-    cancelled(entry) {
+    cancelled(entry, why) {
       if (entry.kind === 'resume') {
+        // Its session was closed: nothing to carry on, and nothing to say in a thread that ended.
+        if (why === 'closed') return;
         void post(
           entry.channel,
           entry.threadTs,
@@ -165,7 +171,7 @@ export function createUserTaskSlackNotifier(deps: UserTaskSlackNotifierDeps): Us
         );
         return;
       }
-      rewrite(entry, () => buildCancelledNotice(), 'cancelled notice');
+      rewrite(entry, () => buildCancelledNotice(why), 'cancelled notice');
     },
     deferred(victim, first) {
       // Named in the first one's notice (its rewrite waits for this); the first one named in the stopped thread —
@@ -185,6 +191,8 @@ const REFUSAL_TEXT: Record<QueueActionRefusal, string> = {
   'not-found': '이 대기 항목은 이미 없습니다 — 시작됐거나 취소됐습니다.',
   'not-waiting': '이 작업은 이미 시작됐습니다.',
   forbidden: '이 작업을 요청한 사람(또는 관리자)만 조작할 수 있습니다.',
+  protected:
+    '진행 중인 작업이 배포·QA 레인(또는 환경 작업)을 잡고 있어 중간에 멈출 수 없습니다 — 그 작업이 끝나면 이 요청이 자동으로 시작합니다.',
 };
 
 export interface UserTaskQueueActionDeps {
