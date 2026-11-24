@@ -37,6 +37,8 @@ const KNOB = [
   'tqStepFromDrag',
   'tqKnobSvg',
   'tqRow',
+  'tqCpuLabel',
+  'tqCpuHtml',
   'esc',
   'escAttr',
 ];
@@ -238,5 +240,58 @@ describe('the tab', () => {
   it('the shipped script has no template holes', () => {
     expect(TASK_QUEUE_CLIENT_JS).not.toContain('${');
     expect(TASK_QUEUE_CLIENT_JS).not.toContain('`');
+  });
+});
+
+describe('the CPU cap', () => {
+  it('each row picks the cap on one of the person’s tasks: 기본값 (100%), the choices, 무제한; what applies now is said', () => {
+    const k = load<any>(KNOB);
+    k.setTq({ cpuChoices: [50, 100, 200, 400, 800] });
+    const html = k.tqCpuHtml({ id: 'U1', name: 'Alice', cpu: { limit: 200, setting: 200, defaultLimit: 100 } }, true);
+    expect(html).toContain('<option value="">기본값 (100%)</option>');
+    expect(html).toContain('<option value="200" selected>200%</option>');
+    expect(html).toContain('<option value="unlimited">무제한</option>');
+    expect(html).toContain('onchange="tqCpuChange(this)"');
+    expect(html).toContain('<span>지금 200%</span>');
+    expect(html).toContain('aria-label="Alice 작업 하나의 CPU 한도"');
+    // An admin at the default: 무제한; without admin mode the choice is inert.
+    const admin = k.tqCpuHtml(
+      { id: 'U2', name: 'Admin', cpu: { limit: null, setting: null, defaultLimit: null } },
+      false,
+    );
+    expect(admin).toContain('<option value="" selected>기본값 (무제한)</option>');
+    expect(admin).toContain('disabled');
+    expect(admin).not.toContain('onchange');
+    // No cap wiring: nothing.
+    expect(k.tqCpuHtml({ id: 'U3', name: 'x' }, true)).toBe('');
+  });
+
+  it('a change writes the cap (null for 기본값, a number, or unlimited) and says what it saved', async () => {
+    const writes: Array<[string, string, unknown]> = [];
+    let status = '';
+    const k = load<any>([...KNOB, 'tqUser', 'tqCpuChange'], {
+      apiWrite: async (m: string, u: string, b: unknown) => {
+        writes.push([m, u, b]);
+        return {
+          ok: true,
+          data: { user: { id: 'U1', name: 'Alice', cpu: { limit: 400, setting: 400, defaultLimit: 100 } } },
+        };
+      },
+      tqStatus: (t: string) => {
+        status = t;
+      },
+      tqRefreshRow: () => {},
+    });
+    k.setTq({ users: [{ id: 'U1', name: 'Alice' }] });
+    const sel = (value: string) => ({ value, getAttribute: () => 'U1' });
+    await k.tqCpuChange(sel('400'));
+    await k.tqCpuChange(sel(''));
+    await k.tqCpuChange(sel('unlimited'));
+    expect(writes).toEqual([
+      ['PUT', '/api/settings/cpu-limits/U1', { cpu: 400 }],
+      ['PUT', '/api/settings/cpu-limits/U1', { cpu: null }],
+      ['PUT', '/api/settings/cpu-limits/U1', { cpu: 'unlimited' }],
+    ]);
+    expect(status).toContain('Alice: 작업 하나의 CPU 한도 400%');
   });
 });

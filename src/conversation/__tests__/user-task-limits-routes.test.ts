@@ -166,4 +166,61 @@ describe('user task limit routes (작업 큐 tab)', () => {
     expect((await call('PUT', '/api/settings/task-limits/U_ALICE', noMode, { limit: 5 })).status).toBe(403);
     expect(limits.limitFor('U_ALICE')).toBe(1);
   });
+  describe('the CPU cap on one task (PUT /api/settings/cpu-limits/:userId)', () => {
+    let caps: any;
+    beforeEach(async () => {
+      const mod = await import('../../process-monitor/cpu-limits');
+      caps = new mod.UserCpuLimits(root, (id: string) => id === 'U_ADMIN');
+      mod.setActiveCpuLimits(caps);
+    });
+    afterEach(async () => {
+      (await import('../../process-monitor/cpu-limits')).setActiveCpuLimits(undefined);
+    });
+
+    it('the rows carry each person’s cap: 100% by default, none for an admin; the choices come along', async () => {
+      const res = await call('GET', '/api/settings/task-limits', await signIn('U_ADMIN'));
+      expect(res.body.cpuChoices).toEqual([50, 100, 200, 400, 800]);
+      const byId = Object.fromEntries(res.body.users.map((u: any) => [u.id, u.cpu]));
+      expect(byId.U_ADMIN).toEqual({ limit: null, setting: null, defaultLimit: null });
+      expect(byId.U_ALICE).toEqual({ limit: 100, setting: null, defaultLimit: 100 });
+    });
+
+    it('an admin in admin mode sets it, makes it unlimited, puts it back; the file keeps it', async () => {
+      const h = { ...(await signIn('U_ADMIN')), 'x-admin-mode': 'on' };
+      const set = await call('PUT', '/api/settings/cpu-limits/U_ALICE', h, { cpu: 200 });
+      expect(set.status).toBe(200);
+      expect(set.body.user.cpu).toEqual({ limit: 200, setting: 200, defaultLimit: 100 });
+      expect(caps.capFor('U_ALICE')).toBe(200);
+      const saved = JSON.parse(fs.readFileSync(path.join(root, 'user-cpu-limits.json'), 'utf8'));
+      expect(saved).toEqual({ version: 1, limits: { U_ALICE: 200 } });
+      expect((await call('PUT', '/api/settings/cpu-limits/U_ALICE', h, { cpu: 'unlimited' })).body.user.cpu).toEqual({
+        limit: null,
+        setting: 'unlimited',
+        defaultLimit: 100,
+      });
+      expect((await call('PUT', '/api/settings/cpu-limits/U_ALICE', h, { cpu: null })).body.user.cpu.limit).toBe(100);
+    });
+
+    it('refuses what the page cannot send, a person who is not an admin, and a change without admin mode', async () => {
+      const h = { ...(await signIn('U_ADMIN')), 'x-admin-mode': 'on' };
+      for (const cpu of [0, 24, 6401, 150.5, '100', true]) {
+        expect((await call('PUT', '/api/settings/cpu-limits/U_ALICE', h, { cpu })).status).toBe(400);
+      }
+      expect(
+        (await call('PUT', '/api/settings/cpu-limits/U_ALICE', await signIn('U_ALICE'), { cpu: 800 })).status,
+      ).toBe(403);
+      expect(
+        (await call('PUT', '/api/settings/cpu-limits/U_ALICE', await signIn('U_ADMIN'), { cpu: 800 })).status,
+      ).toBe(403);
+      expect(caps.capFor('U_ALICE')).toBe(100);
+    });
+
+    it('answers 503 when caps are not wired on this instance', async () => {
+      (await import('../../process-monitor/cpu-limits')).setActiveCpuLimits(undefined);
+      const h = { ...(await signIn('U_ADMIN')), 'x-admin-mode': 'on' };
+      expect((await call('PUT', '/api/settings/cpu-limits/U_ALICE', h, { cpu: 200 })).status).toBe(503);
+      const res = await call('GET', '/api/settings/task-limits', h);
+      expect(res.body.users[1]).not.toHaveProperty('cpu');
+    });
+  });
 });

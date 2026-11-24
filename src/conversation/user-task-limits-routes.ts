@@ -2,8 +2,11 @@
  * The settings page 작업 큐 tab's HTTP surface: how many tasks (threads) each person may run at once — the per-user
  * task queue's limit (src/user-task-queue). 1 by default, no limit for an admin; an admin turns a person's knob.
  *
- *   GET /api/settings/task-limits          → { max, users: [{ id, name, admin, limit, setting, defaultLimit, running, waiting }] }
+ *   GET /api/settings/task-limits          → { max, cpuChoices, users: [{ id, name, admin, limit, setting, defaultLimit,
+ *                                             running, waiting, cpu: { limit, setting, defaultLimit } }] }
  *   PUT /api/settings/task-limits/:userId  { limit: 1..max | 'unlimited' | null }  → { user } (null = back to the default)
+ *   PUT /api/settings/cpu-limits/:userId   { cpu: percent | 'unlimited' | null }    → { user } — the CPU cap on one of the
+ *                                             person's tasks (100% = one core; 100 by default, none for an admin)
  *
  * `limit`/`defaultLimit` are what applies (`null` = no limit); `setting` is the admin's choice (`null` = none).
  * Only an admin signed in with Slack reads it; a change needs admin mode and CSRF (`namedAdmin`). A change starts
@@ -12,6 +15,12 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { isAdminUser } from '../admin-utils';
 import { Logger } from '../logger';
+import {
+  CPU_CAP_CHOICES,
+  type CpuCapSetting,
+  getActiveCpuLimits,
+  parseCpuCapSetting,
+} from '../process-monitor/cpu-limits';
 import { getActiveUserTaskQueue } from '../user-task-queue/active';
 import { MAX_TASK_LIMIT, parseTaskLimitSetting, type TaskLimitSetting } from '../user-task-queue/store';
 import { UNLIMITED } from '../user-task-queue/user-task-queue';
@@ -38,6 +47,8 @@ export interface TaskLimitRow {
   defaultLimit: number | null;
   running: number;
   waiting: number;
+  /** The CPU cap on one of the person's tasks (percent of one core; `null` = none). Absent when caps are not wired. */
+  cpu?: { limit: number | null; setting: CpuCapSetting | null; defaultLimit: number | null };
 }
 
 const asLimit = (n: number): number | null => (n === UNLIMITED ? null : n);
@@ -55,7 +66,14 @@ function rowOf(id: string, name: string): TaskLimitRow | null {
     defaultLimit: asLimit(active.limits.defaultFor(id)),
     running: view.running.length,
     waiting: view.waiting.filter((w) => w.state === 'waiting').length,
+    ...cpuOf(id),
   };
+}
+
+function cpuOf(id: string): Pick<TaskLimitRow, 'cpu'> {
+  const caps = getActiveCpuLimits();
+  if (!caps) return {};
+  return { cpu: { limit: caps.capFor(id), setting: caps.settingFor(id) ?? null, defaultLimit: caps.defaultFor(id) } };
 }
 
 export function registerUserTaskLimitsRoutes(
@@ -75,8 +93,42 @@ export function registerUserTaskLimitsRoutes(
     const users = knownUsers()
       .map((u) => rowOf(u.id, u.name))
       .filter((r): r is TaskLimitRow => r !== null);
-    reply.send({ max: MAX_TASK_LIMIT, users });
+    reply.send({ max: MAX_TASK_LIMIT, cpuChoices: CPU_CAP_CHOICES, users });
   });
+
+  server.put<{ Params: { userId: string }; Body: { cpu?: unknown } }>(
+    '/api/settings/cpu-limits/:userId',
+    write,
+    async (request, reply) => {
+      const admin = namedAdmin(request, reply, true, REFUSAL);
+      if (!admin) return;
+      const caps = getActiveCpuLimits();
+      if (!caps) {
+        reply.status(503).send({ error: 'CPU 한도가 꺼져 있습니다 (이 인스턴스에서 시작되지 않음)' });
+        return;
+      }
+      const userId = String(request.params.userId || '').trim();
+      if (!userId || userId.length > 64) {
+        reply.status(400).send({ error: '사용자 id가 필요합니다' });
+        return;
+      }
+      const raw = request.body?.cpu;
+      const setting = raw === null ? undefined : parseCpuCapSetting(raw);
+      if (raw !== null && setting === undefined) {
+        reply.status(400).send({ error: "cpu는 25~6400(%), 'unlimited', 또는 null(기본값)입니다" });
+        return;
+      }
+      try {
+        caps.set(userId, setting);
+      } catch (error) {
+        reply.status(500).send({ error: (error as Error)?.message ?? 'CPU 한도를 저장하지 못했습니다' });
+        return;
+      }
+      logger.info('CPU cap changed', { userId, setting: setting ?? 'default', by: admin });
+      const name = knownUsers().find((u) => u.id === userId)?.name ?? userId;
+      reply.send({ ok: true, user: rowOf(userId, name) });
+    },
+  );
 
   server.put<{ Params: { userId: string }; Body: { limit?: unknown } }>(
     '/api/settings/task-limits/:userId',

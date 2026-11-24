@@ -3,12 +3,14 @@
  * process uses, sampled with the real `ps`, paused and resumed with real signals. Runs on macOS and Linux (CI).
  */
 import { type ChildProcess, execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createTrackedClaudeProcessSpawner,
   getClaudeChildProcessRegistry,
 } from '../../agent-runtime/claude-child-process-registry';
-import { LocalProcessMonitor, runReadOnly } from '../index';
+import { LocalProcessMonitor, parseProcStatCpuSeconds, runReadOnly } from '../index';
+import { parseCpuTime } from '../ps-table';
 import type { SessionProcessDetail } from '../types';
 
 const posix = process.platform === 'darwin' || process.platform === 'linux';
@@ -201,4 +203,59 @@ describe.skipIf(!posix)('process monitor on the real OS', () => {
       off();
     }
   });
+  it('holds a task over its CPU cap to the cap: a spinning child at ~100% runs at about 50% under a 50% cap', async () => {
+    const spawn = createTrackedClaudeProcessSpawner(undefined, { sessionKey: 'capped-session' });
+    child = spawn({
+      command: '/bin/sh',
+      args: ['-c', `"${process.execPath}" -e "for(;;){}" & sleep 63.73519 & wait`],
+      cwd: '/',
+      env: { PATH: '/bin:/usr/bin' },
+      signal: new AbortController().signal,
+    } as never) as unknown as ChildProcess;
+    const monitor = new LocalProcessMonitor({
+      nodeId: 'test-node',
+      roots: getClaudeChildProcessRegistry(),
+      runPs: (args) => runReadOnly('ps', args),
+      runCommand: runReadOnly,
+    });
+    monitor.setCpuCaps(() => 50);
+    const cpuOf = (pid: number): number => {
+      if (process.platform === 'linux') return parseProcStatCpuSeconds(readFileSync(`/proc/${pid}/stat`, 'utf8')) ?? 0;
+      return (
+        parseCpuTime(
+          execFileSync('ps', ['-o', 'time=', '-p', String(pid)])
+            .toString()
+            .trim(),
+        ) ?? 0
+      );
+    };
+    let spinnerPid = 0;
+    try {
+      // Two samples: the second measures the spinner at about one core — over the cap, so the cap starts holding it.
+      const spinner = await until(async () => {
+        const s = (await monitor.sample()).sessions.find((x) => x.sessionKey === 'capped-session');
+        return s?.processes.find((p) => p.name === 'node');
+      });
+      spinnerPid = spinner.pid;
+      await new Promise((r) => setTimeout(r, 1_200));
+      const metered = (await monitor.sample()).sessions.find((x) => x.sessionKey === 'capped-session');
+      expect(metered).toMatchObject({ cpuCapPercent: 50, throttling: true });
+      // Let the share settle, then measure 4 s of the spinner's own CPU time.
+      await new Promise((r) => setTimeout(r, 1_500));
+      const t0 = Date.now();
+      const c0 = cpuOf(spinner.pid);
+      await new Promise((r) => setTimeout(r, 4_000));
+      const rate = ((cpuOf(spinner.pid) - c0) / ((Date.now() - t0) / 1000)) * 100;
+      expect(rate).toBeGreaterThan(20);
+      expect(rate).toBeLessThan(75);
+    } finally {
+      monitor.dispose();
+    }
+    // Disposed: nothing is left held.
+    expect(
+      execFileSync('ps', ['-o', 'stat=', '-p', String(spinnerPid)])
+        .toString()
+        .trim(),
+    ).not.toMatch(/^T/);
+  }, 20_000);
 });

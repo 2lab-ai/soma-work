@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import type { TrackedClaudeRootInfo } from '../agent-runtime/claude-child-process-registry';
+import { CpuThrottler, createThrottleReader, type ReadThrottle } from './cpu-throttler';
 import type { ReadCwds } from './cwd-reader';
 import { createNodeCapacityReader, type RunCommand } from './node-capacity';
 import type { InspectProcess } from './process-inspector';
@@ -72,6 +73,11 @@ export interface ProcessMonitorDeps {
   readonly readCwds?: ReadCwds;
   /** Reads one process in depth for the detail view; none: `inspect` answers `unsupported`. */
   readonly inspectProcess?: InspectProcess;
+  /** The CPU throttler's per-period read (default: one `ps`, Linux `/proc` ticks over it). */
+  readonly readThrottle?: ReadThrottle;
+  /** The throttler's timers (tests). */
+  readonly setTimer?: (fn: () => void, ms: number) => unknown;
+  readonly clearTimer?: (handle: unknown) => void;
   /** Signal delivery; `process.kill` in production. */
   readonly kill?: (pid: number, signal: NodeJS.Signals) => void;
   readonly platform?: string;
@@ -171,6 +177,10 @@ export class LocalProcessMonitor implements ProcessHost {
   private static readonly INSPECT_QUEUE = 4;
   /** A read that waited longer than this is not started (the page gives up on it after 15 s). */
   private static readonly INSPECT_WAIT_MS = 10_000;
+  /** Holds a task's tree to its owner's CPU cap (`cpu-throttler.ts`). */
+  private readonly throttler: CpuThrottler;
+  /** Each session's CPU cap (percent of one core; `null` = none). Unset: no task is capped. */
+  private cpuCapFor: ((sessionKey: string) => number | null) | null = null;
 
   constructor(private readonly deps: ProcessMonitorDeps) {
     this.nodeId = deps.nodeId;
@@ -182,6 +192,15 @@ export class LocalProcessMonitor implements ProcessHost {
       deps.readCapacity ??
       createNodeCapacityReader({ nodeId: deps.nodeId, platform: this.platform, run: deps.runCommand });
     this.liveStartToken = deps.liveStartToken ?? psLiveStartToken;
+    this.throttler = new CpuThrottler({
+      kill: this.kill,
+      read: deps.readThrottle ?? createThrottleReader(deps.runPs, deps.readCpuSeconds),
+      now: this.now,
+      userPaused: (sessionKey, pid, startToken) => this.paused.get(sessionKey)?.get(pid)?.startToken === startToken,
+      setTimer: deps.setTimer,
+      clearTimer: deps.clearTimer,
+      logger: deps.logger,
+    });
     // Cleanup is live from the start, not from start(): control() works on an unstarted monitor too, and a pause it
     // makes must still be undone by an abort or a shutdown.
     this.unsubscribeAbort = deps.roots.onAbort((root) => this.resumeAfterAbort(root));
@@ -205,8 +224,18 @@ export class LocalProcessMonitor implements ProcessHost {
     this.timer = null;
   }
 
+  /**
+   * Where each session's CPU cap comes from (its owner's setting). `null`: no task is capped — everything held is
+   * continued. Applied from the next sample.
+   */
+  setCpuCaps(capFor: ((sessionKey: string) => number | null) | null): void {
+    this.cpuCapFor = capFor;
+    if (!capFor) this.throttler.update([], () => null);
+  }
+
   /** Stop the timer and detach from the registry — the monitor is going away (tests). */
   dispose(): void {
+    this.throttler.releaseAll();
     this.stop();
     this.unsubscribeAbort();
     this.unsubscribeShutdown?.();
@@ -218,6 +247,8 @@ export class LocalProcessMonitor implements ProcessHost {
    */
   resumeAllPaused(): void {
     this.shuttingDown = true;
+    // What the CPU cap holds goes first: it is only ever held for a fraction of a period.
+    this.throttler.releaseAll();
     const until = this.now() + LocalProcessMonitor.SHUTDOWN_BUDGET_MS;
     for (let i = 0; i < LocalProcessMonitor.SHUTDOWN_TRIES && this.paused.size > 0 && this.now() < until; i++) {
       for (const [sessionKey, mine] of this.paused) {
@@ -287,7 +318,7 @@ export class LocalProcessMonitor implements ProcessHost {
         const snapshot: NodeProcessSnapshot = {
           node,
           sampledAt: this.now(),
-          sessions: tree.sessions,
+          sessions: this.applyCpuCaps(tree.sessions),
           unattributed: tree.unattributed,
         };
         this.snapshot = snapshot;
@@ -355,6 +386,8 @@ export class LocalProcessMonitor implements ProcessHost {
     }
 
     const mine = this.paused.get(input.sessionKey) ?? new Map<number, PausedEntry>();
+    // A person's pause of a process the CPU cap holds: it is theirs now, never continued by the cap.
+    if (input.action === 'pause') this.throttler.forget(input.sessionKey, input.pid);
     if (input.action === 'pause') {
       mine.set(input.pid, { startToken: input.startToken, turn: this.turnOf.get(`${input.pid}:${input.startToken}`) });
     } else mine.delete(input.pid);
@@ -457,9 +490,42 @@ export class LocalProcessMonitor implements ProcessHost {
     };
   }
 
+  /**
+   * Hand the sample to the CPU throttler (a session over its owner's cap starts being metered) and say on each session
+   * what it is held to. A process the cap holds reads as running and `throttled` — it is not a pause: it runs part of
+   * every period, and its 일시중지 is still the person's own.
+   */
+  private applyCpuCaps(sessions: readonly SessionProcessDetail[]): SessionProcessDetail[] {
+    const capFor = this.cpuCapFor;
+    if (!capFor) return [...sessions];
+    this.throttler.update(sessions, capFor);
+    return sessions.map((s) => {
+      const cap = capFor(s.sessionKey);
+      const metered = this.throttler.meteredCap(s.sessionKey) !== null;
+      if (cap === null && !metered) return s;
+      const mine = this.paused.get(s.sessionKey);
+      const processes = metered
+        ? s.processes.map((p) =>
+            p.state === 'stopped' && mine?.get(p.pid)?.startToken !== p.startToken
+              ? { ...p, state: 'running' as const, throttled: true }
+              : p,
+          )
+        : s.processes;
+      return {
+        ...s,
+        processes,
+        stoppedCount: processes.filter((p) => p.state === 'stopped').length,
+        ...(cap !== null ? { cpuCapPercent: cap } : {}),
+        throttling: metered,
+      };
+    });
+  }
+
   /** An aborted turn must end: continue every process this monitor paused in that session. */
   private resumeAfterAbort(root: TrackedClaudeRootInfo): void {
     if (!root.sessionKey) return;
+    // The stop must land: nothing of the session stays held by the CPU cap.
+    this.throttler.release(root.sessionKey);
     this.abortedTurnIds.add(root.turnId);
     for (const check of this.pendingPauses) {
       if (check.sessionKey === root.sessionKey) check.abortedTurns.push(root.turnId);

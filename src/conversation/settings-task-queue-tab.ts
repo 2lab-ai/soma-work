@@ -7,6 +7,9 @@
  * keys, Page Up / Down (3 at a time), Home (1) and End (∞). It saves when the hand lets go (a short pause after the
  * wheel or a key), and says what it saved.
  *
+ * Each row also picks the CPU cap on one of that person's tasks (100% = one core; 100% by default, none for an admin):
+ * the process monitor holds a task over it to it with a duty cycle (src/process-monitor/cpu-throttler.ts).
+ *
  * Admins only (the tab is `adminOnly`; `user-task-limits-routes.ts` refuses everyone else). Turning needs admin mode.
  * Client script: String.raw, no `${…}` and no backticks (ships byte for byte).
  */
@@ -17,6 +20,7 @@ export const TASK_QUEUE_TAB_HTML = `<div slot="task-queue" data-tab="task-queue"
   </aside>
   <main>
     <p class="intro">사람마다 동시에 진행할 수 있는 작업(스레드) 수입니다. 이보다 많이 시키면 새 요청은 그 사람의 대기큐에 들어가고, 진행 중인 작업이 끝나면 자동으로 시작합니다. 기본은 1개, 관리자는 무제한입니다. 노브를 볼륨처럼 돌려 정하세요 — 위·오른쪽으로 끌거나 휠·화살표 키로 돌리고, 손을 떼면 저장됩니다. 끝까지 돌리면 ∞(무제한)입니다.</p>
+    <p class="intro">CPU 한도는 그 사람의 작업 하나가 쓸 수 있는 CPU입니다(100% = 코어 1개). 기본은 100%, 관리자는 무제한입니다. 작업의 프로세스 트리 전체가 한도를 넘으면 그 아래 프로세스를 아주 짧게 멈췄다 이어 가며 한도에 맞춥니다(Claude Code 자체는 멈추지 않습니다).</p>
     <div id="tq-status" class="status" role="status" aria-live="polite"></div>
     <section class="group" id="tq-body"><div class="notice">불러오는 중…</div></section>
   </main>
@@ -44,6 +48,8 @@ export const TASK_QUEUE_TAB_CSS = `
 .tq-pointer { stroke: var(--text); stroke-width: 3; stroke-linecap: round; transition: transform .12s ease-out; transform-origin: 38px 38px; }
 .tq-value { position: absolute; left: 0; right: 0; bottom: -2px; text-align: center; font-size: 14px; font-weight: 650; line-height: 18px; font-variant-numeric: tabular-nums; pointer-events: none; }
 .tq-knob.is-default .tq-fill { stroke: var(--text-tertiary); }
+.tq-cpu { font-size: 12px; color: var(--text-secondary); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.tq-cpu select { font: inherit; font-size: 12px; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text); }
 @media (prefers-reduced-motion: reduce) { .tq-fill, .tq-pointer { transition: none; } }
 `;
 
@@ -148,7 +154,50 @@ function tqRow(u, editable) {
     + tqKnobSvg(step) + '<span class="tq-value">' + (step > TQ_MAX ? '∞' : step) + '</span></div>'
     + '<div class="tq-who"><span class="tq-name">' + esc(name) + '</span>'
     + '<span class="tq-sub">' + esc(sub) + '</span>'
-    + '<span class="tq-set" id="tq-set-' + escAttr(u.id) + '">' + set + '</span></div></li>';
+    + '<span class="tq-set" id="tq-set-' + escAttr(u.id) + '">' + set + '</span>' + tqCpuHtml(u, editable) + '</div></li>';
+}
+// The CPU cap on one of the person's tasks: a choice (기본값 · 50% … · 무제한) and what applies now.
+function tqCpuLabel(v) {
+  return v === null || v === undefined || v === 'unlimited' ? '무제한' : v + '%';
+}
+function tqCpuHtml(u, editable) {
+  var c = u.cpu;
+  if (!c) return '';
+  var name = u.name || u.id;
+  var choices = (_tq && _tq.cpuChoices) || [50, 100, 200, 400, 800];
+  var cur = c.setting === null || c.setting === undefined ? '' : String(c.setting);
+  var opts = '<option value=""' + (cur === '' ? ' selected' : '') + '>기본값 (' + esc(tqCpuLabel(c.defaultLimit)) + ')</option>';
+  var seen = false;
+  for (var i = 0; i < choices.length; i++) {
+    var v = String(choices[i]);
+    if (v === cur) seen = true;
+    opts += '<option value="' + v + '"' + (v === cur ? ' selected' : '') + '>' + v + '%</option>';
+  }
+  // A cap set to a value the list does not offer (set through the API) still shows as itself.
+  if (cur && cur !== 'unlimited' && !seen) opts += '<option value="' + escAttr(cur) + '" selected>' + esc(cur) + '%</option>';
+  opts += '<option value="unlimited"' + (cur === 'unlimited' ? ' selected' : '') + '>무제한</option>';
+  return '<label class="tq-cpu">CPU 한도 <select data-user="' + escAttr(u.id) + '" aria-label="' + escAttr(name + ' 작업 하나의 CPU 한도') + '"'
+    + (editable ? ' onchange="tqCpuChange(this)"' : ' disabled title="관리자 모드를 켜야 바꿀 수 있습니다"') + '>' + opts + '</select>'
+    + '<span>지금 ' + esc(tqCpuLabel(c.limit)) + '</span></label>';
+}
+async function tqCpuChange(sel) {
+  var id = sel.getAttribute('data-user');
+  var u = tqUser(id);
+  var who = (u && u.name) || id;
+  var v = sel.value;
+  var cpu = v === '' ? null : v === 'unlimited' ? 'unlimited' : Number(v);
+  var r = await apiWrite('PUT', '/api/settings/cpu-limits/' + encodeURIComponent(id), { cpu: cpu });
+  if (!r.ok) {
+    tqStatus(who + ' CPU 한도를 저장하지 못했습니다 — ' + r.error, true);
+    tqRefreshRow(id);
+    return;
+  }
+  var row = r.data && r.data.user;
+  if (row && _tq && _tq.users) {
+    for (var i = 0; i < _tq.users.length; i++) if (_tq.users[i].id === id) _tq.users[i] = row;
+  }
+  tqStatus(who + ': 작업 하나의 CPU 한도 ' + tqCpuLabel(row && row.cpu ? row.cpu.limit : cpu) + (cpu === null ? ' (기본값)' : '') + '로 저장했습니다');
+  tqRefreshRow(id);
 }
 function tqBanner() {
   if (!adminModeOn()) {

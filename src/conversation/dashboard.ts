@@ -1317,6 +1317,8 @@ function procSignature(u: SessionProcessUsage, node?: NodeCapacity): string {
     // Unknown (no second sample yet) is not the empty gauge: -1, so the first reading pushes.
     load?.cpu == null ? -1 : gaugeStep(load.cpu),
     load?.mem == null ? -1 : gaugeStep(load.mem),
+    u.cpuCapPercent ?? '',
+    u.throttling ? 1 : 0,
   ].join('|');
 }
 
@@ -1397,6 +1399,8 @@ function procUsageField(key: string): { procUsage?: KanbanProcUsage } {
       stoppedCount: u.stoppedCount,
       cpuPercent: u.cpuPercent,
       rssBytes: u.rssBytes,
+      ...(u.cpuCapPercent !== undefined ? { cpuCapPercent: u.cpuCapPercent } : {}),
+      ...(u.throttling ? { throttling: true } : {}),
     },
   };
 }
@@ -7775,6 +7779,9 @@ html[data-pdragging], html[data-pdragging] * { cursor: grabbing !important; user
 .pp-hidden { margin-left: 6px; color: var(--text-tertiary); font-size: 11px; }
 .pp-where { margin-right: 8px; padding: 0 5px; border-radius: 4px; background: var(--border); color: var(--text-secondary); font-family: var(--mono, ui-monospace, monospace); font-size: 11px; }
 .pp-legend { margin: 0 0 6px; color: var(--text-tertiary); font-size: 11.5px; }
+.pp-cap { padding: 0 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-secondary); font-weight: 500; }
+.pp-cap.is-on { border-color: var(--st-wait); color: color-mix(in srgb, var(--st-wait) calc(100% * var(--chroma, 1)), var(--text)); }
+.pp-throttled { border: 1px solid var(--st-wait); background: transparent; }
 /* CPU: under 1% dim, 10%+ amber and bold, 100%+ (over one core) red with ▲ and the core count — never colour alone. */
 .pp-cpu, .pp-mem { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 2px 4px; min-width: 0; max-width: 100%; }
 .pp-bar { position: relative; flex: 0 0 100%; height: 3px; border-radius: 2px; background: var(--border); overflow: hidden; }
@@ -16962,6 +16969,8 @@ function panelProcsHtml(state, canControl) {
   var sum = ['프로세스 ' + toNum(sess.processCount) + '개', '<span class="pp-cpu-sum' + (procCpuLevel(sess.cpuPercent) ? ' is-' + procCpuLevel(sess.cpuPercent) : '') + '">CPU ' + procCpuText(sess.cpuPercent) + '</span>', '메모리 ' + procBytesText(sess.rssBytes)];
   if (toNum(sess.stoppedCount)) sum.push('<span class="pp-stopped">일시중지 ' + toNum(sess.stoppedCount) + '개</span>');
   if (!sess.rootAlive) sum.push('<span class="pi-muted">Claude Code는 끝났고 남은 프로세스</span>');
+  // The task's CPU cap (its owner's): while the tree is over it, its processes are held part of every moment.
+  if (toNum(sess.cpuCapPercent)) sum.push('<span class="pp-cap' + (sess.throttling ? ' is-on' : '') + '" title="' + escAttr('이 작업의 CPU 한도 — 넘으면 그 아래 프로세스를 아주 짧게 멈췄다 이어 가며 맞춰요 (Claude Code 자체는 멈추지 않아요)') + '">CPU 한도 ' + toNum(sess.cpuCapPercent) + '%' + (sess.throttling ? ' · 맞추는 중' : '') + '</span>');
   html += '<div class="pp-sum">' + sum.join('<span class="pi-dot" aria-hidden="true">&middot;</span>') + '</div>';
   var opens = st.body.commands === true;
   html += '<p class="pp-legend">CPU 100% = 코어 1개 · <span class="pp-cpu is-busy"><span class="pp-v">10%+</span></span> 바쁨 · <span class="pp-cpu is-hot"><span class="pp-v">▲ 100%+</span></span> 코어 1개 넘김'
@@ -16993,6 +17002,7 @@ function panelProcsHtml(state, canControl) {
       ? '<button type="button" class="pp-open" data-proc-open="' + toNum(p.pid) + '" data-start="' + start + '" title="PID ' + toNum(p.pid) + ' 상세 보기 (스냅샷)">' + esc(p.name || '?') + '</button>'
       : '<span class="pp-pname">' + esc(p.name || '?') + '</span>';
     var hidden = r.folded ? '<span class="pp-hidden">+' + r.sub.count + '개</span>' : '';
+    if (p.throttled) role += '<span class="pp-role pp-throttled" title="CPU 한도에 맞추느라 아주 짧게 멈췄다 이어 가는 중 — 일시중지가 아니에요">한도</span>';
     var cls = 'pp-row' + (stopped ? ' is-stopped' : '') + (lvl ? ' is-' + lvl : '') + (opens ? ' can-open' : '');
     html += '<tr class="' + cls + '" data-proc-row="' + toNum(p.pid) + '" data-start="' + start + '">'
       + '<td class="pp-name"><span class="pp-guide" aria-hidden="true">' + r.guide + '</span>' + fold + name + role + hidden + '</td>'

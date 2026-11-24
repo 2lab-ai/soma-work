@@ -184,6 +184,7 @@ import { acquirePidLock, releasePidLock } from './pid-lock';
 import { BUNDLED_PLUGINS } from './plugin/bundled';
 import { PluginManager } from './plugin/plugin-manager';
 import { startProcessMonitor } from './process-monitor';
+import { setActiveCpuLimits, UserCpuLimits } from './process-monitor/cpu-limits';
 import { getProjectMemoryStore, normalizeProjectSlug } from './project-memory-store';
 import { getVersionInfo, notifyRelease } from './release-notifier';
 import { clearDaemonReady, clearStaleDaemonReady, publishDaemonReadiness } from './service-readiness';
@@ -919,7 +920,18 @@ async function start() {
     claudeHandler.getSessionRegistry().setActivityStateChangeCallback(() => broadcastSessionUpdate());
     // Connect dashboard: the process monitor — each session's Claude Code process and every process under it on this
     // node (the card's CPU · 메모리 chip, the 프로세스 tab with pause · resume). Samples every 5 s while one is alive.
-    setDashboardProcessSource(startProcessMonitor());
+    {
+      const monitor = startProcessMonitor();
+      // The CPU cap on each task: its owner's (100% — one core — by default, none for an admin, the settings page's
+      // 작업 큐 tab per person). The monitor holds a task over it with a duty cycle (src/process-monitor/cpu-throttler.ts).
+      const cpuLimits = new UserCpuLimits(DATA_DIR, isAdminUser);
+      setActiveCpuLimits(cpuLimits);
+      monitor.setCpuCaps((key) => {
+        const ownerId = claudeHandler.getSessionRegistry().getSessionByKey(key)?.ownerId;
+        return ownerId ? cpuLimits.capFor(ownerId) : null;
+      });
+      setDashboardProcessSource(monitor);
+    }
 
     // user-memory-store, user-settings-store, AND user-skill-store mutate
     // SSOT fields that feed the cached system prompt but live outside the

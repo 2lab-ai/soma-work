@@ -26,6 +26,7 @@ function setup(
     readCapacity?: () => Promise<NodeCapacity>;
     logger?: { info(msg: string, meta?: unknown): void; warn(msg: string, meta?: unknown): void };
     inspectProcess?: import('../process-inspector').InspectProcess;
+    readThrottle?: import('../cpu-throttler').ReadThrottle;
   } = {},
 ) {
   const ps = new FakePs()
@@ -77,6 +78,10 @@ function setup(
     readCapacity: opts.readCapacity ?? (async () => capacity),
     logger: opts.logger,
     inspectProcess: opts.inspectProcess,
+    readThrottle: opts.readThrottle,
+    // The throttler's periods do not run on their own here; a test drives what it needs.
+    setTimer: () => null,
+    clearTimer: () => {},
   });
   return {
     ps,
@@ -264,6 +269,48 @@ describe('LocalProcessMonitor.inspect — one process in depth, a snapshot', () 
       ok: false,
       reason: 'stale',
     });
+  });
+});
+
+describe('LocalProcessMonitor — the CPU cap on each task', () => {
+  it('a task over its cap is metered: what the cap holds reads running + throttled, a person’s pause stays a pause', async () => {
+    const { monitor, ps } = setup();
+    // Session A: 300 burns 4 cores (ps's own %cpu on a first sample).
+    ps.set(300, { ppid: 200, args: '/bin/bash -c make', psCpu: 400 });
+    monitor.setCpuCaps((key) => (key === 'A' ? 100 : null));
+    const first = await monitor.sample();
+    const a = first.sessions.find((x) => x.sessionKey === 'A');
+    expect(a).toMatchObject({ cpuCapPercent: 100, throttling: true });
+    // B has no cap (an admin's task): no cap fields at all.
+    const b = first.sessions.find((x) => x.sessionKey === 'B');
+    expect(b).not.toHaveProperty('cpuCapPercent');
+    expect(b).not.toHaveProperty('throttling');
+    // The cap holds 300 at the next sample: ps says T, the tab says running and throttled, not 일시중지.
+    ps.set(300, { ppid: 200, args: '/bin/bash -c make', psCpu: 400, stat: 'T' });
+    const held = (await monitor.sample()).sessions.find((x) => x.sessionKey === 'A');
+    expect(held?.processes.find((p) => p.pid === 300)).toMatchObject({ state: 'running', throttled: true });
+    expect(held?.stoppedCount).toBe(0);
+  });
+
+  it('a person’s pause in a metered task still reads stopped and counts as paused', async () => {
+    const { monitor, ps } = setup();
+    ps.set(300, { ppid: 200, args: '/bin/bash -c make', psCpu: 400 });
+    monitor.setCpuCaps(() => 100);
+    await monitor.sample();
+    expect((await monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' })).ok).toBe(true);
+    const a = (await monitor.sample()).sessions.find((x) => x.sessionKey === 'A');
+    expect(a?.processes.find((p) => p.pid === 300)).toMatchObject({ state: 'stopped' });
+    expect(a?.processes.find((p) => p.pid === 300)).not.toHaveProperty('throttled');
+    expect(a?.stoppedCount).toBe(1);
+  });
+
+  it('caps unwired (setCpuCaps(null)) leave every task as sampled', async () => {
+    const { monitor, ps } = setup();
+    ps.set(300, { ppid: 200, args: '/bin/bash -c make', psCpu: 400, stat: 'T' });
+    monitor.setCpuCaps(null);
+    const a = (await monitor.sample()).sessions.find((x) => x.sessionKey === 'A');
+    expect(a).not.toHaveProperty('cpuCapPercent');
+    expect(a?.processes.find((p) => p.pid === 300)?.state).toBe('stopped');
   });
 });
 

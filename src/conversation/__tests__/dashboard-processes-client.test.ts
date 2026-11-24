@@ -1043,3 +1043,52 @@ describe('P8 — the card’s node badge (card.node)', () => {
     expect(fns.faceOf({ title: 'x' }, '', { rows: [], foot: [] }).node).toBeUndefined();
   });
 });
+
+describe('P9 — the CPU cap on the task', () => {
+  it('the tab says the cap, and while it holds the tree; a held row is tagged 한도, not 일시중지', () => {
+    const e = load<{ panelProcsHtml: (st: unknown, c: boolean) => string }>(TAB_FNS, ['PROC_STATE_LABEL']);
+    const p = (pid: number, depth: number, extra: Record<string, unknown> = {}) => ({
+      pid,
+      depth,
+      role: depth === 0 ? 'root' : 'child',
+      state: 'running',
+      cpuPercent: 0,
+      rssBytes: 1e6,
+      name: `p${pid}`,
+      startToken: 'S',
+      ...extra,
+    });
+    const body = (throttling: boolean) => ({
+      node: { nodeId: 'n1' },
+      session: {
+        processCount: 2,
+        cpuPercent: 98,
+        rssBytes: 2e6,
+        rootAlive: true,
+        cpuCapPercent: 100,
+        throttling,
+        processes: [p(1, 0), p(2, 1, { cpuPercent: 95, throttled: throttling })],
+      },
+    });
+    const on = e.panelProcsHtml({ status: 200, body: body(true), busy: {} }, true);
+    expect(on).toContain('CPU 한도 100% · 맞추는 중</span>');
+    expect(on).toContain('<span class="pp-cap is-on"');
+    expect(on).toContain('>한도</span>');
+    expect(on).not.toContain('일시중지 1개');
+    const off = e.panelProcsHtml({ status: 200, body: body(false), busy: {} }, true);
+    expect(off).toContain('CPU 한도 100%</span>');
+    expect(off).not.toContain('>한도</span>');
+  });
+
+  it('the card’s chip and node badge say the cap in their titles', () => {
+    const src = `${VIEW_LAYOUT_CLIENT_JS}\nreturn { procChipOf: procChipOf, nodeBadgeOf: nodeBadgeOf };`;
+    const f = new Function('VIEW_BUILTINS', src)(BUILTIN_PRESETS) as {
+      procChipOf: (u: unknown) => { title: string } | null;
+      nodeBadgeOf: (u: unknown) => { title: string } | null;
+    };
+    const u = usage({ cpuCapPercent: 100, throttling: true });
+    expect(f.procChipOf(u)?.title).toContain('CPU 한도 100% — 넘어서 맞추는 중');
+    expect(f.nodeBadgeOf(u)?.title).toContain('CPU 한도 100% — 넘어서 맞추는 중');
+    expect(f.procChipOf(usage())?.title).not.toContain('CPU 한도');
+  });
+});
