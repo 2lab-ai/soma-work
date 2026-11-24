@@ -173,6 +173,8 @@ require_staged_file dist/index.js
 # which is exactly how the deploy's Verify step would get silently disarmed.
 if [[ -f dist/version.json ]]; then
   require_staged_file dist/version.json
+  # Written next to it by the same script: the host-side release notes read their range out of it.
+  require_staged_file dist/release-history.json
 fi
 require_staged_file config.default.json
 require_staged_file .system.prompt.example

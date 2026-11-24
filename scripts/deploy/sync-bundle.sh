@@ -21,7 +21,16 @@ STRIPPED_PROTECTED="$(mktemp)"
 # The same names anchored to the top of the transfer ("/data"). An unanchored rsync pattern matches at any depth, so
 # `data/` also left the ui-ux skill's dist/local/skills/ui-ux/data out of every deploy.
 ANCHORED_PROTECTED="$(mktemp)"
-trap 'rm -f "$STRIPPED_PROTECTED" "$ANCHORED_PROTECTED"' EXIT
+# The version this host ran until now. The clean below removes it with the rest of dist/, so it is kept here and
+# written back as dist/previous-version.json after the copy: the daemon announces the release from it — what changed
+# on THIS host — instead of from the last deploy anywhere (dev tags are global; packages/slack/src/release-notes.ts).
+PREVIOUS_VERSION="$(mktemp)"
+trap 'rm -f "$STRIPPED_PROTECTED" "$ANCHORED_PROTECTED" "$PREVIOUS_VERSION"' EXIT
+if [[ -f "$TARGET/dist/version.json" ]]; then
+  cp "$TARGET/dist/version.json" "$PREVIOUS_VERSION"
+else
+  : > "$PREVIOUS_VERSION"
+fi
 sed 's:/*$::' "$PROTECTED_FILE" | grep -v '^[[:space:]]*$' > "$STRIPPED_PROTECTED"
 sed 's:^:/:' "$STRIPPED_PROTECTED" > "$ANCHORED_PROTECTED"
 
@@ -50,4 +59,9 @@ while IFS= read -r entry; do
 done < <(find "$TARGET" -mindepth 1 -maxdepth 1)
 
 rsync -a --exclude-from="$ANCHORED_PROTECTED" "$SOURCE_DIR"/ "$TARGET"/
+if [[ -s "$PREVIOUS_VERSION" && -d "$TARGET/dist" ]]; then
+  cp "$PREVIOUS_VERSION" "$TARGET/dist/previous-version.json.tmp"
+  mv "$TARGET/dist/previous-version.json.tmp" "$TARGET/dist/previous-version.json"
+  echo "sync-bundle: kept the replaced version as dist/previous-version.json"
+fi
 echo "sync-bundle: done; target packages: $(ls "$TARGET/packages" 2>/dev/null | tr '\n' ' ')"

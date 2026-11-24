@@ -117,6 +117,39 @@ describe('deploy bundle contract', () => {
     }
   });
 
+  it('a deploy sync keeps the version it replaced as dist/previous-version.json (the host-side release notes range)', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sync-bundle-prev-'));
+    try {
+      const source = path.join(tmp, 'bundle');
+      fs.mkdirSync(path.join(source, 'deploy'), { recursive: true });
+      fs.copyFileSync(
+        path.join(repoRoot, 'deploy/protected-paths.txt'),
+        path.join(source, 'deploy/protected-paths.txt'),
+      );
+      fs.mkdirSync(path.join(source, 'dist'), { recursive: true });
+      fs.writeFileSync(path.join(source, 'dist/version.json'), '{"version":"0.3.108"}');
+      const sync = (target: string) =>
+        spawnSync('bash', [path.join(repoRoot, 'scripts/deploy/sync-bundle.sh'), target, source], { encoding: 'utf8' });
+
+      // A host that ran v0.3.103.
+      const ran = path.join(tmp, 'ran');
+      fs.mkdirSync(path.join(ran, 'dist'), { recursive: true });
+      fs.writeFileSync(path.join(ran, 'dist/version.json'), '{"version":"0.3.103"}');
+      const first = sync(ran);
+      expect(first.status, first.stderr).toBe(0);
+      expect(fs.readFileSync(path.join(ran, 'dist/version.json'), 'utf8')).toBe('{"version":"0.3.108"}');
+      expect(fs.readFileSync(path.join(ran, 'dist/previous-version.json'), 'utf8')).toBe('{"version":"0.3.103"}');
+
+      // A fresh host: nothing ran before, nothing is invented.
+      const fresh = path.join(tmp, 'fresh');
+      const second = sync(fresh);
+      expect(second.status, second.stderr).toBe(0);
+      expect(fs.existsSync(path.join(fresh, 'dist/previous-version.json'))).toBe(false);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   // I-4: the credential/symlink gate used to live only in a SEPARATE npm
   // script, so `bash scripts/deploy/stage-bundle.sh` — which is what both the
   // deploy workflow and the release path run — exited 0 on a tree carrying a
