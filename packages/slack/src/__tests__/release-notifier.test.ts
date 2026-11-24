@@ -84,6 +84,25 @@ describe('notifyRelease — this host’s changes, once per deploy', () => {
     expect(next.postMessage).toHaveBeenCalledTimes(1);
   });
 
+  it('a redeploy that reuses the same dev tag (its tag push was refused) is a new build and is announced', async () => {
+    const first = fakeClient();
+    await notifyRelease(first.client, { distDir, notifiedFile });
+    write('version.json', version({ buildTime: '2026-11-24T06:00:00Z' }));
+    const again = fakeClient();
+    await notifyRelease(again.client, { distDir, notifiedFile });
+    expect(again.postMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('a malformed history file is ignored (bundle notes), never a failed startup', async () => {
+    write('previous-version.json', version({ version: '0.3.103', tag: 'v0.3.103-dev', commitHash: sha(3) }));
+    write('release-history.json', { head: sha(10), entries: 'oops' });
+    const { client, postMessage } = fakeClient();
+    await notifyRelease(client, { distDir, notifiedFile });
+    const notes = notesOf(postMessage.mock.calls[0][0]);
+    expect(notes).toContain('• change 10 (#110)');
+    expect(notes).toContain('이력 범위 밖');
+  });
+
   it('a failed post is not recorded: the next start tries again', async () => {
     const failing = fakeClient();
     failing.postMessage.mockRejectedValueOnce(new Error('channel_not_found'));

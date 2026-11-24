@@ -24,12 +24,16 @@ ANCHORED_PROTECTED="$(mktemp)"
 # The version this host ran until now. The clean below removes it with the rest of dist/, so it is kept here and
 # written back as dist/previous-version.json after the copy: the daemon announces the release from it — what changed
 # on THIS host — instead of from the last deploy anywhere (dev tags are global; packages/slack/src/release-notes.ts).
+# A retry of the same bundle (a re-run job) finds that bundle's own version.json installed: the host's real
+# predecessor is the previous-version.json the first attempt wrote, so that one is carried over instead.
 PREVIOUS_VERSION="$(mktemp)"
 trap 'rm -f "$STRIPPED_PROTECTED" "$ANCHORED_PROTECTED" "$PREVIOUS_VERSION"' EXIT
 if [[ -f "$TARGET/dist/version.json" ]]; then
-  cp "$TARGET/dist/version.json" "$PREVIOUS_VERSION"
-else
-  : > "$PREVIOUS_VERSION"
+  if cmp -s "$TARGET/dist/version.json" "$SOURCE_DIR/dist/version.json" && [[ -f "$TARGET/dist/previous-version.json" ]]; then
+    cp "$TARGET/dist/previous-version.json" "$PREVIOUS_VERSION"
+  else
+    cp "$TARGET/dist/version.json" "$PREVIOUS_VERSION"
+  fi
 fi
 sed 's:/*$::' "$PROTECTED_FILE" | grep -v '^[[:space:]]*$' > "$STRIPPED_PROTECTED"
 sed 's:^:/:' "$STRIPPED_PROTECTED" > "$ANCHORED_PROTECTED"
@@ -61,6 +65,8 @@ done < <(find "$TARGET" -mindepth 1 -maxdepth 1)
 rsync -a --exclude-from="$ANCHORED_PROTECTED" "$SOURCE_DIR"/ "$TARGET"/
 if [[ -s "$PREVIOUS_VERSION" && -d "$TARGET/dist" ]]; then
   cp "$PREVIOUS_VERSION" "$TARGET/dist/previous-version.json.tmp"
+  # mktemp made the copy owner-only; the daemon may run as another account and reads it like version.json.
+  chmod 644 "$TARGET/dist/previous-version.json.tmp"
   mv "$TARGET/dist/previous-version.json.tmp" "$TARGET/dist/previous-version.json"
   echo "sync-bundle: kept the replaced version as dist/previous-version.json"
 fi

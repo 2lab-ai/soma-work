@@ -63,7 +63,6 @@ const escapeMrkdwn = (text) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;')
  * the same way (packages/slack/src/release-notes.ts formatReleaseNotes).
  */
 export function formatNotes(entries, max = MAX_NOTES) {
-  if (entries.length === 0) return '';
   const lines = entries.slice(0, max).map((e) => `• ${escapeMrkdwn(e.title)}${e.pr ? ` (#${e.pr})` : ''}`);
   if (entries.length > max) lines.push(`… 외 ${entries.length - max}건`);
   return lines.join('\n');

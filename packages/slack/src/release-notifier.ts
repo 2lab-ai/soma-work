@@ -13,7 +13,7 @@ import { DATA_DIR, ENV_FILE } from '@soma/common/env-paths';
 import { Logger } from '@soma/common/logger';
 import { existsSync, readFileSync } from 'fs';
 import path from 'path';
-import { hostReleaseNotes, type ReleaseHistory } from './release-notes';
+import { hostReleaseNotes, isReleaseHistory } from './release-notes';
 
 const logger = new Logger('ReleaseNotifier');
 
@@ -29,6 +29,7 @@ export interface VersionInfo {
   releaseTrack?: string;
   buildTime: string;
   releaseNotes: string;
+  releaseNotesBase?: string | null;
   isRollback?: boolean;
   rollbackTargetTag?: string | null;
   rollbackTargetVersion?: string | null;
@@ -199,9 +200,19 @@ export async function notifyRelease(client: WebClient, paths: ReleaseNotifierPat
     return;
   }
 
-  const previous = readOptionalJson<VersionInfo>(path.join(paths.distDir, 'previous-version.json'), 'previous-version');
-  const history = readOptionalJson<ReleaseHistory>(path.join(paths.distDir, 'release-history.json'), 'release-history');
-  const release = hostReleaseNotes(versionInfo, previous, history);
+  const previousRaw = readOptionalJson<Partial<VersionInfo>>(
+    path.join(paths.distDir, 'previous-version.json'),
+    'previous-version',
+  );
+  const previous =
+    previousRaw && typeof previousRaw.commitHash === 'string' && typeof previousRaw.tag === 'string'
+      ? { version: String(previousRaw.version ?? ''), tag: previousRaw.tag, commitHash: previousRaw.commitHash }
+      : null;
+  const historyRaw = readOptionalJson<unknown>(path.join(paths.distDir, 'release-history.json'), 'release-history');
+  if (historyRaw !== null && !isReleaseHistory(historyRaw)) {
+    logger.warn('release-history.json has an unexpected shape; using the bundle notes');
+  }
+  const release = hostReleaseNotes(versionInfo, previous, isReleaseHistory(historyRaw) ? historyRaw : null);
 
   const channelId = await resolveChannel(client, channelConfig);
   if (!channelId) {

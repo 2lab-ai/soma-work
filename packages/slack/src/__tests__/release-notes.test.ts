@@ -62,6 +62,11 @@ describe('hostReleaseNotes — what changed on this host', () => {
     });
   });
 
+  it('the bundle default names the tag its notes actually start at', () => {
+    const out = hostReleaseNotes({ ...current, releaseNotesBase: 'v0.3.106-dev' }, null, history);
+    expect(out.fromTag).toBe('v0.3.106-dev');
+  });
+
   it('a previous commit outside the shipped history keeps the host versions and says the list is partial', () => {
     const out = hostReleaseNotes(current, { version: '0.2.9', tag: 'v0.2.9-dev', commitHash: 'f'.repeat(40) }, history);
     expect(out.fromTag).toBe('v0.2.9-dev');

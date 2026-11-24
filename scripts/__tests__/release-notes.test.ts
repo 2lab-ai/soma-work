@@ -120,6 +120,9 @@ describe('version-bump.sh — release notes', () => {
     );
     expect(v.releaseNotes).not.toContain('Initial release');
     expect(v.releaseNotes).not.toContain('wip');
+    // The header names the tag the notes start at, not the newest tag (which is this very commit).
+    expect(v.previousTag).toBe('v0.3.2-dev');
+    expect(v.releaseNotesBase).toBe('v0.3.1-dev');
 
     const history = JSON.parse(fs.readFileSync(path.join(work, 'dist', 'release-history.json'), 'utf8'));
     expect(history.head).toBe(git(work, 'rev-parse', 'HEAD'));
@@ -129,6 +132,15 @@ describe('version-bump.sh — release notes', () => {
       'feat: first change',
       'base',
     ]);
+  }, 60_000);
+
+  it('escapes Slack markup in PR titles', () => {
+    const work = repo();
+    git(work, 'tag', '-a', 'v0.3.1-dev', '-m', 'v0.3.1-dev');
+    mergePr(work, 20, 'fix: <b> & <@U123> in a title');
+    const r = bump(work);
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(versionJson(work).releaseNotes).toBe('• fix: &lt;b&gt; &amp; &lt;@U123&gt; in a title (#20)');
   }, 60_000);
 
   it('every tag on this very commit: "no code change", never "Initial release"', () => {

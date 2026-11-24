@@ -30,6 +30,8 @@ export interface ReleaseVersion {
   readonly previousVersion: string;
   readonly previousTag: string;
   readonly releaseNotes: string;
+  /** The tag the bundle's notes start at (the newest tag on a different commit); older bundles do not carry it. */
+  readonly releaseNotesBase?: string | null;
 }
 
 /** What one host announces. */
@@ -47,6 +49,20 @@ export const MAX_NOTES = 30;
 /** Slack mrkdwn control characters (`&`, `<`, `>`) in a commit title would read as markup. */
 function escapeMrkdwn(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/** A shipped history file that has the shape this module reads; anything else is treated as absent. */
+export function isReleaseHistory(raw: unknown): raw is ReleaseHistory {
+  const h = raw as Partial<ReleaseHistory> | null;
+  return (
+    !!h &&
+    typeof h.head === 'string' &&
+    Array.isArray(h.entries) &&
+    h.entries.every(
+      (e) =>
+        !!e && typeof e.sha === 'string' && typeof e.title === 'string' && (e.pr === null || typeof e.pr === 'number'),
+    )
+  );
 }
 
 /** One bullet per entry, newest first; past `max`, one line says how many more. Same shape as release-notes.mjs. */
@@ -73,7 +89,7 @@ export function hostReleaseNotes(
 ): HostRelease {
   const bundleDefault: HostRelease = {
     fromVersion: current.previousVersion,
-    fromTag: current.previousTag,
+    fromTag: current.releaseNotesBase || current.previousTag,
     notes: current.releaseNotes,
     hostRelative: false,
   };

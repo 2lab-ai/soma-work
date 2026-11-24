@@ -139,6 +139,12 @@ describe('deploy bundle contract', () => {
       expect(first.status, first.stderr).toBe(0);
       expect(fs.readFileSync(path.join(ran, 'dist/version.json'), 'utf8')).toBe('{"version":"0.3.108"}');
       expect(fs.readFileSync(path.join(ran, 'dist/previous-version.json'), 'utf8')).toBe('{"version":"0.3.103"}');
+      // Readable by a daemon running as another account, like version.json.
+      expect(fs.statSync(path.join(ran, 'dist/previous-version.json')).mode & 0o777).toBe(0o644);
+      // A retry of the same bundle keeps the host's real predecessor, not the bundle's own version.
+      const retry = sync(ran);
+      expect(retry.status, retry.stderr).toBe(0);
+      expect(fs.readFileSync(path.join(ran, 'dist/previous-version.json'), 'utf8')).toBe('{"version":"0.3.103"}');
 
       // A fresh host: nothing ran before, nothing is invented.
       const fresh = path.join(tmp, 'fresh');

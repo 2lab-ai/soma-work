@@ -219,7 +219,11 @@ fi
 
 if [[ -n "$NOTES_BASE" ]]; then
   echo "[version-bump] Release notes: ${NOTES_BASE}..HEAD (first-parent)"
-  RELEASE_NOTES=$(node "$SCRIPT_DIR/release-notes.mjs" notes "$NOTES_BASE" || echo "")
+  # A failure is a failure, not "no change": the deploy goes on and the notes say so.
+  if ! RELEASE_NOTES=$(node "$SCRIPT_DIR/release-notes.mjs" notes "$NOTES_BASE"); then
+    echo "[version-bump] WARNING: release notes for ${NOTES_BASE}..HEAD could not be generated"
+    RELEASE_NOTES="• (릴리즈 노트를 만들지 못함 — 배포 로그 확인)"
+  fi
   [[ -z "$RELEASE_NOTES" ]] && RELEASE_NOTES="• 코드 변경 없음 — ${NOTES_BASE}와 같은 내용"
 elif [[ -n "$PREV_TAG" ]]; then
   RELEASE_NOTES="• 코드 변경 없음 — ${PREV_TAG}와 같은 커밋 재배포"
@@ -255,11 +259,12 @@ const data = {
   isRollback: process.argv[12] === 'true',
   rollbackTargetTag: process.argv[13] || null,
   rollbackTargetVersion: process.argv[14] || null,
+  releaseNotesBase: process.argv[15] || null,
 };
 process.stdout.write(JSON.stringify(data, null, 2) + '\n');
 " "$NEW_VERSION" "$PREV_VERSION" "$NEW_TAG" "${PREV_TAG:-none}" \
   "$COMMIT_HASH" "$COMMIT_HASH_SHORT" "$COMMIT_TIME" "$GIT_REF" \
-  "$RELEASE_TRACK" "$BUILD_TIME" "$RELEASE_NOTES" "$IS_ROLLBACK" "$ROLLBACK_TARGET" "$ROLLBACK_TARGET_VERSION" > "$DIST_DIR/version.json"
+  "$RELEASE_TRACK" "$BUILD_TIME" "$RELEASE_NOTES" "$IS_ROLLBACK" "$ROLLBACK_TARGET" "$ROLLBACK_TARGET_VERSION" "$NOTES_BASE" > "$DIST_DIR/version.json"
 
 echo "[version-bump] Wrote $DIST_DIR/version.json"
 cat "$DIST_DIR/version.json"
