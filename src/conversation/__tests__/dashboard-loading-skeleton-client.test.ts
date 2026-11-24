@@ -245,6 +245,7 @@ function boardFlow(cardOf?: (s: { key: string }, col: string) => unknown, over: 
       _buildEnvIndex: () => ({}),
       _ownerIndex: null,
       assignOwnerHues: () => ({}),
+      boardOwnerIds: () => [],
       _lastBoardData: null,
       _cronJobs: [],
       _cronPlan: null,

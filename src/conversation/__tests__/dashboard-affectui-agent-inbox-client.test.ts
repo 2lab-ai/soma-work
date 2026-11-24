@@ -431,6 +431,7 @@ function boardHarness(opts: { boardLoad?: string; expanded?: string[]; groupOpen
       _buildEnvIndex: () => ({}),
       _ownerIndex: null,
       assignOwnerHues: () => ({}),
+      boardOwnerIds: () => [],
       _lastBoardData: null,
       _cronJobs: [],
       _cronPlan: null,

@@ -12991,7 +12991,19 @@ function uqCardOf(item, session) {
   // the running task (a shared dev host, 2026-11-24 — the second entry read as if it were next).
   var aheadCount = item.ahead && Number(item.ahead.count) > 0 ? Number(item.ahead.count) : 0;
   var aheadTitle = item.ahead && item.ahead.title ? String(item.ahead.title) : '앞 순서';
-  var who = item.ownerName ? String(item.ownerName) + ' · ' : '';
+  // Owner badge (Z 2026-11-24 "대기큐에도 누구 대기큐인지도 이름 뱃지"): on the All Users board the entry names its owner
+  // as the session cards do (§3.1-3) — one person, one colour; the viewer's own with the ring. Then the summary does
+  // not say the name again; one person's board (every card theirs) keeps it there.
+  var ownerName = item.ownerName || item.ownerId || '';
+  var badge = null;
+  if (ownerName && !currentUserId) {
+    badge = { text: String(ownerName), hue: ownerBadgeHue(item.ownerId || ownerName), title: String(ownerName) };
+    if (viewerOwns(item)) {
+      badge.self = true;
+      delete badge.title;
+    }
+  }
+  var who = !badge && item.ownerName ? String(item.ownerName) + ' · ' : '';
   var summary;
   if (item.state === 'admitted') summary = who + '시작 중 — 곧 이 스레드에서 시작합니다';
   else if (item.kind === 'resume') summary = who + '멈춘 작업 — 차례가 오면 멈춘 지점부터 이어서';
@@ -13034,6 +13046,7 @@ function uqCardOf(item, session) {
     bodyMode: 'steps',
     details: details,
   };
+  if (badge) card.badge = badge;
   var since = Number(item.enqueuedAt);
   if (since > 0) card.since = since;
   if (item.state === 'waiting' && !uqSibling(item)) {
@@ -13119,9 +13132,7 @@ function renderBoard(board, partial) {
   _envIndex = _buildEnvIndex();
   // Owner hues for every card in the board data (hidden archives too, so the
   // Show archives toggle never recolours anyone).
-  var owners = [];
-  for (var ok in _sessionCache) owners.push(_sessionCache[ok].ownerId || _sessionCache[ok].ownerName || '');
-  _ownerIndex = assignOwnerHues(owners);
+  _ownerIndex = assignOwnerHues(boardOwnerIds(_sessionCache, board.userQueue));
   _lastBoardData = board;
   // Cron runs leave the columns for the CRON lane, one group per job (SSOT
   // 2026-10-23 T4); the lane sections exist before their elements are filled.
@@ -13929,6 +13940,16 @@ function assignOwnerHues(ids) {
     }
   }
   return out;
+}
+// The owners the board's hues are assigned over: every cached session's, and the 대기큐 line's — an owner who only
+// waits in line still gets a colour nobody else on the board has.
+function boardOwnerIds(cache, queue) {
+  var owners = [];
+  for (var ok in cache) owners.push(cache[ok].ownerId || cache[ok].ownerName || '');
+  (queue || []).forEach(function(q) {
+    if (q) owners.push(q.ownerId || q.ownerName || '');
+  });
+  return owners;
 }
 function ownerBadgeHue(ownerId) {
   var id = String(ownerId || '');
