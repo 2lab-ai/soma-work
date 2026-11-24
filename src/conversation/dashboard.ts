@@ -7773,7 +7773,6 @@ html[data-pdragging], html[data-pdragging] * { cursor: grabbing !important; user
   .pp-open:hover { text-decoration: underline; }
 }
 .pp-hidden { margin-left: 6px; color: var(--text-tertiary); font-size: 11px; }
-.pp-cmdline { padding-left: 6px; }
 .pp-where { margin-right: 8px; padding: 0 5px; border-radius: 4px; background: var(--border); color: var(--text-secondary); font-family: var(--mono, ui-monospace, monospace); font-size: 11px; }
 .pp-legend { margin: 0 0 6px; color: var(--text-tertiary); font-size: 11.5px; }
 /* CPU: under 1% dim, 10%+ amber and bold, 100%+ (over one core) red with ▲ and the core count — never colour alone. */
@@ -16910,30 +16909,21 @@ function procTreeRows(list, collapsed) {
   var out = [];
   var procs = list || [];
   var fold = collapsed || {};
-  // last[i]: no later sibling — nothing at the same depth before the tree climbs above it.
-  var last = [];
-  for (var i = 0; i < procs.length; i++) {
-    var d = toNum(procs[i].depth);
-    var isLast = true;
-    for (var j = i + 1; j < procs.length; j++) {
-      var dj = toNum(procs[j].depth);
-      if (dj < d) break;
-      if (dj === d) { isLast = false; break; }
-    }
-    last.push(isLast);
-  }
   var open = [];
   for (var k = 0; k < procs.length; k++) {
     var p = procs[k];
     var depth = toNum(p.depth);
+    // The subtree ends at the first row not below this one; this row is the last of its siblings unless that row is
+    // at its own depth.
+    var end = k + 1;
+    while (end < procs.length && toNum(procs[end].depth) > depth) end++;
+    var isLast = end === procs.length || toNum(procs[end].depth) < depth;
     // Rails: for every ancestor level, │ while that ancestor still has a later sibling.
     open.length = depth;
     var guide = '';
     for (var lv = 1; lv < depth; lv++) guide += open[lv] ? '│ ' : '  ';
-    if (depth > 0) guide += last[k] ? '└─' : '├─';
-    open[depth] = !last[k];
-    var end = k + 1;
-    while (end < procs.length && toNum(procs[end].depth) > depth) end++;
+    if (depth > 0) guide += isLast ? '└─' : '├─';
+    open[depth] = !isLast;
     var kids = end - k - 1;
     var folded = kids > 0 && !!fold[p.pid + ':' + (p.startToken || '')];
     var row = { p: p, guide: guide, kids: kids, folded: folded };

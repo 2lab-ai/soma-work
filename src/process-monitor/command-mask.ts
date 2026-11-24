@@ -86,6 +86,16 @@ const CONFIG_WRITERS = new Set([
   'composer config',
   'gcloud config',
 ]);
+/** Programs that have credential rules: naming one anywhere re-anchors the command (`sudo -u app curl -u …`). */
+const KNOWN_PROGRAMS = new Set([
+  ...Object.keys(PROGRAM_SECRET_FLAGS).map((k) => k.split(' ')[0]),
+  ...[...SECRET_OPERAND, ...CONFIG_WRITERS].map((k) => k.split(' ')[0]),
+  'mysql',
+  'mysqldump',
+  'mysqladmin',
+  'mariadb',
+  'mariadb-dump',
+]);
 /** A config key as one word (`aws_secret_access_key`, `//registry.npmjs.org/:_authToken`). */
 const CONFIG_KEY = /^[\w.:/@-]+$/;
 /** Words that run the next word as the command (`env A=1 curl …`, `sudo curl …`). */
@@ -210,47 +220,56 @@ export function maskCommandLine(input: { readonly argv: readonly string[]; reado
     ? input.argv.slice(0, MAX_ARGS).map((a) => maskJson(a.length > MAX_INPUT ? a.slice(0, MAX_INPUT) : a))
     : splitArgs(maskJson(input.argv.join(' ').slice(0, MAX_INPUT))).slice(0, MAX_ARGS);
   if (words.length === 0) return '';
-  // The program of the command a word belongs to: the first word, or the first after a shell separator
-  // (`cd /w && curl -u …`), past `env`/`sudo` and `NAME=value` prefixes.
+  // The program of the command a word belongs to: the first word, the first after a shell separator
+  // (`cd /w && curl -u …`) past `env`/`sudo` and `NAME=value` prefixes, or any word naming a program with credential
+  // rules (`sudo -u app curl …`: `curl` takes over from `app`).
   let program = '';
-  // Its subcommand (`docker login`, `npm config`): the first word after the program that is not a flag.
-  let sub = '';
-  let operandDone = false;
+  // Its subcommands (`docker login`, `npm config`): every positional word after the program, so an option's operand
+  // before it (`docker --config /x login`) does not hide it.
+  let subs: string[] = [];
+  // A credential operand is next (`vault login <token>`): the next positional word is the secret.
+  let operandArmed = false;
   let expectCmd = true;
   const out: string[] = [];
-  // The value after a secret flag, a credential header or an auth scheme word: one word — or, when it opens with a
-  // quote, every word up to the one that closes it (`--cookie "a=b; sid=x"`, `"--password=a b"`). Some values run on
-  // (`runOn`) to the next flag, URL or shell separator: a header's (`-H Cookie: a=b; sid=x https://…`, its scheme
-  // `Bearer` left in view), and a secret flag's on a space-joined `ps` line, which has lost the argument's bounds
-  // (`--pass correct horse battery staple`).
-  let value: { header: boolean; closing: string; schemeSeen: boolean; runOn: boolean } | null = null;
-  // A secret flag's value when it is not quoted: one argument in exact argv; on a joined line, up to the next option.
-  const flagValue = (closing: string) => ({ header: false, closing, schemeSeen: true, runOn: !input.exact });
+  // One rule for every value a marker (a secret flag or variable, a program's credential flag or operand, a config
+  // key, a credential header, an auth scheme) says is secret. Its first word is always taken, whatever it looks like
+  // (`--webhook https://…/secret`). A quoted value runs to the word that closes the quote (`--cookie "a=b; sid=x"`,
+  // `"--password=a b"`). Exact argv: one argument. A space-joined `ps` line has lost the argument's bounds, so a flag's
+  // value runs on (`runOn`) to the next option, URL or shell separator (`--pass correct horse battery staple`); a
+  // header's always does (`-H Cookie: a=b; sid=x https://…`, its scheme `Bearer` left in view).
+  let value: { header: boolean; closing: string; schemeSeen: boolean; runOn: boolean; taken: number } | null = null;
+  const separate = (runOn = !input.exact) => ({ header: false, closing: '', schemeSeen: true, runOn, taken: 0 });
+  /** One word of a value: masked; the value ends at its closing quote, or after one word unless it runs on. */
+  const takeValue = (raw: string): void => {
+    if (!value) return;
+    const opens = !value.closing && /^["']/.test(raw) ? raw[0] : '';
+    const closing = value.closing || opens;
+    const ends = closing !== '' && raw.length > (opens ? 1 : 0) && raw.endsWith(closing);
+    out.push(`${opens}${MASK}${ends ? closing : ''}`);
+    value.taken++;
+    // A word that ends a shell command (`abc;`) ends an unquoted flag value too — not a header's (`a=b; sid=x`).
+    if (ends || (!closing && (!value.runOn || (!value.header && /[;&|]$/.test(raw))))) value = null;
+    else if (opens) value.closing = opens;
+  };
   for (const raw of words) {
     const atCmd = expectCmd;
     expectCmd = SHELL_SEPARATOR.test(raw) || /[;&|]$/.test(raw);
     if (value) {
       const bare = raw.replace(/^["']/, '');
-      if (
+      const ended =
         !value.closing &&
-        (SHELL_SEPARATOR.test(raw) || (value.runOn && (raw.startsWith('-') || URL_START.test(bare))))
-      ) {
-        value = null;
-      } else {
+        (SHELL_SEPARATOR.test(raw) ||
+          (value.runOn && value.taken > 0 && (raw.startsWith('-') || URL_START.test(bare))));
+      if (!ended) {
         if (value.header && !value.schemeSeen && AUTH_SCHEME_WORD.test(bare.replace(/["']$/, ''))) {
           value.schemeSeen = true;
           out.push(raw);
           continue;
         }
-        const opens = !value.closing && /^["']/.test(raw) ? raw[0] : '';
-        const closing = value.closing || opens;
-        const ends = closing !== '' && raw.length > (opens ? 1 : 0) && raw.endsWith(closing);
-        out.push(`${opens}${MASK}${ends ? closing : ''}`);
-        // A word that ends a shell command (`abc;`) ends an unquoted flag value too — not a header's (`a=b; sid=x`).
-        if (ends || (!closing && (!value.runOn || (!value.header && /[;&|]$/.test(raw))))) value = null;
-        else if (opens) value.closing = opens;
+        takeValue(raw);
         continue;
       }
+      value = null;
     }
     // ps keeps the quotes a shell command line had (`-H "Authorization: Bearer x"`): a word is matched without its
     // opening quote, and keeps it.
@@ -258,76 +277,99 @@ export function maskCommandLine(input: { readonly argv: readonly string[]; reado
     const word = lead ? raw.slice(1) : raw;
     // The word's own opening quote closes in it (`"--password=x"`), or the value runs on to its close.
     const leadClosed = lead !== '' && word.length > 0 && word.endsWith(lead);
-    /** The quote a secret value is still inside after this word: the word's own, else one opening the value. */
-    const openQuote = (v: string): string => {
-      if (lead) return leadClosed ? '' : lead;
-      return /^["']/.test(v) && !(v.length > 1 && v.endsWith(v[0])) ? v[0] : '';
+    /**
+     * A marker with its value attached (`--password=x`, `TOKEN=x`, `-ux`): the marker stays, the value is masked and
+     * goes on while a quote is open — the word's own, or one opening the value — or, for a flag on a joined line,
+     * to the next option.
+     */
+    const attachedValue = (marker: string, v: string, flagLike: boolean): void => {
+      out.push(`${lead}${marker}${MASK}${leadClosed ? lead : ''}`);
+      const q = lead ? (leadClosed ? '' : lead) : /^["']/.test(v) && !(v.length > 1 && v.endsWith(v[0])) ? v[0] : '';
+      const taken = v === '' ? 0 : 1;
+      if (q) value = { header: false, closing: q, schemeSeen: true, runOn: false, taken };
+      else if (flagLike && !leadClosed && !input.exact && !/[;&|]$/.test(word)) value = { ...separate(), taken };
     };
-    let isSub = false;
-    if (atCmd && !expectCmd) {
+    let programWord = false;
+    if (!/\s/.test(word)) {
       const base = (word.split('/').pop() ?? '').toLowerCase();
-      if (COMMAND_WRAPPERS.has(base) || ASSIGNMENT.test(word) || word.startsWith('-')) expectCmd = true;
-      else {
+      if (atCmd && !expectCmd) {
+        if (COMMAND_WRAPPERS.has(base) || ASSIGNMENT.test(word) || word.startsWith('-')) expectCmd = true;
+        else programWord = true;
+      } else if (KNOWN_PROGRAMS.has(base)) programWord = true;
+      if (programWord) {
         program = base;
-        sub = '';
-        operandDone = false;
-        isSub = true;
+        subs = [];
+        operandArmed = false;
       }
-    } else if (program && !sub && !word.startsWith('-') && !expectCmd) {
-      sub = word.toLowerCase();
-      isSub = true;
     }
-    const cmd = sub ? `${program} ${sub}` : program;
+    /** The table entry for this command: `program subcommand` for any subcommand seen, else `program`. */
+    const ruleOf = <T>(table: Readonly<Record<string, T>>): T | undefined => {
+      for (const sb of subs) {
+        const hit = table[`${program} ${sb}`];
+        if (hit !== undefined) return hit;
+      }
+      return table[program];
+    };
+    const inCommand = (set: ReadonlySet<string>): boolean => subs.some((sb) => set.has(`${program} ${sb}`));
     const flag = FLAG_WITH_VALUE.exec(word);
     if (flag && SECRET_NAME.test(flag[1])) {
-      out.push(`${lead}${flag[1]}=${MASK}${leadClosed ? lead : ''}`);
-      // `--cookie="a=b; sid=x"`, `"--password=two words"`: the quoted value runs on to its close; unquoted on a
-      // joined line, up to the next option — unless the word ended a shell command.
-      const q = openQuote(flag[2]);
-      if (q) value = flagValue(q);
-      else if (!leadClosed && !input.exact && !/[;&|]$/.test(word)) value = flagValue('');
+      attachedValue(`${flag[1]}=`, flag[2], true);
       continue;
     }
     const assignment = !flag && ASSIGNMENT.exec(word);
     if (assignment && SECRET_NAME.test(assignment[1])) {
-      out.push(`${lead}${assignment[1]}=${MASK}${leadClosed ? lead : ''}`);
       // Only a quote carries an assignment's value on: what follows `TOKEN=x` is the command it is for.
-      const q = openQuote(assignment[2]);
-      if (q) value = { header: false, closing: q, schemeSeen: true, runOn: false };
+      attachedValue(`${assignment[1]}=`, assignment[2], false);
       continue;
     }
-    // Not a secret flag or variable as a whole: an exact argument with spaces in it is a command of its own
+    if (MYSQL_PROGRAM.test(program) && /^-p./s.test(word)) {
+      attachedValue('-p', word.slice(2), true);
+      continue;
+    }
+    const own = ruleOf(PROGRAM_SECRET_FLAGS);
+    if (own) {
+      if (own.includes(word)) {
+        out.push(raw);
+        value = separate();
+        continue;
+      }
+      const joinedFlag = own.find((f) => f.startsWith('--') && word.startsWith(`${f}=`));
+      if (joinedFlag) {
+        attachedValue(`${joinedFlag}=`, word.slice(joinedFlag.length + 1), true);
+        continue;
+      }
+      const attached = own.find((f) => !f.startsWith('--') && word.length > f.length && word.startsWith(f));
+      if (attached) {
+        attachedValue(attached, word.slice(attached.length), true);
+        continue;
+      }
+    }
+    const positional = !programWord && program !== '' && !word.startsWith('-') && !expectCmd;
+    if (positional && operandArmed) {
+      operandArmed = false;
+      value = separate();
+      takeValue(raw);
+      continue;
+    }
+    if (positional && !/\s/.test(word)) {
+      const sb = word.toLowerCase();
+      subs.push(sb);
+      if (SECRET_OPERAND.has(`${program} ${sb}`)) operandArmed = true;
+    }
+    if (positional && inCommand(CONFIG_WRITERS) && CONFIG_KEY.test(word) && SECRET_NAME.test(word)) {
+      out.push(raw);
+      value = separate();
+      continue;
+    }
+    // No marker takes the word whole: an exact argument with spaces in it is a command of its own
     // (`bash -c 'client --password=x; …'`), masked as one line, word by word, then quoted back.
     if (input.exact && /\s/.test(raw)) {
       out.push(quoted(maskCommandLine({ argv: [raw], exact: false })));
       continue;
     }
-    if (MYSQL_PROGRAM.test(program) && /^-p.+/.test(word)) {
-      out.push(`${lead}-p${MASK}`);
-      continue;
-    }
-    const own = PROGRAM_SECRET_FLAGS[cmd] ?? PROGRAM_SECRET_FLAGS[program];
-    if (own) {
-      // One word: `user:password`, a password.
-      if (own.includes(word)) {
-        out.push(raw);
-        value = { header: false, closing: '', schemeSeen: true, runOn: false };
-        continue;
-      }
-      const joinedFlag = own.find((f) => f.startsWith('--') && word.startsWith(`${f}=`));
-      if (joinedFlag) {
-        out.push(`${lead}${joinedFlag}=${MASK}`);
-        continue;
-      }
-      const attached = own.find((f) => !f.startsWith('--') && word.length > f.length && word.startsWith(f));
-      if (attached) {
-        out.push(`${lead}${attached}${MASK}`);
-        continue;
-      }
-    }
     if (CREDENTIAL_HEADER.test(word)) {
       out.push(raw);
-      value = { header: true, closing: lead, schemeSeen: false, runOn: true };
+      value = { header: true, closing: lead, schemeSeen: false, runOn: true, taken: 0 };
       continue;
     }
     const inWord = HEADER_IN_WORD.exec(word);
@@ -340,31 +382,23 @@ export function maskCommandLine(input: { readonly argv: readonly string[]; reado
       const head = word.slice(0, inWord.index);
       const shown = after === '' || scheme ? after : MASK;
       out.push(`${lead}${head ? maskWord(head) : ''}${inWord[1]}${inWord[2]}${shown}${closed ? lead : ''}`);
-      if (!closed) value = { header: true, closing: lead, schemeSeen: after !== '', runOn: true };
+      if (!closed) {
+        value = { header: true, closing: lead, schemeSeen: after !== '', runOn: true, taken: after && !scheme ? 1 : 0 };
+      }
       continue;
     }
     if (FLAG.test(word) && SECRET_NAME.test(word)) {
       out.push(raw);
-      value = flagValue('');
+      value = separate();
       continue;
     }
     if (AUTH_SCHEME_WORD.test(word)) {
       out.push(raw);
-      value = { header: false, closing: '', schemeSeen: true, runOn: false };
-      continue;
-    }
-    if (!isSub && !operandDone && SECRET_OPERAND.has(cmd) && !word.startsWith('-')) {
-      operandDone = true;
-      out.push(`${lead}${MASK}`);
-      continue;
-    }
-    if (!isSub && CONFIG_WRITERS.has(cmd) && CONFIG_KEY.test(word) && SECRET_NAME.test(word)) {
-      out.push(raw);
-      value = { header: false, closing: '', schemeSeen: true, runOn: false };
+      value = separate(false);
       continue;
     }
     // `key=value` whose key (the last name before `=`) says secret, written into a longer word: an npmrc line
-    // (`//registry.npmjs.org/:_authToken=x`), `-Dspring.datasource.password=x`. Not a URL (its query is masked above).
+    // (`//registry.npmjs.org/:_authToken=x`). Not a URL (its query is masked by the word rules).
     const eq = word.indexOf('=');
     if (eq > 0 && !word.includes('://') && !word.includes('?')) {
       const key = /[\w.-]+$/.exec(word.slice(0, eq))?.[0] ?? '';

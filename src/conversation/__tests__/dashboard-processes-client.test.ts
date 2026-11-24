@@ -605,7 +605,7 @@ describe('P7 — the detail: one process’s snapshot, read once', () => {
     unreadable: ['threads'],
   };
 
-  function env(answer: (url: string) => Promise<unknown>) {
+  function env(answer: (url: string, init?: { signal?: AbortSignal }) => Promise<unknown>) {
     const calls: string[] = [];
     const dlg = {
       shown: 0,
@@ -639,9 +639,9 @@ describe('P7 — the detail: one process’s snapshot, read once', () => {
                   ? when
                   : null,
         },
-        fetch: (url: string) => {
+        fetch: (url: string, init?: { signal?: AbortSignal }) => {
           calls.push(url);
-          return answer(url);
+          return answer(url, init);
         },
         writePanelPart: (target: { _html: string }, html: string) => {
           target._html = html;
@@ -731,7 +731,38 @@ describe('P7 — the detail: one process’s snapshot, read once', () => {
       const panel = { _wired: false, _html: '', addEventListener: () => {} };
       const body = { _html: '' };
       const dlg = { hasAttribute: () => false, show() {} };
-      const list = { node: { nodeId: 'n1' }, commands: true, session: null };
+      const when = { _text: '' };
+      // The list the tab polls carries the open process itself, changing every read.
+      let polls = 0;
+      const listNow = () => {
+        polls++;
+        const proc = (pid: number, depth: number, extra: Record<string, unknown>) => ({
+          pid,
+          depth,
+          role: depth === 0 ? 'root' : 'child',
+          state: 'running',
+          rssBytes: 1e8 * polls,
+          name: pid === 2 ? 'node tsc' : 'claude',
+          command: '',
+          startToken: S,
+          ...extra,
+        });
+        return {
+          node: { nodeId: 'n1' },
+          commands: true,
+          session: {
+            processCount: 2,
+            stoppedCount: 0,
+            cpuPercent: 10 * polls,
+            rssBytes: 2e8 * polls,
+            rootAlive: true,
+            processes: [
+              proc(1, 0, { cpuPercent: 1, cwd: '/work/repo' }),
+              proc(2, 1, { cpuPercent: 37 * polls, cwd: `/work/repo/pkg-${polls}` }),
+            ],
+          },
+        };
+      };
       const e = load<Env & { renderPanelProcs(): void }>(
         [
           ...TAB_FNS,
@@ -764,17 +795,21 @@ describe('P7 — the detail: one process’s snapshot, read once', () => {
                   ? body
                   : id === 'proc-detail-dialog'
                     ? dlg
-                    : null,
+                    : id === 'proc-detail-when'
+                      ? when
+                      : null,
           },
           fetch: (url: string) => {
             calls.push(url);
-            const json = url.includes('/detail?') ? { ok: true, detail } : list;
+            const json = url.includes('/detail?') ? { ok: true, detail } : listNow();
             return Promise.resolve({ status: 200, ok: true, json: async () => json });
           },
           writePanelPart: (el: { _html: string }, html: string) => {
             el._html = html;
           },
-          setTextIfChanged: () => {},
+          setTextIfChanged: (el: { _text: string }, text: string) => {
+            el._text = text;
+          },
           isSiblingSession: () => false,
           viewerCanManage: () => true,
           _panelMid: 'procs',
@@ -787,11 +822,48 @@ describe('P7 — the detail: one process’s snapshot, read once', () => {
       e.procsOpenDetail(2, S);
       await vi.advanceTimersByTimeAsync(100);
       const first = body._html;
+      const footer = when._text;
       expect(first).toContain('/opt/homebrew/bin/node');
+      expect(footer).toContain('자동으로 새로 고치지 않아요');
       await vi.advanceTimersByTimeAsync(10_000);
       expect(calls.filter((u) => u.includes('/detail?'))).toHaveLength(1);
       expect(calls.filter((u) => u.endsWith('/processes')).length).toBeGreaterThanOrEqual(3);
+      // The table moved on with the live reads (the open process's own row included); the snapshot did not.
+      expect(polls).toBeGreaterThanOrEqual(3);
+      expect(panel._html).toContain(`pkg-${polls}`);
       expect(body._html).toBe(first);
+      expect(body._html).not.toContain('pkg-');
+      expect(when._text).toBe(footer);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a read that never answers is given up after its timeout and says so; 다시 찍기 then shows the snapshot', async () => {
+    vi.useFakeTimers();
+    try {
+      let n = 0;
+      const { e, el, calls } = env((_url, init) => {
+        n++;
+        // The first read hangs until its signal aborts, as fetch does.
+        if (n === 1) {
+          return new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+          });
+        }
+        return Promise.resolve({ status: 200, json: async () => ({ ok: true, detail }) });
+      });
+      e.__get('_procs').key = 'C1:t1';
+      e.procsOpenDetail(2, S);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(el._html).toContain('읽는 중');
+      await vi.advanceTimersByTimeAsync(e.__get('PROCS_CONTROL_TIMEOUT_MS'));
+      expect(el._html).not.toContain('읽는 중');
+      expect(el._html).toContain('답하지 않았어요');
+      e.procDetailRetake();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(calls).toHaveLength(2);
+      expect(el._html).toContain('/opt/homebrew/bin/node');
     } finally {
       vi.useRealTimers();
     }

@@ -54,7 +54,8 @@ describe('maskCommandLine', () => {
     expect(exact('sh', '-c', 'cd /w && GITHUB_TOKEN=abc123 gh pr view 1')).toBe(
       `sh -c 'cd /w && GITHUB_TOKEN=${MASK} gh pr view 1'`,
     );
-    expect(exact('sh', '-c', 'mysql -uroot -phunter2 db')).toBe(`sh -c 'mysql -uroot -p${MASK} db'`);
+    // Read word by word, `-phunter2`'s value runs to the next option (the line lost its bounds).
+    expect(exact('sh', '-c', 'mysql -uroot -phunter2 db')).toBe(`sh -c 'mysql -uroot -p${MASK} ${MASK}'`);
     // The value of a secret flag is masked whole, spaces and all.
     expect(exact('tool', '--token', 'two words')).toBe(`tool --token ${MASK}`);
     expect(exact('tool', '--password=two words', 'API_KEY=two words', '"--secret=a b"')).toBe(
@@ -69,7 +70,8 @@ describe('maskCommandLine', () => {
     expect(joined('env GITHUB_TOKEN=ghx AWS_SECRET_ACCESS_KEY=y PATH=/bin node app.js')).toBe(
       `env GITHUB_TOKEN=${MASK} AWS_SECRET_ACCESS_KEY=${MASK} PATH=/bin node app.js`,
     );
-    expect(joined('mysql -uroot -phunter2 db')).toBe(`mysql -uroot -p${MASK} db`);
+    expect(joined('mysql -uroot -phunter2 db')).toBe(`mysql -uroot -p${MASK} ${MASK}`);
+    expect(exact('mysql', '-uroot', '-phunter2', 'db')).toBe(`mysql -uroot -p${MASK} db`);
     // -p elsewhere is just a flag.
     expect(joined('tsc -p tsconfig.json')).toBe('tsc -p tsconfig.json');
   });
@@ -177,15 +179,57 @@ describe('maskCommandLine', () => {
     expect(joined('curl --proxy-user bot:hunter2 -x http://p https://h')).toBe(
       `curl --proxy-user ${MASK} -x http://p https://h`,
     );
-    expect(joined('sshpass -p hunter2 rsync a b')).toBe(`sshpass -p ${MASK} rsync a b`);
+    // Exact argv: one argument; a joined line: up to the next option (it lost the argument's bounds).
+    expect(exact('sshpass', '-p', 'hunter2', 'rsync', 'a', 'b')).toBe(`sshpass -p ${MASK} rsync a b`);
+    expect(joined('sshpass -p hunter2 rsync -a b')).toBe(`sshpass -p ${MASK} ${MASK} -a b`);
     expect(exact('bash', '-c', 'cd /w && curl -u bot:hunter2 https://h')).toBe(
       `bash -c 'cd /w && curl -u ${MASK} https://h'`,
     );
     expect(joined('env A=1 curl -u bot:hunter2 https://h')).toBe(`env A=1 curl -u ${MASK} https://h`);
-    expect(exact('sh', '-c', 'echo x; mysql -uroot -phunter2 db')).toBe(`sh -c 'echo x; mysql -uroot -p${MASK} db'`);
+    expect(exact('sh', '-c', 'echo x; mysql -uroot -phunter2 -v')).toBe(`sh -c 'echo x; mysql -uroot -p${MASK} -v'`);
     // Elsewhere -u and -p are ordinary flags.
     expect(joined('mysql -uroot db')).toBe('mysql -uroot db');
     expect(joined('ps -u root -p 1')).toBe('ps -u root -p 1');
+  });
+
+  it('every form of a recognised credential is masked: spaced exact arguments, a URL value, quotes, wrappers', () => {
+    // Exact argv with spaces: the program's own rule still applies to the whole argument.
+    expect(exact('curl', '--user=bot:two words', 'https://h')).toBe(`curl --user=${MASK} https://h`);
+    expect(exact('curl', '-ubot:two words', 'https://h')).toBe(`curl -u${MASK} https://h`);
+    expect(exact('mysql', '-ptwo words')).toBe(`mysql -p${MASK}`);
+    expect(exact('vault', 'login', 'two words')).toBe(`vault login ${MASK}`);
+    // The first word of a secret value is taken whatever it looks like — a URL too.
+    expect(joined('notifier --webhook https://hooks.example.test/hunter2')).toBe(`notifier --webhook ${MASK}`);
+    expect(exact('notifier', '--webhook', 'https://hooks.example.test/hunter2')).toBe(`notifier --webhook ${MASK}`);
+    // An attached value's quote runs to its close.
+    expect(exact('bash', '-c', 'curl -u"bot:two hunter2" https://h; sleep 60; echo done')).toBe(
+      `bash -c 'curl -u${MASK} ${MASK}" https://h; sleep 60; echo done'`,
+    );
+    expect(joined('curl --user="bot:two hunter2" https://h')).toBe(`curl --user=${MASK} ${MASK}" https://h`);
+    // A program's credential flag on a joined line runs on like any secret flag (ps lost the argument's bounds).
+    expect(joined('redis-cli -a correct horse battery staple')).toBe(`redis-cli -a ${MASK} ${MASK} ${MASK} ${MASK}`);
+    expect(joined('curl -u bot:correct horse battery https://h')).toBe(`curl -u ${MASK} ${MASK} ${MASK} https://h`);
+    expect(exact('curl', '--user=bot:two hunter2', 'https://h')).toBe(`curl --user=${MASK} https://h`);
+    expect(exact('curl', '-ubot:two hunter2', 'https://h')).toBe(`curl -u${MASK} https://h`);
+    // An option's operand before the subcommand does not hide it.
+    expect(joined('docker --config /tmp/docker login -p hunter2 registry.example.com')).not.toContain('hunter2');
+    expect(exact('docker', '--config', '/tmp/docker', 'login', '-p', 'hunter2', 'r')).toBe(
+      `docker --config /tmp/docker login -p ${MASK} r`,
+    );
+    expect(exact('vault', '-namespace', 'ops', 'login', 'hunter2')).toBe(`vault -namespace ops login ${MASK}`);
+    // A wrapper's own options do not hide the program behind it.
+    expect(joined('sudo -u app curl -u bot:hunter2 https://h')).toBe(`sudo -u app curl -u ${MASK} https://h`);
+    expect(joined('nice -n 5 curl -u bot:hunter2 https://h')).toBe(`nice -n 5 curl -u ${MASK} https://h`);
+    for (const line of [
+      exact('curl', '--user=bot:two words', 'https://h'),
+      exact('curl', '-ubot:two words', 'https://h'),
+      exact('mysql', '-ptwo words'),
+      joined('notifier --webhook https://hooks.example.test/hunter2'),
+      exact('bash', '-c', 'curl -u"bot:two hunter2" https://h; sleep 60; echo done'),
+      joined('sudo -u app curl -u bot:hunter2 https://h'),
+    ]) {
+      expect(line).not.toMatch(/hunter2|two|words/);
+    }
   });
 
   it('real credential-bearing commands show no secret, joined (macOS ps) or exact (Linux argv)', () => {
