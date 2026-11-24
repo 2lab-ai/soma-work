@@ -370,6 +370,36 @@ describe('Dashboard — sessions waiting out an automatic resume, and the one cu
       expect(msg.tasksOutside).toBeNull();
     });
 
+    it('the task_update push marks the current task as the card does — a session waiting on the host keeps it (dashboard perf 2026-11-24)', async () => {
+      const webServer = await import('../web-server');
+      // Idle, no turn, no auto-resume: only its work-queue entry keeps a task current.
+      dashboard.setDashboardSessionAccessor(() => new Map([['C1:t1', session({ activityState: 'idle' })]]));
+      const { setActiveWorkQueueHost } = await import('../../work-queue/host');
+      setActiveWorkQueueHost({
+        statusFor: (_c: string, t: string) =>
+          t === 't1' ? { state: 'queued', queue: 'deploy:dev2', position: 1, since: 1 } : undefined,
+      } as any);
+      const messages: any[] = [];
+      const headers = { cookie: `soma_dash_token=${encodeURIComponent('bearer:test-token')}` };
+      const ws = await webServer.injectWebServerWS('/ws/dashboard', { headers }, (socket: any) => {
+        socket.on('message', (data: any) => messages.push(JSON.parse(data.toString())));
+      });
+      try {
+        dashboard.broadcastTaskUpdate('C1:t1', snapshot());
+        await vi.waitFor(() => expect(messages.some((m) => m.type === 'task_update')).toBe(true));
+      } finally {
+        ws.terminate();
+        setActiveWorkQueueHost(undefined);
+      }
+      // The page keeps this list (it no longer polls the board on a task update): it must read as the card's does.
+      expect(messages.find((m) => m.type === 'task_update').tasks.map((t: any) => t.status)).toEqual([
+        'completed',
+        'in_progress',
+        'pending',
+        'pending',
+      ]);
+    });
+
     it('the task_update push carries the work no task got (SSOT 2026-10-29 T5 — the 태스크 밖 row)', async () => {
       const webServer = await import('../web-server');
       dashboard.setDashboardSessionAccessor(() => new Map([['C1:t1', session({ activityState: 'working' })]]));

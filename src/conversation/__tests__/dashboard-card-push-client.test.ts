@@ -16,7 +16,8 @@ function cook(fragment: string): string {
   return new Function(`return \`${fragment}\`;`)() as string;
 }
 function clientFn(name: string): string {
-  const start = TEMPLATE.indexOf(`\nfunction ${name}(`);
+  let start = TEMPLATE.indexOf(`\nfunction ${name}(`);
+  if (start < 0) start = TEMPLATE.indexOf(`\nasync function ${name}(`);
   if (start < 0) throw new Error(`client function ${name} not found`);
   const end = TEMPLATE.indexOf('\n}\n', start);
   return cook(TEMPLATE.slice(start + 1, end + 2));
@@ -101,5 +102,32 @@ describe('the socket — sessionPatch goes down the sessionUpdated path; task_up
     send({ type: 'task_update', sessionKey: 'k', tasks: [{ id: 'T1' }], earlierTasks: [] });
     expect(cache.k.tasks).toEqual([{ id: 'T1' }]);
     expect(calls).toEqual(['refreshCard:k']);
+  });
+
+  it('task_update for a card this page does not hold yet fetches the board (a new thread joins it)', () => {
+    const { send, calls } = page({});
+    send({ type: 'task_update', sessionKey: 'k', tasks: [{ id: 'T1' }], earlierTasks: [] });
+    expect(calls).toEqual(['loadSessions']);
+  });
+});
+
+describe('wsResync — after a board poll repaints the cards, the next push of each is whole', () => {
+  it('asks the server over an open socket, and only then', () => {
+    const sent: string[] = [];
+    const mk = (readyState: number) =>
+      load<{ wsResync: () => void }>(['wsResync'], { ws: { readyState, send: (m: string) => sent.push(m) } });
+    mk(0).wsResync(); // connecting
+    mk(3).wsResync(); // closed
+    expect(sent).toEqual([]);
+    mk(1).wsResync();
+    expect(sent).toEqual(['{"type":"resync"}']);
+    load<{ wsResync: () => void }>(['wsResync'], { ws: null }).wsResync(); // no socket yet: nothing, no throw
+  });
+
+  it('the board poll calls it right after painting the polled board', () => {
+    const body = clientFn('loadSessions');
+    const paint = body.indexOf('renderBoard(data.board, false);');
+    expect(paint).toBeGreaterThan(-1);
+    expect(body.indexOf("if (typeof wsResync === 'function') wsResync();", paint)).toBeGreaterThan(paint);
   });
 });

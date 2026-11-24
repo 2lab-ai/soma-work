@@ -147,7 +147,7 @@ import { backfillArtifactsFromWorkLog } from './artifact-capture';
 import { type ArtifactSummary, boardArtifact, getArtifactStore, type SessionArtifact } from './artifacts';
 import { buildCapacityView, type CapacityView, readSaveMode } from './capacity-view';
 import { type CardLink, cardLinksOf, followupLinksOf, settledLinkUrlsOf } from './card-links';
-import { cardFields, cardPushMessage, type SentCards } from './card-push';
+import { cardFields, cardPushMessage, type SentCards, WS_RESYNC } from './card-push';
 import { archivedCardClocks, cardWhereOf, liveCardClocks } from './card-where';
 import { isClientRef } from './client-ref';
 import { type ComposerMenuWhere, type ComposerTriggerRow, composerTriggers } from './composer-menus';
@@ -3949,7 +3949,12 @@ export function broadcastTaskUpdate(
     const payload = JSON.stringify({
       type: 'task_update',
       sessionKey: wireKey,
-      tasks: normalizeTaskProgress(tasks, sessionHasCurrentTask(live, deriveAutoResume(live, Date.now()))),
+      // Same predicate as the card (sessionToKanban): a session waiting on the host keeps its current task.
+      tasks: normalizeTaskProgress(
+        tasks,
+        sessionHasCurrentTask(live, deriveAutoResume(live, Date.now())) ||
+          hostWaitFor(live?.channelId, live?.threadTs) !== undefined,
+      ),
       earlierTasks,
       tasksOutside: tasksOutside ?? null,
     });
@@ -6587,6 +6592,12 @@ export async function registerDashboardRoutes(
       } catch {
         /* ignore */
       }
+
+      // The page replaced its cards from a board poll (card-push.ts): what it holds of each card is that board's copy,
+      // which may be older than this socket's last push — the next push of every card is whole. Nothing else is read.
+      socket.on('message', (data: unknown) => {
+        if (String(data) === WS_RESYNC) client.sentCards?.clear();
+      });
 
       socket.on('close', () => {
         if (expiryTimer) clearTimeout(expiryTimer);
@@ -20402,6 +20413,8 @@ async function loadSessions() {
     _lastPolledBoard = data.board;
     if (data.lifecycle) _lifecycle = data.lifecycle;
     renderBoard(data.board, false);
+    // The cards are now this poll's copies: the socket's next push of each is whole (card-push.ts).
+    if (typeof wsResync === 'function') wsResync();
     setBoardLoad('ready');
     if (panelOpen && panelSessionKey && _sessionCache[panelSessionKey]) {
       // Without the WebSocket (or for a sibling instance) the poll is the only
@@ -21207,6 +21220,12 @@ function onServerBuild(serverBuild) {
 // A card push as its changed fields (sessionPatch — card-push.ts, dashboard perf 2026-11-24): this page's copy of the
 // card with the changed fields set and the ones that left removed, as a new object like a whole push. Null when this
 // page holds no copy: the card's next whole push or the board poll brings it.
+// Sent after a board poll repainted the cards: the server's next push of each card is whole, since the poll may have
+// put back an older copy than the patches it has sent since.
+function wsResync() {
+  if (ws && ws.readyState === 1) ws.send('{"type":"resync"}');
+}
+
 function patchedSession(held, msg) {
   if (!held) return null;
   var merged = Object.assign({}, held, msg.set || {});
@@ -21278,9 +21297,11 @@ function connectWs() {
           // SSOT 2026-10-29 T5: the work no task got rides with the list.
           if ('tasksOutside' in msg) _sessionCache[msg.sessionKey].tasksOutside = msg.tasksOutside || undefined;
         }
-        // The card redraws from that copy. Not a board poll: every TodoWrite of any session made every open tab fetch
-        // the whole board, and the server build it for each (dashboard perf 2026-11-24).
-        if (_cardHost[msg.sessionKey]) refreshCard(msg.sessionKey);
+        // The card redraws from that copy. Only a card this page does not hold yet (a new thread whose board push came
+        // before its session was on the board) fetches the board: every TodoWrite of any session made every open tab
+        // fetch the whole board, and the server build it for each (dashboard perf 2026-11-24).
+        if (!_sessionCache[msg.sessionKey]) loadSessions();
+        else if (_cardHost[msg.sessionKey]) refreshCard(msg.sessionKey);
         // The panel repaints through the node it shows: the cache now holds the
         // main agent's new list, and a subagent's panel reads its own (spec 12).
         if (panelOpen && panelSessionKey === msg.sessionKey) repaintPanelSession();

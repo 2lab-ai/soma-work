@@ -8,8 +8,11 @@
  * - nothing, when no field changed;
  * - `sessionPatch` with only the changed fields (`set`) and the fields that left the card (`unset`);
  * - the whole card (`sessionUpdated`, as before) on its first push to the socket, and on a change once
- *   {@link CARD_KEYFRAME_MS} has passed since its last whole copy — so a copy the page replaced from an older board
- *   poll is put right within that time even if the fields it lost never change again.
+ *   {@link CARD_KEYFRAME_MS} has passed since its last whole copy.
+ *
+ * A board poll the page paints may hold an older copy of a card than the patches sent since (the poll was built
+ * before them and arrived after). The page then sends {@link WS_RESYNC}; the server forgets that socket's copies, so
+ * the next push of each card is whole. A whole-board push over the socket forgets them too.
  *
  * The page (`patchedSession` in dashboard.ts's page script) applies a patch onto its copy of the card and runs the
  * `sessionUpdated` path with the result.
@@ -23,6 +26,9 @@ export interface SentCard {
 
 /** A socket's last-sent copy of every card pushed to it, by card key. */
 export type SentCards = Map<string, SentCard>;
+
+/** The page's one message to the server: it repainted its cards from a board poll (dashboard.ts `wsResync`). */
+export const WS_RESYNC = '{"type":"resync"}';
 
 /** The longest a socket goes on patches of a card that keeps changing before it gets the whole card again. */
 export const CARD_KEYFRAME_MS = 30_000;

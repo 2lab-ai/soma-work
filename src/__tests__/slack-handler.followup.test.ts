@@ -2071,7 +2071,7 @@ describe('SlackHandler — follow-up queue host', () => {
       try {
         expect(await lands(1)).toBe(true);
 
-        snapshot.mockImplementation((key: string) => (key === SESSION_KEY ? undefined : real(key)));
+        snapshot.mockImplementation((key: unknown) => (key === SESSION_KEY ? undefined : real(key as string)));
         expect(surfaceView(WORK_KEY)?.turnEpoch).toBeUndefined();
         expect(await lands(1), 'slot session missing = unverifiable, never "the work key\'s own 0"').toBe(false);
 
