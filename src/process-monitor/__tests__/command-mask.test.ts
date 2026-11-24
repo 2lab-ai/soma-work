@@ -58,7 +58,7 @@ describe('maskCommandLine', () => {
     // The value of a secret flag is masked whole, spaces and all.
     expect(exact('tool', '--token', 'two words')).toBe(`tool --token ${MASK}`);
     expect(exact('tool', '--password=two words', 'API_KEY=two words', '"--secret=a b"')).toBe(
-      `tool --password=${MASK} API_KEY=${MASK} "--secret=${MASK}`,
+      `tool --password=${MASK} API_KEY=${MASK} "--secret=${MASK}"`,
     );
   });
 
@@ -85,7 +85,7 @@ describe('maskCommandLine', () => {
     expect(joined('curl -H "Authorization: Bearer abc" https://h')).toBe(
       `curl -H "Authorization: Bearer ${MASK}" https://h`,
     );
-    expect(joined('x "--password=hunter2"')).toBe(`x "--password=${MASK}`);
+    expect(joined('x "--password=hunter2"')).toBe(`x "--password=${MASK}"`);
     expect(joined('git clone https://bot:s3cr3t@github.com/o/r.git')).toBe(
       `git clone https://bot:${MASK}@github.com/o/r.git`,
     );
@@ -104,7 +104,9 @@ describe('maskCommandLine', () => {
     );
     expect(joined('client --cookie "a=b; sid=hunter2" --verbose')).toBe(`client --cookie "${MASK} ${MASK}" --verbose`);
     expect(joined('client --password="two words" --verbose')).toBe(`client --password=${MASK} ${MASK}" --verbose`);
-    expect(joined('x --token abc next')).toBe(`x --token ${MASK} next`);
+    // ps joins argv with spaces: a secret flag's value may be several words — masked up to the next option.
+    expect(joined('x --token abc next')).toBe(`x --token ${MASK} ${MASK}`);
+    expect(joined('x --token abc --next')).toBe(`x --token ${MASK} --next`);
   });
 
   it('a credential header with no space after its colon is masked too (its value runs on like any header value)', () => {
@@ -140,6 +142,37 @@ describe('maskCommandLine', () => {
     ]) {
       expect(line).not.toContain('hunter2');
     }
+  });
+
+  it('a secret value with spaces: quoted around flag and value, or space-joined by ps, is masked whole', () => {
+    // A quote around the whole flag-and-value argument (the shell kept it in `sh -c`, or ps shows it).
+    expect(joined('client "--password=two hunter2" --verbose')).toBe(`client "--password=${MASK} ${MASK}" --verbose`);
+    expect(exact('bash', '-c', 'client "--password=two hunter2" && sleep 60')).toBe(
+      `bash -c 'client "--password=${MASK} ${MASK}" && sleep 60'`,
+    );
+    expect(exact('sh', '-c', 'client "API_KEY=two hunter2" next')).toBe(
+      `sh -c 'client "API_KEY=${MASK} ${MASK}" next'`,
+    );
+    // macOS ps drops argv's quotes: `redis-cli --pass 'correct horse battery staple'` reads as four words.
+    expect(joined('redis-cli --pass correct horse battery staple')).toBe(
+      `redis-cli --pass ${MASK} ${MASK} ${MASK} ${MASK}`,
+    );
+    expect(joined('client --password=correct horse battery -v')).toBe(`client --password=${MASK} ${MASK} ${MASK} -v`);
+    // A shell separator ends it (a `bash -c` line read word by word).
+    expect(exact('bash', '-c', 'client --token abc; sleep 60')).toBe(`bash -c 'client --token ${MASK} sleep 60'`);
+    expect(exact('bash', '-c', 'client --token abc && sleep 60')).toBe(`bash -c 'client --token ${MASK} && sleep 60'`);
+    for (const line of [
+      joined('client "--password=two hunter2" --verbose'),
+      exact('bash', '-c', 'client "--password=two hunter2" && sleep 60'),
+      joined('redis-cli --pass correct horse battery staple'),
+    ]) {
+      expect(line).not.toMatch(/hunter2|horse|battery|staple/);
+    }
+  });
+
+  it('a URL password with no user name is masked (redis://:pw@host)', () => {
+    expect(joined('redis-cli -u redis://:hunter2@localhost:6379')).toBe(`redis-cli -u redis://:${MASK}@localhost:6379`);
+    expect(joined('x https://h:8080/p@x')).toBe('x https://h:8080/p@x');
   });
 
   it('masks known key shapes and long high-entropy words anywhere', () => {

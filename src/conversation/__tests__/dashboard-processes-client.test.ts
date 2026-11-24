@@ -557,6 +557,7 @@ describe('P6 — the tree: guides, folds, CPU levels, where · what', () => {
 describe('P7 — the detail: one process’s snapshot, read once', () => {
   type Env = {
     procsOpenDetail(pid: number, start: string): void;
+    procDetailRetake(): void;
     procDetailHtml(st: unknown): string;
     procDetailFailText(s: number, c?: string): string;
     __get(n: string): any;
@@ -614,6 +615,7 @@ describe('P7 — the detail: one process’s snapshot, read once', () => {
       },
     };
     const el = { _html: '' };
+    const when = { _text: '' };
     const e = load<Env>(
       [
         ...TAB_FNS,
@@ -623,11 +625,19 @@ describe('P7 — the detail: one process’s snapshot, read once', () => {
         'procDetailHtml',
         'paintProcDetail',
         'procsOpenDetail',
+        'procDetailRetake',
       ],
       ['PROC_STATE_LABEL', 'PROCS_CONTROL_TIMEOUT_MS', '_procs', '_procDetail'],
       {
         document: {
-          getElementById: (id: string) => (id === 'proc-detail-dialog' ? dlg : id === 'proc-detail-body' ? el : null),
+          getElementById: (id: string) =>
+            id === 'proc-detail-dialog'
+              ? dlg
+              : id === 'proc-detail-body'
+                ? el
+                : id === 'proc-detail-when'
+                  ? when
+                  : null,
         },
         fetch: (url: string) => {
           calls.push(url);
@@ -636,10 +646,12 @@ describe('P7 — the detail: one process’s snapshot, read once', () => {
         writePanelPart: (target: { _html: string }, html: string) => {
           target._html = html;
         },
-        setTextIfChanged: () => {},
+        setTextIfChanged: (target: { _text: string }, text: string) => {
+          target._text = text;
+        },
       },
     );
-    return { e, calls, dlg, el };
+    return { e, calls, dlg, el, when };
   }
 
   it('a row’s open reads the process once, with its start time, and paints the dialog — no timer re-reads it', async () => {
@@ -663,6 +675,28 @@ describe('P7 — the detail: one process’s snapshot, read once', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('다시 찍기 reads the same process of the same task once more and repaints — even after the tab moved on', async () => {
+    let n = 0;
+    const later = { ...detail, cwd: '/work/repo/packages/a', takenAt: new Date(2026, 10, 23, 10, 5, 7).getTime() };
+    const { e, calls, el, when } = env(() => {
+      n++;
+      return Promise.resolve({ status: 200, json: async () => ({ ok: true, detail: n === 1 ? detail : later }) });
+    });
+    e.__get('_procs').key = 'C1:t1';
+    e.procsOpenDetail(2, S);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(el._html).not.toContain('/work/repo/packages/a');
+    // The tab now shows another task; the open snapshot is still the first task's process.
+    e.__get('_procs').key = 'C9:t9';
+    e.procDetailRetake();
+    await new Promise((r) => setTimeout(r, 0));
+    const url = `/api/dashboard/session/${encodeURIComponent('C1:t1')}/processes/2/detail?start=${encodeURIComponent(S)}`;
+    expect(calls).toEqual([url, url]);
+    expect(el._html).toContain('/work/repo/packages/a');
+    expect(when._text).toContain('10:05:07');
+    expect(when._text).toContain('자동으로 새로 고치지 않아요');
   });
 
   it('a slow answer for the process opened first never replaces the snapshot of the one opened after it', async () => {

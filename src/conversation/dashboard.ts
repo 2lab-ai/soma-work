@@ -17031,8 +17031,9 @@ function panelProcsHtml(state, canControl) {
 // Read once when the row is opened and never on a timer: what the reader sees is the moment they clicked (the
 // footer says when). 다시 찍기 reads again on purpose. Owner and admins only (GET …/processes/:pid/detail).
 var _procDetail = { key: '', pid: 0, start: '', status: 0, body: null, seq: 0 };
-function procsOpenDetail(pid, start) {
-  var key = _procs.key;
+// key: the task the process is in — the tab's, or (다시 찍기) the snapshot's own, which the tab may have moved off since.
+function procsOpenDetail(pid, start, key) {
+  key = key || _procs.key;
   if (!key || !pid || !start) return;
   var seq = _procDetail.seq + 1;
   _procDetail = { key: key, pid: pid, start: start, status: 0, body: null, seq: seq };
@@ -17055,7 +17056,7 @@ function procsOpenDetail(pid, start) {
     });
 }
 function procDetailRetake() {
-  if (_procDetail.pid) procsOpenDetail(_procDetail.pid, _procDetail.start);
+  if (_procDetail.pid) procsOpenDetail(_procDetail.pid, _procDetail.start, _procDetail.key);
 }
 function closeProcDetail() {
   var dlg = document.getElementById('proc-detail-dialog');
@@ -17146,9 +17147,7 @@ function procDetailHtml(state) {
   }).join('');
   html += '<section class="px-sec"><h3 class="px-h">하위 프로세스</h3><p class="px-line">이 프로세스와 그 아래 ' + toNum(sub.processCount) + '개 · CPU ' + procCpuText(sub.cpuPercent) + ' · 메모리 ' + procBytesText(sub.rssBytes) + '</p>'
     + (kids ? '<ul class="px-list">' + kids + '</ul>' : '<p class="pp-note">직속 자식 프로세스 없음</p>') + '</section>';
-  var types = [];
-  var byType = d.fdByType || {};
-  for (var t in byType) if (Object.prototype.hasOwnProperty.call(byType, t)) types.push(esc(t) + ' ' + toNum(byType[t]));
+  var types = Object.entries(d.fdByType || {}).map(function(e) { return esc(e[0]) + ' ' + toNum(e[1]); });
   var socks = (d.sockets || []).map(function(s) {
     return '<tr><td class="pp-num">' + esc(s.fd) + '</td><td>' + esc(s.proto) + '</td><td class="px-mono">' + esc(s.local || '') + '</td><td class="px-mono">' + esc(s.remote || '') + '</td><td>' + esc(s.state || '') + '</td></tr>';
   }).join('');

@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { promises as fsp, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -171,7 +171,30 @@ describe('readFilePrefix / statFdType', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'inspector-'));
     const big = path.join(dir, 'table');
     writeFileSync(big, 'x'.repeat(10_000));
-    expect((await readFilePrefix(big, 4096)).length).toBe(4096);
+    // At the filesystem: a handle read in short pieces (as /proc gives them) that stops at the bound; never readFile.
+    const pieces: number[] = [];
+    const realOpen = fsp.open.bind(fsp);
+    const open = vi.spyOn(fsp, 'open').mockImplementation(async (...args: Parameters<typeof fsp.open>) => {
+      const fh = await realOpen(...args);
+      const realRead = fh.read.bind(fh) as (b: Buffer, o: number, l: number, p: null) => Promise<{ bytesRead: number }>;
+      Object.assign(fh, {
+        read: async (b: Buffer, o: number, l: number, p: null) => {
+          const r = await realRead(b, o, Math.min(l, 1000), p);
+          pieces.push(r.bytesRead);
+          return r;
+        },
+      });
+      return fh;
+    });
+    const whole = vi.spyOn(fsp, 'readFile');
+    try {
+      expect((await readFilePrefix(big, 4096)).length).toBe(4096);
+      expect(pieces).toEqual([1000, 1000, 1000, 1000, 96]);
+      expect(whole).not.toHaveBeenCalled();
+    } finally {
+      open.mockRestore();
+      whole.mockRestore();
+    }
     writeFileSync(big, 'short\n');
     expect(await readFilePrefix(big, 4096)).toBe('short\n');
     expect(await statFdType(big)).toBe('REG');

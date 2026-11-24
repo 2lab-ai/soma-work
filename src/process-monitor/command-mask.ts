@@ -54,7 +54,10 @@ const AUTH_SCHEME_WORD = /^(bearer|basic|token|digest)$/i;
 /** A word that opens a URL (where a header's unquoted value ends). */
 const URL_START = /^[a-z][a-z0-9+.-]*:\/\//i;
 const INLINE_SCHEME = /\b(bearer|basic)(\s+)\S+/gi;
-const URL_PASSWORD = /\b([a-z][a-z0-9+.-]*:\/\/[^\s/@:]+):[^\s/@]+@/gi;
+/** `scheme://user:password@` — the user may be empty (`redis://:password@host`). */
+const URL_PASSWORD = /\b([a-z][a-z0-9+.-]*:\/\/[^\s/@:]*):[^\s/@]+@/gi;
+/** A shell word that separates commands (a `bash -c` line is read word by word). */
+const SHELL_SEPARATOR = /^(;|&&|\|\||\||&)$/;
 /** A query parameter (`?name=value`, `&name=value`): masked when its name says secret. Bounded name, linear scan. */
 const QUERY_PARAM = /([?&;])([^=&\s#?;]{1,64})=([^&\s#;]*)/g;
 const SECRET_QUERY_NAME = /token|key|secret|sig|signature|password|passwd|auth|credential/i;
@@ -159,13 +162,20 @@ export function maskCommandLine(input: { readonly argv: readonly string[]; reado
   const program = (words[0].split('/').pop() ?? '').toLowerCase();
   const out: string[] = [];
   // The value after a secret flag, a credential header or an auth scheme word: one word — or, when it opens with a
-  // quote, every word up to the one that closes it (`--cookie "a=b; sid=x"`); a header's value runs to the next flag
-  // or URL (`-H Cookie: a=b; sid=x https://…`), with its scheme (`Bearer`) left in view.
-  let value: { header: boolean; closing: string; schemeSeen: boolean } | null = null;
+  // quote, every word up to the one that closes it (`--cookie "a=b; sid=x"`, `"--password=a b"`). Some values run on
+  // (`runOn`) to the next flag, URL or shell separator: a header's (`-H Cookie: a=b; sid=x https://…`, its scheme
+  // `Bearer` left in view), and a secret flag's on a space-joined `ps` line, which has lost the argument's bounds
+  // (`--pass correct horse battery staple`).
+  let value: { header: boolean; closing: string; schemeSeen: boolean; runOn: boolean } | null = null;
+  // A secret flag's value when it is not quoted: one argument in exact argv; on a joined line, up to the next option.
+  const flagValue = (closing: string) => ({ header: false, closing, schemeSeen: true, runOn: !input.exact });
   for (const raw of words) {
     if (value) {
       const bare = raw.replace(/^["']/, '');
-      if (value.header && !value.closing && (raw.startsWith('-') || URL_START.test(bare))) {
+      if (
+        !value.closing &&
+        (SHELL_SEPARATOR.test(raw) || (value.runOn && (raw.startsWith('-') || URL_START.test(bare))))
+      ) {
         value = null;
       } else {
         if (value.header && !value.schemeSeen && AUTH_SCHEME_WORD.test(bare.replace(/["']$/, ''))) {
@@ -177,7 +187,8 @@ export function maskCommandLine(input: { readonly argv: readonly string[]; reado
         const closing = value.closing || opens;
         const ends = closing !== '' && raw.length > (opens ? 1 : 0) && raw.endsWith(closing);
         out.push(`${opens}${MASK}${ends ? closing : ''}`);
-        if (ends || (!closing && !value.header)) value = null;
+        // A word that ends a shell command (`abc;`) ends an unquoted flag value too — not a header's (`a=b; sid=x`).
+        if (ends || (!closing && (!value.runOn || (!value.header && /[;&|]$/.test(raw))))) value = null;
         else if (opens) value.closing = opens;
         continue;
       }
@@ -186,20 +197,29 @@ export function maskCommandLine(input: { readonly argv: readonly string[]; reado
     // opening quote, and keeps it.
     const lead = /^["']/.test(raw) ? raw[0] : '';
     const word = lead ? raw.slice(1) : raw;
+    // The word's own opening quote closes in it (`"--password=x"`), or the value runs on to its close.
+    const leadClosed = lead !== '' && word.length > 0 && word.endsWith(lead);
+    /** The quote a secret value is still inside after this word: the word's own, else one opening the value. */
+    const openQuote = (v: string): string => {
+      if (lead) return leadClosed ? '' : lead;
+      return /^["']/.test(v) && !(v.length > 1 && v.endsWith(v[0])) ? v[0] : '';
+    };
     const flag = FLAG_WITH_VALUE.exec(word);
     if (flag && SECRET_NAME.test(flag[1])) {
-      out.push(`${lead}${flag[1]}=${MASK}`);
-      // `--cookie="a=b; sid=x"`: the quoted value runs on.
-      if (/^["']/.test(flag[2]) && !flag[2].endsWith(flag[2][0]))
-        value = { header: false, closing: flag[2][0], schemeSeen: true };
+      out.push(`${lead}${flag[1]}=${MASK}${leadClosed ? lead : ''}`);
+      // `--cookie="a=b; sid=x"`, `"--password=two words"`: the quoted value runs on to its close; unquoted on a
+      // joined line, up to the next option — unless the word ended a shell command.
+      const q = openQuote(flag[2]);
+      if (q) value = flagValue(q);
+      else if (!leadClosed && !input.exact && !/[;&|]$/.test(word)) value = flagValue('');
       continue;
     }
     const assignment = !flag && ASSIGNMENT.exec(word);
     if (assignment && SECRET_NAME.test(assignment[1])) {
-      out.push(`${lead}${assignment[1]}=${MASK}`);
-      if (/^["']/.test(assignment[2]) && !assignment[2].endsWith(assignment[2][0])) {
-        value = { header: false, closing: assignment[2][0], schemeSeen: true };
-      }
+      out.push(`${lead}${assignment[1]}=${MASK}${leadClosed ? lead : ''}`);
+      // Only a quote carries an assignment's value on: what follows `TOKEN=x` is the command it is for.
+      const q = openQuote(assignment[2]);
+      if (q) value = { header: false, closing: q, schemeSeen: true, runOn: false };
       continue;
     }
     // Not a secret flag or variable as a whole: an exact argument with spaces in it is a command of its own
@@ -214,7 +234,7 @@ export function maskCommandLine(input: { readonly argv: readonly string[]; reado
     }
     if (CREDENTIAL_HEADER.test(word)) {
       out.push(raw);
-      value = { header: true, closing: lead, schemeSeen: false };
+      value = { header: true, closing: lead, schemeSeen: false, runOn: true };
       continue;
     }
     const inWord = HEADER_IN_WORD.exec(word);
@@ -227,12 +247,17 @@ export function maskCommandLine(input: { readonly argv: readonly string[]; reado
       const head = word.slice(0, inWord.index);
       const shown = after === '' || scheme ? after : MASK;
       out.push(`${lead}${head ? maskWord(head) : ''}${inWord[1]}${inWord[2]}${shown}${closed ? lead : ''}`);
-      if (!closed) value = { header: true, closing: lead, schemeSeen: after !== '' };
+      if (!closed) value = { header: true, closing: lead, schemeSeen: after !== '', runOn: true };
       continue;
     }
-    if ((FLAG.test(word) && SECRET_NAME.test(word)) || AUTH_SCHEME_WORD.test(word)) {
+    if (FLAG.test(word) && SECRET_NAME.test(word)) {
       out.push(raw);
-      value = { header: false, closing: '', schemeSeen: true };
+      value = flagValue('');
+      continue;
+    }
+    if (AUTH_SCHEME_WORD.test(word)) {
+      out.push(raw);
+      value = { header: false, closing: '', schemeSeen: true, runOn: false };
       continue;
     }
     out.push(input.exact ? quoted(maskWord(raw)) : maskWord(raw));
