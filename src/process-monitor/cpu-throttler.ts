@@ -55,6 +55,8 @@ const IDLE_PERIODS = 8;
  * whole ticks (Linux /proc: 10 ms) reads a short run as none, and resetting the share on it lets a wide tree run free.
  */
 const QUIET_WINDOW_S = 2;
+/** The most hold intervals kept per process (a sample in flight may have read an earlier one). */
+const MAX_INTERVALS = 32;
 /** How long a hold's interval is kept for reading a monitor sample taken during it. */
 const INTERVAL_KEEP_MS = 30_000;
 /** Shutdown's passes over holds it could not continue yet, within this budget. */
@@ -122,14 +124,9 @@ interface Hold {
 
 /** Add members, one per pid (a sample and a period can both bring the same process). */
 function withMembers(into: Member[], more: readonly Member[]): Member[] {
-  const seen = new Set(into.map((m) => m.pid));
-  const out = [...into];
-  for (const m of more) {
-    if (seen.has(m.pid)) continue;
-    seen.add(m.pid);
-    out.push(m);
-  }
-  return out;
+  const byPid = new Map(into.map((m) => [m.pid, m]));
+  for (const m of more) if (!byPid.has(m.pid)) byPid.set(m.pid, m);
+  return [...byPid.values()];
 }
 
 export class CpuThrottler {
@@ -137,7 +134,7 @@ export class CpuThrottler {
   /** pid → the hold: every stop this throttler made and has not continued (or seen gone). */
   private readonly held = new Map<number, Hold>();
   /** `pid:start` → when the cap stopped it and continued it (`to` null while held): which `T` in a sample is the cap's. */
-  private readonly intervals = new Map<string, { from: number; to: number | null }>();
+  private readonly intervals = new Map<string, Array<{ from: number; to: number | null }>>();
   /** Stops the OS refused, said once each. */
   private readonly refused = new Set<string>();
   /** Continues the OS refused, said once each (the hold is kept and tried again every period). */
@@ -204,7 +201,6 @@ export class CpuThrottler {
         this.release(s.sessionKey);
         replanned = true;
       } else if (cur) {
-        cur.cap = cap;
         // Keep what a period discovered that the sample has not seen yet (it is in the next sample).
         cur.members = withMembers(
           members,
@@ -239,10 +235,24 @@ export class CpuThrottler {
     if (!window) return mine;
     // For a sample: the hold must overlap the ps run that read the `T` — one that began after it read a stop of
     // someone else's.
-    const iv = this.intervals.get(`${pid}:${startToken}`);
-    if (!iv) return false;
     if (h && !mine) return false;
-    return iv.from <= window.to && (iv.to === null || iv.to >= window.from);
+    // Any of its recent holds: a sample still in flight may have read an earlier one.
+    const ivs = this.intervals.get(`${pid}:${startToken}`) ?? [];
+    return ivs.some((iv) => iv.from <= window.to && (iv.to === null || iv.to >= window.from));
+  }
+
+  /** A hold began: its interval opens (the last `MAX_INTERVALS` of a process are kept). */
+  private openInterval(id: string, at: number): void {
+    const list = this.intervals.get(id) ?? [];
+    list.push({ from: at, to: null });
+    if (list.length > MAX_INTERVALS) list.splice(0, list.length - MAX_INTERVALS);
+    this.intervals.set(id, list);
+  }
+
+  /** A hold ended (continued, or gone): its open interval closes. */
+  private closeInterval(id: string, at: number): void {
+    const open = this.intervals.get(id)?.find((iv) => iv.to === null);
+    if (open) open.to = at;
   }
 
   /** The cap being enforced on a session now (`null`: not metered). */
@@ -305,8 +315,7 @@ export class CpuThrottler {
     /** A hold that ends without a continue (gone, reused, a person's pause): its interval closes now. */
     const drop = (pid: number, h: Hold): void => {
       this.held.delete(pid);
-      const iv = this.intervals.get(`${pid}:${h.startToken}`);
-      if (iv && iv.to === null) iv.to = at;
+      this.closeInterval(`${pid}:${h.startToken}`, at);
     };
     const picked = [...this.held].filter(([pid, h]) => {
       if (!which(h)) return false;
@@ -330,8 +339,7 @@ export class CpuThrottler {
       try {
         this.deps.kill(pid, 'SIGCONT');
         this.held.delete(pid);
-        const iv = this.intervals.get(id);
-        if (iv) iv.to = at;
+        this.closeInterval(id, at);
       } catch (err) {
         if ((err as NodeJS.ErrnoException)?.code === 'ESRCH') drop(pid, h);
         else if (!this.refusedContinue.has(id)) {
@@ -479,8 +487,10 @@ export class CpuThrottler {
       if (extra.length > 0) {
         // This read awaits: what is held is read again with it, so a held pid reused meanwhile is not continued. If
         // it fails, their identities are unknown here and the continue reads them live.
+        // Their parents are read again with them too: a parent pid reused since the period read lends no children.
         const heldPids = [...this.held.keys()];
-        const more = await this.timedRead([...extra, ...heldPids]).catch(() => null);
+        const parentPids = extra.map((pid) => parents.get(pid)).filter((pid): pid is number => pid !== undefined);
+        const more = await this.timedRead([...new Set([...extra, ...heldPids, ...parentPids])]).catch(() => null);
         // Every hold now — those that landed while this read was out too — is answered by this read or read live.
         for (const pid of this.held.keys()) if (!more?.has(pid)) read.delete(pid);
         if (more) for (const [pid, r] of more) read.set(pid, r);
@@ -557,8 +567,11 @@ export class CpuThrottler {
       const heldHere = new Set([...this.held].filter(([, h]) => h.sessionKey === key).map(([pid]) => pid));
       this.continueHolds((h) => h.sessionKey === key, read);
       // Let go only a tree well under its cap for a while (one held to its cap reads at its cap).
-      if (rate < s.cap / 2) s.calmPeriods++;
-      else s.calmPeriods = 0;
+      // A period with no measured rate (a counter that has not moved yet) leaves the streak as it is.
+      if (!Number.isNaN(rate)) {
+        if (rate < s.cap / 2) s.calmPeriods++;
+        else s.calmPeriods = 0;
+      }
       if (s.calmPeriods >= IDLE_PERIODS) {
         this.sessions.delete(key);
         continue;
@@ -579,7 +592,11 @@ export class CpuThrottler {
         this.setTimer(() => void this.hold(key, s, stop, seq), runMs);
       }
     }
-    for (const [k, iv] of this.intervals) if (iv.to !== null && at - iv.to > INTERVAL_KEEP_MS) this.intervals.delete(k);
+    for (const [k, list] of this.intervals) {
+      const kept = list.filter((iv) => iv.to === null || at - iv.to <= INTERVAL_KEEP_MS);
+      if (kept.length === 0) this.intervals.delete(k);
+      else if (kept.length !== list.length) this.intervals.set(k, kept);
+    }
   }
 
   /**
@@ -600,7 +617,7 @@ export class CpuThrottler {
       try {
         this.deps.kill(m.pid, 'SIGSTOP');
         this.held.set(m.pid, { sessionKey: key, startToken: m.startToken });
-        this.intervals.set(id, { from: at, to: null });
+        this.openInterval(id, at);
       } catch (err) {
         // Gone: nothing to hold. Refused: the cap cannot hold this one — said once, so a cap that does not bite is
         // not silent.
@@ -639,9 +656,12 @@ export function parseThrottleRows(out: string): Map<number, ThrottleRead> {
 export function createThrottleReader(runPs: RunPs, readCpuSeconds?: ReadCpuSeconds): ReadThrottle {
   return async (pids) => {
     if (pids.length === 0) return new Map();
+    // The fine CPU counters first, the identity last: what a signal trusts is the latest read before it. (A pid gone
+    // from the `-p` list makes ps exit 1; `runPs` still answers the others' rows.)
+    const fine = readCpuSeconds
+      ? await readCpuSeconds(pids).catch(() => new Map<number, number>())
+      : new Map<number, number>();
     const rows = parseThrottleRows(await runPs(['-o', 'pid=,ppid=,stat=,lstart=,time=', '-p', pids.join(',')]));
-    if (!readCpuSeconds) return rows;
-    const fine = await readCpuSeconds([...rows.keys()]).catch(() => new Map<number, number>());
     for (const [pid, cpu] of fine) {
       const r = rows.get(pid);
       if (r) rows.set(pid, { ...r, cpuSeconds: cpu });

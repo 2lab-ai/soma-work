@@ -220,15 +220,18 @@ describe.skipIf(!posix)('process monitor on the real OS', () => {
       // As production wires it: Linux ps time has whole-second resolution, /proc ticks do not.
       readCpuSeconds: process.platform === 'linux' ? readLinuxCpuSeconds : undefined,
     });
+    // A counter that cannot be read fails the test (a 0 would pass for a held tree).
     const cpuOf = (pid: number): number => {
-      if (process.platform === 'linux') return parseProcStatCpuSeconds(readFileSync(`/proc/${pid}/stat`, 'utf8')) ?? 0;
-      return (
-        parseCpuTime(
-          execFileSync('ps', ['-o', 'time=', '-p', String(pid)])
-            .toString()
-            .trim(),
-        ) ?? 0
-      );
+      const v =
+        process.platform === 'linux'
+          ? parseProcStatCpuSeconds(readFileSync(`/proc/${pid}/stat`, 'utf8'))
+          : parseCpuTime(
+              execFileSync('ps', ['-o', 'time=', '-p', String(pid)])
+                .toString()
+                .trim(),
+            );
+      if (v === null || v === undefined) throw new Error(`CPU time of ${pid} could not be read`);
+      return v;
     };
     let spinnerPid = 0;
     try {

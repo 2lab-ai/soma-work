@@ -198,9 +198,10 @@ async function tqCpuChange(sel) {
   var r = await write;
   // Every write the server took is what it now enforces, a later one replaced or not: keep it, so a failing later
   // write falls back to it, not to what the page loaded with.
+  // Only the CPU fields: a concurrent knob save owns the rest of the row.
   var row = r.ok && r.data && r.data.user;
-  if (row && _tq && _tq.users) {
-    for (var i = 0; i < _tq.users.length; i++) if (_tq.users[i].id === id) _tq.users[i] = row;
+  if (row && row.cpu && _tq && _tq.users) {
+    for (var i = 0; i < _tq.users.length; i++) if (_tq.users[i].id === id) _tq.users[i].cpu = row.cpu;
   }
   if (_tqCpuSeq[id] !== seq) return;
   if (!r.ok) {

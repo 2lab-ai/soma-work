@@ -1,5 +1,7 @@
+import { spawnSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { CpuThrottler, parseThrottleRows, THROTTLE_PERIOD_MS } from '../cpu-throttler';
+import { CpuThrottler, createThrottleReader, parseThrottleRows, THROTTLE_PERIOD_MS } from '../cpu-throttler';
+import { runReadOnly } from '../index';
 import type { ProcessSample, SessionProcessDetail } from '../types';
 
 /**
@@ -477,6 +479,62 @@ describe('CpuThrottler — a task tree held to its cap by a duty cycle', () => {
     expect(t.meteredCap('A')).toBeNull();
   });
 
+  it('a cap that changes but stays under the tree keeps it metered, on the new cap', async () => {
+    const { m, t } = setup();
+    m.add(10, 0).add(11, 4);
+    const tree = session(400, [proc(10, 'root'), proc(11, 'child')]);
+    t.update([tree], () => 100);
+    await vi.advanceTimersByTimeAsync(10_000);
+    t.update([tree], () => 50);
+    expect(t.meteredCap('A')).toBe(50);
+    await vi.advanceTimersByTimeAsync(10_000);
+    const before = m.cpuOf(11);
+    await vi.advanceTimersByTimeAsync(10_000);
+    const rate = ((m.cpuOf(11) - before) / 10) * 100;
+    expect(rate).toBeGreaterThan(30);
+    expect(rate).toBeLessThan(70);
+  });
+
+  it('periods whose counter has not moved leave the calm streak as it is: a quiet tree is let go', async () => {
+    const { m, t } = setup();
+    // 2% of a core, read in 10 ms ticks: every other period reads no increase.
+    m.tickSeconds = 0.01;
+    m.add(10, 0).add(11, 0.02);
+    t.update([session(400, [proc(10, 'root'), proc(11, 'child')])], () => 100);
+    expect(t.meteredCap('A')).toBe(100);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(t.meteredCap('A')).toBeNull();
+  });
+
+  it('a sample still in flight reads an earlier hold of the same process as the cap’s', async () => {
+    const { m, t } = setup();
+    m.add(10, 0).add(11, 4);
+    t.update([session(400, [proc(10, 'root'), proc(11, 'child')])], () => 100);
+    for (let i = 0; i < 100 && !t.holds('A', 11, START); i++) await vi.advanceTimersByTimeAsync(5);
+    const firstHold = Date.now();
+    // That hold ends, and a later period holds it again.
+    for (let i = 0; i < 100 && t.holds('A', 11, START); i++) await vi.advanceTimersByTimeAsync(5);
+    for (let i = 0; i < 100 && !t.holds('A', 11, START); i++) await vi.advanceTimersByTimeAsync(5);
+    expect(Date.now()).toBeGreaterThan(firstHold);
+    expect(t.holds('A', 11, START, { from: firstHold, to: firstHold + 1 })).toBe(true);
+  });
+
+  it('a discovered worker whose parent pid changed hands while the period read is not adopted', async () => {
+    const { m, t } = setup();
+    m.add(10, 0).add(11, 4).add(30, 1, START, 11);
+    let done = false;
+    m.readHook = async (pids) => {
+      // The discovery read (30 and its parent): 11 exits just before it and its pid goes to another program.
+      if (done || !pids.includes(30)) return;
+      done = true;
+      m.reuse(11);
+    };
+    t.update([session(400, [proc(10, 'root'), proc(11, 'child')])], () => 100);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(done).toBe(true);
+    expect(m.signals.some(([pid]) => pid === 30)).toBe(false);
+  });
+
   it('never stops or continues a process a person paused', async () => {
     const { m, t } = setup({ paused: (pid) => pid === 12 });
     m.add(10, 0).add(11, 3).add(12, 3);
@@ -789,4 +847,15 @@ describe('CpuThrottler probe — every tree width, cap and read latency is held 
     expect(cases).toBeGreaterThan(60);
     // A few seconds on an idle machine; room for a loaded runner.
   }, 300_000);
+});
+
+describe.skipIf(process.platform === 'win32')('createThrottleReader on the real OS', () => {
+  it('a pid in the list that is gone does not lose the others (ps exits 1 and still prints them)', async () => {
+    // A pid that just exited (and was reaped): in range, no longer a process.
+    const gone = spawnSync('/bin/sh', ['-c', 'echo $$']).stdout.toString().trim();
+    const read = createThrottleReader((args) => runReadOnly('ps', args));
+    const rows = await read([process.pid, Number(gone)]);
+    expect(rows.has(Number(gone))).toBe(false);
+    expect(rows.get(process.pid)).toMatchObject({ ppid: process.ppid });
+  });
 });

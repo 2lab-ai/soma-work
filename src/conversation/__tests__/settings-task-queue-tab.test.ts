@@ -338,6 +338,22 @@ describe('the CPU cap', () => {
     expect(refreshed[refreshed.length - 1]).toEqual({ limit: 400, setting: 400 });
   });
 
+  it('a CPU save takes only the CPU fields: the row’s task limit (a knob save’s) is left as it is', async () => {
+    const tq = { users: [{ id: 'U1', name: 'Alice', limit: 3, setting: 3, cpu: { limit: 100, setting: null } }] };
+    const k = load<any>([...KNOB, 'tqUser', 'tqCpuChange', 'tqCpuLabel'], {
+      // The CPU route answers a row whose task limit is stale (read before the knob's save landed).
+      apiWrite: async () => ({
+        ok: true,
+        data: { user: { id: 'U1', name: 'Alice', limit: 1, setting: null, cpu: { limit: 200, setting: 200 } } },
+      }),
+      tqStatus: () => {},
+      tqRefreshRow: () => {},
+    });
+    k.setTq(tq);
+    await k.tqCpuChange({ value: '200', getAttribute: () => 'U1' });
+    expect(tq.users[0]).toEqual({ id: 'U1', name: 'Alice', limit: 3, setting: 3, cpu: { limit: 200, setting: 200 } });
+  });
+
   it('changes for one person are written in the order they were made: a slow first write never lands last', async () => {
     const started: unknown[] = [];
     const finish: Array<() => void> = [];
