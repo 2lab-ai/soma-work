@@ -87,7 +87,7 @@ const CONFIG_WRITERS = new Set([
   'gcloud config',
 ]);
 /** Programs that have credential rules: naming one anywhere re-anchors the command (`sudo -u app curl -u …`). */
-const KNOWN_PROGRAMS = new Set([
+const KNOWN_PROGRAMS = new Set<string>([
   ...Object.keys(PROGRAM_SECRET_FLAGS).map((k) => k.split(' ')[0]),
   ...[...SECRET_OPERAND, ...CONFIG_WRITERS].map((k) => k.split(' ')[0]),
   'mysql',
@@ -96,6 +96,8 @@ const KNOWN_PROGRAMS = new Set([
   'mariadb',
   'mariadb-dump',
 ]);
+/** An own key of a rule table (a program named `constructor` or `__proto__` reads no inherited value). */
+const hasOwn = (o: object, k: string): boolean => Object.getOwnPropertyDescriptor(o, k) !== undefined;
 /** A config key as one word (`aws_secret_access_key`, `//registry.npmjs.org/:_authToken`). */
 const CONFIG_KEY = /^[\w.:/@-]+$/;
 /** Words that run the next word as the command (`env A=1 curl …`, `sudo curl …`). */
@@ -220,16 +222,24 @@ export function maskCommandLine(input: { readonly argv: readonly string[]; reado
     ? input.argv.slice(0, MAX_ARGS).map((a) => maskJson(a.length > MAX_INPUT ? a.slice(0, MAX_INPUT) : a))
     : splitArgs(maskJson(input.argv.join(' ').slice(0, MAX_INPUT))).slice(0, MAX_ARGS);
   if (words.length === 0) return '';
-  // The program of the command a word belongs to: the first word, the first after a shell separator
-  // (`cd /w && curl -u …`) past `env`/`sudo` and `NAME=value` prefixes, or any word naming a program with credential
-  // rules (`sudo -u app curl …`: `curl` takes over from `app`).
-  let program = '';
-  // Its subcommands (`docker login`, `npm config`): every positional word after the program, so an option's operand
-  // before it (`docker --config /x login`) does not hide it.
+  // The command a word belongs to runs from the line's start, or a shell separator (`cd /w && curl -u …`,
+  // `true&&curl …`), to the next. Its programs: the word at its command position (past `env`/`sudo` and `NAME=value`
+  // prefixes) and every word naming a program with credential rules (`sudo -u app curl …`). Their rules add up, so a
+  // later word can only add a rule, never drop one (`curl https://h/git -u …` keeps curl's).
+  let programs: string[] = [];
+  // Its subcommands (`docker login`, `npm config`): every positional word, so an option's operand before it
+  // (`docker --config /x login`) does not hide it.
   let subs: string[] = [];
-  // A credential operand is next (`vault login <token>`): the next positional word is the secret.
+  // After a credential subcommand (`vault login`), every positional word is taken as secret (an option's operand
+  // cannot be told from the token: `vault login -namespace ops <token>`).
   let operandArmed = false;
   let expectCmd = true;
+  let segmentEnds = false;
+  const newSegment = (): void => {
+    programs = [];
+    subs = [];
+    operandArmed = false;
+  };
   const out: string[] = [];
   // One rule for every value a marker (a secret flag or variable, a program's credential flag or operand, a config
   // key, a credential header, an auth scheme) says is secret. Its first word is always taken, whatever it looks like
@@ -252,8 +262,10 @@ export function maskCommandLine(input: { readonly argv: readonly string[]; reado
     else if (opens) value.closing = opens;
   };
   for (const raw of words) {
-    const atCmd = expectCmd;
+    if (segmentEnds) newSegment();
+    let atCmd = expectCmd;
     expectCmd = SHELL_SEPARATOR.test(raw) || /[;&|]$/.test(raw);
+    segmentEnds = expectCmd;
     if (value) {
       const bare = raw.replace(/^["']/, '');
       const ended =
@@ -289,28 +301,36 @@ export function maskCommandLine(input: { readonly argv: readonly string[]; reado
       if (q) value = { header: false, closing: q, schemeSeen: true, runOn: false, taken };
       else if (flagLike && !leadClosed && !input.exact && !/[;&|]$/.test(word)) value = { ...separate(), taken };
     };
+    // A marker is recognised without the quote that closes the word (`"--password" x`, `'-u' x`).
+    const bareWord = leadClosed ? word.slice(0, -1) : word;
     let programWord = false;
     if (!/\s/.test(word)) {
-      const base = (word.split('/').pop() ?? '').toLowerCase();
+      // A shell operator inside the word (`true&&curl`, `a;mysql`): what follows it starts a command.
+      let cmdWord = bareWord;
+      const joinedOp = /(?:&&|\|\||[;|&])([^;&|]+)$/.exec(bareWord);
+      if (joinedOp) {
+        newSegment();
+        atCmd = true;
+        cmdWord = joinedOp[1];
+      }
+      const base = (cmdWord.split('/').pop() ?? '').toLowerCase();
       if (atCmd && !expectCmd) {
-        if (COMMAND_WRAPPERS.has(base) || ASSIGNMENT.test(word) || word.startsWith('-')) expectCmd = true;
+        if (COMMAND_WRAPPERS.has(base) || ASSIGNMENT.test(cmdWord) || cmdWord.startsWith('-')) expectCmd = true;
         else programWord = true;
       } else if (KNOWN_PROGRAMS.has(base)) programWord = true;
-      if (programWord) {
-        program = base;
-        subs = [];
-        operandArmed = false;
-      }
+      if (programWord && !programs.includes(base)) programs.push(base);
     }
-    /** The table entry for this command: `program subcommand` for any subcommand seen, else `program`. */
-    const ruleOf = <T>(table: Readonly<Record<string, T>>): T | undefined => {
-      for (const sb of subs) {
-        const hit = table[`${program} ${sb}`];
-        if (hit !== undefined) return hit;
+    /** Every rule the command's programs (with any of its subcommands) have. Own keys only (`constructor`). */
+    const rulesOf = (table: Readonly<Record<string, readonly string[]>>): string[] => {
+      const found: string[] = [];
+      for (const pr of programs) {
+        if (hasOwn(table, pr)) found.push(...table[pr]);
+        for (const sb of subs) if (hasOwn(table, `${pr} ${sb}`)) found.push(...table[`${pr} ${sb}`]);
       }
-      return table[program];
+      return found;
     };
-    const inCommand = (set: ReadonlySet<string>): boolean => subs.some((sb) => set.has(`${program} ${sb}`));
+    const inCommand = (set: ReadonlySet<string>): boolean =>
+      programs.some((pr) => subs.some((sb) => set.has(`${pr} ${sb}`)));
     const flag = FLAG_WITH_VALUE.exec(word);
     if (flag && SECRET_NAME.test(flag[1])) {
       attachedValue(`${flag[1]}=`, flag[2], true);
@@ -322,13 +342,13 @@ export function maskCommandLine(input: { readonly argv: readonly string[]; reado
       attachedValue(`${assignment[1]}=`, assignment[2], false);
       continue;
     }
-    if (MYSQL_PROGRAM.test(program) && /^-p./s.test(word)) {
+    if (programs.some((pr) => MYSQL_PROGRAM.test(pr)) && /^-p./s.test(word)) {
       attachedValue('-p', word.slice(2), true);
       continue;
     }
-    const own = ruleOf(PROGRAM_SECRET_FLAGS);
-    if (own) {
-      if (own.includes(word)) {
+    const own = rulesOf(PROGRAM_SECRET_FLAGS);
+    if (own.length > 0) {
+      if (own.includes(bareWord)) {
         out.push(raw);
         value = separate();
         continue;
@@ -344,19 +364,18 @@ export function maskCommandLine(input: { readonly argv: readonly string[]; reado
         continue;
       }
     }
-    const positional = !programWord && program !== '' && !word.startsWith('-') && !expectCmd;
+    const positional = !programWord && programs.length > 0 && !word.startsWith('-') && !expectCmd;
     if (positional && operandArmed) {
-      operandArmed = false;
       value = separate();
       takeValue(raw);
       continue;
     }
     if (positional && !/\s/.test(word)) {
-      const sb = word.toLowerCase();
+      const sb = bareWord.toLowerCase();
       subs.push(sb);
-      if (SECRET_OPERAND.has(`${program} ${sb}`)) operandArmed = true;
+      if (programs.some((pr) => SECRET_OPERAND.has(`${pr} ${sb}`))) operandArmed = true;
     }
-    if (positional && inCommand(CONFIG_WRITERS) && CONFIG_KEY.test(word) && SECRET_NAME.test(word)) {
+    if (positional && inCommand(CONFIG_WRITERS) && CONFIG_KEY.test(bareWord) && SECRET_NAME.test(bareWord)) {
       out.push(raw);
       value = separate();
       continue;
@@ -367,7 +386,7 @@ export function maskCommandLine(input: { readonly argv: readonly string[]; reado
       out.push(quoted(maskCommandLine({ argv: [raw], exact: false })));
       continue;
     }
-    if (CREDENTIAL_HEADER.test(word)) {
+    if (CREDENTIAL_HEADER.test(bareWord)) {
       out.push(raw);
       value = { header: true, closing: lead, schemeSeen: false, runOn: true, taken: 0 };
       continue;
@@ -387,12 +406,12 @@ export function maskCommandLine(input: { readonly argv: readonly string[]; reado
       }
       continue;
     }
-    if (FLAG.test(word) && SECRET_NAME.test(word)) {
+    if (FLAG.test(bareWord) && SECRET_NAME.test(bareWord)) {
       out.push(raw);
       value = separate();
       continue;
     }
-    if (AUTH_SCHEME_WORD.test(word)) {
+    if (AUTH_SCHEME_WORD.test(bareWord)) {
       out.push(raw);
       value = separate(false);
       continue;

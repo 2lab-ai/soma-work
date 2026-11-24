@@ -276,6 +276,27 @@ describe('maskCommandLine', () => {
       expect(joined(line), line).not.toContain('hunter2');
       expect(exact(...line.split(' ')), line).not.toContain('hunter2');
     }
+    // Real argv as the kernel holds it — one argument per shell word, spaces kept — and its space-joined ps line.
+    const argvs: string[][] = [
+      ['git', '-c', 'http.extraHeader=AUTHORIZATION: bearer hunter2', 'clone', 'https://h/r'],
+      ['curl', '-H', 'X-API-KEY: hunter2', 'https://h'],
+      ['curl', '-H', 'Authorization:Basic hunter2 swordfish', 'https://h'],
+      ['curl', '-u', 'bot:hunter2 swordfish', 'https://h'],
+      ['curl', '--user=bot:hunter2 swordfish', 'https://h'],
+      ['redis-cli', '-a', 'hunter2 swordfish', 'ping'],
+      ['mysql', '-phunter2 swordfish', 'db'],
+      ['docker', 'login', '-p', 'hunter2 swordfish', 'r'],
+      ['vault', 'login', 'hunter2 swordfish'],
+      ['npm', 'config', 'set', '//registry.npmjs.org/:_authToken', 'hunter2 swordfish'],
+      ['bash', '-c', 'cd /w && curl -u "bot:hunter2 swordfish" https://h'],
+      ['bash', '-c', 'true&&curl -u bot:hunter2 https://h'],
+      ['sh', '-c', 'export API_TOKEN="hunter2 swordfish"; run'],
+      ['tool', '--password', 'hunter2 swordfish', '--verbose'],
+    ];
+    for (const argv of argvs) {
+      expect(exact(...argv), argv.join(' ')).not.toMatch(/hunter2|swordfish/);
+      expect(joined(argv.join(' ')), argv.join(' ')).not.toMatch(/hunter2|swordfish/);
+    }
     // What is not a credential stays in view.
     expect(joined('docker run -p 8080:80 nginx')).toBe('docker run -p 8080:80 nginx');
     expect(joined('git checkout -b token-refresh main')).toBe('git checkout -b token-refresh main');
@@ -284,6 +305,35 @@ describe('maskCommandLine', () => {
     expect(joined('npm config get registry')).toBe('npm config get registry');
     expect(joined('curl https://h/x#section-2')).toBe('curl https://h/x#section-2');
     expect(joined('vault login -method=github')).toBe('vault login -method=github');
+  });
+
+  it('a quoted marker, a program named inside an operand, an option before a token, operators without spaces', () => {
+    // The quote that closes the marker's own word does not hide it.
+    expect(joined('tool "--password" hunter2 -v')).toBe(`tool "--password" ${MASK} -v`);
+    expect(exact('bash', '-c', `tool '--password' hunter2; echo`)).toBe(
+      `bash -c 'tool '\\''--password'\\'' ${MASK} echo'`,
+    );
+    expect(joined(`curl '-u' bot:hunter2 https://h`)).toBe(`curl '-u' ${MASK} https://h`);
+    // A program named inside an operand adds its rules; it never drops the command's own.
+    expect(joined('curl https://example.test/git -u bot:hunter2')).toBe(`curl https://example.test/git -u ${MASK}`);
+    expect(exact('curl', 'https://example.test/git', '-u', 'bot:hunter2')).toBe(
+      `curl https://example.test/git -u ${MASK}`,
+    );
+    // After `vault login`, an option's operand cannot be told from the token: every positional word is taken.
+    expect(exact('vault', 'login', '-namespace', 'ops', 'hunter2')).toBe(`vault login -namespace ${MASK} ${MASK}`);
+    // A shell operator without spaces around it still starts a command.
+    for (const line of [
+      'true&&curl -u bot:hunter2 https://h',
+      'cd /w;curl -u bot:hunter2 https://h',
+      'x|curl -u bot:hunter2',
+    ]) {
+      expect(joined(line), line).not.toContain('hunter2');
+      expect(exact('bash', '-c', line), line).not.toContain('hunter2');
+    }
+    // A program named like an Object property reads no inherited rule (it used to throw).
+    expect(() => joined('constructor -u x')).not.toThrow();
+    expect(() => exact('__proto__', 'login', '-p', 'x')).not.toThrow();
+    expect(joined('toString -p x')).toBe('toString -p x');
   });
 
   it('a URL password with no user name is masked (redis://:pw@host)', () => {

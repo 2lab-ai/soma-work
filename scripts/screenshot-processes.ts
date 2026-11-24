@@ -265,13 +265,9 @@ async function main() {
         badge,
       );
       const zoomCard = async (file: string) => {
-        const box = await page.evaluate((k) => {
-          const host = document.getElementById('kanban') as any;
-          const r = (
-            host.shadowRoot.querySelector(`li.ib-card[data-card="${k}"]`) as HTMLElement
-          ).getBoundingClientRect();
-          return { x: r.x, y: r.y, width: r.width, height: r.height };
-        }, WIRE);
+        // Playwright's locator pierces the board's open shadow root.
+        const box = await page.locator('#kanban').locator(`li.ib-card[data-card="${WIRE}"]`).boundingBox();
+        if (!box) throw new Error('the card is not on the board');
         await page.screenshot({
           path: path.join(OUT, file),
           clip: {

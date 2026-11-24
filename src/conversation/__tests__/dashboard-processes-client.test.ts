@@ -839,6 +839,93 @@ describe('P7 — the detail: one process’s snapshot, read once', () => {
     }
   });
 
+  it('a click on a row or its name opens that row’s process; a fold or pause click inside the row does not', () => {
+    const calls: string[] = [];
+    let onClick: ((ev: unknown) => void) | null = null;
+    const panel = {
+      _wired: false,
+      _html: '',
+      addEventListener: (_type: string, fn: (ev: unknown) => void) => {
+        onClick = fn;
+      },
+    };
+    const control = vi.fn();
+    const e = load<Env & { renderPanelProcs(): void }>(
+      [
+        ...TAB_FNS,
+        'procsFailText',
+        'paintPanelProcs',
+        'procsFetch',
+        'renderPanelProcs',
+        'procSecondsText',
+        'procClockText',
+        'procDetailFailText',
+        'procDetailHtml',
+        'paintProcDetail',
+        'procsOpenDetail',
+      ],
+      [
+        'PROCS_POLL_MS',
+        'PROCS_READ_TIMEOUT_MS',
+        'PROCS_CONTROL_TIMEOUT_MS',
+        '_procs',
+        '_procDetail',
+        'PROC_STATE_LABEL',
+      ],
+      {
+        document: {
+          hidden: false,
+          getElementById: (id: string) =>
+            id === 'panel-procs'
+              ? panel
+              : id === 'proc-detail-body'
+                ? { _html: '' }
+                : id === 'proc-detail-dialog'
+                  ? { hasAttribute: () => false, show() {} }
+                  : null,
+        },
+        fetch: (url: string) => {
+          calls.push(url);
+          return new Promise(() => {});
+        },
+        writePanelPart: () => {},
+        setTextIfChanged: () => {},
+        isSiblingSession: () => false,
+        viewerCanManage: () => true,
+        procsControl: control,
+        _panelMid: 'procs',
+        panelSessionKey: 'k1',
+        _sessionCache: { k1: { ownerId: 'U1' } },
+      },
+    );
+    e.renderPanelProcs();
+    const node = (attrs: Record<string, string>) => ({
+      disabled: false,
+      getAttribute: (n: string) => attrs[n] ?? null,
+    });
+    const click = (hits: Record<string, ReturnType<typeof node>>) =>
+      (onClick as unknown as (ev: unknown) => void)({ target: { closest: (sel: string) => hits[sel] ?? null } });
+    const details = () => calls.filter((u) => u.includes('/detail?'));
+    const row3 = node({ 'data-proc-row': '3', 'data-start': 'T3' });
+    // The name's button.
+    click({ '[data-proc-open]': node({ 'data-proc-open': '2', 'data-start': S }) });
+    expect(details()).toEqual([`/api/dashboard/session/k1/processes/2/detail?start=${encodeURIComponent(S)}`]);
+    // Anywhere else on an openable row.
+    click({ 'tr.can-open': row3 });
+    expect(details()[1]).toBe('/api/dashboard/session/k1/processes/3/detail?start=T3');
+    // A fold inside that row folds, and opens nothing.
+    click({ '[data-proc-fold]': node({ 'data-proc-fold': '3', 'data-start': 'T3' }), 'tr.can-open': row3 });
+    expect(details()).toHaveLength(2);
+    expect(e.__get('_procs').collapsed['3:T3']).toBe(true);
+    // A pause inside it pauses, and opens nothing.
+    click({
+      '[data-proc-op]': node({ 'data-proc-op': 'pause', 'data-pid': '3', 'data-start': 'T3' }),
+      'tr.can-open': row3,
+    });
+    expect(details()).toHaveLength(2);
+    expect(control).toHaveBeenCalledWith('pause', 3, 'T3');
+  });
+
   it('a read that never answers is given up after its timeout and says so; 다시 찍기 then shows the snapshot', async () => {
     vi.useFakeTimers();
     try {
