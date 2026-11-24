@@ -8,7 +8,9 @@ import { splitArgs } from './command-preview';
  * view is what a person opens on purpose to see what one process really runs (Process Explorer's "Command line"), for
  * the task's owner and admins only, so it shows the whole line and masks what a value can hide a secret in:
  *   - JSON — everything between braces or brackets (`--mcp-config {…}` carries MCP servers' env and headers);
- *   - the value of a flag or `NAME=` whose name says secret (`--token x`, `--api-key=x`, `GITHUB_TOKEN=x`, mysql `-px`);
+ *   - the value of a flag or `NAME=` whose name says secret (`--token x`, `--api-key=x`, `GITHUB_TOKEN=x`, mysql `-px`),
+ *     or a program's own credential flag (curl `-u user:x`); on a space-joined `ps` line, a secret flag's value runs to
+ *     the next option, since ps lost where the argument ended (`--pass correct horse battery`);
  *   - an HTTP credential (`Authorization: Bearer x`, `Authorization:Bearer x`, `Cookie: x`, `Basic x`);
  *   - a URL's password (`https://user:x@host`) and a secret-named query value (`?token=x`);
  *   - every token shape the logger knows plus common provider keys (GitHub, AWS, Google, npm, JWT, `sk-…`);
@@ -39,6 +41,16 @@ const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s;
 const FLAG = /^-{1,2}[A-Za-z][\w.-]*$/;
 /** mysql-family `-p<password>` (the password attached to the flag). */
 const MYSQL_PROGRAM = /^(mysql|mysqldump|mysqladmin|mariadb|mariadb-dump)$/;
+/**
+ * Flags whose value is a credential for one program only (elsewhere `-u` and `-p` mean other things): curl's
+ * `user:password`, sshpass's password. Separate (`-u x`), `=`-joined (`--user=x`) or attached (`-ux`).
+ */
+const PROGRAM_SECRET_FLAGS: Readonly<Record<string, readonly string[]>> = {
+  curl: ['-u', '--user', '-U', '--proxy-user'],
+  sshpass: ['-p'],
+};
+/** Words that run the next word as the command (`env A=1 curl …`, `sudo curl …`). */
+const COMMAND_WRAPPERS = new Set(['env', 'sudo', 'nohup', 'exec', 'time', 'nice', 'command', 'xargs']);
 /** An HTTP header that carries a credential, as its own word (`Authorization:`) or inline. */
 const CREDENTIAL_HEADER =
   /^(authorization|proxy-authorization|cookie|set-cookie|x-api-key|api-key|x-auth-token|private-token):?$/i;
@@ -159,7 +171,10 @@ export function maskCommandLine(input: { readonly argv: readonly string[]; reado
     ? input.argv.slice(0, MAX_ARGS).map((a) => maskJson(a.length > MAX_INPUT ? a.slice(0, MAX_INPUT) : a))
     : splitArgs(maskJson(input.argv.join(' ').slice(0, MAX_INPUT))).slice(0, MAX_ARGS);
   if (words.length === 0) return '';
-  const program = (words[0].split('/').pop() ?? '').toLowerCase();
+  // The program of the command a word belongs to: the first word, or the first after a shell separator
+  // (`cd /w && curl -u …`), past `env`/`sudo` and `NAME=value` prefixes.
+  let program = '';
+  let expectCmd = true;
   const out: string[] = [];
   // The value after a secret flag, a credential header or an auth scheme word: one word — or, when it opens with a
   // quote, every word up to the one that closes it (`--cookie "a=b; sid=x"`, `"--password=a b"`). Some values run on
@@ -170,6 +185,8 @@ export function maskCommandLine(input: { readonly argv: readonly string[]; reado
   // A secret flag's value when it is not quoted: one argument in exact argv; on a joined line, up to the next option.
   const flagValue = (closing: string) => ({ header: false, closing, schemeSeen: true, runOn: !input.exact });
   for (const raw of words) {
+    const atCmd = expectCmd;
+    expectCmd = SHELL_SEPARATOR.test(raw) || /[;&|]$/.test(raw);
     if (value) {
       const bare = raw.replace(/^["']/, '');
       if (
@@ -204,6 +221,11 @@ export function maskCommandLine(input: { readonly argv: readonly string[]; reado
       if (lead) return leadClosed ? '' : lead;
       return /^["']/.test(v) && !(v.length > 1 && v.endsWith(v[0])) ? v[0] : '';
     };
+    if (atCmd && !expectCmd) {
+      const base = (word.split('/').pop() ?? '').toLowerCase();
+      if (COMMAND_WRAPPERS.has(base) || ASSIGNMENT.test(word) || word.startsWith('-')) expectCmd = true;
+      else program = base;
+    }
     const flag = FLAG_WITH_VALUE.exec(word);
     if (flag && SECRET_NAME.test(flag[1])) {
       out.push(`${lead}${flag[1]}=${MASK}${leadClosed ? lead : ''}`);
@@ -231,6 +253,25 @@ export function maskCommandLine(input: { readonly argv: readonly string[]; reado
     if (MYSQL_PROGRAM.test(program) && /^-p.+/.test(word)) {
       out.push(`${lead}-p${MASK}`);
       continue;
+    }
+    const own = PROGRAM_SECRET_FLAGS[program];
+    if (own) {
+      // One word: `user:password`, a password.
+      if (own.includes(word)) {
+        out.push(raw);
+        value = { header: false, closing: '', schemeSeen: true, runOn: false };
+        continue;
+      }
+      const joinedFlag = own.find((f) => f.startsWith('--') && word.startsWith(`${f}=`));
+      if (joinedFlag) {
+        out.push(`${lead}${joinedFlag}=${MASK}`);
+        continue;
+      }
+      const attached = own.find((f) => !f.startsWith('--') && word.length > f.length && word.startsWith(f));
+      if (attached) {
+        out.push(`${lead}${attached}${MASK}`);
+        continue;
+      }
     }
     if (CREDENTIAL_HEADER.test(word)) {
       out.push(raw);

@@ -170,6 +170,24 @@ describe('maskCommandLine', () => {
     }
   });
 
+  it('a program’s own credential flags (curl -u, sshpass -p), wherever the command sits in a shell line', () => {
+    expect(joined('curl -u bot:hunter2 https://h')).toBe(`curl -u ${MASK} https://h`);
+    expect(joined('curl --user=bot:hunter2 https://h')).toBe(`curl --user=${MASK} https://h`);
+    expect(joined('curl -ubot:hunter2 https://h')).toBe(`curl -u${MASK} https://h`);
+    expect(joined('curl --proxy-user bot:hunter2 -x http://p https://h')).toBe(
+      `curl --proxy-user ${MASK} -x http://p https://h`,
+    );
+    expect(joined('sshpass -p hunter2 rsync a b')).toBe(`sshpass -p ${MASK} rsync a b`);
+    expect(exact('bash', '-c', 'cd /w && curl -u bot:hunter2 https://h')).toBe(
+      `bash -c 'cd /w && curl -u ${MASK} https://h'`,
+    );
+    expect(joined('env A=1 curl -u bot:hunter2 https://h')).toBe(`env A=1 curl -u ${MASK} https://h`);
+    expect(exact('sh', '-c', 'echo x; mysql -uroot -phunter2 db')).toBe(`sh -c 'echo x; mysql -uroot -p${MASK} db'`);
+    // Elsewhere -u and -p are ordinary flags.
+    expect(joined('mysql -uroot db')).toBe('mysql -uroot db');
+    expect(joined('ps -u root -p 1')).toBe('ps -u root -p 1');
+  });
+
   it('a URL password with no user name is masked (redis://:pw@host)', () => {
     expect(joined('redis-cli -u redis://:hunter2@localhost:6379')).toBe(`redis-cli -u redis://:${MASK}@localhost:6379`);
     expect(joined('x https://h:8080/p@x')).toBe('x https://h:8080/p@x');
