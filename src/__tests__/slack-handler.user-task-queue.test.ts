@@ -348,14 +348,26 @@ describe('SlackHandler — per-user task queue gate', () => {
   });
 
   // a shared dev host (2026-11-24) — the three gaps a live board showed.
-  it('a pr-watch event the host held for a free slot (userTaskReady) passes even while another task runs', async () => {
+  it('a pr-watch event runs on the slot it reserved; a request sent before it arrives waits', async () => {
+    expect(queue.reserveHostTurn(OWNER, 'C123:300.0')).toBe(true);
+    await handler.handleMessage(message('200.0', { ts: '200.01' }), vi.fn());
+    expect(ledger.entries.map((e) => e.sessionKey)).toEqual(['C123:200.0']);
+    await handler.handleMessage(
+      message('300.0', { ts: '', synthetic: true, routeContext: { skipAutoBotThread: true, userTaskReady: true } }),
+      vi.fn(),
+    );
+    expect(startWithContinuation).toHaveBeenCalledTimes(1);
+    expect(ledger.entries.map((e) => e.sessionKey)).toEqual(['C123:200.0']);
+  });
+
+  it('a pr-watch event without a reservation (it expired) is gated like any message', async () => {
     const a = await startBusy('100.0');
     await handler.handleMessage(
       message('300.0', { ts: '', synthetic: true, routeContext: { skipAutoBotThread: true, userTaskReady: true } }),
       vi.fn(),
     );
-    expect(ledger.entries).toEqual([]);
-    expect(startWithContinuation).toHaveBeenCalledTimes(2);
+    expect(startWithContinuation).toHaveBeenCalledTimes(1);
+    expect(ledger.entries.map((e) => e.sessionKey)).toEqual(['C123:300.0']);
     await a.settle();
   });
 

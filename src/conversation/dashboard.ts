@@ -902,8 +902,11 @@ export interface KanbanUserQueueItem {
   enqueuedAt: number;
   /** Tasks the owner may run at once (`null` = no limit). */
   limit: number | null;
-  /** What the owner runs now (what this entry waits for); `guard` — 먼저 진행 may not stop it (a deploy/QA lane). */
-  running: Array<{ key: string; title: string; slackThreadUrl?: string; guard?: string }>;
+  /**
+   * What the owner runs now (what this entry waits for). `guard` — 먼저 진행 may not stop it (a deploy/QA lane);
+   * `stops` — the one 먼저 진행 would stop.
+   */
+  running: Array<{ key: string; title: string; slackThreadUrl?: string; guard?: string; stops?: true }>;
   /** From the second place on: the owner's entry right ahead of this one, and how many wait ahead in all. */
   ahead?: { title: string; count: number };
   slackThreadUrl?: string;
@@ -3663,11 +3666,17 @@ function userQueueItems(userId?: string): KanbanUserQueueItem[] {
       // #1315 — an entry everyone may see names no private task of its owner (a DM's, a private channel's): only that
       // a task runs. An entry that is itself private is shown to its owner and admins only.
       const entryPrivate = isPrivateTask(w.channel);
-      const running = view.running.map((t) =>
-        !entryPrivate && t.channel !== w.channel && isPrivateTask(t.channel)
-          ? { key: composeSessionKey(t.sessionKey), title: '비공개 작업', ...(t.guard ? { guard: t.guard } : {}) }
-          : runningOf(t),
-      );
+      // The task 먼저 진행 would stop, picked as `UserTaskQueue.bypass` picks it: the newest one without a guard.
+      const stops = view.running
+        .filter((t) => !t.guard)
+        .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))[0]?.sessionKey;
+      const running = view.running.map((t) => ({
+        ...(!entryPrivate && t.channel !== w.channel && isPrivateTask(t.channel)
+          ? // Its lane would tell what the private task deploys: only that it is guarded.
+            { key: composeSessionKey(t.sessionKey), title: '비공개 작업', ...(t.guard ? { guard: '보호된 작업' } : {}) }
+          : runningOf(t)),
+        ...(t.sessionKey === stops ? { stops: true as const } : {}),
+      }));
       // What waits right ahead of it (the same privacy rule as what runs).
       const at = line.indexOf(w);
       const before = at > 0 ? line[at - 1] : undefined;
@@ -12818,7 +12827,9 @@ function uqCardOf(item, session) {
     if (guarded) {
       details.push({ label: '먼저 진행 불가: 진행 중인 작업이 ' + guarded + '을(를) 잡고 있어 중간에 멈출 수 없음', meta: '끝나면 자동으로 시작' });
     } else {
-      var stopTitle = stoppable.length ? String(stoppable[stoppable.length - 1].title) : '진행 중인 작업';
+      // As the server picked it (the newest unguarded task); an older board without the mark names the first one.
+      var marked = stoppable.filter(function(r) { return r.stops; })[0] || stoppable[0];
+      var stopTitle = marked ? String(marked.title) : '진행 중인 작업';
       details.push({ label: '먼저 진행: ' + stopTitle + '을(를) 멈추고 이 작업을 바로 시작', meta: '멈춘 작업은 이 작업이 끝난 뒤 이어서' });
     }
   }

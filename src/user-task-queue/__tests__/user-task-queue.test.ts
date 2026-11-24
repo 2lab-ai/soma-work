@@ -559,3 +559,34 @@ describe('먼저 진행 never stops a guarded task', () => {
     expect(h.queue.snapshot().entries.map((e) => [e.id, e.state])).toEqual([['t1', 'waiting']]);
   });
 });
+
+// Review of #1413 (P1): a host event that saw a free slot must hold it until it reaches the gate — a request arriving
+// in between, or a second host event, must not take the same slot.
+describe('host turn reservations', () => {
+  it('a reservation holds the slot: another request waits, a second reservation is refused', () => {
+    const h = harness();
+    expect(h.queue.reserveHostTurn('U1', 'C1:9.0')).toBe(true);
+    expect(h.queue.hasFreeSlot('U1', 'C1:8.0')).toBe(false);
+    expect(h.queue.reserveHostTurn('U1', 'C1:8.0')).toBe(false);
+    expect(h.queue.gate(input()).action).toBe('queued');
+  });
+
+  it('the reserved event takes its reservation at the gate, once; without one it is gated like any message', () => {
+    const h = harness();
+    h.queue.reserveHostTurn('U1', 'C1:9.0');
+    const reserved = { ...input({ sessionKey: 'C1:9.0', threadTs: '9.0' }), hostReserved: true };
+    expect(h.queue.gate(reserved)).toEqual({ action: 'run' });
+    // Taken: the slot it held is the turn's now; a second event with the same mark has nothing to take.
+    h.running.set('U1', [{ ...taskA, sessionKey: 'C1:9.0', threadTs: '9.0' }]);
+    expect(h.queue.gate({ ...input({ sessionKey: 'C1:7.0', threadTs: '7.0' }), hostReserved: true }).action).toBe(
+      'queued',
+    );
+  });
+
+  it('an unused reservation expires and frees the slot', () => {
+    const h = harness();
+    h.queue.reserveHostTurn('U1', 'C1:9.0');
+    h.clock.now += 3 * 60_000;
+    expect(h.queue.hasFreeSlot('U1', 'C1:8.0')).toBe(true);
+  });
+});

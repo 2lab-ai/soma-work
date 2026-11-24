@@ -9251,7 +9251,7 @@ export class SlackHandler {
     const route = event.routeContext;
     const continuation: GateInput['continuation'] = route?.goalContinuation
       ? 'drop'
-      : route?.hostTurn || route?.autoResume || route?.compactRedispatch || route?.userTaskReady || event.epicChild
+      : route?.hostTurn || route?.autoResume || route?.compactRedispatch || event.epicChild
         ? 'pass'
         : 'none';
     try {
@@ -9264,6 +9264,8 @@ export class SlackHandler {
         message: JSON.parse(JSON.stringify(event)) as Record<string, unknown>,
         continuation,
         admitted,
+        // pr-watch reserved this event's slot as it sent it (`reserveHostTurn`): it runs on that reservation.
+        hostReserved: route?.userTaskReady === true,
       });
       if (result.action === 'queued') {
         this.logger.info('User task queue: message waits for the person to have a free slot', {

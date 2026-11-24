@@ -103,6 +103,20 @@ describe('uqCardOf', () => {
     expect(JSON.stringify(third.details)).toContain('앞에서 기다림: B 외 1개');
   });
 
+  // #1413 review: the card names the task 먼저 진행 will stop as the server picked it (the newest unguarded one).
+  it('names the task the server marked as the one 먼저 진행 stops', () => {
+    const card = uqCardOf(
+      item({
+        running: [
+          { key: 'C1:a', title: '새 작업', stops: true },
+          { key: 'C1:b', title: '오래된 작업' },
+        ],
+      }),
+      undefined,
+    );
+    expect(JSON.stringify(card.details)).toContain('먼저 진행: 새 작업을(를) 멈추고');
+  });
+
   it('a running task that may not be stopped (a deploy lane): 먼저 진행 is inert and says why', () => {
     const card = uqCardOf(item({ running: [{ key: 'C1:t1', title: '배포', guard: 'deploy:dev2' }] }), undefined);
     expect(card.primary.disabled).toContain('deploy:dev2');

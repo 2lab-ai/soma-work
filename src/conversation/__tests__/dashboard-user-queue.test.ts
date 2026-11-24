@@ -232,9 +232,22 @@ describe('Dashboard — the per-user task queue (대기큐)', () => {
     const queue = new UserTaskQueue({
       store: { load: () => undefined, save: () => undefined },
       limitFor: () => 1,
-      runningTasks: () => [{ sessionKey: 'D9:t1', channel: 'D9', threadTs: 't1', title: '비밀 프로젝트 X' }],
+      runningTasks: () => [
+        { sessionKey: 'D9:t1', channel: 'D9', threadTs: 't1', title: '비밀 프로젝트 X', guard: 'deploy:secret-env' },
+      ],
       start: () => undefined,
       interrupt: () => 'stopped' as const,
+    });
+    // A private request (a DM) waits ahead of the public one: the public card counts it, never names it.
+    queue.gate({
+      userId: 'U1',
+      sessionKey: 'D9:t3',
+      channel: 'D9',
+      threadTs: 't3',
+      text: '비밀 요청 Y',
+      message: {},
+      continuation: 'none',
+      admitted: false,
     });
     queue.gate({
       userId: 'U1',
@@ -248,8 +261,14 @@ describe('Dashboard — the per-user task queue (대기큐)', () => {
     });
     setActiveUserTaskQueue({ queue, limits: {} as any, release: vi.fn() });
     const b = await board();
-    expect(b.userQueue[0].running).toEqual([{ key: 'D9:t1', title: '비공개 작업' }]);
-    expect(JSON.stringify(b.userQueue)).not.toContain('비밀 프로젝트 X');
+    const pub = b.userQueue.find((q: any) => q.threadTs === 't2');
+    // Its guard is kept only as a generic marker: the lane would tell what the private task deploys.
+    expect(pub.running).toEqual([{ key: 'D9:t1', title: '비공개 작업', guard: '보호된 작업' }]);
+    expect(pub.ahead).toEqual({ title: '비공개 작업', count: 1 });
+    const json = JSON.stringify(pub);
+    expect(json).not.toContain('비밀 프로젝트 X');
+    expect(json).not.toContain('비밀 요청 Y');
+    expect(json).not.toContain('secret-env');
   });
 
   it('without the queue wired the board has no 대기큐', async () => {

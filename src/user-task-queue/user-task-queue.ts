@@ -75,6 +75,11 @@ export interface GateInput extends UserTaskThread {
   continuation: 'none' | 'pass' | 'drop';
   /** The message carried an admission that `takeAdmission` took. */
   admitted: boolean;
+  /**
+   * A host event that reserved its slot before it was sent (`reserveHostTurn` — pr-watch): it runs on that
+   * reservation, taken once. Without one (it expired) it is gated like any other message.
+   */
+  hostReserved?: boolean;
 }
 
 export type GateResult =
@@ -174,6 +179,8 @@ export class UserTaskQueue {
   private ledger: UserTaskLedger;
   /** Stops 먼저 진행 asked for whose turn was still starting, by the stopped thread (in memory: a restart ends them). */
   private readonly pendingStops = new Map<string, { victim: RunningTask; firstId: string; resumeId: string }>();
+  /** Slots host events reserved on their way to the gate (in memory: a restart drops them, as it drops the events). */
+  private readonly hostReservations = new Map<string, { userId: string; at: number }>();
   private readonly now: () => number;
   private readonly newId: () => string;
 
@@ -186,6 +193,13 @@ export class UserTaskQueue {
   /** Decide, synchronously, whether a message may start its turn now. */
   gate(input: GateInput): GateResult {
     if (input.admitted) return { action: 'run' };
+    if (input.hostReserved) {
+      this.expireAdmissions();
+      if (this.hostReservations.get(input.sessionKey)?.userId === input.userId) {
+        this.hostReservations.delete(input.sessionKey);
+        return { action: 'run' };
+      }
+    }
     const limit = this.deps.limitFor(input.userId);
     if (limit === UNLIMITED) return { action: 'run' };
 
@@ -248,11 +262,8 @@ export class UserTaskQueue {
     }
 
     // A task holding a deploy/QA lane (or waiting on an environment hand-off) is never stopped halfway.
-    const stoppable = running.filter((t) => !t.guard);
-    if (running.length > 0 && stoppable.length === 0) {
-      return { ok: false, reason: 'protected', guard: running[0].guard as string };
-    }
-    const victim = [...stoppable].sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))[0];
+    const victim = running.filter((t) => !t.guard).sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))[0];
+    if (running.length > 0 && !victim) return { ok: false, reason: 'protected', guard: running[0].guard as string };
     if (!victim) {
       // Over the limit only by admissions on their way: go first in line, the next release starts it.
       this.commit(putFirst(this.ledger, entry));
@@ -349,11 +360,23 @@ export class UserTaskQueue {
    * nothing of theirs waits (their requests go first). The thread itself does not count against its own event.
    */
   hasFreeSlot(userId: string, sessionKey: string): boolean {
+    this.expireAdmissions();
     const limit = this.deps.limitFor(userId);
     if (limit === UNLIMITED) return true;
     if (waitingOf(this.ledger, userId).some((e) => e.sessionKey !== sessionKey)) return false;
     const holding = this.othersRunning(userId, sessionKey).length + this.admittedElsewhere(userId, sessionKey);
     return holding < limit;
+  }
+
+  /**
+   * Hold a free slot for a host event about to be sent (pr-watch): between its send and its gate another request, or
+   * a second host event, must not take the same slot. False when there is none (`hasFreeSlot`). The event's gate takes
+   * it (`hostReserved`); one never taken expires with the admissions.
+   */
+  reserveHostTurn(userId: string, sessionKey: string): boolean {
+    if (!this.hasFreeSlot(userId, sessionKey)) return false;
+    if (this.deps.limitFor(userId) !== UNLIMITED) this.hostReservations.set(sessionKey, { userId, at: this.now() });
+    return true;
   }
 
   /** Remember where the entry's Slack notice is (to rewrite it later). */
@@ -467,11 +490,14 @@ export class UserTaskQueue {
   }
 
   private admittedElsewhere(userId: string, sessionKey: string): number {
-    return admittedOf(this.ledger, userId).filter((e) => e.sessionKey !== sessionKey).length;
+    let reserved = 0;
+    for (const [key, r] of this.hostReservations) if (r.userId === userId && key !== sessionKey) reserved++;
+    return admittedOf(this.ledger, userId).filter((e) => e.sessionKey !== sessionKey).length + reserved;
   }
 
   private expireAdmissions(): void {
     const cutoff = this.now() - ADMISSION_TTL_MS;
+    for (const [key, r] of this.hostReservations) if (r.at < cutoff) this.hostReservations.delete(key);
     const stale = this.ledger.entries.filter((e) => e.state === 'admitted' && (e.admittedAt ?? 0) < cutoff);
     if (stale.length === 0) return;
     let next = this.ledger;
