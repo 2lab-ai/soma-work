@@ -16,8 +16,22 @@ describe('isDmAllowedForNonAdmin — personal llmux key command', () => {
     expect(isDmAllowedForNonAdmin('set auth key')).toBe(true);
   });
 
+  it('allows `key rotate` in the same forms (users replace their own key via DM)', () => {
+    for (const t of [
+      'key rotate',
+      'KEY ROTATE',
+      '/key rotate',
+      'auth key rotate',
+      '/auth key rotate',
+      'set auth key rotate',
+      '/z auth key rotate',
+    ])
+      expect(isDmAllowedForNonAdmin(t), t).toBe(true);
+  });
+
   it('still rejects prose that merely contains "key"', () => {
     expect(isDmAllowedForNonAdmin('key rotate please')).toBe(false);
+    expect(isDmAllowedForNonAdmin('key rotation')).toBe(false);
     expect(isDmAllowedForNonAdmin('monkey')).toBe(false);
   });
 });

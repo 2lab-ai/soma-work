@@ -23,12 +23,15 @@ export type CctAction =
  *   - `auth switch <name>`          → { action: 'switch', target } (llmux manual switch)
  *   - `auth key` / bare `key`       → { action: 'key' } (DM the caller their
  *     personal llmux client key + local Claude Code setup; non-admin allowed)
+ *   - `auth key rotate` / `key rotate` → { action: 'key-rotate' } (replace the
+ *     caller's key: the old secret stops working, the new one is DMed; non-admin allowed)
  */
 export type AuthCommandAction =
   | { action: 'status' }
   | { action: 'set-mode'; mode: 'llmux' | 'ccp' }
   | { action: 'switch'; target: string }
-  | { action: 'key' };
+  | { action: 'key' }
+  | { action: 'key-rotate' };
 
 export type BypassAction = 'on' | 'off' | 'status';
 export type SandboxAction = 'on' | 'off' | 'status';
@@ -222,18 +225,22 @@ export class CommandParser {
    * Check if text is an auth command (#llmux runtime switch).
    *
    * Accepted: `auth`, `auth llmux`, `auth cct`, `auth ccp`,
-   * `set auth llmux|cct|ccp`, `auth switch <name>`, `auth key`, and the bare
-   * `key` shorthand (exact word only — prose starting with "key" stays chat).
+   * `set auth llmux|cct|ccp`, `auth switch <name>`, `auth key [rotate]`, and the
+   * bare `key [rotate]` shorthand (exact words only — prose starting with "key"
+   * stays chat).
    */
   static isAuthCommand(text: string): boolean {
     const trimmed = text.trim();
-    if (/^\/?key$/i.test(trimmed)) return true;
-    return /^\/?(?:set\s+)?auth(?:\s+(?:llmux|cct|ccp|key|switch\s+\S+))?$/i.test(trimmed);
+    if (/^\/?key(?:\s+rotate)?$/i.test(trimmed)) return true;
+    return /^\/?(?:set\s+)?auth(?:\s+(?:llmux|cct|ccp|key(?:\s+rotate)?|switch\s+\S+))?$/i.test(trimmed);
   }
 
   /** Parse an auth command. See {@link AuthCommandAction}. */
   static parseAuthCommand(text: string): AuthCommandAction {
     const trimmed = text.trim();
+    if (/^\/?key\s+rotate$/i.test(trimmed) || /^\/?(?:set\s+)?auth\s+key\s+rotate$/i.test(trimmed)) {
+      return { action: 'key-rotate' };
+    }
     if (/^\/?key$/i.test(trimmed) || /^\/?(?:set\s+)?auth\s+key$/i.test(trimmed)) {
       return { action: 'key' };
     }

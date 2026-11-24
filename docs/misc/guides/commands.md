@@ -42,7 +42,7 @@ Grammar: `/z <topic> [verb] [args...]`. See `docs/current/spec/01-slack-integrat
 | `/z onboarding` | Run onboarding workflow |
 | `/z admin [accept\|deny\|users\|config\|llmchat\|session list]` | Admin commands |
 | `/z cct [set <name>\|next]` | CCT token status / manual switch |
-| `/z auth [llmux\|cct\|switch <name>\|key]` | Auth backend card: read-only capacity overview by provider (see [Auth capacity overview](#auth-capacity-overview)) + runtime mode switch (llmux default / cct legacy) and account switch/add/remove behind explicit Admin mode; `key` DMs your personal llmux client key |
+| `/z auth [llmux\|cct\|switch <name>\|key [rotate]]` | Auth backend card: read-only capacity overview by provider (see [Auth capacity overview](#auth-capacity-overview)) + runtime mode switch (llmux default / cct legacy) and account switch/add/remove behind explicit Admin mode; `key` DMs your personal llmux client key, `key rotate` replaces it |
 | `/z marketplace [add <x>]` | Plugin marketplace |
 | `/z plugin [add\|update\|remove\|rollback\|backups]` | Manage installed plugins |
 | `/z skill [list\|download]` | Skills directory |
@@ -361,6 +361,7 @@ Bare (no-prefix) `[cmd] [args]` forms run through the same command handlers as t
 | `new [<prompt>]` · `renew [<prompt>]` | Reset / renew session, optional prompt carries over |
 | `auth` · `auth llmux\|cct` · `set auth <mode>` · `auth switch <name>` | Auth backend card / runtime mode switch (#1189; defaults to the read-only [capacity overview](#auth-capacity-overview) for everyone, mutations admin-only behind Admin mode) |
 | `key` · `auth key` | DM yourself your personal llmux client key + local Claude Code (`ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY`) and Codex (`OPENAI_BASE_URL`/`OPENAI_API_KEY`) setup. Same user always gets the same key; llmux meters bot + local usage as one tenant. Works for every user (it is your own key) |
+| `key rotate` · `auth key rotate` | Replace your llmux client key: the old secret is refused from the next request and the new one is DMed with the same setup. Same llmux id, so your usage history stays one tenant; the bot's own dispatches switch to the new key too. Use it when a key leaks or your local client gets `401 Invalid proxy API key`. If an admin rotated the key directly in llmux (`llmux key rotate`), plain `key` no longer sends the stored, now-dead key — it tells you to run `key rotate` |
 | `cct` · `cct set <n>` · `cct next` · `cct usage [<n>]` · `cct auto [dry]` | CCT token status / rotation; `auto` = admin-only manual auto-rotate (token mutation is card-only since #569) |
 | `cron` · `schedule` (also `크론` · `스케줄`) | Interactive cron card — per-job model/output-target dropdowns + delete button; routed as a command so autogoal can never swallow it; admins see all users' jobs with the owner shown |
 | `cron model <name> <default\|opus\|fable\|fast\|model>` · `cron target <name> <channel\|dm\|thread>` · `cron delete <name>` | Change a job's model (`default` = creator's current model at fire time; `opus`/`fable` = latest opus/fable resolved at fire time; `fast` = the sonnet tier of the creator's current model at fire time — `sonnet` / `terra` / `grok` at medium effort for a Claude / Codex / Grok model) / delivery target / delete; admins address another user's job by appending `<@owner>` |
