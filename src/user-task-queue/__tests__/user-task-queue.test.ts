@@ -728,6 +728,8 @@ describe('a Slack redelivery is one request', () => {
       },
     });
     expect(h.queue.snapshot().entries.map((e) => e.id)).toEqual(['a', 'b']);
+    // The repair reaches the store: the copies do not come back on the next load.
+    expect(h.saved[h.saved.length - 1]?.entries.map((e) => e.id)).toEqual(['a', 'b']);
   });
 });
 
