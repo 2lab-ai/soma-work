@@ -52,6 +52,46 @@ describe('TreeSampler', () => {
     expect(out.sessions[0].processes.every((p) => p.cwd === '')).toBe(true);
   });
 
+  it('a pid reused within the cache window is read again at once, and a cwd read across a reuse is never kept', async () => {
+    const ps = machine();
+    let now = 1_000;
+    const folders = new Map<number, string>([[300, '/work/old']]);
+    const reads: number[][] = [];
+    const sampler = new TreeSampler(
+      ps.run,
+      () => now,
+      undefined,
+      async (pids) => {
+        reads.push([...pids].sort());
+        return new Map(pids.map((p) => [p, folders.get(p) ?? `/work/${p}`]));
+      },
+    );
+    const roots = [{ pid: 200, sessionKey: 'A' }];
+    await sampler.sample(roots, 'n1');
+    // 300 exits and its pid goes to a new bash in another folder, 2 s later (inside the 15 s window).
+    now += 2_000;
+    ps.set(300, { ppid: 200, args: '/bin/bash -c other', start: 'Mon Nov 23 11:00:00 2026' });
+    folders.set(300, '/work/new');
+    const out = await sampler.sample(roots, 'n1');
+    expect(reads[1]).toEqual([300]);
+    expect(out.sessions[0].processes.find((p) => p.pid === 300)?.cwd).toBe('/work/new');
+
+    // The reuse lands between the detail ps and the cwd read: the folder read belongs to the newcomer — not kept.
+    now += 20_000;
+    const racing = new TreeSampler(
+      ps.run,
+      () => now,
+      undefined,
+      async (pids) => {
+        ps.set(300, { ppid: 200, args: '/bin/bash -c third', start: 'Mon Nov 23 12:00:00 2026' });
+        return new Map(pids.map((p) => [p, p === 300 ? '/work/third' : `/work/${p}`]));
+      },
+    );
+    const raced = await racing.sample(roots, 'n1');
+    expect(raced.sessions[0].processes.find((p) => p.pid === 300)?.cwd).toBe('');
+    expect(raced.sessions[0].processes.find((p) => p.pid === 200)?.cwd).toBe('/work/200');
+  });
+
   it('does no ps work while nothing is tracked or remembered', async () => {
     const ps = machine();
     const sampler = new TreeSampler(ps.run, () => 0);

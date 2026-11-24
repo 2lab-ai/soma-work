@@ -140,9 +140,21 @@ export class TreeSampler {
       }
       if (stale.length > 0) {
         const read = await this.readCwds(stale).catch(() => new Map<number, string>());
+        // The cwd reader names a pid, not a process: one that exited and was reused between the detail ps and that
+        // read would hand another program's folder to this session. Its start time is read again after the cwd —
+        // the same start before and after means the same process throughout.
+        const after =
+          read.size > 0
+            ? await this.runPs(['-o', 'pid=,lstart=', '-p', [...read.keys()].join(',')])
+                .then(parseStartTokens)
+                .catch(() => new Map<number, string>())
+            : new Map<number, string>();
         for (const pid of stale) {
           const row = rows.get(pid);
-          if (row) this.cwds.set(`${pid}:${row.startToken}`, { cwd: read.get(pid) ?? '', at });
+          if (!row) continue;
+          const cwd = read.get(pid);
+          if (cwd !== undefined && after.get(pid) !== row.startToken) continue; // unverified: read again next sample
+          this.cwds.set(`${pid}:${row.startToken}`, { cwd: cwd ?? '', at });
         }
       }
     }
@@ -327,4 +339,15 @@ function sum(ps: readonly ProcessSample[]): { cpuPercent: number; rssBytes: numb
 
 function round1(n: number): number {
   return Math.round(n * 10) / 10;
+}
+
+/** `ps -o pid=,lstart=` → pid → its start token (lstart's 5 words, single-spaced). */
+function parseStartTokens(out: string): Map<number, string> {
+  const tokens = new Map<number, string>();
+  for (const line of out.split('\n')) {
+    const t = line.trim().split(/\s+/);
+    if (t.length < 6 || !/^\d+$/.test(t[0])) continue;
+    tokens.set(Number(t[0]), t.slice(1, 6).join(' '));
+  }
+  return tokens;
 }

@@ -66,7 +66,10 @@ function highEntropy(run: string): boolean {
   return /[a-z]/.test(run) && /[A-Z]/.test(run) && /[0-9]/.test(run);
 }
 
-/** Replace every brace or bracket span — JSON — with `{…}` / `[…]`. An unclosed one runs to the end. */
+/**
+ * Replace every brace or bracket span — JSON — with `{…}` / `[…]`. A delimiter inside a JSON string (`"}"`, an escaped
+ * quote) does not end the span. An unclosed span, or an unclosed string, runs to the end.
+ */
 export function maskJson(text: string): string {
   let out = '';
   let i = 0;
@@ -85,10 +88,19 @@ export function maskJson(text: string): string {
       continue;
     }
     let depth = 0;
+    let inString = false;
+    let escaped = false;
     let j = i;
     for (; j < text.length; j++) {
       const c = text[j];
-      if (c === '{' || c === '[') depth++;
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (c === '\\') escaped = true;
+        else if (c === '"') inString = false;
+        continue;
+      }
+      if (c === '"') inString = true;
+      else if (c === '{' || c === '[') depth++;
       else if (c === '}' || c === ']') {
         depth--;
         if (depth === 0) break;
@@ -131,27 +143,37 @@ export function maskCommandLine(input: { readonly argv: readonly string[]; reado
     if (maskNext > 0) {
       maskNext--;
       // `Authorization: Bearer x` — the scheme stays, its value goes.
-      if (AUTH_SCHEME_WORD.test(raw)) {
+      if (AUTH_SCHEME_WORD.test(raw.replace(/^["']/, ''))) {
         out.push(raw);
         maskNext = 1;
       } else out.push(MASK);
       continue;
     }
-    const flag = FLAG_WITH_VALUE.exec(raw);
+    // An exact argument with spaces in it is a command of its own (`bash -c 'client --password=x; …'`): masked as one
+    // line, word by word, then quoted back.
+    if (input.exact && /\s/.test(raw)) {
+      out.push(quoted(maskCommandLine({ argv: [raw], exact: false })));
+      continue;
+    }
+    // ps keeps the quotes a shell command line had (`-H "Authorization: Bearer x"`): a word is matched without its
+    // opening quote, and keeps it.
+    const lead = /^["']/.test(raw) ? raw[0] : '';
+    const word = lead ? raw.slice(1) : raw;
+    const flag = FLAG_WITH_VALUE.exec(word);
     if (flag && SECRET_NAME.test(flag[1])) {
-      out.push(`${flag[1]}=${MASK}`);
+      out.push(`${lead}${flag[1]}=${MASK}`);
       continue;
     }
-    const assignment = !flag && ASSIGNMENT.exec(raw);
+    const assignment = !flag && ASSIGNMENT.exec(word);
     if (assignment && SECRET_NAME.test(assignment[1])) {
-      out.push(`${assignment[1]}=${MASK}`);
+      out.push(`${lead}${assignment[1]}=${MASK}`);
       continue;
     }
-    if (MYSQL_PROGRAM.test(program) && /^-p.+/.test(raw)) {
-      out.push(`-p${MASK}`);
+    if (MYSQL_PROGRAM.test(program) && /^-p.+/.test(word)) {
+      out.push(`${lead}-p${MASK}`);
       continue;
     }
-    if ((FLAG.test(raw) && SECRET_NAME.test(raw)) || CREDENTIAL_HEADER.test(raw) || AUTH_SCHEME_WORD.test(raw)) {
+    if ((FLAG.test(word) && SECRET_NAME.test(word)) || CREDENTIAL_HEADER.test(word) || AUTH_SCHEME_WORD.test(word)) {
       out.push(raw);
       maskNext = 1;
       continue;

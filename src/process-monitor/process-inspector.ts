@@ -77,6 +77,11 @@ export interface ProcessInspection {
   /** Files and other non-socket descriptors, up to {@link MAX_FILES}; `filesTruncated` when there were more. */
   readonly files: readonly ProcessFileEntry[];
   readonly filesTruncated: boolean;
+  /**
+   * More descriptors than one detail read looks at (Linux): `fdCount` is all of them, but `fdByType`, `files` and
+   * `sockets` cover the first {@link MAX_FD_LINKS} only.
+   */
+  readonly fdScanPartial: boolean;
   readonly sockets: readonly ProcessSocketEntry[];
   readonly socketsTruncated: boolean;
   /** Epoch ms of the read. */
@@ -155,13 +160,10 @@ export function parsePsDetail(out: string): PsDetail | null {
   };
 }
 
-/** `lstart` (`Tue Nov 24 15:50:48 2026`, local time) → epoch ms. */
+/** `lstart` (`Tue Nov 24 15:50:48 2026`, local time — the C locale's form, which `Date.parse` reads) → epoch ms. */
 export function parseLstart(token: string): number | null {
-  const m = /^\w{3} (\w{3}) +(\d{1,2}) (\d{2}):(\d{2}):(\d{2}) (\d{4})$/.exec(token.trim());
-  if (!m) return null;
-  const month = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].indexOf(m[1]);
-  if (month < 0) return null;
-  return new Date(Number(m[6]), month, Number(m[2]), Number(m[3]), Number(m[4]), Number(m[5])).getTime();
+  const ms = Date.parse(token);
+  return Number.isNaN(ms) ? null : ms;
 }
 
 interface FdTable {
@@ -265,11 +267,8 @@ export function formatProcNetAddress(hex: string): string {
     }
     const groups: string[] = [];
     for (let i = 0; i < 16; i += 2) groups.push(((bytes[i] << 8) | bytes[i + 1]).toString(16));
-    let text = groups.join(':');
-    // The longest run of zero groups becomes `::`.
-    const runs = [...text.matchAll(/(?:^|:)0(?::0)+(?::|$)/g)].sort((a, b) => b[0].length - a[0].length);
-    if (runs[0]) text = `${text.slice(0, runs[0].index)}::${text.slice((runs[0].index ?? 0) + runs[0][0].length)}`;
-    return `[${text.replace(/:{3,}/, '::')}]:${port}`;
+    // The URL host serializer writes the canonical form (zero runs as `::`) with its brackets.
+    return `${new URL(`http://[${groups.join(':')}]`).hostname}:${port}`;
   }
   return hex;
 }
@@ -377,7 +376,11 @@ export function createProcessInspector(deps: InspectorDeps): InspectProcess | un
 
   return async (pid, startToken) => {
     const takenAt = now();
-    const before = await psDetail(pid);
+    // A pid gone before the first read: ps exits 1 (no such process) — gone, not a server failure.
+    const before = await psDetail(pid).catch((err: { code?: unknown }) => {
+      if (err?.code === 1) return null;
+      throw err;
+    });
     if (!before) return 'gone';
     if (before.startToken !== startToken) return 'stale';
     const unreadable: string[] = [];
@@ -399,6 +402,7 @@ export function createProcessInspector(deps: InspectorDeps): InspectProcess | un
     let io: ProcessInspection['io'] = null;
     let fds = emptyFds();
     let fdsRead = false;
+    let fdScanPartial = false;
 
     if (linux) {
       commandLine = await attempt(
@@ -424,19 +428,27 @@ export function createProcessInspector(deps: InspectorDeps): InspectProcess | un
           const links = await Promise.allSettled(
             names.slice(0, MAX_FD_LINKS).map((n) => readLink(`/proc/${pid}/fd/${n}`)),
           );
+          fdScanPartial = names.length > MAX_FD_LINKS;
           const inet = new Map<string, Omit<ProcessSocketEntry, 'fd'>>();
           let unix = new Map<string, string>();
           if (links.some((l) => l.status === 'fulfilled' && l.value.startsWith('socket:'))) {
+            // A table that cannot be read is said (`sockets`), and its sockets stay unknown — never guessed at.
+            let tableFailed = false;
+            const table = (file: string) =>
+              readFile(`/proc/${pid}/net/${file}`).catch(() => {
+                tableFailed = true;
+                return '';
+              });
             for (const [file, proto] of [
               ['tcp', 'TCP'],
               ['tcp6', 'TCP'],
               ['udp', 'UDP'],
               ['udp6', 'UDP'],
             ] as const) {
-              const text = await readFile(`/proc/${pid}/net/${file}`).catch(() => '');
-              for (const [k, v] of parseProcNetInet(text, proto)) inet.set(k, v);
+              for (const [k, v] of parseProcNetInet(await table(file), proto)) inet.set(k, v);
             }
-            unix = parseProcNetUnix(await readFile(`/proc/${pid}/net/unix`).catch(() => ''));
+            unix = parseProcNetUnix(await table('unix'));
+            if (tableFailed) unreadable.push('sockets');
           }
           fds = emptyFds();
           fds.count = names.length;
@@ -447,12 +459,13 @@ export function createProcessInspector(deps: InspectorDeps): InspectProcess | un
             if (type === 'sock') {
               const inode = /^socket:\[(\d+)\]$/.exec(target)?.[1] ?? '';
               const s = inet.get(inode);
-              const kind = s ? (s.local.startsWith('[') ? 'IPv6' : 'IPv4') : 'unix';
+              const isUnix = !s && unix.has(inode);
+              const kind = s ? (s.local.startsWith('[') ? 'IPv6' : 'IPv4') : isUnix ? 'unix' : 'sock';
               fds.byType[kind] = (fds.byType[kind] ?? 0) + 1;
               fds.sockets.push(
                 s
                   ? { fd: names[i], ...s }
-                  : { fd: names[i], proto: 'unix', local: unix.get(inode) ?? '', remote: '', state: '' },
+                  : { fd: names[i], proto: isUnix ? 'unix' : '?', local: unix.get(inode) ?? '', remote: '', state: '' },
               );
               return;
             }
@@ -531,7 +544,8 @@ export function createProcessInspector(deps: InspectorDeps): InspectProcess | un
       fdCount: fdsRead ? fds.count : null,
       fdByType: fds.byType,
       files,
-      filesTruncated: fds.files.length > files.length,
+      filesTruncated: fds.files.length > files.length || fdScanPartial,
+      fdScanPartial,
       sockets,
       socketsTruncated: fds.sockets.length > sockets.length,
       takenAt,

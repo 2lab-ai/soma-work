@@ -128,6 +128,7 @@ const inspection = (pid: number, startToken: string) => ({
   fdByType: {},
   files: [],
   filesTruncated: false,
+  fdScanPartial: false,
   sockets: [],
   socketsTruncated: false,
   takenAt: 1,

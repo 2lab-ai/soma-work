@@ -35,6 +35,28 @@ describe('maskCommandLine', () => {
     expect(maskJson('x --list=["a","b"]')).toBe(`x --list=[${MASK}]`);
   });
 
+  it('a delimiter inside a JSON string does not end the span (both modes); an escaped quote does not end the string', () => {
+    expect(joined('x --settings {"label":"}","value":"hunter2"} --verbose')).toBe(`x --settings {${MASK}} --verbose`);
+    expect(exact('x', '--settings', '{"label":"}","value":"hunter2"}', '--verbose')).toBe(
+      `x --settings {${MASK}} --verbose`,
+    );
+    expect(joined('x {"a":"q\\"}","b":"hunter2"} tail')).toBe(`x {${MASK}} tail`);
+    expect(joined('x ["]","hunter2"] tail')).toBe(`x [${MASK}] tail`);
+    expect(joined('x {"open":"hunter2')).not.toContain('hunter2');
+  });
+
+  it('a shell command inside one exact argument is masked word by word (bash -c, sh -c)', () => {
+    expect(exact('bash', '-c', 'client --password=hunter2; sleep 60')).toBe(
+      `bash -c 'client --password=${MASK} sleep 60'`,
+    );
+    expect(exact('sh', '-c', 'GITHUB_TOKEN=abc123 gh pr view 1')).toBe(
+      `sh -c '${'GITHUB_TOKEN'}=${MASK} gh pr view 1'`,
+    );
+    expect(exact('sh', '-c', 'mysql -uroot -phunter2 db')).toBe(`sh -c 'mysql -uroot -p${MASK} db'`);
+    // The value of a secret flag is masked whole, spaces and all.
+    expect(exact('tool', '--token', 'two words')).toBe(`tool --token ${MASK}`);
+  });
+
   it('masks the value of a flag or variable whose name says secret, in every form', () => {
     expect(joined('tool --token abc123 --password=pw --api-key K --out file')).toBe(
       `tool --token ${MASK} --password=${MASK} --api-key ${MASK} --out file`,
@@ -52,8 +74,13 @@ describe('maskCommandLine', () => {
       `curl -H Authorization: Bearer ${MASK} https://api.example.com/x`,
     );
     expect(exact('curl', '-H', 'Authorization: Bearer abc', '-H', 'Cookie: sid=1')).toBe(
-      `curl -H 'Authorization: ${MASK}' -H 'Cookie: ${MASK}'`,
+      `curl -H 'Authorization: Bearer ${MASK}' -H 'Cookie: ${MASK}'`,
     );
+    // ps keeps a shell line's quotes: the header is still found behind its opening quote.
+    expect(joined('curl -H "Authorization: Bearer abc" https://h')).toBe(
+      `curl -H "Authorization: Bearer ${MASK} https://h`,
+    );
+    expect(joined('x "--password=hunter2"')).toBe(`x "--password=${MASK}`);
     expect(joined('git clone https://bot:s3cr3t@github.com/o/r.git')).toBe(
       `git clone https://bot:${MASK}@github.com/o/r.git`,
     );

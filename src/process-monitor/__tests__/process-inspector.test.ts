@@ -248,10 +248,12 @@ describe('createProcessInspector', () => {
       '/proc/4242/fd/3': 'socket:[5151]',
       '/proc/4242/fd/4': 'socket:[6000]',
     };
+    const fileReads: string[] = [];
     const inspect = createProcessInspector({
       platform: 'linux',
       run: async () => psLine(),
       readFile: async (p) => {
+        fileReads.push(p);
         if (p in files) return files[p];
         throw new Error('ENOENT');
       },
@@ -278,8 +280,54 @@ describe('createProcessInspector', () => {
       ],
     });
     expect(got && got !== 'gone' && got !== 'stale' ? got.commandLine : '').toBe(
-      `bash -c 'curl -H "Authorization: •••'`,
+      `bash -c 'curl -H "Authorization: Bearer ••• https://x'`,
     );
+    // The environment holds the session's credentials: never read.
+    expect(fileReads.some((f) => /environ/.test(f))).toBe(false);
+    expect(fileReads.length).toBeGreaterThan(0);
+  });
+
+  it('a pid gone before the first read (ps exits 1) is gone, not a failure; another ps failure still throws', async () => {
+    const gone = createProcessInspector({
+      platform: 'darwin',
+      run: async () => {
+        throw Object.assign(new Error('ps exited 1'), { code: 1 });
+      },
+    });
+    expect(await gone?.(4242, START)).toBe('gone');
+    const broken = createProcessInspector({
+      platform: 'darwin',
+      run: async () => {
+        throw Object.assign(new Error('spawn ps ENOENT'), { code: 'ENOENT' });
+      },
+    });
+    await expect(broken?.(4242, START)).rejects.toThrow(/ENOENT/);
+  });
+
+  it('Linux: past 400 descriptors the scan says it is partial; an unreadable socket table leaves its sockets unknown', async () => {
+    const names = Array.from({ length: 450 }, (_, i) => String(i));
+    const inspect = createProcessInspector({
+      platform: 'linux',
+      run: async () => psLine(),
+      readFile: async (p) => {
+        if (p.endsWith('/cmdline')) return 'node\0x.js\0';
+        if (p.includes('/net/')) throw new Error('EACCES');
+        throw new Error('ENOENT');
+      },
+      // Descriptor 3 is a socket; 420 (beyond the scan) would have been a file.
+      readLink: async (p) => (p.endsWith('/fd/3') ? 'socket:[777]' : p.endsWith('/fd/420') ? '/beyond' : '/dev/null'),
+      readDir: async () => names,
+    });
+    const got = await inspect?.(4242, START);
+    if (!got || got === 'gone' || got === 'stale') throw new Error('expected a read');
+    expect(got.fdCount).toBe(450);
+    expect(got.fdScanPartial).toBe(true);
+    expect(got.filesTruncated).toBe(true);
+    expect(got.files.some((f) => f.name === '/beyond')).toBe(false);
+    expect(got.unreadable).toContain('sockets');
+    expect(got.sockets).toEqual([{ fd: '3', proto: '?', local: '', remote: '', state: '' }]);
+    expect(got.fdByType.sock).toBe(1);
+    expect(got.fdByType.unix).toBeUndefined();
   });
 
   it('none on Windows', () => {

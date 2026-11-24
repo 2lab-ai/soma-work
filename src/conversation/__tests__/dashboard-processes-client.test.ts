@@ -700,6 +700,9 @@ describe('P7 — the detail: one process’s snapshot, read once', () => {
   it('a refusal reads in the reader’s words; nothing open draws nothing', () => {
     const { e } = env(() => new Promise(() => {}));
     expect(e.procDetailHtml({ pid: 0 })).toBe('');
+    expect(e.procDetailHtml({ pid: 2, status: 200, body: { ...detail, fdScanPartial: true } })).toContain(
+      '디스크립터가 많아 앞의 일부만 살펴봤어요',
+    );
     expect(e.procDetailHtml({ pid: 2, status: 0 })).toContain('읽는 중');
     expect(e.procDetailHtml({ pid: 2, status: 409, code: 'stale' })).toContain('다른 프로세스가 됐어요');
     expect(e.procDetailFailText(403)).toContain('작업 소유자와 관리자만');

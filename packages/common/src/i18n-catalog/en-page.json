@@ -1974,5 +1974,6 @@
   "<div class=\"pp-wrap\"><table class=\"px-table\"><thead><tr><th scope=\"col\" class=\"pp-num\">FD</th><th scope=\"col\">종류</th><th scope=\"col\">이름</th></tr></thead><tbody>": "<div class=\"pp-wrap\"><table class=\"px-table\"><thead><tr><th scope=\"col\" class=\"pp-num\">FD</th><th scope=\"col\">Kind</th><th scope=\"col\">Name</th></tr></thead><tbody>",
   "<p class=\"px-hint\">파일이 더 있어요 — 앞의 ": "<p class=\"px-hint\">There are more files — only the first ",
   "<p class=\"px-hint\">운영체제가 주지 않은 항목: ": "<p class=\"px-hint\">Not given by the operating system: ",
-  "\"><thead><tr><th scope=\"col\">프로세스</th><th scope=\"col\" class=\"pp-num\">CPU</th><th scope=\"col\" class=\"pp-num\">메모리</th>": "\"><thead><tr><th scope=\"col\">Process</th><th scope=\"col\" class=\"pp-num\">CPU</th><th scope=\"col\" class=\"pp-num\">Memory</th>"
+  "\"><thead><tr><th scope=\"col\">프로세스</th><th scope=\"col\" class=\"pp-num\">CPU</th><th scope=\"col\" class=\"pp-num\">메모리</th>": "\"><thead><tr><th scope=\"col\">Process</th><th scope=\"col\" class=\"pp-num\">CPU</th><th scope=\"col\" class=\"pp-num\">Memory</th>",
+  "<p class=\"px-hint\">디스크립터가 많아 앞의 일부만 살펴봤어요 — 종류별 개수와 목록은 그 안에서만 센 값이에요</p>": "<p class=\"px-hint\">Too many descriptors to look at all of them — the counts by kind and the lists cover only the first part</p>"
 }

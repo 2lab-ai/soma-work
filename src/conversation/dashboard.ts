@@ -17153,6 +17153,7 @@ function procDetailHtml(state) {
   html += '<section class="px-sec"><h3 class="px-h">열린 파일 · 소켓</h3><p class="px-line">' + (d.fdCount === null || d.fdCount === undefined ? '읽지 못했어요' : '디스크립터 ' + toNum(d.fdCount) + '개' + (types.length ? ' <span class="pi-muted">(' + types.join(' · ') + ')</span>' : '')) + '</p>'
     + (socks ? '<div class="pp-wrap"><table class="px-table"><thead><tr><th scope="col" class="pp-num">FD</th><th scope="col">종류</th><th scope="col">로컬</th><th scope="col">상대</th><th scope="col">상태</th></tr></thead><tbody>' + socks + '</tbody></table></div>' + (d.socketsTruncated ? '<p class="px-hint">소켓이 더 있어요 — 앞의 ' + (d.sockets || []).length + '개만</p>' : '') : '')
     + (files ? '<div class="pp-wrap"><table class="px-table"><thead><tr><th scope="col" class="pp-num">FD</th><th scope="col">종류</th><th scope="col">이름</th></tr></thead><tbody>' + files + '</tbody></table></div>' + (d.filesTruncated ? '<p class="px-hint">파일이 더 있어요 — 앞의 ' + (d.files || []).length + '개만</p>' : '') : '')
+    + (d.fdScanPartial ? '<p class="px-hint">디스크립터가 많아 앞의 일부만 살펴봤어요 — 종류별 개수와 목록은 그 안에서만 센 값이에요</p>' : '')
     + '</section>';
   if (d.unreadable && d.unreadable.length) html += '<p class="px-hint">운영체제가 주지 않은 항목: ' + d.unreadable.map(esc).join(', ') + '</p>';
   return html;

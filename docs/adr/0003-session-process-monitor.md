@@ -85,7 +85,8 @@ same snapshot, and work will be placed by each node's free CPU and memory.
 
 7. **Where and what, by default; one process in depth, on purpose (2026-11-24).** Each sample also reads every
    session process's working directory (Linux `/proc/<pid>/cwd`, macOS one `lsof -a -d cwd` for all pids), cached
-   15 seconds per (pid, start time). It travels with the command preview, under the same rule: the owner and admins
+   15 seconds per (pid, start time); a folder is kept only when the pid's start time read after it is the one the
+   sample saw (a reader names a pid, not a process). It travels with the command preview, under the same rule: the owner and admins
    see it, everyone else gets `''`. The preview now names a multi-command tool's subcommand (`npm run build`,
    `git status`, `gh pr view`): only for a fixed list of tools, only right after the program, only subcommand-shaped
    words. A row of the tab opens the process in depth: `ProcessHost.inspect` checks the pid and its start time against
@@ -93,7 +94,8 @@ same snapshot, and work will be placed by each node's free CPU and memory.
    macOS `ps -M` and `lsof`), and checks the start time again after the reads. The answer is a snapshot: the route
    (`GET …/processes/:pid/detail?start=`, owner and admins) never pushes it and the client never polls it. Its command
    line is the full line with secret values masked (`command-mask.ts`: JSON spans, secret-named flags and variables,
-   HTTP credentials, URL passwords, known key shapes, long high-entropy runs). This is a deny-list, so a secret with no
+   HTTP credentials, URL passwords, known key shapes, long high-entropy runs; a delimiter inside a JSON string does not
+   end a span, and an exact argument that is a command of its own — `bash -c '…'` — is masked word by word). This is a deny-list, so a secret with no
    shape after a flag whose name says nothing still shows. That is why the detail is the owner's and admins' only and
    is read only on a click. The environment is never read.
 8. **The node on the card (2026-11-24).** A card with a live tree carries its node's load (`nodeCpuPercent`,
