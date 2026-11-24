@@ -19,9 +19,10 @@ describe('TreeSampler', () => {
     const ps = machine();
     let now = 1_000;
     const calls: number[][] = [];
+    let moved = false;
     const readCwds = async (pids: readonly number[]) => {
       calls.push([...pids].sort());
-      return new Map(pids.filter((p) => p !== 400).map((p) => [p, `/work/${p}`]));
+      return new Map(pids.filter((p) => p !== 400).map((p) => [p, moved && p === 300 ? '/work/moved' : `/work/${p}`]));
     };
     const sampler = new TreeSampler(ps.run, () => now, undefined, readCwds);
     const roots = [{ pid: 200, sessionKey: 'A' }, { pid: 250 }];
@@ -36,9 +37,12 @@ describe('TreeSampler', () => {
     now += 5_000;
     await sampler.sample(roots, 'n1');
     expect(calls).toHaveLength(1);
+    // 300 cd'd somewhere else: within the window the cache stands; past it the new folder shows.
+    moved = true;
     now += 10_000;
-    await sampler.sample(roots, 'n1');
+    const later = await sampler.sample(roots, 'n1');
     expect(calls).toHaveLength(2);
+    expect(later.sessions[0].processes.find((p) => p.pid === 300)?.cwd).toBe('/work/moved');
     // A failing read leaves the column empty and the sample whole.
     const broken = new TreeSampler(
       ps.run,

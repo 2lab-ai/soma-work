@@ -49,12 +49,17 @@ describe('maskCommandLine', () => {
     expect(exact('bash', '-c', 'client --password=hunter2; sleep 60')).toBe(
       `bash -c 'client --password=${MASK} sleep 60'`,
     );
-    expect(exact('sh', '-c', 'GITHUB_TOKEN=abc123 gh pr view 1')).toBe(
-      `sh -c '${'GITHUB_TOKEN'}=${MASK} gh pr view 1'`,
+    // An argument that opens with a secret assignment may be its value, spaces and all: the rest goes with it.
+    expect(exact('sh', '-c', 'GITHUB_TOKEN=abc123 gh pr view 1')).toBe(`sh -c GITHUB_TOKEN=${MASK}`);
+    expect(exact('sh', '-c', 'cd /w && GITHUB_TOKEN=abc123 gh pr view 1')).toBe(
+      `sh -c 'cd /w && GITHUB_TOKEN=${MASK} gh pr view 1'`,
     );
     expect(exact('sh', '-c', 'mysql -uroot -phunter2 db')).toBe(`sh -c 'mysql -uroot -p${MASK} db'`);
     // The value of a secret flag is masked whole, spaces and all.
     expect(exact('tool', '--token', 'two words')).toBe(`tool --token ${MASK}`);
+    expect(exact('tool', '--password=two words', 'API_KEY=two words', '"--secret=a b"')).toBe(
+      `tool --password=${MASK} API_KEY=${MASK} "--secret=${MASK}`,
+    );
   });
 
   it('masks the value of a flag or variable whose name says secret, in every form', () => {
@@ -96,6 +101,17 @@ describe('maskCommandLine', () => {
     expect(joined('x --opaque Zq8vR2mKx7pL4nW9tY3bC6dF1')).toBe(`x --opaque ${MASK}`);
     // A long all-lowercase word (a library name) is not entropy.
     expect(joined('x libabsl_log_internal_structured_proto')).toBe('x libabsl_log_internal_structured_proto');
+  });
+
+  it('a crafted long argument costs linear time: the masker reads a bounded prefix of each word and of the line', () => {
+    const evil = `?${'a'.repeat(200_000)}`;
+    const bomb = `x://${'a:'.repeat(100_000)}`;
+    const t0 = Date.now();
+    joined(`x ${evil} ${bomb} ${'&k'.repeat(50_000)}`);
+    exact('x', evil, bomb, '?'.repeat(300_000));
+    expect(Date.now() - t0).toBeLessThan(1_000);
+    // A secret query value still goes.
+    expect(joined('curl https://h/x?api_key=abc&page=2')).toBe(`curl https://h/x?api_key=${MASK}&page=2`);
   });
 
   it('exact argv: words with spaces are quoted back; caps a word and the line', () => {

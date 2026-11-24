@@ -330,6 +330,27 @@ describe('createProcessInspector', () => {
     expect(got.fdByType.unix).toBeUndefined();
   });
 
+  it('a unix socket path keeps its spaces; a failing identity re-read after the read is a failure, not a 404', async () => {
+    expect(
+      parseProcNetUnix(
+        'Num RefCount Protocol Flags Type St Inode Path\nffff: 00000002 00000000 00010000 0001 01 8888 /tmp/my project/server.sock\n',
+      ),
+    ).toEqual(new Map([['8888', '/tmp/my project/server.sock']]));
+    let calls = 0;
+    const inspect = createProcessInspector({
+      platform: 'darwin',
+      run: async (cmd, args) => {
+        if (cmd === 'ps' && args.some((a) => a.includes('lstart='))) {
+          calls++;
+          if (calls === 2) throw Object.assign(new Error('ps timed out'), { code: 'ETIMEDOUT' });
+          return psLine();
+        }
+        return '';
+      },
+    });
+    await expect(inspect?.(4242, START)).rejects.toThrow(/timed out/);
+  });
+
   it('none on Windows', () => {
     expect(createProcessInspector({ platform: 'win32', run: vi.fn() })).toBeUndefined();
   });

@@ -187,6 +187,25 @@ describe('LocalProcessMonitor.inspect — one process in depth, a snapshot', () 
     });
   });
 
+  it('detail reads run one at a time on a node (a burst of clicks does not multiply ps / lsof)', async () => {
+    let running = 0;
+    let most = 0;
+    const inspectProcess = vi.fn(async (pid: number, token: string) => {
+      running++;
+      most = Math.max(most, running);
+      await new Promise((r) => setTimeout(r, 5));
+      running--;
+      return inspection(pid, token);
+    });
+    const { monitor } = setup({ inspectProcess });
+    const all = await Promise.all(
+      [1, 2, 3].map(() => monitor.inspect({ sessionKey: 'A', pid: 300, startToken: start })),
+    );
+    expect(all.every((r) => r.ok)).toBe(true);
+    expect(most).toBe(1);
+    expect(inspectProcess).toHaveBeenCalledTimes(3);
+  });
+
   it('the inspector’s own identity checks decide: gone → not-found, reused mid-read → stale', async () => {
     const inspectProcess = vi.fn<import('../process-inspector').InspectProcess>();
     const { monitor } = setup({ inspectProcess });

@@ -665,6 +665,79 @@ describe('P7 — the detail: one process’s snapshot, read once', () => {
     }
   });
 
+  it('while the tab polls the list every 3 s, the open snapshot is never read again nor repainted', async () => {
+    vi.useFakeTimers();
+    try {
+      const calls: string[] = [];
+      const panel = { _wired: false, _html: '', addEventListener: () => {} };
+      const body = { _html: '' };
+      const dlg = { hasAttribute: () => false, show() {} };
+      const list = { node: { nodeId: 'n1' }, commands: true, session: null };
+      const e = load<Env & { renderPanelProcs(): void }>(
+        [
+          ...TAB_FNS,
+          'procsFailText',
+          'paintPanelProcs',
+          'procsFetch',
+          'renderPanelProcs',
+          'procSecondsText',
+          'procClockText',
+          'procDetailFailText',
+          'procDetailHtml',
+          'paintProcDetail',
+          'procsOpenDetail',
+        ],
+        [
+          'PROCS_POLL_MS',
+          'PROCS_READ_TIMEOUT_MS',
+          'PROCS_CONTROL_TIMEOUT_MS',
+          '_procs',
+          '_procDetail',
+          'PROC_STATE_LABEL',
+        ],
+        {
+          document: {
+            hidden: false,
+            getElementById: (id: string) =>
+              id === 'panel-procs'
+                ? panel
+                : id === 'proc-detail-body'
+                  ? body
+                  : id === 'proc-detail-dialog'
+                    ? dlg
+                    : null,
+          },
+          fetch: (url: string) => {
+            calls.push(url);
+            const json = url.includes('/detail?') ? { ok: true, detail } : list;
+            return Promise.resolve({ status: 200, ok: true, json: async () => json });
+          },
+          writePanelPart: (el: { _html: string }, html: string) => {
+            el._html = html;
+          },
+          setTextIfChanged: () => {},
+          isSiblingSession: () => false,
+          viewerCanManage: () => true,
+          _panelMid: 'procs',
+          panelSessionKey: 'k1',
+          _sessionCache: { k1: { ownerId: 'U1' } },
+        },
+      );
+      e.renderPanelProcs();
+      await vi.advanceTimersByTimeAsync(100);
+      e.procsOpenDetail(2, S);
+      await vi.advanceTimersByTimeAsync(100);
+      const first = body._html;
+      expect(first).toContain('/opt/homebrew/bin/node');
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(calls.filter((u) => u.includes('/detail?'))).toHaveLength(1);
+      expect(calls.filter((u) => u.endsWith('/processes')).length).toBeGreaterThanOrEqual(3);
+      expect(body._html).toBe(first);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('the body: image, performance, subtree, files and sockets — the masked command line and its hint', () => {
     const { e } = env(() => new Promise(() => {}));
     const html = e.procDetailHtml({ pid: 2, status: 200, body: detail });

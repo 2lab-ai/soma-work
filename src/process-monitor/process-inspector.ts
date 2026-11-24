@@ -96,6 +96,8 @@ export type InspectProcess = (pid: number, startToken: string) => Promise<Proces
 export const MAX_FILES = 60;
 export const MAX_SOCKETS = 40;
 const MAX_FD_LINKS = 400;
+/** The most of one `/proc/<pid>/net/*` table a detail read parses (a busy host's tables can be large). */
+const MAX_NET_TABLE = 4 * 1024 * 1024;
 
 /** Fixed columns first, `lstart` (5 tokens) last — no column with spaces before it. */
 const PS_COLUMNS = 'pid=,ppid=,pgid=,uid=,user=,stat=,nice=,pri=,%cpu=,%mem=,rss=,vsz=,time=,etime=,lstart=';
@@ -296,10 +298,11 @@ export function parseProcNetInet(text: string, proto: 'TCP' | 'UDP'): Map<string
 /** `/proc/<pid>/net/unix` → inode → socket path (`''` for an unnamed one). */
 export function parseProcNetUnix(text: string): Map<string, string> {
   const out = new Map<string, string>();
+  // Num RefCount Protocol Flags Type St Inode [Path] — the path is the rest of the line (it may hold spaces).
+  const row = /^\s*(?:\S+\s+){6}(\d+)(?:\s(.*))?$/;
   for (const line of text.split('\n').slice(1)) {
-    const f = line.trim().split(/\s+/);
-    if (f.length < 7) continue;
-    out.set(f[6], f[7] ?? '');
+    const m = row.exec(line);
+    if (m) out.set(m[1], (m[2] ?? '').trim());
   }
   return out;
 }
@@ -435,10 +438,13 @@ export function createProcessInspector(deps: InspectorDeps): InspectProcess | un
             // A table that cannot be read is said (`sockets`), and its sockets stay unknown — never guessed at.
             let tableFailed = false;
             const table = (file: string) =>
-              readFile(`/proc/${pid}/net/${file}`).catch(() => {
-                tableFailed = true;
-                return '';
-              });
+              readFile(`/proc/${pid}/net/${file}`).then(
+                (text) => (text.length > MAX_NET_TABLE ? text.slice(0, text.lastIndexOf('\n', MAX_NET_TABLE)) : text),
+                () => {
+                  tableFailed = true;
+                  return '';
+                },
+              );
             for (const [file, proto] of [
               ['tcp', 'TCP'],
               ['tcp6', 'TCP'],
@@ -509,7 +515,11 @@ export function createProcessInspector(deps: InspectorDeps): InspectProcess | un
     }
 
     // The pid may have exited and been reused while this read ran: the answer is only good if it is still that process.
-    const after = await psDetail(pid).catch(() => null);
+    // A pid gone by now (ps exits 1) is gone; any other failure of this read is a failure, not a 404.
+    const after = await psDetail(pid).catch((err: { code?: unknown }) => {
+      if (err?.code === 1) return null;
+      throw err;
+    });
     if (!after) return 'gone';
     if (after.startToken !== startToken) return 'stale';
 

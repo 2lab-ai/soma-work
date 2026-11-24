@@ -164,6 +164,8 @@ export class LocalProcessMonitor implements ProcessHost {
   private readonly listeners = new Set<Listener>();
   /** session → pid → what was paused, for every process this monitor paused and has not resumed. */
   private readonly paused = new Map<string, Map<number, PausedEntry>>();
+  /** The detail read in progress (inspect runs one at a time). */
+  private inspecting: Promise<void> = Promise.resolve();
 
   constructor(private readonly deps: ProcessMonitorDeps) {
     this.nodeId = deps.nodeId;
@@ -374,6 +376,17 @@ export class LocalProcessMonitor implements ProcessHost {
    * a pid the OS reused is never described as the process the reader clicked.
    */
   async inspect(input: ProcessInspectInput): Promise<ProcessInspectResult> {
+    // One detail read at a time on a node: each runs several ps / lsof calls (and reads Linux socket tables), and a
+    // burst of clicks must not multiply that.
+    const run = this.inspecting.then(() => this.inspectNow(input));
+    this.inspecting = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  private async inspectNow(input: ProcessInspectInput): Promise<ProcessInspectResult> {
     const inspectProcess = this.deps.inspectProcess;
     if (!inspectProcess) return { ok: false, reason: 'unsupported' };
     const snapshot = await this.fresh(1_000);

@@ -20,6 +20,13 @@ import { splitArgs } from './command-preview';
 export const MASK = '•••';
 const MAX_WORD = 300;
 const MAX_LINE = 4000;
+/**
+ * What the masker reads at most — a word before its regexes, the line before its split: a crafted argument cannot make
+ * a pattern work in proportion to its length squared on the daemon's thread. What lies past it is cut, not shown.
+ */
+const MAX_WORD_INPUT = 2 * MAX_WORD;
+const MAX_INPUT = 4 * MAX_LINE;
+const MAX_ARGS = 400;
 
 /** A flag or variable name that says its value is a secret. */
 const SECRET_NAME =
@@ -40,8 +47,9 @@ const INLINE_HEADER =
 const AUTH_SCHEME_WORD = /^(bearer|basic|token|digest)$/i;
 const INLINE_SCHEME = /\b(bearer|basic)(\s+)\S+/gi;
 const URL_PASSWORD = /\b([a-z][a-z0-9+.-]*:\/\/[^\s/@:]+):[^\s/@]+@/gi;
-const SECRET_QUERY =
-  /([?&;][^=&\s#]*(?:token|key|secret|sig|signature|password|passwd|auth|credential)[^=&\s#]*=)[^&\s#]+/gi;
+/** A query parameter (`?name=value`, `&name=value`): masked when its name says secret. Bounded name, linear scan. */
+const QUERY_PARAM = /([?&;])([^=&\s#?;]{1,64})=([^&\s#;]*)/g;
+const SECRET_QUERY_NAME = /token|key|secret|sig|signature|password|passwd|auth|credential/i;
 /** Provider key shapes the logger does not know. */
 const PROVIDER_KEYS: readonly RegExp[] = [
   /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g,
@@ -114,13 +122,15 @@ export function maskJson(text: string): string {
 
 /** Mask the shapes a single word can carry a secret in (see the module comment). */
 function maskWord(word: string): string {
-  let w = String(redactSecrets(word));
+  let w = String(redactSecrets(word.length > MAX_WORD_INPUT ? word.slice(0, MAX_WORD_INPUT) : word));
   for (const re of PROVIDER_KEYS) w = w.replace(re, MASK);
   w = w
     .replace(INLINE_HEADER, (_m, name: string, sep: string) => `${name}${sep}${MASK}`)
     .replace(INLINE_SCHEME, (_m, scheme: string, sp: string) => `${scheme}${sp}${MASK}`)
     .replace(URL_PASSWORD, (_m, head: string) => `${head}:${MASK}@`)
-    .replace(SECRET_QUERY, (_m, head: string) => `${head}${MASK}`)
+    .replace(QUERY_PARAM, (m, sep: string, name: string) =>
+      SECRET_QUERY_NAME.test(name) ? `${sep}${name}=${MASK}` : m,
+    )
     .replace(HEX_RUN, MASK)
     .replace(RUN, (run) => (highEntropy(run) ? MASK : run));
   return w.length > MAX_WORD ? `${w.slice(0, MAX_WORD - 1)}…` : w;
@@ -134,7 +144,9 @@ const quoted = (w: string): string => (/\s/.test(w) ? `'${w.replace(/'/g, `'\\''
  * are quoted; otherwise it is one `ps args` line (macOS), which has no argument boundaries.
  */
 export function maskCommandLine(input: { readonly argv: readonly string[]; readonly exact: boolean }): string {
-  const words = input.exact ? input.argv.map(maskJson) : splitArgs(maskJson(input.argv.join(' ')));
+  const words = input.exact
+    ? input.argv.slice(0, MAX_ARGS).map((a) => maskJson(a.length > MAX_INPUT ? a.slice(0, MAX_INPUT) : a))
+    : splitArgs(maskJson(input.argv.join(' ').slice(0, MAX_INPUT))).slice(0, MAX_ARGS);
   if (words.length === 0) return '';
   const program = (words[0].split('/').pop() ?? '').toLowerCase();
   const out: string[] = [];
@@ -149,12 +161,6 @@ export function maskCommandLine(input: { readonly argv: readonly string[]; reado
       } else out.push(MASK);
       continue;
     }
-    // An exact argument with spaces in it is a command of its own (`bash -c 'client --password=x; …'`): masked as one
-    // line, word by word, then quoted back.
-    if (input.exact && /\s/.test(raw)) {
-      out.push(quoted(maskCommandLine({ argv: [raw], exact: false })));
-      continue;
-    }
     // ps keeps the quotes a shell command line had (`-H "Authorization: Bearer x"`): a word is matched without its
     // opening quote, and keeps it.
     const lead = /^["']/.test(raw) ? raw[0] : '';
@@ -167,6 +173,12 @@ export function maskCommandLine(input: { readonly argv: readonly string[]; reado
     const assignment = !flag && ASSIGNMENT.exec(word);
     if (assignment && SECRET_NAME.test(assignment[1])) {
       out.push(`${lead}${assignment[1]}=${MASK}`);
+      continue;
+    }
+    // Not a secret flag or variable as a whole: an exact argument with spaces in it is a command of its own
+    // (`bash -c 'client --password=x; …'`), masked as one line, word by word, then quoted back.
+    if (input.exact && /\s/.test(raw)) {
+      out.push(quoted(maskCommandLine({ argv: [raw], exact: false })));
       continue;
     }
     if (MYSQL_PROGRAM.test(program) && /^-p.+/.test(word)) {

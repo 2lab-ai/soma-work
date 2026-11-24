@@ -1305,8 +1305,11 @@ function procSignature(u: SessionProcessUsage, node?: NodeCapacity): string {
   // its 10-step gauges.
   const cpu = u.cpuPercent < 10 ? Math.round(u.cpuPercent) : 10 + Math.round((u.cpuPercent - 10) / 5);
   const load = node ? nodeLoadOf(node) : null;
+  // The badge's level (busy from 10%, hot from 100%) moves at its own edges, which a bucket can straddle.
+  const level = u.cpuPercent >= 100 ? 2 : u.cpuPercent >= 10 ? 1 : 0;
   return [
     cpu,
+    level,
     Math.round(u.rssBytes / 10_000_000),
     u.processCount,
     u.stoppedCount,

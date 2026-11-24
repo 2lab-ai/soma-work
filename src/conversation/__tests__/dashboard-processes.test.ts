@@ -425,6 +425,12 @@ describe('Dashboard — the 프로세스 tab and the CPU · 메모리 chip', () 
     expect(dashboard.procCardsToPush(pushed, at(21))).toEqual([KEY]);
     expect(dashboard.procCardsToPush(pushed, at(21, 7e9))).toEqual([KEY]);
     expect(dashboard.procCardsToPush(pushed, at(null, 7e9))).toEqual([KEY]);
+    // The badge's busy / hot edges push even inside one CPU bucket (9.6 and 10.2 share a bucket; 98 and 101 too).
+    const lv = (cpuPercent: number) => snapshot([{ ...sessionA, stoppedCount: 2, cpuPercent }]);
+    dashboard.procCardsToPush(pushed, lv(9.6));
+    expect(dashboard.procCardsToPush(pushed, lv(10.2))).toEqual([KEY]);
+    dashboard.procCardsToPush(pushed, lv(98));
+    expect(dashboard.procCardsToPush(pushed, lv(101))).toEqual([KEY]);
     // Every process gone: one more push so the chip disappears, then nothing.
     expect(dashboard.procCardsToPush(pushed, snapshot([]))).toEqual([KEY]);
     expect(dashboard.procCardsToPush(pushed, snapshot([]))).toEqual([]);
