@@ -1,5 +1,5 @@
 import { isAdminUser } from '../../admin-utils';
-import { getAuthMode } from '../../auth/auth-runtime';
+import { getAuthMode, getLlmuxSettings } from '../../auth/auth-runtime';
 import { switchLlmuxAccount } from '../../auth/llmux-client';
 import { advertisedLlmuxBaseUrl, buildLlmuxKeyDmText } from '../../auth/llmux-key-info';
 import {
@@ -115,9 +115,12 @@ export class AuthHandler implements CommandHandler {
    * - `show`: issue-or-reuse via `ensureTenantKey` (the SAME user gets the SAME
    *   key per daemon). Before sending, llmux is asked whether it still accepts
    *   the stored secret: a key rotated outside soma-work (`llmux key rotate`)
-   *   is dead, so it is NOT sent — the user is told to run `key rotate`.
+   *   is dead, so it is NOT sent — the user is told to run `key rotate`; a key
+   *   an admin revoked sends the user to the admin.
    * - `rotate`: `rotateTenantKey` revokes the current secret and stores a new
-   *   one under the same llmux id; only the new secret is DMed.
+   *   one under the same llmux id; only the new secret is DMed. The address the
+   *   DM advertises is resolved FIRST — rotating and then failing to say where
+   *   to use the new key would only kill the old one.
    */
   private async executeKey(ctx: CommandContext, mode: 'show' | 'rotate'): Promise<CommandResult> {
     const { user, channel, threadTs, say } = ctx;
@@ -136,18 +139,36 @@ export class AuthHandler implements CommandHandler {
       return { handled: true };
     }
 
+    const noAddress = async (): Promise<CommandResult> => {
+      await say({
+        text: '❌ 이 봇 호스트에서 외부에서 접근 가능한 IP를 찾지 못했습니다 — 운영자가 `LLMUX_ADVERTISED_BASE_URL`을 설정해야 합니다.',
+        thread_ts: threadTs,
+      });
+      return { handled: true };
+    };
+    const revokedByAdmin = async (): Promise<CommandResult> => {
+      await say({
+        text: '⛔ 당신의 llmux 키는 관리자가 폐기했습니다 — `key rotate`로는 되살릴 수 없습니다. 새 키가 필요하면 관리자에게 요청하세요.',
+        thread_ts: threadTs,
+      });
+      return { handled: true };
+    };
+
     const settings = this.deps?.userSettingsStore?.getUserSettings(user);
     const profile = { name: settings?.slackName, email: settings?.email };
     let lease: TenantKeyLease | null;
     if (mode === 'rotate') {
-      lease = await rotateTenantKey(user, profile);
-      if (!lease) {
+      if (!(await advertisedLlmuxBaseUrl(getLlmuxSettings().baseUrl))) return noAddress();
+      const rotated = await rotateTenantKey(user, profile);
+      if (!rotated.ok) {
+        if (rotated.reason === 'revoked') return revokedByAdmin();
         await say({
           text: '❌ llmux 키 교체에 실패했습니다 — 기존 키는 그대로입니다. 잠시 후 `key rotate`를 다시 보내주세요 (계속 실패하면 `auth` 카드로 데몬 상태를 확인).',
           thread_ts: threadTs,
         });
         return { handled: true };
       }
+      lease = rotated.lease;
     } else {
       lease = await ensureTenantKey(user, profile);
       if (!lease) {
@@ -157,9 +178,11 @@ export class AuthHandler implements CommandHandler {
         });
         return { handled: true };
       }
-      if ((await checkTenantKey(user)) === 'stale') {
+      const health = await checkTenantKey(user);
+      if (health === 'revoked') return revokedByAdmin();
+      if (health === 'stale') {
         await say({
-          text: '⚠️ 봇이 가진 당신의 llmux 키는 llmux에서 이미 교체·폐기되어 401(`Invalid proxy API key`)을 받습니다 (봇 밖에서 로테이션됨). `key rotate`를 보내면 새 키를 DM으로 받습니다.',
+          text: '⚠️ 봇이 가진 당신의 llmux 키는 llmux에서 이미 교체되어 401(`Invalid proxy API key`)을 받습니다 (봇 밖에서 로테이션됨). `key rotate`를 보내면 새 키를 DM으로 받습니다.',
           thread_ts: threadTs,
         });
         return { handled: true };
@@ -168,10 +191,13 @@ export class AuthHandler implements CommandHandler {
 
     // IP-only contract: never DM a hostname a plain-office-network client
     // can't resolve. No determinable IP is an operator problem, not a card.
+    // (`rotate` already checked this before rotating; the lease's own daemon is
+    // re-resolved here because the secret is only valid there.)
     const advertised = await advertisedLlmuxBaseUrl(lease.baseUrl);
     if (!advertised) {
+      if (mode === 'show') return noAddress();
       await say({
-        text: '❌ 이 봇 호스트에서 외부에서 접근 가능한 IP를 찾지 못했습니다 — 운영자가 `LLMUX_ADVERTISED_BASE_URL`을 설정해야 합니다.',
+        text: '❌ 키는 교체됐지만 외부에서 접근 가능한 IP를 찾지 못해 DM을 보내지 못했습니다 — 이전 키는 이미 폐기됐습니다. 운영자가 `LLMUX_ADVERTISED_BASE_URL`을 설정한 뒤 `key`를 보내면 새 키를 받습니다.',
         thread_ts: threadTs,
       });
       return { handled: true };

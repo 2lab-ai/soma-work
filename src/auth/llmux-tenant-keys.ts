@@ -96,8 +96,13 @@ let _state: TenantKeyStore | null = null;
 let _storePath: string | null = null;
 /** {@link tenantCacheKey} → epoch ms of the last failed issuance (retry suppressed until +TTL). */
 const _negativeCache = new Map<string, number>();
-/** {@link tenantCacheKey} → in-flight issuance, so concurrent dispatches issue at most one key. */
-const _inFlight = new Map<string, Promise<TenantKeyLease | null>>();
+/**
+ * {@link tenantCacheKey} → the issuance or rotation in flight for that user and
+ * daemon. Everything that reads or replaces the stored key waits for it first,
+ * so concurrent dispatches issue at most one key and nobody is handed a secret
+ * a rotation is about to kill. Only the settled moment matters, not the value.
+ */
+const _inFlight = new Map<string, Promise<unknown>>();
 
 /**
  * Both per-user caches are scoped to the DAEMON as well as the user: a key is
@@ -462,17 +467,22 @@ export async function ensureTenantKey(
 
   const baseUrl = currentBaseUrl();
   const target: ControlPlaneTarget = { baseUrl, adminKey: getLlmuxAdminKey(baseUrl) };
+  const cacheKey = tenantCacheKey(baseUrl, userId);
+
+  // A `key rotate` in flight is about to kill the stored secret: wait for it
+  // and read the store afterwards, so neither a dispatch nor the `key` DM gets
+  // the dying secret. An issuance in flight lands in the store (or the
+  // negative cache) the same way, so concurrent first dispatches share it.
+  // The wait loop is inline on purpose: from its last empty check to the
+  // `_inFlight.set` below nothing awaits, so no other caller can slip between.
+  for (let pending = _inFlight.get(cacheKey); pending; pending = _inFlight.get(cacheKey)) await pending;
 
   // Store hit only counts for the daemon that issued the key.
   const existing = state().tenants[userId]?.[baseUrl];
   if (existing?.secret) return { secret: existing.secret, baseUrl };
 
-  const cacheKey = tenantCacheKey(baseUrl, userId);
   const failedAt = _negativeCache.get(cacheKey);
   if (failedAt !== undefined && Date.now() - failedAt < NEGATIVE_CACHE_MS) return null;
-
-  const pending = _inFlight.get(cacheKey);
-  if (pending) return pending;
 
   const attempt = issue(userId, target, profile).finally(() => _inFlight.delete(cacheKey));
   _inFlight.set(cacheKey, attempt);
@@ -482,26 +492,50 @@ export async function ensureTenantKey(
 /**
  * Replace the stored key's secret at `target` (`key rotate`). llmux rotates in
  * place: same id (usage history continues), new secret, and the old secret is
- * refused from the next request. A stored id llmux no longer has (revoked or
- * removed outside soma-work) falls back to {@link issue}, which reclaims the
- * user's live key by name or creates one. Any other refusal keeps the stored key.
+ * refused from the next request. A stored id an admin revoked is refused
+ * (`revoked`); a stored id llmux has no record of falls back to {@link issue},
+ * which reclaims the user's live key by name or creates one. Any other refusal
+ * keeps the stored key.
  */
 async function rotateStored(
   userId: string,
   target: ControlPlaneTarget,
   profile?: { name?: string; email?: string },
-): Promise<TenantKeyLease | null> {
+): Promise<RotateTenantKeyResult> {
+  const issued = async (): Promise<RotateTenantKeyResult> => {
+    const lease = await issue(userId, target, profile);
+    return lease ? { ok: true, lease } : { ok: false, reason: 'failed' };
+  };
+  const failed = (reason: string): RotateTenantKeyResult => {
+    fail(userId, target.baseUrl, reason);
+    return { ok: false, reason: 'failed' };
+  };
+
   const stored = state().tenants[userId]?.[target.baseUrl];
-  if (!stored) return issue(userId, target, profile);
+  if (!stored) return issued();
   try {
     const rotated = await llmuxPost<{ key?: LlmuxIssuedKey }>(target, '/llmux/keys/rotate', { id: stored.id });
-    if (rotated.status === 404) return await issue(userId, target, profile);
+    if (rotated.status === 404) {
+      // llmux rotates only non-revoked keys, so 404 means "revoked" or "gone".
+      // A revocation is an admin's decision to cut this user off — it must hold,
+      // not turn into a fresh key. Only a key llmux has no record of is re-issued.
+      const listed = await llmuxGetKeys(target);
+      if (listed.status !== 200 || !Array.isArray(listed.body?.keys)) {
+        return failed(`rotate 404, then GET /llmux/keys → ${listed.status}`);
+      }
+      const row = listed.body.keys.find((entry) => entry?.id === stored.id);
+      if (row && row.revoked_at_ms !== null && row.revoked_at_ms !== undefined) {
+        logger.warn('llmux tenant key rotation refused: key revoked by an admin', { userId, keyId: stored.id });
+        return { ok: false, reason: 'revoked' };
+      }
+      return await issued();
+    }
     const secret = nonEmptyString(rotated.body?.key?.key);
     if (rotated.status !== 200 || !secret) {
-      return fail(userId, target.baseUrl, `POST /llmux/keys/rotate → ${rotated.status}`);
+      return failed(`POST /llmux/keys/rotate → ${rotated.status}`);
     }
     const email = profile?.email?.trim() || stored.email;
-    return remember(userId, {
+    const lease = remember(userId, {
       ...stored,
       secret,
       keyPrefix: nonEmptyString(rotated.body?.key?.key_prefix) ?? '',
@@ -509,38 +543,39 @@ async function rotateStored(
       ...(email ? { email } : {}),
       rotatedAtMs: Date.now(),
     });
+    return { ok: true, lease };
   } catch (err) {
-    return fail(userId, target.baseUrl, (err as Error).message);
+    return failed((err as Error).message);
   }
 }
 
+/** Outcome of {@link rotateTenantKey}. `revoked`: an admin revoked the key; it stays revoked. */
+export type RotateTenantKeyResult = { ok: true; lease: TenantKeyLease } | { ok: false; reason: 'revoked' | 'failed' };
+
 /**
  * `key rotate`: revoke `userId`'s current llmux secret and issue a new one under
- * the same llmux id, then store it so the user's dispatches use it too. Returns
- * the new lease, or `null` (never a throw) when not in llmux mode or llmux
- * refused — the stored key is then left as it was.
+ * the same llmux id, then store it so the user's dispatches use it too. Never
+ * throws; on `{ ok: false }` (not in llmux mode, llmux refused, or the key was
+ * revoked by an admin) the stored key is left as it was.
  *
  * An explicit request is not held back by an earlier failed issuance (the
- * negative cache), and it waits for an issuance already in flight so it rotates
- * the key that issuance produced instead of racing it.
+ * negative cache), and it waits for an issuance or rotation already in flight
+ * so it rotates the key that one produced instead of racing it — two rotations
+ * at once could leave llmux and the store holding different secrets.
  */
 export async function rotateTenantKey(
   userId: string,
   profile?: { name?: string; email?: string },
-): Promise<TenantKeyLease | null> {
-  if (getAuthMode() !== 'llmux') return null;
-  if (!userId.trim()) return null;
+): Promise<RotateTenantKeyResult> {
+  if (getAuthMode() !== 'llmux' || !userId.trim()) return { ok: false, reason: 'failed' };
 
   const baseUrl = currentBaseUrl();
   const target: ControlPlaneTarget = { baseUrl, adminKey: getLlmuxAdminKey(baseUrl) };
   const cacheKey = tenantCacheKey(baseUrl, userId);
 
-  // Loop, not a single await: two rotations queued behind the same issuance
-  // must not both resume and run at once — llmux and the store could then keep
-  // different secrets. Nothing awaits between the loop exit and the `set` below.
-  for (let pending = _inFlight.get(cacheKey); pending; pending = _inFlight.get(cacheKey)) {
-    await pending;
-  }
+  // Same inline wait as ensureTenantKey: nothing awaits between the loop's
+  // last empty check and the `_inFlight.set` below.
+  for (let pending = _inFlight.get(cacheKey); pending; pending = _inFlight.get(cacheKey)) await pending;
   _negativeCache.delete(cacheKey);
 
   const attempt = rotateStored(userId, target, profile).finally(() => _inFlight.delete(cacheKey));
@@ -551,13 +586,14 @@ export async function rotateTenantKey(
 /**
  * What llmux thinks of a stored secret:
  * - `valid`   — llmux lists the stored id, not revoked, with the secret's prefix.
- * - `stale`   — the id is gone or revoked, or its prefix moved on: someone rotated
- *               it outside soma-work (`llmux key rotate`). The stored secret now
+ * - `stale`   — the id is gone, or its prefix moved on: someone rotated it
+ *               outside soma-work (`llmux key rotate`). The stored secret now
  *               401s from any non-loopback client; only a rotation recovers it,
  *               because llmux shows a secret once.
+ * - `revoked` — an admin revoked the id. `key rotate` will not undo that.
  * - `unknown` — nothing stored, or llmux could not be asked.
  */
-export type TenantKeyHealth = 'valid' | 'stale' | 'unknown';
+export type TenantKeyHealth = 'valid' | 'stale' | 'revoked' | 'unknown';
 
 /**
  * Whether llmux still accepts the stored secret of `userId` on the current
@@ -572,7 +608,8 @@ export async function checkTenantKey(userId: string): Promise<TenantKeyHealth> {
     const listed = await llmuxGetKeys({ baseUrl, adminKey: getLlmuxAdminKey(baseUrl) });
     if (listed.status !== 200 || !Array.isArray(listed.body?.keys)) return 'unknown';
     const live = listed.body.keys.find((entry) => entry?.id === record.id);
-    if (!live || (live.revoked_at_ms !== null && live.revoked_at_ms !== undefined)) return 'stale';
+    if (!live) return 'stale';
+    if (live.revoked_at_ms !== null && live.revoked_at_ms !== undefined) return 'revoked';
     const prefix = nonEmptyString(live.key_prefix);
     if (!prefix) return 'unknown';
     return record.secret.startsWith(prefix) ? 'valid' : 'stale';

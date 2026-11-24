@@ -95,8 +95,8 @@ describe('llmux tenant keys — `key rotate` and stale-key detection', () => {
     fetchMock.mockResolvedValue(okResponse(rotatedDoc('k-1', 'lmk-new1-secret')));
 
     await expect(rotateTenantKey('U1', { name: 'Zhuge' })).resolves.toEqual({
-      secret: 'lmk-new1-secret',
-      baseUrl: LOCAL,
+      ok: true,
+      lease: { secret: 'lmk-new1-secret', baseUrl: LOCAL },
     });
 
     expect(urlsOf()).toEqual([ROTATE_URL]);
@@ -117,20 +117,45 @@ describe('llmux tenant keys — `key rotate` and stale-key detection', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('falls back to issuing a new key when the stored id no longer exists at llmux (404)', async () => {
+  it('falls back to issuing a new key when the stored id is gone from llmux entirely (404, not listed)', async () => {
     await seedIssuedKey();
     fetchMock.mockImplementation(async (url: string) => {
       if (url === ROTATE_URL) return okResponse({ error: { message: 'client key not found' } }, 404);
-      if (url === KEYS_URL) return okResponse({ keys: [{ id: 'k-1', name: 'Zhuge (U1)', revoked_at_ms: 1 }] });
+      if (url === KEYS_URL) return okResponse({ keys: [] });
       return okResponse({ ...ISSUED, id: 'k-2', key_prefix: 'lmk-new2', key: 'lmk-new2-secret' });
     });
 
     await expect(rotateTenantKey('U1', { name: 'Zhuge' })).resolves.toEqual({
-      secret: 'lmk-new2-secret',
-      baseUrl: LOCAL,
+      ok: true,
+      lease: { secret: 'lmk-new2-secret', baseUrl: LOCAL },
     });
-    expect(urlsOf()).toEqual([ROTATE_URL, KEYS_URL, NEW_URL]);
+    expect(urlsOf()).toEqual([ROTATE_URL, KEYS_URL, KEYS_URL, NEW_URL]);
     expect(describeTenantKey('U1')).toMatchObject({ id: 'k-2', keyPrefix: 'lmk-new2' });
+  });
+
+  it('refuses to replace a key an admin revoked — no new key is created (revocation holds)', async () => {
+    await seedIssuedKey();
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === ROTATE_URL) return okResponse({ error: { message: 'client key not found' } }, 404);
+      if (url === KEYS_URL) return okResponse({ keys: [{ id: 'k-1', name: 'Zhuge (U1)', revoked_at_ms: 1 }] });
+      return okResponse({ ...ISSUED, id: 'k-2', key: 'lmk-should-not-exist' });
+    });
+
+    await expect(rotateTenantKey('U1', { name: 'Zhuge' })).resolves.toEqual({ ok: false, reason: 'revoked' });
+    expect(urlsOf()).toEqual([ROTATE_URL, KEYS_URL]);
+    expect(describeTenantKey('U1')).toMatchObject({ id: 'k-1', keyPrefix: 'lmk-old1' });
+  });
+
+  it('a 404 whose listing cannot be read fails without creating a key', async () => {
+    await seedIssuedKey();
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === ROTATE_URL) return okResponse({ error: { message: 'client key not found' } }, 404);
+      if (url === KEYS_URL) return okResponse({ error: 'boom' }, 500);
+      return okResponse({ ...ISSUED, id: 'k-2', key: 'lmk-should-not-exist' });
+    });
+
+    await expect(rotateTenantKey('U1')).resolves.toEqual({ ok: false, reason: 'failed' });
+    expect(urlsOf()).toEqual([ROTATE_URL, KEYS_URL]);
   });
 
   it('with no stored key, reclaims the user’s live llmux key by rotating it (no second tenant)', async () => {
@@ -140,8 +165,8 @@ describe('llmux tenant keys — `key rotate` and stale-key detection', () => {
     });
 
     await expect(rotateTenantKey('U1', { name: 'Zhuge' })).resolves.toEqual({
-      secret: 'lmk-live-secret',
-      baseUrl: LOCAL,
+      ok: true,
+      lease: { secret: 'lmk-live-secret', baseUrl: LOCAL },
     });
     expect(urlsOf()).toEqual([KEYS_URL, ROTATE_URL]);
   });
@@ -150,7 +175,7 @@ describe('llmux tenant keys — `key rotate` and stale-key detection', () => {
     await seedIssuedKey();
     fetchMock.mockResolvedValue(okResponse({ error: { message: 'boom' } }, 500));
 
-    await expect(rotateTenantKey('U1')).resolves.toBeNull();
+    await expect(rotateTenantKey('U1')).resolves.toEqual({ ok: false, reason: 'failed' });
     expect(urlsOf()).toEqual([ROTATE_URL]);
     // Nothing was replaced: the stored secret is still the one served.
     fetchMock.mockClear();
@@ -166,8 +191,8 @@ describe('llmux tenant keys — `key rotate` and stale-key detection', () => {
     );
 
     await expect(rotateTenantKey('U1', { name: 'Zhuge' })).resolves.toEqual({
-      secret: 'lmk-old1-secret',
-      baseUrl: LOCAL,
+      ok: true,
+      lease: { secret: 'lmk-old1-secret', baseUrl: LOCAL },
     });
     expect(urlsOf()).toEqual([KEYS_URL, NEW_URL]);
   });
@@ -195,21 +220,39 @@ describe('llmux tenant keys — `key rotate` and stale-key detection', () => {
     releaseIssue(okResponse(ISSUED));
 
     await issued;
-    await expect(first).resolves.toEqual({ secret: 'lmk-rot1-secret', baseUrl: LOCAL });
-    await expect(second).resolves.toEqual({ secret: 'lmk-rot2-secret', baseUrl: LOCAL });
+    await expect(first).resolves.toEqual({ ok: true, lease: { secret: 'lmk-rot1-secret', baseUrl: LOCAL } });
+    await expect(second).resolves.toEqual({ ok: true, lease: { secret: 'lmk-rot2-secret', baseUrl: LOCAL } });
     // llmux's last rotation is the live secret, and the store holds exactly that.
     await expect(ensureTenantKey('U1')).resolves.toEqual({ secret: 'lmk-rot2-secret', baseUrl: LOCAL });
   });
 
-  it('never throws: unreachable llmux → null', async () => {
+  it('a plain `key` lookup during a rotation waits for it and gets the NEW secret, never the dying one', async () => {
     await seedIssuedKey();
-    fetchMock.mockRejectedValue(new Error('ECONNREFUSED'));
-    await expect(rotateTenantKey('U1')).resolves.toBeNull();
+    let releaseRotate!: (res: Response) => void;
+    fetchMock.mockImplementation(
+      () =>
+        new Promise<Response>((resolve) => {
+          releaseRotate = resolve;
+        }),
+    );
+
+    const rotating = rotateTenantKey('U1');
+    const lookup = ensureTenantKey('U1');
+    releaseRotate(okResponse(rotatedDoc('k-1', 'lmk-new9-secret')));
+
+    await rotating;
+    await expect(lookup).resolves.toEqual({ secret: 'lmk-new9-secret', baseUrl: LOCAL });
   });
 
-  it('returns null without any llmux call outside llmux mode', async () => {
+  it('never throws: unreachable llmux → failed', async () => {
+    await seedIssuedKey();
+    fetchMock.mockRejectedValue(new Error('ECONNREFUSED'));
+    await expect(rotateTenantKey('U1')).resolves.toEqual({ ok: false, reason: 'failed' });
+  });
+
+  it('fails without any llmux call outside llmux mode', async () => {
     setAuthMode('ccp');
-    await expect(rotateTenantKey('U1')).resolves.toBeNull();
+    await expect(rotateTenantKey('U1')).resolves.toEqual({ ok: false, reason: 'failed' });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -233,12 +276,12 @@ describe('llmux tenant keys — `key rotate` and stale-key detection', () => {
     await expect(checkTenantKey('U1')).resolves.toBe('stale');
   });
 
-  it('reports `stale` when the stored id is revoked or gone', async () => {
+  it('reports `revoked` when an admin revoked the stored id, `stale` when the id is gone', async () => {
     await seedIssuedKey();
     fetchMock.mockResolvedValueOnce(
       okResponse({ keys: [{ id: 'k-1', name: 'Zhuge (U1)', key_prefix: 'lmk-old1', revoked_at_ms: 5 }] }),
     );
-    await expect(checkTenantKey('U1')).resolves.toBe('stale');
+    await expect(checkTenantKey('U1')).resolves.toBe('revoked');
     fetchMock.mockResolvedValueOnce(okResponse({ keys: [] }));
     await expect(checkTenantKey('U1')).resolves.toBe('stale');
   });

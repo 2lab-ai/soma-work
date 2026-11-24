@@ -257,7 +257,7 @@ export function buildLlmuxKeyDmText(input: LlmuxKeyDmInput): string {
     ? [
         ':key: *새 llmux 클라이언트 키로 교체했습니다*',
         '',
-        '이전 키는 방금 폐기되어 지금부터 401(`Invalid proxy API key`)을 받습니다. 로컬 Claude Code / Codex / llmux CLI에 넣어 둔 키를 아래 키로 바꾸세요. 사용량 기록은 같은 테넌트로 이어집니다.',
+        '이전 키는 방금 폐기되어 지금부터 401(`Invalid proxy API key`)을 받습니다. 로컬 Claude Code / Codex / llmux CLI에 넣어 둔 키를 아래 키로 바꾸세요.',
       ]
     : [
         ':key: *당신의 llmux 클라이언트 키*',
