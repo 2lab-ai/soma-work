@@ -1,11 +1,14 @@
 import type { TrackedClaudeRootInfo } from '../agent-runtime/claude-child-process-registry';
 import { commandPreview, processName, splitArgs } from './command-preview';
+import type { ReadCwds } from './cwd-reader';
 import { DETAIL_COLUMNS, type PsRow, parseDetailRows, parseParentMap, stateOf } from './ps-table';
 import type { NodeCapacity, ProcessSample, SessionProcessDetail } from './types';
 
 /** A Claude Code process the SDK spawned, as the child registry knows it (pid + the session it runs for, if any). */
 /** Pids per detail `ps` call. */
 const DETAIL_BATCH = 200;
+/** How long a process's working directory is trusted before it is read again (a shell `cd`s, most processes never do). */
+const CWD_TTL_MS = 15_000;
 
 export type TrackedRoot = Pick<TrackedClaudeRootInfo, 'pid' | 'sessionKey'>;
 
@@ -48,11 +51,14 @@ const NO_SESSION = '';
 export class TreeSampler {
   private readonly remembered = new Map<string, Map<number, Remembered>>();
   private readonly prevCpu = new Map<string, { cpuSeconds: number; at: number }>();
+  /** `pid:start` → its working directory and when it was read. */
+  private readonly cwds = new Map<string, { cwd: string; at: number }>();
 
   constructor(
     private readonly runPs: RunPs,
     private readonly now: () => number = Date.now,
     private readonly readCpuSeconds?: ReadCpuSeconds,
+    private readonly readCwds?: ReadCwds,
   ) {}
 
   /** Whether a sample would do any work (a tracked root, or a remembered leftover). */
@@ -119,6 +125,40 @@ export class TreeSampler {
       return !!row && (!seen || seen.startToken === row.startToken);
     });
 
+    // Working directories, for session trees only (the unattributed group is never shown per process): read again only
+    // for a process not read in the last CWD_TTL_MS. A failed read leaves '' until the next read.
+    if (this.readCwds) {
+      const stale: number[] = [];
+      for (const [owner, members] of membership) {
+        if (owner === NO_SESSION) continue;
+        for (const pid of members.keys()) {
+          const row = rows.get(pid);
+          if (!row) continue;
+          const known = this.cwds.get(`${pid}:${row.startToken}`);
+          if (!known || at - known.at >= CWD_TTL_MS) stale.push(pid);
+        }
+      }
+      if (stale.length > 0) {
+        const read = await this.readCwds(stale).catch(() => new Map<number, string>());
+        // The cwd reader names a pid, not a process: one that exited and was reused between the detail ps and that
+        // read would hand another program's folder to this session. Its start time is read again after the cwd —
+        // the same start before and after means the same process throughout.
+        const after =
+          read.size > 0
+            ? await this.runPs(['-o', 'pid=,lstart=', '-p', [...read.keys()].join(',')])
+                .then(parseStartTokens)
+                .catch(() => new Map<number, string>())
+            : new Map<number, string>();
+        for (const pid of stale) {
+          const row = rows.get(pid);
+          if (!row) continue;
+          const cwd = read.get(pid);
+          if (cwd !== undefined && after.get(pid) !== row.startToken) continue; // unverified: read again next sample
+          this.cwds.set(`${pid}:${row.startToken}`, { cwd: cwd ?? '', at });
+        }
+      }
+    }
+
     const sessions: SessionProcessDetail[] = [];
     const unattributed = { processCount: 0, cpuPercent: 0, rssBytes: 0 };
     const liveCpuKeys = new Set<string>();
@@ -148,6 +188,7 @@ export class TreeSampler {
           rssBytes: row.rssBytes,
           name: processName(argv),
           command: commandPreview(argv),
+          cwd: this.cwds.get(cpuKey)?.cwd ?? '',
         });
         memory.set(pid, { startToken: row.startToken, depth });
       }
@@ -189,6 +230,7 @@ export class TreeSampler {
     }
 
     for (const key of this.prevCpu.keys()) if (!liveCpuKeys.has(key)) this.prevCpu.delete(key);
+    for (const key of this.cwds.keys()) if (!liveCpuKeys.has(key)) this.cwds.delete(key);
     unattributed.cpuPercent = round1(unattributed.cpuPercent);
     return { sessions, unattributed };
   }
@@ -297,4 +339,15 @@ function sum(ps: readonly ProcessSample[]): { cpuPercent: number; rssBytes: numb
 
 function round1(n: number): number {
   return Math.round(n * 10) / 10;
+}
+
+/** `ps -o pid=,lstart=` → pid → its start token (lstart's 5 words, single-spaced). */
+function parseStartTokens(out: string): Map<number, string> {
+  const tokens = new Map<number, string>();
+  for (const line of out.split('\n')) {
+    const t = line.trim().split(/\s+/);
+    if (t.length < 6 || !/^\d+$/.test(t[0])) continue;
+    tokens.set(Number(t[0]), t.slice(1, 6).join(' '));
+  }
+  return tokens;
 }

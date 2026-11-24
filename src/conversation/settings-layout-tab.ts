@@ -647,7 +647,7 @@ function laySampleCard(id) {
     artifacts: [{ id: 'a1', name: 'analysis.html', kind: 'html' }, { id: 'a2', name: 'board.png', kind: 'image' }, { id: 'a3', name: 'notes.md', kind: 'file' }],
     steps: { done: 2, total: 4 },
     // The CPU · 메모리 chip's sample: the session's Claude Code process and five under it.
-    procUsage: { nodeId: 'node', cpuCount: 12, rootAlive: true, processCount: 6, stoppedCount: 0, cpuPercent: 38, rssBytes: 1.2e9 },
+    procUsage: { nodeId: 'node', cpuCount: 12, nodeCpuPercent: 46, nodeMemPercent: 63, rootAlive: true, processCount: 6, stoppedCount: 0, cpuPercent: 38, rssBytes: 1.2e9 },
     contextPct: 64,
     contextLevel: 'warn',
     titles: { cost: 'API 환산 비용 (작업 합계)', tokens: '총 토큰 6.4M', context: '컨텍스트 64%', steps: '완료한 작업 / 전체' },

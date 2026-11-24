@@ -1,0 +1,374 @@
+import { describe, expect, it } from 'vitest';
+import { MASK, maskCommandLine, maskJson } from '../command-mask';
+
+/** The detail view's full command line: every word, secret values masked (see command-mask.ts). */
+const joined = (line: string) => maskCommandLine({ argv: [line], exact: false });
+const exact = (...argv: string[]) => maskCommandLine({ argv, exact: true });
+
+describe('maskCommandLine', () => {
+  it('keeps an ordinary command line whole — program, subcommands, flags, paths', () => {
+    expect(joined('/opt/homebrew/bin/node /work/repo/node_modules/.bin/tsc --noEmit -p tsconfig.json')).toBe(
+      '/opt/homebrew/bin/node /work/repo/node_modules/.bin/tsc --noEmit -p tsconfig.json',
+    );
+    expect(joined('git checkout feat/process-explorer')).toBe('git checkout feat/process-explorer');
+    // A path with capitals and digits in it is a path (its parts are short or single-case).
+    expect(
+      joined('/opt/homebrew/Cellar/node/26.9.0/bin/node /Users/Z/Library/Caches/ms-playwright/chromium-1255/x'),
+    ).toBe('/opt/homebrew/Cellar/node/26.9.0/bin/node /Users/Z/Library/Caches/ms-playwright/chromium-1255/x');
+    // A git SHA and a UUID are not keys.
+    expect(joined('git show 53c597d5aa0c2e1f63d0b3f5bd4c6a1d2e3f4a5b')).toBe(
+      'git show 53c597d5aa0c2e1f63d0b3f5bd4c6a1d2e3f4a5b',
+    );
+    expect(joined('claude --resume 0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0')).toBe(
+      'claude --resume 0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0',
+    );
+  });
+
+  it('masks JSON wholesale — an MCP config carries servers’ env and headers', () => {
+    expect(joined('claude --mcp-config {"mcpServers":{"gh":{"env":{"GITHUB_TOKEN":"hunter2"}}}} --verbose')).toBe(
+      `claude --mcp-config {${MASK}} --verbose`,
+    );
+    // ps splits the JSON at its spaces; the braces still bound it. An unclosed one runs to the end.
+    expect(joined('x --settings {"a": "b c", "d": [1, 2]} tail')).toBe(`x --settings {${MASK}} tail`);
+    expect(joined('x --settings {"token": "abc')).toBe(`x --settings {${MASK}}`);
+    expect(maskJson('jq .items[0] file')).toBe('jq .items[0] file');
+    expect(maskJson('x --list=["a","b"]')).toBe(`x --list=[${MASK}]`);
+  });
+
+  it('a delimiter inside a JSON string does not end the span (both modes); an escaped quote does not end the string', () => {
+    expect(joined('x --settings {"label":"}","value":"hunter2"} --verbose')).toBe(`x --settings {${MASK}} --verbose`);
+    expect(exact('x', '--settings', '{"label":"}","value":"hunter2"}', '--verbose')).toBe(
+      `x --settings {${MASK}} --verbose`,
+    );
+    expect(joined('x {"a":"q\\"}","b":"hunter2"} tail')).toBe(`x {${MASK}} tail`);
+    expect(joined('x ["]","hunter2"] tail')).toBe(`x [${MASK}] tail`);
+    expect(joined('x {"open":"hunter2')).not.toContain('hunter2');
+  });
+
+  it('a shell command inside one exact argument is masked word by word (bash -c, sh -c)', () => {
+    expect(exact('bash', '-c', 'client --password=hunter2; sleep 60')).toBe(
+      `bash -c 'client --password=${MASK} sleep 60'`,
+    );
+    // An argument that opens with a secret assignment may be its value, spaces and all: the rest goes with it.
+    expect(exact('sh', '-c', 'GITHUB_TOKEN=abc123 gh pr view 1')).toBe(`sh -c GITHUB_TOKEN=${MASK}`);
+    expect(exact('sh', '-c', 'cd /w && GITHUB_TOKEN=abc123 gh pr view 1')).toBe(
+      `sh -c 'cd /w && GITHUB_TOKEN=${MASK} gh pr view 1'`,
+    );
+    // Read word by word, `-phunter2`'s value runs to the next option (the line lost its bounds).
+    expect(exact('sh', '-c', 'mysql -uroot -phunter2 db')).toBe(`sh -c 'mysql -uroot -p${MASK} ${MASK}'`);
+    // The value of a secret flag is masked whole, spaces and all.
+    expect(exact('tool', '--token', 'two words')).toBe(`tool --token ${MASK}`);
+    expect(exact('tool', '--password=two words', 'API_KEY=two words', '"--secret=a b"')).toBe(
+      `tool --password=${MASK} API_KEY=${MASK} "--secret=${MASK}"`,
+    );
+  });
+
+  it('masks the value of a flag or variable whose name says secret, in every form', () => {
+    expect(joined('tool --token abc123 --password=pw --api-key K --out file')).toBe(
+      `tool --token ${MASK} --password=${MASK} --api-key ${MASK} --out file`,
+    );
+    expect(joined('env GITHUB_TOKEN=ghx AWS_SECRET_ACCESS_KEY=y PATH=/bin node app.js')).toBe(
+      `env GITHUB_TOKEN=${MASK} AWS_SECRET_ACCESS_KEY=${MASK} PATH=/bin node app.js`,
+    );
+    expect(joined('mysql -uroot -phunter2 db')).toBe(`mysql -uroot -p${MASK} ${MASK}`);
+    expect(exact('mysql', '-uroot', '-phunter2', 'db')).toBe(`mysql -uroot -p${MASK} db`);
+    // -p elsewhere is just a flag.
+    expect(joined('tsc -p tsconfig.json')).toBe('tsc -p tsconfig.json');
+  });
+
+  it('masks HTTP credentials, URL passwords and secret query values', () => {
+    expect(joined('curl -H Authorization: Bearer abc.def.ghi https://api.example.com/x')).toBe(
+      `curl -H Authorization: Bearer ${MASK} https://api.example.com/x`,
+    );
+    expect(exact('curl', '-H', 'Authorization: Bearer abc', '-H', 'Cookie: sid=1')).toBe(
+      `curl -H 'Authorization: Bearer ${MASK}' -H 'Cookie: ${MASK}'`,
+    );
+    // ps keeps a shell line's quotes: the header is still found behind its opening quote.
+    expect(joined('curl -H "Authorization: Bearer abc" https://h')).toBe(
+      `curl -H "Authorization: Bearer ${MASK}" https://h`,
+    );
+    expect(joined('x "--password=hunter2"')).toBe(`x "--password=${MASK}"`);
+    expect(joined('git clone https://bot:s3cr3t@github.com/o/r.git')).toBe(
+      `git clone https://bot:${MASK}@github.com/o/r.git`,
+    );
+    expect(joined('curl https://h/x?a=1&access_token=zzz&b=2')).toBe(`curl https://h/x?a=1&access_token=${MASK}&b=2`);
+  });
+
+  it('a value spanning words is masked whole: several cookies, a quoted flag value, a header up to the next flag or URL', () => {
+    expect(joined('curl -H "Cookie: theme=dark; sid=hunter2" https://h')).toBe(
+      `curl -H "Cookie: ${MASK} ${MASK}" https://h`,
+    );
+    expect(joined('curl -H Cookie: theme=dark; sid=hunter2 -X GET https://h')).toBe(
+      `curl -H Cookie: ${MASK} ${MASK} -X GET https://h`,
+    );
+    expect(exact('curl', '-H', 'Cookie: theme=dark; sid=hunter2', 'https://h')).toBe(
+      `curl -H 'Cookie: ${MASK} ${MASK}' https://h`,
+    );
+    expect(joined('client --cookie "a=b; sid=hunter2" --verbose')).toBe(`client --cookie "${MASK} ${MASK}" --verbose`);
+    expect(joined('client --password="two words" --verbose')).toBe(`client --password=${MASK} ${MASK}" --verbose`);
+    // ps joins argv with spaces: a secret flag's value may be several words — masked up to the next option.
+    expect(joined('x --token abc next')).toBe(`x --token ${MASK} ${MASK}`);
+    expect(joined('x --token abc --next')).toBe(`x --token ${MASK} --next`);
+  });
+
+  it('a credential header with no space after its colon is masked too (its value runs on like any header value)', () => {
+    expect(joined('curl -H Authorization:Bearer hunter2 https://h')).toBe(
+      `curl -H Authorization:Bearer ${MASK} https://h`,
+    );
+    expect(exact('curl', '-H', 'Authorization:Bearer hunter2', 'https://h')).toBe(
+      `curl -H 'Authorization:Bearer ${MASK}' https://h`,
+    );
+    expect(exact('curl', '-H', 'Authorization:Basic dXNlcjpwYXNz', 'https://h')).toBe(
+      `curl -H 'Authorization:Basic ${MASK}' https://h`,
+    );
+    expect(joined('curl -H "Proxy-Authorization:Token hunter2" https://h')).toBe(
+      `curl -H "Proxy-Authorization:Token ${MASK}" https://h`,
+    );
+    expect(joined('curl -H Authorization:hunter2 https://h')).toBe(`curl -H Authorization:${MASK} https://h`);
+    expect(joined('curl -H Cookie:theme=dark; sid=hunter2 -X GET https://h')).toBe(
+      `curl -H Cookie:${MASK} ${MASK} -X GET https://h`,
+    );
+    expect(joined('curl -H "Cookie:sid=hunter2" -v')).toBe(`curl -H "Cookie:${MASK}" -v`);
+    // Written into a flag's word: the value after it is masked all the same.
+    expect(joined('client --header=Authorization:Bearer hunter2 --verbose')).toBe(
+      `client --header=Authorization:Bearer ${MASK} --verbose`,
+    );
+    expect(joined('curl -HAuthorization:Bearer hunter2 https://h')).toBe(
+      `curl -HAuthorization:Bearer ${MASK} https://h`,
+    );
+    for (const line of [
+      joined('curl -H Authorization:Bearer hunter2 https://h'),
+      exact('curl', '-H', 'Authorization:Bearer hunter2', 'https://h'),
+      exact('curl', '-H', 'Authorization:Basic hunter2', 'https://h'),
+      joined('client --header=Authorization:Bearer hunter2 --verbose'),
+    ]) {
+      expect(line).not.toContain('hunter2');
+    }
+  });
+
+  it('a secret value with spaces: quoted around flag and value, or space-joined by ps, is masked whole', () => {
+    // A quote around the whole flag-and-value argument (the shell kept it in `sh -c`, or ps shows it).
+    expect(joined('client "--password=two hunter2" --verbose')).toBe(`client "--password=${MASK} ${MASK}" --verbose`);
+    expect(exact('bash', '-c', 'client "--password=two hunter2" && sleep 60')).toBe(
+      `bash -c 'client "--password=${MASK} ${MASK}" && sleep 60'`,
+    );
+    expect(exact('sh', '-c', 'client "API_KEY=two hunter2" next')).toBe(
+      `sh -c 'client "API_KEY=${MASK} ${MASK}" next'`,
+    );
+    // macOS ps drops argv's quotes: `redis-cli --pass 'correct horse battery staple'` reads as four words.
+    expect(joined('redis-cli --pass correct horse battery staple')).toBe(
+      `redis-cli --pass ${MASK} ${MASK} ${MASK} ${MASK}`,
+    );
+    expect(joined('client --password=correct horse battery -v')).toBe(`client --password=${MASK} ${MASK} ${MASK} -v`);
+    // A shell separator ends it (a `bash -c` line read word by word).
+    expect(exact('bash', '-c', 'client --token abc; sleep 60')).toBe(`bash -c 'client --token ${MASK} sleep 60'`);
+    expect(exact('bash', '-c', 'client --token abc && sleep 60')).toBe(`bash -c 'client --token ${MASK} && sleep 60'`);
+    for (const line of [
+      joined('client "--password=two hunter2" --verbose'),
+      exact('bash', '-c', 'client "--password=two hunter2" && sleep 60'),
+      joined('redis-cli --pass correct horse battery staple'),
+    ]) {
+      expect(line).not.toMatch(/hunter2|horse|battery|staple/);
+    }
+  });
+
+  it('a program’s own credential flags (curl -u, sshpass -p), wherever the command sits in a shell line', () => {
+    expect(joined('curl -u bot:hunter2 https://h')).toBe(`curl -u ${MASK} https://h`);
+    expect(joined('curl --user=bot:hunter2 https://h')).toBe(`curl --user=${MASK} https://h`);
+    expect(joined('curl -ubot:hunter2 https://h')).toBe(`curl -u${MASK} https://h`);
+    expect(joined('curl --proxy-user bot:hunter2 -x http://p https://h')).toBe(
+      `curl --proxy-user ${MASK} -x http://p https://h`,
+    );
+    // Exact argv: one argument; a joined line: up to the next option (it lost the argument's bounds).
+    expect(exact('sshpass', '-p', 'hunter2', 'rsync', 'a', 'b')).toBe(`sshpass -p ${MASK} rsync a b`);
+    expect(joined('sshpass -p hunter2 rsync -a b')).toBe(`sshpass -p ${MASK} ${MASK} -a b`);
+    expect(exact('bash', '-c', 'cd /w && curl -u bot:hunter2 https://h')).toBe(
+      `bash -c 'cd /w && curl -u ${MASK} https://h'`,
+    );
+    expect(joined('env A=1 curl -u bot:hunter2 https://h')).toBe(`env A=1 curl -u ${MASK} https://h`);
+    expect(exact('sh', '-c', 'echo x; mysql -uroot -phunter2 -v')).toBe(`sh -c 'echo x; mysql -uroot -p${MASK} -v'`);
+    // Elsewhere -u and -p are ordinary flags.
+    expect(joined('mysql -uroot db')).toBe('mysql -uroot db');
+    expect(joined('ps -u root -p 1')).toBe('ps -u root -p 1');
+  });
+
+  it('every form of a recognised credential is masked: spaced exact arguments, a URL value, quotes, wrappers', () => {
+    // Exact argv with spaces: the program's own rule still applies to the whole argument.
+    expect(exact('curl', '--user=bot:two words', 'https://h')).toBe(`curl --user=${MASK} https://h`);
+    expect(exact('curl', '-ubot:two words', 'https://h')).toBe(`curl -u${MASK} https://h`);
+    expect(exact('mysql', '-ptwo words')).toBe(`mysql -p${MASK}`);
+    expect(exact('vault', 'login', 'two words')).toBe(`vault login ${MASK}`);
+    // The first word of a secret value is taken whatever it looks like — a URL too.
+    expect(joined('notifier --webhook https://hooks.example.test/hunter2')).toBe(`notifier --webhook ${MASK}`);
+    expect(exact('notifier', '--webhook', 'https://hooks.example.test/hunter2')).toBe(`notifier --webhook ${MASK}`);
+    // An attached value's quote runs to its close.
+    expect(exact('bash', '-c', 'curl -u"bot:two hunter2" https://h; sleep 60; echo done')).toBe(
+      `bash -c 'curl -u${MASK} ${MASK}" https://h; sleep 60; echo done'`,
+    );
+    expect(joined('curl --user="bot:two hunter2" https://h')).toBe(`curl --user=${MASK} ${MASK}" https://h`);
+    // A program's credential flag on a joined line runs on like any secret flag (ps lost the argument's bounds).
+    expect(joined('redis-cli -a correct horse battery staple')).toBe(`redis-cli -a ${MASK} ${MASK} ${MASK} ${MASK}`);
+    expect(joined('curl -u bot:correct horse battery https://h')).toBe(`curl -u ${MASK} ${MASK} ${MASK} https://h`);
+    expect(exact('curl', '--user=bot:two hunter2', 'https://h')).toBe(`curl --user=${MASK} https://h`);
+    expect(exact('curl', '-ubot:two hunter2', 'https://h')).toBe(`curl -u${MASK} https://h`);
+    // An option's operand before the subcommand does not hide it.
+    expect(joined('docker --config /tmp/docker login -p hunter2 registry.example.com')).not.toContain('hunter2');
+    expect(exact('docker', '--config', '/tmp/docker', 'login', '-p', 'hunter2', 'r')).toBe(
+      `docker --config /tmp/docker login -p ${MASK} r`,
+    );
+    expect(exact('vault', '-namespace', 'ops', 'login', 'hunter2')).toBe(`vault -namespace ops login ${MASK}`);
+    // A wrapper's own options do not hide the program behind it.
+    expect(joined('sudo -u app curl -u bot:hunter2 https://h')).toBe(`sudo -u app curl -u ${MASK} https://h`);
+    expect(joined('nice -n 5 curl -u bot:hunter2 https://h')).toBe(`nice -n 5 curl -u ${MASK} https://h`);
+    for (const line of [
+      exact('curl', '--user=bot:two words', 'https://h'),
+      exact('curl', '-ubot:two words', 'https://h'),
+      exact('mysql', '-ptwo words'),
+      joined('notifier --webhook https://hooks.example.test/hunter2'),
+      exact('bash', '-c', 'curl -u"bot:two hunter2" https://h; sleep 60; echo done'),
+      joined('sudo -u app curl -u bot:hunter2 https://h'),
+    ]) {
+      expect(line).not.toMatch(/hunter2|two|words/);
+    }
+  });
+
+  it('real credential-bearing commands show no secret, joined (macOS ps) or exact (Linux argv)', () => {
+    const lines = [
+      'psql postgresql://app:hunter2@db:5432/app',
+      'mongosh mongodb+srv://u:hunter2@c.example.net/x',
+      'redis-cli -a hunter2 ping',
+      'redis-cli -h h -a hunter2',
+      'mysql --password hunter2 db',
+      'docker login -u bot -p hunter2 registry.example.com',
+      'docker login --password hunter2',
+      'podman login -p hunter2 r',
+      'git clone https://x-access-token:hunter2@github.com/o/r',
+      'curl -H X-Api-Key:hunter2 https://h',
+      'curl -H "X-API-KEY: hunter2" https://h',
+      'curl --oauth2-bearer hunter2 https://h',
+      'wget --http-password=hunter2 https://h',
+      'aws configure set aws_secret_access_key hunter2',
+      'export OPENAI_API_KEY=hunter2',
+      'node app.js --db-password hunter2',
+      'java -Djavax.net.ssl.keyStorePassword=hunter2 -jar a.jar',
+      'npm config set //registry.npmjs.org/:_authToken hunter2',
+      'npm config set //registry.npmjs.org/:_authToken=hunter2',
+      'git -c http.extraHeader="AUTHORIZATION: bearer hunter2" clone https://h/r',
+      'gh auth login --with-token hunter2',
+      'openssl enc -k hunter2 -in a',
+      'openssl pkcs12 -passin pass:hunter2 -in a',
+      'smbclient //h/s -U user%hunter2',
+      'ldapsearch -w hunter2 -D cn=admin',
+      'PGPASSWORD=hunter2 psql',
+      'kubectl --token=hunter2 get pods',
+      'kubectl --token hunter2 get pods',
+      'vault login hunter2',
+      'rclone --webdav-pass hunter2',
+      'curl "https://h/x?api_key=hunter2"',
+      'curl https://h/x#access_token=hunter2',
+      'x --client-secret hunter2',
+      'zip -P hunter2 a.zip f',
+      '7z a -phunter2 a.7z f',
+      'unzip -P hunter2 a.zip',
+      'cd /w && docker login -p hunter2 r',
+    ];
+    for (const line of lines) {
+      expect(joined(line), line).not.toContain('hunter2');
+      expect(exact(...line.split(' ')), line).not.toContain('hunter2');
+    }
+    // Real argv as the kernel holds it — one argument per shell word, spaces kept — and its space-joined ps line.
+    const argvs: string[][] = [
+      ['git', '-c', 'http.extraHeader=AUTHORIZATION: bearer hunter2', 'clone', 'https://h/r'],
+      ['curl', '-H', 'X-API-KEY: hunter2', 'https://h'],
+      ['curl', '-H', 'Authorization:Basic hunter2 swordfish', 'https://h'],
+      ['curl', '-u', 'bot:hunter2 swordfish', 'https://h'],
+      ['curl', '--user=bot:hunter2 swordfish', 'https://h'],
+      ['redis-cli', '-a', 'hunter2 swordfish', 'ping'],
+      ['mysql', '-phunter2 swordfish', 'db'],
+      ['docker', 'login', '-p', 'hunter2 swordfish', 'r'],
+      ['vault', 'login', 'hunter2 swordfish'],
+      ['npm', 'config', 'set', '//registry.npmjs.org/:_authToken', 'hunter2 swordfish'],
+      ['bash', '-c', 'cd /w && curl -u "bot:hunter2 swordfish" https://h'],
+      ['bash', '-c', 'true&&curl -u bot:hunter2 https://h'],
+      ['sh', '-c', 'export API_TOKEN="hunter2 swordfish"; run'],
+      ['tool', '--password', 'hunter2 swordfish', '--verbose'],
+    ];
+    for (const argv of argvs) {
+      expect(exact(...argv), argv.join(' ')).not.toMatch(/hunter2|swordfish/);
+      expect(joined(argv.join(' ')), argv.join(' ')).not.toMatch(/hunter2|swordfish/);
+    }
+    // What is not a credential stays in view.
+    expect(joined('docker run -p 8080:80 nginx')).toBe('docker run -p 8080:80 nginx');
+    expect(joined('git checkout -b token-refresh main')).toBe('git checkout -b token-refresh main');
+    expect(joined('vault status')).toBe('vault status');
+    expect(joined('zip -r a.zip src')).toBe('zip -r a.zip src');
+    expect(joined('npm config get registry')).toBe('npm config get registry');
+    expect(joined('curl https://h/x#section-2')).toBe('curl https://h/x#section-2');
+    expect(joined('vault login -method=github')).toBe('vault login -method=github');
+  });
+
+  it('a quoted marker, a program named inside an operand, an option before a token, operators without spaces', () => {
+    // The quote that closes the marker's own word does not hide it.
+    expect(joined('tool "--password" hunter2 -v')).toBe(`tool "--password" ${MASK} -v`);
+    expect(exact('bash', '-c', `tool '--password' hunter2; echo`)).toBe(
+      `bash -c 'tool '\\''--password'\\'' ${MASK} echo'`,
+    );
+    expect(joined(`curl '-u' bot:hunter2 https://h`)).toBe(`curl '-u' ${MASK} https://h`);
+    // A program named inside an operand adds its rules; it never drops the command's own.
+    expect(joined('curl https://example.test/git -u bot:hunter2')).toBe(`curl https://example.test/git -u ${MASK}`);
+    expect(exact('curl', 'https://example.test/git', '-u', 'bot:hunter2')).toBe(
+      `curl https://example.test/git -u ${MASK}`,
+    );
+    // After `vault login`, an option's operand cannot be told from the token: every positional word is taken.
+    expect(exact('vault', 'login', '-namespace', 'ops', 'hunter2')).toBe(`vault login -namespace ${MASK} ${MASK}`);
+    // A shell operator without spaces around it still starts a command.
+    for (const line of [
+      'true&&curl -u bot:hunter2 https://h',
+      'cd /w;curl -u bot:hunter2 https://h',
+      'x|curl -u bot:hunter2',
+    ]) {
+      expect(joined(line), line).not.toContain('hunter2');
+      expect(exact('bash', '-c', line), line).not.toContain('hunter2');
+    }
+    // A program named like an Object property reads no inherited rule (it used to throw).
+    expect(() => joined('constructor -u x')).not.toThrow();
+    expect(() => exact('__proto__', 'login', '-p', 'x')).not.toThrow();
+    expect(joined('toString -p x')).toBe('toString -p x');
+  });
+
+  it('a URL password with no user name is masked (redis://:pw@host)', () => {
+    expect(joined('redis-cli -u redis://:hunter2@localhost:6379')).toBe(`redis-cli -u redis://:${MASK}@localhost:6379`);
+    expect(joined('x https://h:8080/p@x')).toBe('x https://h:8080/p@x');
+  });
+
+  it('masks known key shapes and long high-entropy words anywhere', () => {
+    const gh = `ghp_${'A1b2C3d4E5'.repeat(4)}`;
+    expect(joined(`gh auth --with ${gh}`)).not.toContain(gh);
+    expect(joined('x sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123')).not.toContain('abcdefghijklmnop');
+    expect(joined('x AKIAABCDEFGHIJKLMNOP')).toBe(`x ${MASK}`);
+    expect(joined('x eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N')).toBe(`x ${MASK}`);
+    expect(joined('x --opaque Zq8vR2mKx7pL4nW9tY3bC6dF1')).toBe(`x --opaque ${MASK}`);
+    // A long all-lowercase word (a library name) is not entropy.
+    expect(joined('x libabsl_log_internal_structured_proto')).toBe('x libabsl_log_internal_structured_proto');
+  });
+
+  it('a crafted long argument costs linear time: the masker reads a bounded prefix of each word and of the line', () => {
+    const evil = `?${'a'.repeat(200_000)}`;
+    const bomb = `x://${'a:'.repeat(100_000)}`;
+    const t0 = Date.now();
+    joined(`x ${evil} ${bomb} ${'&k'.repeat(50_000)}`);
+    exact('x', evil, bomb, '?'.repeat(300_000));
+    expect(Date.now() - t0).toBeLessThan(1_000);
+    // A secret query value still goes.
+    expect(joined('curl https://h/x?api_key=abc&page=2')).toBe(`curl https://h/x?api_key=${MASK}&page=2`);
+  });
+
+  it('exact argv: words with spaces are quoted back; caps a word and the line', () => {
+    expect(exact('bash', '-c', 'npm run build && npm test')).toBe(`bash -c 'npm run build && npm test'`);
+    expect(exact('echo', "it's")).toBe("echo it's");
+    expect(exact('echo', 'a b', "c'd e")).toBe(`echo 'a b' 'c'\\''d e'`);
+    expect(exact('x', 'y'.repeat(500)).length).toBeLessThan(320);
+    expect(exact(...Array.from({ length: 400 }, () => 'word-word-word')).length).toBeLessThanOrEqual(4000);
+    expect(maskCommandLine({ argv: [], exact: true })).toBe('');
+  });
+});

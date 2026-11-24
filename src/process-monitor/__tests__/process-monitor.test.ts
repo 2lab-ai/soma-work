@@ -25,6 +25,7 @@ function setup(
     runPs?: (ps: FakePs) => (a: readonly string[]) => Promise<string>;
     readCapacity?: () => Promise<NodeCapacity>;
     logger?: { info(msg: string, meta?: unknown): void; warn(msg: string, meta?: unknown): void };
+    inspectProcess?: import('../process-inspector').InspectProcess;
   } = {},
 ) {
   const ps = new FakePs()
@@ -75,6 +76,7 @@ function setup(
     now: () => now,
     readCapacity: opts.readCapacity ?? (async () => capacity),
     logger: opts.logger,
+    inspectProcess: opts.inspectProcess,
   });
   return {
     ps,
@@ -94,6 +96,176 @@ function setup(
 }
 
 const start = 'Mon Nov 23 10:00:00 2026';
+
+/** What an inspector answers for a pid (the OS side of a detail snapshot); the tree side comes from the monitor. */
+const inspection = (pid: number, startToken: string) => ({
+  pid,
+  ppid: 0,
+  pgid: null,
+  startToken,
+  startedAt: null,
+  elapsedSeconds: 5,
+  exe: '/bin/bash',
+  commandLine: '/bin/bash -c sleep 100',
+  argvExact: false,
+  cwd: '/work',
+  user: 'z',
+  uid: 501,
+  stat: 'S',
+  state: 'sleeping' as const,
+  nice: 0,
+  priority: 20,
+  cpuSeconds: 1,
+  psCpuPercent: 0,
+  memPercent: 0.1,
+  rssBytes: 1,
+  vszBytes: 2,
+  peakRssBytes: null,
+  threads: 1,
+  contextSwitches: null,
+  io: null,
+  fdCount: 3,
+  fdByType: {},
+  files: [],
+  filesTruncated: false,
+  fdScanPartial: false,
+  sockets: [],
+  socketsTruncated: false,
+  takenAt: 1,
+  unreadable: [],
+});
+
+describe('LocalProcessMonitor.inspect — one process in depth, a snapshot', () => {
+  it('answers the inspector’s read plus where the process sits: its parent chain, children and subtree totals', async () => {
+    const inspectProcess = vi.fn(async (pid: number, token: string) => inspection(pid, token));
+    const { monitor, ps } = setup({ inspectProcess });
+    ps.set(310, { ppid: 300, args: '/bin/sleep 100', rssKb: 2_000 });
+    const got = await monitor.inspect({ sessionKey: 'A', pid: 300, startToken: start });
+    expect(inspectProcess).toHaveBeenCalledWith(300, start);
+    if (!got.ok) throw new Error(`expected ok, got ${got.reason}`);
+    expect(got.detail).toMatchObject({
+      sessionKey: 'A',
+      nodeId: 'n1',
+      pid: 300,
+      name: 'bash',
+      role: 'child',
+      depth: 1,
+      exe: '/bin/bash',
+      cwd: '/work',
+      ancestors: [{ pid: 200, name: 'claude', role: 'root' }],
+      children: [{ pid: 310, name: 'sleep' }],
+      subtree: { processCount: 2 },
+    });
+    expect(got.detail.subtree.rssBytes).toBe((1000 + 2000) * 1024);
+  });
+
+  it('refuses a pid outside the session’s tree, a stale start time, and answers unsupported with no inspector', async () => {
+    const inspectProcess = vi.fn(async (pid: number, token: string) => inspection(pid, token));
+    const { monitor } = setup({ inspectProcess });
+    // 600 is session B's; 800 is nobody's.
+    expect(await monitor.inspect({ sessionKey: 'A', pid: 600, startToken: start })).toEqual({
+      ok: false,
+      reason: 'not-found',
+    });
+    expect(await monitor.inspect({ sessionKey: 'A', pid: 800, startToken: start })).toEqual({
+      ok: false,
+      reason: 'not-found',
+    });
+    expect(await monitor.inspect({ sessionKey: 'Z', pid: 300, startToken: start })).toEqual({
+      ok: false,
+      reason: 'not-found',
+    });
+    expect(await monitor.inspect({ sessionKey: 'A', pid: 300, startToken: 'Sun Nov 22 10:00:00 2026' })).toEqual({
+      ok: false,
+      reason: 'stale',
+    });
+    expect(inspectProcess).not.toHaveBeenCalled();
+    const bare = setup();
+    expect(await bare.monitor.inspect({ sessionKey: 'A', pid: 300, startToken: start })).toEqual({
+      ok: false,
+      reason: 'unsupported',
+    });
+  });
+
+  it('the line of detail reads is bounded, turns away a read that waited too long, and survives a failing read', async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let calls = 0;
+    const inspectProcess = vi.fn(async (pid: number, token: string) => {
+      calls++;
+      if (calls === 1) {
+        await gate;
+        throw new Error('lsof hung up');
+      }
+      return inspection(pid, token);
+    });
+    const { monitor, tick } = setup({ inspectProcess });
+    const ask = () => monitor.inspect({ sessionKey: 'A', pid: 300, startToken: start });
+    const first = ask();
+    await new Promise((r) => setTimeout(r, 5));
+    const waiting = [ask(), ask(), ask()];
+    // The line holds four (the running one does not count once started); a fifth is turned away at once.
+    const extra = [ask(), ask()];
+    expect(await extra[1]).toEqual({ ok: false, reason: 'busy' });
+    release();
+    await expect(first).rejects.toThrow(/lsof/);
+    // After the failure the line goes on.
+    expect((await waiting[0]).ok).toBe(true);
+    await Promise.all([...waiting, extra[0]]);
+    // A read that waited longer than a reader waits is not started.
+    let hold: () => void = () => {};
+    const slow = new Promise<void>((r) => {
+      hold = r;
+    });
+    inspectProcess.mockImplementationOnce(async (pid: number, token: string) => {
+      await slow;
+      return inspection(pid, token);
+    });
+    const busy = ask();
+    await new Promise((r) => setTimeout(r, 5));
+    const late = ask();
+    tick(11_000);
+    hold();
+    expect((await busy).ok).toBe(true);
+    expect(await late).toEqual({ ok: false, reason: 'busy' });
+  });
+
+  it('detail reads run one at a time on a node (a burst of clicks does not multiply ps / lsof)', async () => {
+    let running = 0;
+    let most = 0;
+    const inspectProcess = vi.fn(async (pid: number, token: string) => {
+      running++;
+      most = Math.max(most, running);
+      await new Promise((r) => setTimeout(r, 5));
+      running--;
+      return inspection(pid, token);
+    });
+    const { monitor } = setup({ inspectProcess });
+    const all = await Promise.all(
+      [1, 2, 3].map(() => monitor.inspect({ sessionKey: 'A', pid: 300, startToken: start })),
+    );
+    expect(all.every((r) => r.ok)).toBe(true);
+    expect(most).toBe(1);
+    expect(inspectProcess).toHaveBeenCalledTimes(3);
+  });
+
+  it('the inspector’s own identity checks decide: gone → not-found, reused mid-read → stale', async () => {
+    const inspectProcess = vi.fn<import('../process-inspector').InspectProcess>();
+    const { monitor } = setup({ inspectProcess });
+    inspectProcess.mockResolvedValueOnce('gone');
+    expect(await monitor.inspect({ sessionKey: 'A', pid: 300, startToken: start })).toEqual({
+      ok: false,
+      reason: 'not-found',
+    });
+    inspectProcess.mockResolvedValueOnce('stale');
+    expect(await monitor.inspect({ sessionKey: 'A', pid: 300, startToken: start })).toEqual({
+      ok: false,
+      reason: 'stale',
+    });
+  });
+});
 
 describe('LocalProcessMonitor', () => {
   it('a sample carries the node capacity and each session’s tree', async () => {

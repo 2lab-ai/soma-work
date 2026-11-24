@@ -8,8 +8,14 @@
  * conversation) are browser routes, and the WebSocket is a stub.
  *
  *   R1  the card's foot shows CPU · memory of the whole tree
+ *   R1b the card's head has the node badge: the node's name, its CPU and memory gauges, this card's CPU (hot)
+ *   R1c a minimized (one-line) card keeps the node badge
  *   R2  the detail card's tab bar has 프로세스 right of 세부, with the process count
  *   R3  the tab lists every process in tree order with the node line and the totals
+ *   R3b the tree: guides, each row's working folder and command, a hot row (≥100%) and a busy one (≥10%)
+ *   R3c folding a parent hides its subtree and shows its totals; unfolding brings it back
+ *   R6  a row opens the process's detail — a snapshot (exe, command line, folder, threads, files) that does not
+ *       change while the tab keeps polling
  *   R4  일시중지 on a child stops the real process (ps says T); the row reads 일시중지 and its button 재개
  *   R5  재개 continues it
  *
@@ -104,6 +110,8 @@ async function main() {
     '../src/agent-runtime/claude-child-process-registry'
   );
   const { LocalProcessMonitor, runReadOnly } = await import('../src/process-monitor');
+  const { createCwdReader } = await import('../src/process-monitor/cwd-reader');
+  const { createProcessInspector } = await import('../src/process-monitor/process-inspector');
 
   upsertChannel({ id: 'C601', name: '', isPrivate: false });
   dashboard.setDashboardSessionAccessor(
@@ -137,12 +145,16 @@ async function main() {
   let browser: import('playwright').Browser | null = null;
   let serverStarted = false;
   try {
-    // The stand-in tree: sh → (yes > /dev/null — burns a core), sleep, sh → sleep.
+    // The stand-in tree, in /tmp: sh → node with two spinning threads (~200%: hot), sleep, sh in /usr → node at ~25% of
+    // a core (busy), sleep.
     const spawn = createTrackedClaudeProcessSpawner(undefined, { sessionKey: KEY });
+    const node = process.execPath;
+    const hot = `${node} -e 'const W=require("worker_threads").Worker;for(let i=0;i<2;i++)new W("for(;;){}",{eval:true})'`;
+    const busy = `${node} -e "setInterval(function(){var t=Date.now();while(Date.now()-t<25){}},100)"`;
     root = spawn({
       command: '/bin/sh',
-      args: ['-c', '(yes > /dev/null) & sleep 300 & sh -c "sleep 301" & wait'],
-      cwd: '/',
+      args: ['-c', `(${hot}) & sleep 300 & sh -c 'cd /usr && (${busy}) & sleep 301 & wait' & wait`],
+      cwd: '/tmp',
       env: { PATH: '/bin:/usr/bin' },
       signal: new AbortController().signal,
     } as never) as unknown as import('node:child_process').ChildProcess;
@@ -152,12 +164,14 @@ async function main() {
       roots: getClaudeChildProcessRegistry(),
       runPs: (args) => runReadOnly('ps', args),
       runCommand: runReadOnly,
+      readCwds: createCwdReader(process.platform, runReadOnly),
+      inspectProcess: createProcessInspector({ platform: process.platform, run: runReadOnly }),
     });
     monitor.start();
     dashboard.setDashboardProcessSource(monitor);
     // Two samples so CPU is a measured rate, not ps's own average.
     await monitor.sample();
-    await sleep(1_200);
+    await sleep(1_500);
     await monitor.sample();
 
     await ws.startWebServer({ listen: true });
@@ -222,6 +236,65 @@ async function main() {
         },
       });
 
+      // R1b — the node badge in the card's head.
+      const badge = await page.evaluate((k) => {
+        const host = document.getElementById('kanban') as any;
+        const card = host.shadowRoot.querySelector(`li.ib-card[data-card="${k}"]`) as HTMLElement;
+        const n = card.querySelector('.ib-head .ib-node') as HTMLElement | null;
+        if (!n) return null;
+        const owner = card.querySelector('.ib-head .ib-badge') as HTMLElement | null;
+        return {
+          name: (n.querySelector('.ib-node-name') as HTMLElement)?.innerText,
+          load: (n.querySelector('.ib-node-load') as HTMLElement | null)?.innerText ?? '',
+          level: n.getAttribute('data-level') ?? '',
+          gauges: Array.from(n.querySelectorAll('svg.ib-node-g')).map(
+            (g) => `${g.getAttribute('data-g')}:${g.getAttribute('data-fill')}`,
+          ),
+          h: Math.round(n.getBoundingClientRect().height * 10) / 10,
+          ownerH: owner ? Math.round(owner.getBoundingClientRect().height * 10) / 10 : null,
+          title: n.getAttribute('title'),
+        };
+      }, WIRE);
+      check(
+        !!badge &&
+          badge.name === 'owner-mac' &&
+          badge.gauges.length === 2 &&
+          badge.level === 'hot' &&
+          /%/.test(badge.load),
+        'R1b the card head has the node badge — name, CPU · memory gauges, this card’s CPU (hot)',
+        badge,
+      );
+      const zoomCard = async (file: string) => {
+        // Playwright's locator pierces the board's open shadow root.
+        const box = await page.locator('#kanban').locator(`li.ib-card[data-card="${WIRE}"]`).boundingBox();
+        if (!box) throw new Error('the card is not on the board');
+        await page.screenshot({
+          path: path.join(OUT, file),
+          clip: {
+            x: Math.max(0, box.x - 8),
+            y: Math.max(0, box.y - 8),
+            width: box.width + 16,
+            height: box.height + 16,
+          },
+        });
+      };
+      await zoomCard('01c-node-badge.png');
+      // R1c — the card minimized to one line keeps it.
+      await page.evaluate((k) => (document.getElementById('kanban') as any).setMinimized(k, true), WIRE);
+      await sleep(700);
+      const minBadge = await page.evaluate((k) => {
+        const host = document.getElementById('kanban') as any;
+        const card = host.shadowRoot.querySelector(`li.ib-card[data-card="${k}"]`) as HTMLElement;
+        const n = card.querySelector('.ib-head .ib-node') as HTMLElement | null;
+        return n && n.getBoundingClientRect().width > 0
+          ? (n.querySelector('.ib-node-name') as HTMLElement).innerText
+          : null;
+      }, WIRE);
+      check(minBadge === 'owner-mac', 'R1c a minimized (one-line) card keeps the node badge', { minBadge });
+      await zoomCard('01d-minimized-card.png');
+      await page.evaluate((k) => (document.getElementById('kanban') as any).setMinimized(k, false), WIRE);
+      await sleep(500);
+
       // Open the detail card (title → ui-detail → openPanel).
       await page.evaluate((k) => (window as any).openPanel(k), WIRE);
       await page.waitForSelector('#panel-midbar .pm-tab[data-mid="procs"]', { timeout: 10_000 });
@@ -239,8 +312,15 @@ async function main() {
       // R3
       await page.click('#panel-midbar .pm-tab[data-mid="procs"]');
       await page.waitForSelector('#panel-procs .pp-table tbody tr.pp-row', { timeout: 10_000 });
+      // Cells: name (after the tree's guide and fold toggle), CPU, memory, PID, state.
       const rows = await page.$$eval('#panel-procs .pp-table tbody tr.pp-row', (trs) =>
-        trs.map((tr) => Array.from(tr.querySelectorAll('td')).map((td) => (td as HTMLElement).innerText.trim())),
+        trs.map((tr) =>
+          Array.from(tr.querySelectorAll('td')).map((td, i) =>
+            i === 0
+              ? (td as HTMLElement).innerText.replace(/^[│├└─▾▸\s]+/, '').trim()
+              : (td as HTMLElement).innerText.trim(),
+          ),
+        ),
       );
       check(
         rows.length >= 4 && rows[0][0].startsWith('sh') && rows[0][0].includes('Claude Code'),
@@ -249,11 +329,112 @@ async function main() {
       );
       const nodeLine = await page.$eval('#panel-procs .pp-node', (e) => (e as HTMLElement).innerText);
       check(/owner-mac/.test(nodeLine) && /코어/.test(nodeLine), 'R3 the node line', { nodeLine });
+      // R3b — the tree and what each row works on.
+      await page.waitForFunction(() => !!document.querySelector('#panel-procs tr.pp-row.is-hot'), null, {
+        timeout: 15_000,
+      });
+      const tree = await page.evaluate(() => ({
+        guides: Array.from(document.querySelectorAll('#panel-procs tr.pp-row .pp-guide')).map(
+          (g) => (g as HTMLElement).textContent,
+        ),
+        where: Array.from(document.querySelectorAll('#panel-procs .pp-where')).map((w) => (w as HTMLElement).innerText),
+        hot: Array.from(document.querySelectorAll('#panel-procs tr.pp-row.is-hot .pp-name')).map((n) =>
+          (n as HTMLElement).innerText.trim(),
+        ),
+        busy: Array.from(document.querySelectorAll('#panel-procs tr.pp-row.is-busy .pp-name')).map((n) =>
+          (n as HTMLElement).innerText.trim(),
+        ),
+        cores:
+          (document.querySelector('#panel-procs tr.pp-row.is-hot .pp-cores') as HTMLElement | null)?.innerText ?? '',
+      }));
+      check(
+        tree.guides.some((g) => /[├└]─/.test(g ?? '')) &&
+          tree.where.some((w) => /\/tmp$/.test(w)) &&
+          tree.where.some((w) => w.includes('usr')) &&
+          tree.hot.some((n) => n.includes('node')) &&
+          /코어/.test(tree.cores),
+        'R3b guides, working folders, a hot row with its cores',
+        tree,
+      );
+      check(tree.busy.some((n) => n.startsWith('node')) || tree.busy.length > 0, 'R3b a busy row (≥10% of a core)', {
+        busy: tree.busy,
+      });
       await page.screenshot({ path: path.join(OUT, '02-processes-tab.png') });
+      const panelBox = await page.$eval('#panel-procs', (e) => {
+        const r = e.getBoundingClientRect();
+        return { x: r.x, y: r.y, width: r.width, height: Math.min(r.height, 700) };
+      });
+      await page.screenshot({
+        path: path.join(OUT, '02b-processes-tree.png'),
+        clip: { x: panelBox.x - 8, y: panelBox.y - 8, width: panelBox.width + 16, height: panelBox.height + 16 },
+      });
 
-      // R4 — pause the busy child (yes).
-      const yesRow = rows.findIndex((r) => r[0].startsWith('yes'));
-      const yesPid = Number(rows[yesRow][1]);
+      // R3c — fold the inner shell (the one with children under the root).
+      const foldPid = await page.evaluate(() => {
+        const bs = Array.from(document.querySelectorAll('#panel-procs [data-proc-fold]')) as HTMLElement[];
+        return bs.length > 1 ? Number(bs[1].getAttribute('data-proc-fold')) : 0;
+      });
+      const before = await page.$$eval('#panel-procs tr.pp-row', (r) => r.length);
+      await page.click(`#panel-procs [data-proc-fold="${foldPid}"]`);
+      await sleep(300);
+      const folded = await page.evaluate((pid) => {
+        const row = document.querySelector(`#panel-procs tr.pp-row[data-proc-row="${pid}"]`) as HTMLElement;
+        return {
+          rows: document.querySelectorAll('#panel-procs tr.pp-row').length,
+          hidden: (row.querySelector('.pp-hidden') as HTMLElement | null)?.innerText ?? '',
+          cpu: (row.querySelector('.pp-cpu .pp-v') as HTMLElement).innerText,
+        };
+      }, foldPid);
+      check(
+        folded.rows < before && /^\+\d+개$/.test(folded.hidden) && folded.cpu.includes('Σ'),
+        'R3c a folded parent shows its totals',
+        {
+          before,
+          ...folded,
+        },
+      );
+      await page.screenshot({
+        path: path.join(OUT, '02c-folded.png'),
+        clip: {
+          x: panelBox.x - 8,
+          y: panelBox.y - 8,
+          width: panelBox.width + 16,
+          height: Math.min(panelBox.height, 420),
+        },
+      });
+      await page.click(`#panel-procs [data-proc-fold="${foldPid}"]`);
+      await sleep(300);
+      check(
+        (await page.$$eval('#panel-procs tr.pp-row', (r) => r.length)) === before,
+        'R3c unfolding brings the subtree back',
+      );
+
+      // R6 — open the hot row's detail: a snapshot.
+      const hotPid = await page.$eval('#panel-procs tr.pp-row.is-hot', (r) => Number(r.getAttribute('data-proc-row')));
+      await page.click(`#panel-procs [data-proc-open="${hotPid}"]`);
+      await page.waitForSelector('#proc-detail-body .px-sec', { timeout: 10_000 });
+      const detail1 = await page.$eval('#proc-detail-body', (e) => (e as HTMLElement).innerText);
+      const when = await page.$eval('#proc-detail-when', (e) => (e as HTMLElement).innerText);
+      check(
+        detail1.includes(node) &&
+          /명령줄/.test(detail1) &&
+          /\/tmp/.test(detail1) &&
+          /디스크립터 \d+개/.test(detail1) &&
+          /스냅샷/.test(when),
+        'R6 the detail: exe, command line, folder, descriptors, and the footer says snapshot',
+        { when, head: detail1.slice(0, 300) },
+      );
+      await sleep(400);
+      await page.screenshot({ path: path.join(OUT, '04-detail.png') });
+      // The tab keeps polling (every 3 s); the snapshot does not move.
+      await sleep(7_000);
+      const detail2 = await page.$eval('#proc-detail-body', (e) => (e as HTMLElement).innerText);
+      check(detail2 === detail1, 'R6 the snapshot does not refresh while the tab polls');
+      await page.evaluate(() => (window as any).closeProcDetail());
+      await sleep(500);
+
+      // R4 — pause the hot child.
+      const yesPid = hotPid;
       await page.click(`#panel-procs [data-proc-op="pause"][data-pid="${yesPid}"]`);
       await page.waitForSelector(`#panel-procs [data-proc-op="resume"][data-pid="${yesPid}"]`, { timeout: 10_000 });
       check(psState(yesPid).startsWith('T'), 'R4 the real process is stopped (ps stat T)', {

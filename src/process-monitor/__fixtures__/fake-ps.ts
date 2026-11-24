@@ -43,6 +43,13 @@ export class FakePs {
     const list = String(args[args.indexOf('-p') + 1] ?? '')
       .split(',')
       .map(Number);
+    // The identity re-read after a cwd read: pid and start time only.
+    if (args.includes('pid=,lstart=')) {
+      return list
+        .filter((pid) => this.procs.has(pid))
+        .map((pid) => `${String(pid).padStart(6)} ${this.procs.get(pid)?.start ?? 'Mon Nov 23 10:00:00 2026'}`)
+        .join('\n');
+    }
     return list
       .filter((pid) => this.procs.has(pid))
       .map((pid) => {

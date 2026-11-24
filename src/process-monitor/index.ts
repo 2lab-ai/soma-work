@@ -4,11 +4,14 @@ import * as os from 'node:os';
 import { getClaudeChildProcessRegistry } from '../agent-runtime/claude-child-process-registry';
 import { getProcessMonitorNodeId } from '../config';
 import { Logger } from '../logger';
+import { createCwdReader } from './cwd-reader';
 import type { RunCommand } from './node-capacity';
+import { createProcessInspector } from './process-inspector';
 import { LocalProcessMonitor } from './process-monitor';
 import type { ReadCpuSeconds, RunPs } from './tree-sampler';
 
-export type { ProcessControlInput, ProcessHost } from './process-monitor';
+export type { ProcessInspection } from './process-inspector';
+export type { ProcessControlInput, ProcessHost, ProcessInspectInput } from './process-monitor';
 export { LocalProcessMonitor } from './process-monitor';
 export type * from './types';
 
@@ -35,7 +38,9 @@ export const runReadOnly: RunCommand = (cmd, args) =>
         if ((error as { code?: unknown }).code === 1 && typeof stdout === 'string' && !String(stderr ?? '').trim()) {
           return resolve(stdout);
         }
-        reject(error);
+        // The output so far travels with the failure: a reader whose tool exits 1 for one gone pid (lsof) keeps the
+        // others' rows.
+        reject(Object.assign(error, { stdout, stderr }));
       },
     );
   });
@@ -82,6 +87,8 @@ export function getProcessMonitor(): LocalProcessMonitor {
       runPs,
       runCommand: runReadOnly,
       readCpuSeconds: process.platform === 'linux' ? readLinuxCpuSeconds : undefined,
+      readCwds: createCwdReader(process.platform, runReadOnly),
+      inspectProcess: createProcessInspector({ platform: process.platform, run: runReadOnly }),
       logger,
     });
   }
