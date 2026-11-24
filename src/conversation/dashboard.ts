@@ -12958,12 +12958,10 @@ function uqCardOf(item, session) {
   // as the session cards do (§3.1-3) — one person, one colour; the viewer's own with the ring. Then the summary does
   // not say the name again; one person's board (every card theirs) keeps it there.
   var ownerName = item.ownerName || item.ownerId || '';
-  var allUsers = typeof currentUserId === 'undefined' || !currentUserId;
   var badge = null;
-  if (ownerName && allUsers) {
-    var hue = typeof ownerBadgeHue === 'function' ? ownerBadgeHue(item.ownerId || ownerName) : 0;
-    badge = { text: String(ownerName), hue: hue, title: String(ownerName) };
-    if (typeof viewerOwns === 'function' && viewerOwns(item)) {
+  if (ownerName && !currentUserId) {
+    badge = { text: String(ownerName), hue: ownerBadgeHue(item.ownerId || ownerName), title: String(ownerName) };
+    if (viewerOwns(item)) {
       badge.self = true;
       delete badge.title;
     }
