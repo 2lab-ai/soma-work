@@ -571,16 +571,47 @@ describe('host turn reservations', () => {
     expect(h.queue.gate(input()).action).toBe('queued');
   });
 
-  it('the reserved event takes its reservation at the gate, once; without one it is gated like any message', () => {
+  it('the reserved event takes its reservation at the gate, once', () => {
     const h = harness();
     h.queue.reserveHostTurn('U1', 'C1:9.0');
     const reserved = { ...input({ sessionKey: 'C1:9.0', threadTs: '9.0' }), hostReserved: true };
     expect(h.queue.gate(reserved)).toEqual({ action: 'run' });
-    // Taken: the slot it held is the turn's now; a second event with the same mark has nothing to take.
-    h.running.set('U1', [{ ...taskA, sessionKey: 'C1:9.0', threadTs: '9.0' }]);
-    expect(h.queue.gate({ ...input({ sessionKey: 'C1:7.0', threadTs: '7.0' }), hostReserved: true }).action).toBe(
-      'queued',
-    );
+    // Taken: another task now holds the one slot; the same event again has no reservation left to run on.
+    h.running.set('U1', [taskA]);
+    expect(h.queue.gate(reserved)).toEqual({ action: 'drop' });
+    expect(h.queue.snapshot().entries).toEqual([]);
+  });
+
+  // #1413 review round 2: a host event whose reservation is gone never becomes a request in the ledger — there a merged
+  // PR could no longer take it back.
+  it('a marked event without a reservation runs only into a free slot; otherwise it is dropped, never queued', () => {
+    const h = harness();
+    const marked = { ...input({ sessionKey: 'C1:9.0', threadTs: '9.0' }), hostReserved: true };
+    expect(h.queue.gate(marked)).toEqual({ action: 'run' });
+    h.running.set('U1', [taskA]);
+    expect(h.queue.gate(marked)).toEqual({ action: 'drop' });
+    expect(h.queue.snapshot().entries).toEqual([]);
+  });
+
+  it('releaseHostTurn gives back a reservation whose event never arrived', () => {
+    const h = harness();
+    h.queue.reserveHostTurn('U1', 'C1:9.0');
+    h.queue.releaseHostTurn('C1:9.0');
+    expect(h.queue.hasFreeSlot('U1', 'C1:8.0')).toBe(true);
+  });
+
+  it('a reservation for a thread that already holds an admission is one slot, not two', () => {
+    const h = harness();
+    h.limits.set('U1', 2);
+    // Thread 2.0 waits, then is admitted (on its way); pr-watch reserves for the same thread.
+    h.running.set('U1', [taskA, { ...taskA, sessionKey: 'C1:5.0', threadTs: '5.0' }]);
+    h.queue.gate(input());
+    h.running.set('U1', []);
+    h.queue.release('U1');
+    expect(h.queue.snapshot().entries.map((e) => e.state)).toEqual(['admitted']);
+    expect(h.queue.reserveHostTurn('U1', 'C1:2.0')).toBe(true);
+    // One slot held (thread 2.0), one free: a request for another thread runs.
+    expect(h.queue.gate(input({ sessionKey: 'C1:3.0', threadTs: '3.0' })).action).toBe('run');
   });
 
   it('an unused reservation expires and frees the slot', () => {

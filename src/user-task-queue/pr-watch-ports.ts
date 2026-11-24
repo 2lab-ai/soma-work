@@ -10,7 +10,7 @@
  */
 import type { SyntheticMessageEvent } from '../cron-scheduler';
 import type { DeliveryState } from '../session-pr-watch';
-import { reserveUserTaskHostTurn, userTaskSlotFree } from './active';
+import { releaseUserTaskHostTurn, reserveUserTaskHostTurn, userTaskSlotFree } from './active';
 
 export interface PrWatchSession {
   channelId?: string;
@@ -25,14 +25,12 @@ export interface PrWatchPortsDeps {
   /** No request runs in the thread and no dispatch slot is held (`SlackHandler.isHostTurnFree`). */
   isHostTurnFree(channel: string, threadTs?: string): boolean;
   inject(event: SyntheticMessageEvent): Promise<void>;
-  now?: () => number;
 }
 
 export function prWatchDeliveryPorts(deps: PrWatchPortsDeps): {
   state: (sessionKey: string) => DeliveryState;
   inject: (sessionKey: string, text: string) => Promise<void>;
 } {
-  const now = deps.now ?? Date.now;
   return {
     state: (sessionKey) => {
       const s = deps.getSession(sessionKey);
@@ -46,16 +44,22 @@ export function prWatchDeliveryPorts(deps: PrWatchPortsDeps): {
       if (!s?.channelId) return;
       // In the same tick as the `ready` it follows: nothing took the slot in between.
       reserveUserTaskHostTurn(s.ownerId, sessionKey);
-      await deps.inject({
-        user: s.ownerId ?? '',
-        channel: s.channelId,
-        thread_ts: s.threadTs,
-        ts: `${now() / 1000}`,
-        text,
-        synthetic: true,
-        skipDispatch: true,
-        routeContext: { skipAutoBotThread: true, userTaskReady: true },
-      });
+      try {
+        await deps.inject({
+          user: s.ownerId ?? '',
+          channel: s.channelId,
+          thread_ts: s.threadTs,
+          ts: `${Date.now() / 1000}`,
+          text,
+          synthetic: true,
+          skipDispatch: true,
+          routeContext: { skipAutoBotThread: true, userTaskReady: true },
+        });
+      } catch (error) {
+        // It never reached the gate: the slot it held goes back (a request would otherwise wait out the expiry).
+        releaseUserTaskHostTurn(sessionKey);
+        throw error;
+      }
     },
   };
 }

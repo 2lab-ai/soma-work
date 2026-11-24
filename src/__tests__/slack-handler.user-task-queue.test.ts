@@ -360,14 +360,14 @@ describe('SlackHandler — per-user task queue gate', () => {
     expect(ledger.entries.map((e) => e.sessionKey)).toEqual(['C123:200.0']);
   });
 
-  it('a pr-watch event without a reservation (it expired) is gated like any message', async () => {
+  it('a pr-watch event whose reservation is gone runs only into a free slot; at the limit it is dropped, not queued', async () => {
     const a = await startBusy('100.0');
     await handler.handleMessage(
       message('300.0', { ts: '', synthetic: true, routeContext: { skipAutoBotThread: true, userTaskReady: true } }),
       vi.fn(),
     );
     expect(startWithContinuation).toHaveBeenCalledTimes(1);
-    expect(ledger.entries.map((e) => e.sessionKey)).toEqual(['C123:300.0']);
+    expect(ledger.entries).toEqual([]);
     await a.settle();
   });
 

@@ -2143,9 +2143,12 @@ export class SlackHandler {
     // it waits in their queue and the host starts it when a running task ends. Synchronous, inside the fence.
     const userTask = this.gateUserTask(event, sessionKey, userTaskAdmitted);
     if (userTask === 'drop') {
-      this.logger.info('Turn dropped — its thread (or its cron job) already waits in the user task queue', {
-        sessionKey,
-      });
+      this.logger.info(
+        'Turn dropped by the user task queue — its thread or cron job already waits, or a host event lost its slot',
+        {
+          sessionKey,
+        },
+      );
       this.holdDroppedGoalContinuation(sessionKey, event);
       return;
     }

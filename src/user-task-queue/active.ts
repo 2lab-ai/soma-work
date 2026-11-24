@@ -58,3 +58,15 @@ export function reserveUserTaskHostTurn(userId: string | undefined, sessionKey: 
     return true;
   }
 }
+
+/** Give back a reservation whose host event was never delivered (`UserTaskQueue.releaseHostTurn`). Never throws. */
+export function releaseUserTaskHostTurn(sessionKey: string): void {
+  try {
+    active?.queue.releaseHostTurn(sessionKey);
+  } catch (error) {
+    logger.warn('User task queue: releasing a host turn reservation failed', {
+      sessionKey,
+      error: (error as Error)?.message ?? String(error),
+    });
+  }
+}

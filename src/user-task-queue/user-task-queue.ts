@@ -199,6 +199,9 @@ export class UserTaskQueue {
         this.hostReservations.delete(input.sessionKey);
         return { action: 'run' };
       }
+      // Its reservation is gone (taken, or expired on the way): it runs only into a free slot. It never lines up as a
+      // request — in the ledger a merged PR or a closed session could no longer take it back.
+      return this.hasFreeSlot(input.userId, input.sessionKey) ? { action: 'run' } : { action: 'drop' };
     }
     const limit = this.deps.limitFor(input.userId);
     if (limit === UNLIMITED) return { action: 'run' };
@@ -223,7 +226,7 @@ export class UserTaskQueue {
     }
 
     const running = this.othersRunning(input.userId, input.sessionKey);
-    const holding = running.length + this.admittedElsewhere(input.userId, input.sessionKey);
+    const holding = this.holdingElsewhere(input.userId, input.sessionKey);
     if (holding < limit && waitingOf(this.ledger, input.userId).length === 0) return { action: 'run' };
     return this.enqueue(input, limit, running, true);
   }
@@ -255,7 +258,7 @@ export class UserTaskQueue {
     this.expireAdmissions();
     const limit = this.deps.limitFor(entry.userId);
     const running = this.othersRunning(entry.userId, entry.sessionKey);
-    const holding = running.length + this.admittedElsewhere(entry.userId, entry.sessionKey);
+    const holding = this.holdingElsewhere(entry.userId, entry.sessionKey);
     if (holding < limit) {
       this.admitAndStart(entry, 'bypass', true);
       return { ok: true };
@@ -364,8 +367,16 @@ export class UserTaskQueue {
     const limit = this.deps.limitFor(userId);
     if (limit === UNLIMITED) return true;
     if (waitingOf(this.ledger, userId).some((e) => e.sessionKey !== sessionKey)) return false;
-    const holding = this.othersRunning(userId, sessionKey).length + this.admittedElsewhere(userId, sessionKey);
-    return holding < limit;
+    return this.holdingElsewhere(userId, sessionKey) < limit;
+  }
+
+  /** Give back a reservation whose event never reached the gate (its send failed). */
+  releaseHostTurn(sessionKey: string): void {
+    const held = this.hostReservations.get(sessionKey);
+    if (!held) return;
+    this.hostReservations.delete(sessionKey);
+    // The slot it held may be a waiting request's now.
+    this.release(held.userId);
   }
 
   /**
@@ -454,8 +465,8 @@ export class UserTaskQueue {
       const next = waitingOf(this.ledger, userId)[0];
       if (!next) return;
       if (limit !== UNLIMITED) {
-        const running = this.othersRunning(userId, next.sessionKey);
-        const holding = running.length + admittedOf(this.ledger, userId).length;
+        // Reservations of host events on their way hold their slots too.
+        const holding = this.holdingElsewhere(userId, next.sessionKey);
         // The next entry's own thread still running (a turn of it went on): wait for it too.
         const ownBusy = this.deps.runningTasks(userId).some((t) => t.sessionKey === next.sessionKey);
         if (holding >= limit || ownBusy) return;
@@ -489,10 +500,16 @@ export class UserTaskQueue {
     return this.deps.runningTasks(userId).filter((t) => t.sessionKey !== sessionKey);
   }
 
-  private admittedElsewhere(userId: string, sessionKey: string): number {
-    let reserved = 0;
-    for (const [key, r] of this.hostReservations) if (r.userId === userId && key !== sessionKey) reserved++;
-    return admittedOf(this.ledger, userId).filter((e) => e.sessionKey !== sessionKey).length + reserved;
+  /**
+   * The slots the person's other threads hold: running, admitted on their way, or reserved by a host event — one per
+   * thread, however many of these it is at once (a thread admitted and reserved holds one slot).
+   */
+  private holdingElsewhere(userId: string, sessionKey: string): number {
+    const held = new Set<string>();
+    for (const t of this.othersRunning(userId, sessionKey)) held.add(t.sessionKey);
+    for (const e of admittedOf(this.ledger, userId)) if (e.sessionKey !== sessionKey) held.add(e.sessionKey);
+    for (const [key, r] of this.hostReservations) if (r.userId === userId && key !== sessionKey) held.add(key);
+    return held.size;
   }
 
   private expireAdmissions(): void {

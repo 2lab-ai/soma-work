@@ -107,9 +107,10 @@ describe('uqCardOf', () => {
   it('names the task the server marked as the one 먼저 진행 stops', () => {
     const card = uqCardOf(
       item({
+        // Board order is not newest-first: the marked one comes second here.
         running: [
-          { key: 'C1:a', title: '새 작업', stops: true },
           { key: 'C1:b', title: '오래된 작업' },
+          { key: 'C1:a', title: '새 작업', stops: true },
         ],
       }),
       undefined,

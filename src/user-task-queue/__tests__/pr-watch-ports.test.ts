@@ -100,6 +100,24 @@ describe('pr-watch delivery and the per-user task queue', () => {
     d.stop();
   });
 
+  it('a send that fails gives its reservation back', async () => {
+    running = [];
+    const d = createSettledDelivery({
+      ...prWatchDeliveryPorts({
+        getSession: (key) => sessions.get(key),
+        isHostTurnFree: () => true,
+        inject: async () => {
+          throw new Error('slack down');
+        },
+      }),
+      retryMs: 100,
+    });
+    await d.deliver('C1:5.0', 'ci failed');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(queue.hasFreeSlot('U1', 'C1:6.0')).toBe(true);
+    d.stop();
+  });
+
   it('no queue wired: the owner is never held', async () => {
     setActiveUserTaskQueue(undefined);
     const d = delivery();
