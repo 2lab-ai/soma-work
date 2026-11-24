@@ -61,6 +61,8 @@ export interface ProcessSample {
   readonly command: string;
   /** Its working directory (`''` when it could not be read). Owner and admins only on the dashboard, like `command`. */
   readonly cwd: string;
+  /** Held part of each period by its task's CPU cap (`cpu-throttler.ts`) — it reads as running, not paused. */
+  readonly throttled?: boolean;
 }
 
 /** Totals over one session's tree. */
@@ -75,6 +77,10 @@ export interface SessionProcessUsage {
   readonly rssBytes: number;
   /** Epoch ms of the sample. */
   readonly sampledAt: number;
+  /** The CPU cap on this task (percent of one core; absent: no cap — an admin's task, or caps not wired). */
+  readonly cpuCapPercent?: number;
+  /** Whether the cap is holding the tree now (it went over the cap). */
+  readonly throttling?: boolean;
 }
 
 export interface SessionProcessDetail extends SessionProcessUsage {

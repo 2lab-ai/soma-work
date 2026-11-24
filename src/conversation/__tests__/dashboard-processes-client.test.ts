@@ -552,6 +552,15 @@ describe('P6 — the tree: guides, folds, CPU levels, where · what', () => {
     expect(CSS).toContain('.pp-cpu.is-hot .pp-v, .pp-cpu-sum.is-hot { color: color-mix(in srgb, var(--st-fail)');
     expect(CSS).toContain('.pp-table tr.pp-row.is-hot td { background:');
   });
+
+  it('in high contrast every meter is one solid system colour — the busy and hot rules do not outrank it', () => {
+    const forced = CSS.slice(CSS.indexOf('@media (forced-colors: active) {\n  .pp-bar'));
+    const rule = forced.slice(0, forced.indexOf('}') + 1);
+    for (const sel of ['.pp-bar > i', '.pp-cpu.is-busy .pp-bar > i', '.pp-cpu.is-hot .pp-bar > i']) {
+      expect(rule).toContain(sel);
+    }
+    expect(rule).toContain('background: CanvasText;');
+  });
 });
 
 describe('P7 — the detail: one process’s snapshot, read once', () => {
@@ -926,6 +935,37 @@ describe('P7 — the detail: one process’s snapshot, read once', () => {
     expect(control).toHaveBeenCalledWith('pause', 3, 'T3');
   });
 
+  it('a body that never arrives after the headers is given up too — read as no answer, not as an HTTP 200', async () => {
+    vi.useFakeTimers();
+    try {
+      let n = 0;
+      const { e, el } = env((_url, init) => {
+        n++;
+        if (n === 1) {
+          // The headers came in time; the body read is aborted by the timeout.
+          return Promise.resolve({
+            status: 200,
+            json: () =>
+              new Promise((_resolve, reject) => {
+                init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+              }),
+          });
+        }
+        return Promise.resolve({ status: 200, json: async () => ({ ok: true, detail }) });
+      });
+      e.__get('_procs').key = 'C1:t1';
+      e.procsOpenDetail(2, S);
+      await vi.advanceTimersByTimeAsync(e.__get('PROCS_CONTROL_TIMEOUT_MS'));
+      expect(e.__get('_procDetail').status).toBe(-1);
+      expect(el._html).toContain('답하지 않았어요');
+      e.procDetailRetake();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(el._html).toContain('/opt/homebrew/bin/node');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('a read that never answers is given up after its timeout and says so; 다시 찍기 then shows the snapshot', async () => {
     vi.useFakeTimers();
     try {
@@ -1041,5 +1081,54 @@ describe('P8 — the card’s node badge (card.node)', () => {
       text: 'build-box',
     });
     expect(fns.faceOf({ title: 'x' }, '', { rows: [], foot: [] }).node).toBeUndefined();
+  });
+});
+
+describe('P9 — the CPU cap on the task', () => {
+  it('the tab says the cap, and while it holds the tree; a held row is tagged 한도, not 일시중지', () => {
+    const e = load<{ panelProcsHtml: (st: unknown, c: boolean) => string }>(TAB_FNS, ['PROC_STATE_LABEL']);
+    const p = (pid: number, depth: number, extra: Record<string, unknown> = {}) => ({
+      pid,
+      depth,
+      role: depth === 0 ? 'root' : 'child',
+      state: 'running',
+      cpuPercent: 0,
+      rssBytes: 1e6,
+      name: `p${pid}`,
+      startToken: 'S',
+      ...extra,
+    });
+    const body = (throttling: boolean) => ({
+      node: { nodeId: 'n1' },
+      session: {
+        processCount: 2,
+        cpuPercent: 98,
+        rssBytes: 2e6,
+        rootAlive: true,
+        cpuCapPercent: 100,
+        throttling,
+        processes: [p(1, 0), p(2, 1, { cpuPercent: 95, throttled: throttling })],
+      },
+    });
+    const on = e.panelProcsHtml({ status: 200, body: body(true), busy: {} }, true);
+    expect(on).toContain('CPU 한도 100% · 맞추는 중</span>');
+    expect(on).toContain('<span class="pp-cap is-on"');
+    expect(on).toContain('>한도</span>');
+    expect(on).not.toContain('일시중지 1개');
+    const off = e.panelProcsHtml({ status: 200, body: body(false), busy: {} }, true);
+    expect(off).toContain('CPU 한도 100%</span>');
+    expect(off).not.toContain('>한도</span>');
+  });
+
+  it('the card’s chip and node badge say the cap in their titles', () => {
+    const src = `${VIEW_LAYOUT_CLIENT_JS}\nreturn { procChipOf: procChipOf, nodeBadgeOf: nodeBadgeOf };`;
+    const f = new Function('VIEW_BUILTINS', src)(BUILTIN_PRESETS) as {
+      procChipOf: (u: unknown) => { title: string } | null;
+      nodeBadgeOf: (u: unknown) => { title: string } | null;
+    };
+    const u = usage({ cpuCapPercent: 100, throttling: true });
+    expect(f.procChipOf(u)?.title).toContain('CPU 한도 100% — 넘어서 맞추는 중');
+    expect(f.nodeBadgeOf(u)?.title).toContain('CPU 한도 100% — 넘어서 맞추는 중');
+    expect(f.procChipOf(usage())?.title).not.toContain('CPU 한도');
   });
 });

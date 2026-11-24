@@ -103,6 +103,20 @@ same snapshot, and work will be placed by each node's free CPU and memory.
    `card.node`): this card's CPU, the node's name, and the node's CPU and memory as two 10-step gauges. The head is the
    part a one-line card keeps. A card is pushed again only when a gauge crosses a step.
 
+9. **A CPU cap per task (2026-11-24).** One task of a person may use at most their cap: 100% (one core) by default,
+   none for an admin, an admin's choice per person in the settings page's 작업 큐 tab (`DATA_DIR/user-cpu-limits.json`,
+   `cpu-limits.ts`). Neither OS gives an unprivileged quota on a running tree (Linux cgroup `cpu.max` needs delegated
+   systemd; macOS has none), so the monitor holds a task over its cap with a duty cycle (`cpu-throttler.ts`): each
+   period (250 ms, up to 30 s — long enough that its run part holds the identity read before each stop and its
+   stopped part the period's reads) it reads the tree's CPU time, sets the share of the period the tree may run
+   (share × cap / rate, at least 0.2%), runs it that long and stops it (`SIGSTOP`) the rest. A new worker joins the
+   tree only if the read that gives its identity names a parent in it; an aborted turn's processes are never metered
+   again. It never stops the Claude Code process itself, never continues what it did not stop (a person's pause
+   becomes theirs), never signals a reused pid, and continues everything it holds on an abort, a cap change and
+   shutdown (before the monitor's own resume pass). A held process reads as running with `throttled`, not as paused;
+   a session says its `cpuCapPercent` and whether the cap is `throttling`. Research: [2026-11-24 task CPU
+   cap](../misc/research/2026-11-24-task-cpu-cap.md).
+
 ## Consequences
 
 - One sample costs two `ps` runs (plus `vm_stat` on macOS) every 5 seconds, and only while a tracked root or a
@@ -111,13 +125,16 @@ same snapshot, and work will be placed by each node's free CPU and memory.
   process tab answers 409 here (open that instance's dashboard).
 - Placing work on worker nodes is not built. This ADR fixes the shape the placement will read.
 - Windows has no job-control signals: control answers `unsupported`. Sampling there is not supported.
+- A capped task over its cap costs three `ps` runs a period (the parent map, the tree, the read before the stop)
+  while it is over (none otherwise), and its processes see brief stops — what a cap is. A process that starts and
+  exits within one period is never read by the cap and runs uncapped for that short life.
 - The working directory costs one `lsof` (macOS) or one `readlink` per pid (Linux) every 15 seconds per process, and
   nothing for the unattributed group. The detail read costs a handful of `ps`/`lsof` runs per click.
 
 ## Evidence
 
 - Code: `src/process-monitor/` (types, `ps-table.ts`, `tree-sampler.ts`, `node-capacity.ts`, `process-monitor.ts`,
-  `command-preview.ts`, `cwd-reader.ts`, `process-inspector.ts`, `command-mask.ts`). The spawn owner is in `src/agent-runtime/claude-child-process-registry.ts`. The dashboard
+  `command-preview.ts`, `cwd-reader.ts`, `process-inspector.ts`, `command-mask.ts`, `cpu-throttler.ts`, `cpu-limits.ts`). The spawn owner is in `src/agent-runtime/claude-child-process-registry.ts`. The dashboard
   side is `setDashboardProcessSource`, `procCardsToPush`, and the routes in `src/conversation/dashboard.ts`.
 - Tests: `src/process-monitor/__tests__/` include `process-monitor.real.test.ts`, which runs against the real `ps` and
   real signals on macOS and Linux. Route and client tests are `src/conversation/__tests__/dashboard-processes*.test.ts`.

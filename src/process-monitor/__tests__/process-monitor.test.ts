@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { TrackedClaudeRootInfo } from '../../agent-runtime/claude-child-process-registry';
 import { FakePs } from '../__fixtures__/fake-ps';
-import { LocalProcessMonitor, psLiveStartToken } from '../process-monitor';
+import { LocalProcessMonitor, psLiveStartToken, psLiveStartTokens } from '../process-monitor';
 import type { NodeCapacity } from '../types';
 
 type RootFixture = Omit<TrackedClaudeRootInfo, 'turnId'> & { turnId?: number };
@@ -26,6 +26,7 @@ function setup(
     readCapacity?: () => Promise<NodeCapacity>;
     logger?: { info(msg: string, meta?: unknown): void; warn(msg: string, meta?: unknown): void };
     inspectProcess?: import('../process-inspector').InspectProcess;
+    readThrottle?: import('../cpu-throttler').ReadThrottle;
   } = {},
 ) {
   const ps = new FakePs()
@@ -53,6 +54,8 @@ function setup(
       p.stat = signal === 'SIGSTOP' ? 'T' : 'S';
     });
   let now = 1_000;
+  // The CPU throttler's timers: run by hand (runTimers), never on their own.
+  const timers: Array<() => void> = [];
   const monitor = new LocalProcessMonitor({
     nodeId: 'n1',
     roots: {
@@ -72,11 +75,50 @@ function setup(
       const fallback = ps.procs.get(pid)?.start ?? (ps.procs.has(pid) ? 'Mon Nov 23 10:00:00 2026' : null);
       return opts.live ? opts.live(pid, fallback) : fallback;
     },
+    liveStartTokens: (pids) => {
+      const out = new Map<number, string | null>();
+      for (const pid of pids) {
+        const fallback = ps.procs.get(pid)?.start ?? (ps.procs.has(pid) ? 'Mon Nov 23 10:00:00 2026' : null);
+        const v = opts.live ? opts.live(pid, fallback) : fallback;
+        if (v === undefined) return undefined;
+        out.set(pid, v);
+      }
+      return out;
+    },
     platform: opts.platform ?? 'darwin',
     now: () => now,
     readCapacity: opts.readCapacity ?? (async () => capacity),
     logger: opts.logger,
     inspectProcess: opts.inspectProcess,
+    // The period read, from the fake process table (a test may bring its own).
+    readThrottle:
+      opts.readThrottle ??
+      (async (pids) =>
+        new Map(
+          pids
+            .filter((pid) => ps.procs.has(pid))
+            .map((pid) => {
+              const p = ps.procs.get(pid) as { ppid: number; stat?: string; start?: string; cpu?: number };
+              return [
+                pid,
+                {
+                  ppid: p.ppid,
+                  stat: p.stat ?? 'S',
+                  startToken: p.start ?? 'Mon Nov 23 10:00:00 2026',
+                  cpuSeconds: p.cpu ?? 0,
+                },
+              ];
+            }),
+        )),
+    // The throttler's periods do not run on their own here; a test drives what it needs.
+    setTimer: (fn: () => void) => {
+      timers.push(fn);
+      return fn;
+    },
+    clearTimer: (h: unknown) => {
+      const i = timers.indexOf(h as () => void);
+      if (i >= 0) timers.splice(i, 1);
+    },
   });
   return {
     ps,
@@ -88,6 +130,11 @@ function setup(
     },
     fireShutdown: () => {
       for (const l of shutdown) l();
+    },
+    /** Run the oldest armed throttler timer only (a period's hold lands before the next period continues it). */
+    runOne: async () => {
+      timers.shift()?.();
+      for (let i = 0; i < 20; i++) await Promise.resolve();
     },
     tick: (ms: number) => {
       now += ms;
@@ -227,9 +274,12 @@ describe('LocalProcessMonitor.inspect — one process in depth, a snapshot', () 
     await new Promise((r) => setTimeout(r, 5));
     const late = ask();
     tick(11_000);
+    const started = inspectProcess.mock.calls.length;
     hold();
     expect((await busy).ok).toBe(true);
     expect(await late).toEqual({ ok: false, reason: 'busy' });
+    // Turned away before it ran: the inspector (ps, lsof, socket tables) is never called for it.
+    expect(inspectProcess.mock.calls.length).toBe(started);
   });
 
   it('detail reads run one at a time on a node (a burst of clicks does not multiply ps / lsof)', async () => {
@@ -264,6 +314,209 @@ describe('LocalProcessMonitor.inspect — one process in depth, a snapshot', () 
       ok: false,
       reason: 'stale',
     });
+  });
+});
+
+describe('LocalProcessMonitor — the CPU cap on each task', () => {
+  it('a task over its cap is metered: what the cap holds reads running + throttled, any other stop stays a stop', async () => {
+    const { monitor, ps, runOne, signals } = setup();
+    // Session A: 300 burns 4 cores (ps's own %cpu on a first sample); 310 was stopped by someone else (job control).
+    ps.set(300, { ppid: 200, args: '/bin/bash -c make', psCpu: 400 });
+    ps.set(310, { ppid: 200, args: '/bin/bash -c vim', stat: 'T' });
+    monitor.setCpuCaps((key) => (key === 'A' ? 100 : null));
+    const first = await monitor.sample();
+    const a = first.sessions.find((x) => x.sessionKey === 'A');
+    expect(a).toMatchObject({ cpuCapPercent: 100, throttling: true });
+    // B has no cap (an admin's task): no cap fields at all.
+    const b = first.sessions.find((x) => x.sessionKey === 'B');
+    expect(b).not.toHaveProperty('cpuCapPercent');
+    expect(b).not.toHaveProperty('throttling');
+    // A period runs (it arms its hold, then the next period), then its hold lands: 300 is held (a real SIGSTOP); 310,
+    // stopped by someone else, is never signalled.
+    await runOne();
+    await runOne();
+    expect(signals).toContainEqual([300, 'SIGSTOP']);
+    expect(signals.some(([pid]) => pid === 310)).toBe(false);
+    const held = (await monitor.sample()).sessions.find((x) => x.sessionKey === 'A');
+    // ps says T for both: the cap's hold reads running and throttled; the foreign stop stays a stop.
+    expect(held?.processes.find((p) => p.pid === 300)).toMatchObject({ state: 'running', throttled: true });
+    expect(held?.processes.find((p) => p.pid === 310)).toMatchObject({ state: 'stopped' });
+    expect(held?.processes.find((p) => p.pid === 310)).not.toHaveProperty('throttled');
+    expect(held?.stoppedCount).toBe(1);
+    monitor.dispose();
+    expect(ps.procs.get(300)?.stat).not.toBe('T');
+  });
+
+  it('the sample in which a cap is removed still reads the cap’s last hold as throttled, not paused', async () => {
+    const { monitor, ps, runOne } = setup();
+    ps.set(300, { ppid: 200, args: '/bin/bash -c make', psCpu: 400 });
+    let cap: number | null = 100;
+    monitor.setCpuCaps(() => cap);
+    await monitor.sample();
+    await runOne();
+    await runOne();
+    expect(ps.procs.get(300)?.stat).toBe('T');
+    // An admin sets the owner to 무제한: the next sample reads 300 stopped, then the update releases it.
+    cap = null;
+    const a = (await monitor.sample()).sessions.find((x) => x.sessionKey === 'A');
+    expect(a?.processes.find((p) => p.pid === 300)).toMatchObject({ state: 'running', throttled: true });
+    expect(a?.stoppedCount).toBe(0);
+    expect(a).not.toHaveProperty('cpuCapPercent');
+    expect(ps.procs.get(300)?.stat).not.toBe('T');
+  });
+
+  it('a sample in flight when the turn aborts does not meter that turn again; the next turn is capped', async () => {
+    let gate: () => void = () => {};
+    let gated = false;
+    const { monitor, ps, roots, fireAbort, runOne, signals } = setup({
+      readCapacity: () =>
+        gated
+          ? new Promise((r) => {
+              gate = () => r(capacity);
+            })
+          : Promise.resolve(capacity),
+    });
+    ps.set(300, { ppid: 200, args: '/bin/bash -c make', psCpu: 400 });
+    monitor.setCpuCaps(() => 100);
+    // The tree is read over its cap; the capacity read is still pending when the person stops the task.
+    gated = true;
+    const inFlight = monitor.sample();
+    await new Promise((r) => setTimeout(r, 5));
+    fireAbort(roots[0]);
+    gate();
+    const a = (await inFlight).sessions.find((x) => x.sessionKey === 'A');
+    expect(a).toMatchObject({ cpuCapPercent: 100, throttling: false });
+    await runOne();
+    await runOne();
+    expect(signals.some(([pid, sig]) => pid === 300 && sig === 'SIGSTOP')).toBe(false);
+    // Later samples of that turn's tree (its workers still cleaning up) are not metered either.
+    gated = false;
+    expect((await monitor.sample()).sessions.find((x) => x.sessionKey === 'A')?.throttling).toBe(false);
+    // The session's next turn — a new Claude Code process with its own worker — is capped again.
+    ps.procs.delete(300);
+    ps.procs.delete(200);
+    ps.set(210, { ppid: 100, args: '/usr/local/bin/claude' });
+    ps.set(310, { ppid: 210, args: '/bin/bash -c make', psCpu: 400 });
+    roots[0] = { pid: 210, sessionKey: 'A' };
+    const next = (await monitor.sample()).sessions.find((x) => x.sessionKey === 'A');
+    expect(next).toMatchObject({ cpuCapPercent: 100, throttling: true });
+    monitor.dispose();
+  });
+
+  it('a stop someone else makes after the cap’s hold ended reads stopped, not throttled', async () => {
+    const { monitor, ps, runOne, tick } = setup();
+    ps.set(300, { ppid: 200, args: '/bin/bash -c make', psCpu: 400 });
+    let cap: number | null = 100;
+    monitor.setCpuCaps(() => cap);
+    await monitor.sample();
+    await runOne();
+    await runOne();
+    expect(ps.procs.get(300)?.stat).toBe('T');
+    // The cap goes away: its hold is continued and ends.
+    cap = null;
+    await monitor.sample();
+    expect(ps.procs.get(300)?.stat).not.toBe('T');
+    // Later, job control stops the same process: a sample after the hold's end reads a real stop.
+    tick(10_000);
+    const p = ps.procs.get(300);
+    if (p) p.stat = 'T';
+    const a = (await monitor.sample()).sessions.find((x) => x.sessionKey === 'A');
+    expect(a?.processes.find((x) => x.pid === 300)).toMatchObject({ state: 'stopped' });
+    expect(a?.processes.find((x) => x.pid === 300)).not.toHaveProperty('throttled');
+    expect(a?.stoppedCount).toBe(1);
+  });
+
+  it('the cap is enforced from the tree read even when the node-capacity read fails', async () => {
+    const { monitor, ps, runOne, signals } = setup({
+      readCapacity: () => Promise.reject(new Error('vm_stat failed')),
+    });
+    ps.set(300, { ppid: 200, args: '/bin/bash -c make', psCpu: 400 });
+    monitor.setCpuCaps(() => 100);
+    await expect(monitor.sample()).rejects.toThrow(/vm_stat/);
+    await runOne();
+    await runOne();
+    expect(signals).toContainEqual([300, 'SIGSTOP']);
+    monitor.dispose();
+    expect(ps.procs.get(300)?.stat).not.toBe('T');
+  });
+
+  it('a person who pauses a process the cap holds owns it: the cap never continues it, nor reads it as throttled', async () => {
+    const { monitor, ps, runOne, signals } = setup();
+    ps.set(300, { ppid: 200, args: '/bin/bash -c make', psCpu: 400 });
+    let cap: number | null = 100;
+    monitor.setCpuCaps(() => cap);
+    await monitor.sample();
+    await runOne();
+    await runOne();
+    expect(signals).toContainEqual([300, 'SIGSTOP']);
+    expect(ps.procs.get(300)?.stat).toBe('T');
+    // The owner presses 일시중지 on it while the cap holds it.
+    expect((await monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' })).ok).toBe(true);
+    const n = signals.length;
+    // More periods, then the cap goes away: nothing continues the person's pause.
+    for (let i = 0; i < 6; i++) await runOne();
+    cap = null;
+    const a = (await monitor.sample()).sessions.find((x) => x.sessionKey === 'A');
+    for (let i = 0; i < 4; i++) await runOne();
+    expect(signals.slice(n).filter(([pid, sig]) => pid === 300 && sig === 'SIGCONT')).toEqual([]);
+    expect(ps.procs.get(300)?.stat).toBe('T');
+    expect(a?.processes.find((x) => x.pid === 300)).toMatchObject({ state: 'stopped' });
+    expect(a?.processes.find((x) => x.pid === 300)).not.toHaveProperty('throttled');
+  });
+
+  it('a stop someone else made, read by the tree’s ps, stays a stop even if the cap holds it while capacity is read', async () => {
+    let gate: () => void = () => {};
+    let gated = false;
+    const { monitor, ps, runOne, tick } = setup({
+      readCapacity: () =>
+        gated
+          ? new Promise((r) => {
+              gate = () => r(capacity);
+            })
+          : Promise.resolve(capacity),
+    });
+    ps.set(300, { ppid: 200, args: '/bin/bash -c make', psCpu: 400 });
+    monitor.setCpuCaps(() => 100);
+    await monitor.sample();
+    // Job control stops 300; the tree's ps reads that T; the capacity read is slow.
+    const p = ps.procs.get(300);
+    if (p) p.stat = 'T';
+    gated = true;
+    const sampling = monitor.sample();
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    // After the tree read, job control continues it and the cap's period stops it — still before capacity answers.
+    if (p) p.stat = 'S';
+    tick(100);
+    await runOne();
+    await runOne();
+    expect(ps.procs.get(300)?.stat).toBe('T');
+    gate();
+    const a = (await sampling).sessions.find((x) => x.sessionKey === 'A');
+    // The T the ps read was someone else's: the cap's hold began after that read ended.
+    expect(a?.processes.find((x) => x.pid === 300)).toMatchObject({ state: 'stopped' });
+    expect(a?.processes.find((x) => x.pid === 300)).not.toHaveProperty('throttled');
+    monitor.dispose();
+  });
+
+  it('a person’s pause in a metered task still reads stopped and counts as paused', async () => {
+    const { monitor, ps } = setup();
+    ps.set(300, { ppid: 200, args: '/bin/bash -c make', psCpu: 400 });
+    monitor.setCpuCaps(() => 100);
+    await monitor.sample();
+    expect((await monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' })).ok).toBe(true);
+    const a = (await monitor.sample()).sessions.find((x) => x.sessionKey === 'A');
+    expect(a?.processes.find((p) => p.pid === 300)).toMatchObject({ state: 'stopped' });
+    expect(a?.processes.find((p) => p.pid === 300)).not.toHaveProperty('throttled');
+    expect(a?.stoppedCount).toBe(1);
+  });
+
+  it('caps unwired (setCpuCaps(null)) leave every task as sampled', async () => {
+    const { monitor, ps } = setup();
+    ps.set(300, { ppid: 200, args: '/bin/bash -c make', psCpu: 400, stat: 'T' });
+    monitor.setCpuCaps(null);
+    const a = (await monitor.sample()).sessions.find((x) => x.sessionKey === 'A');
+    expect(a).not.toHaveProperty('cpuCapPercent');
+    expect(a?.processes.find((p) => p.pid === 300)?.state).toBe('stopped');
   });
 });
 
@@ -945,5 +1198,40 @@ describe('psLiveStartToken — gone only when ps says so silently', () => {
     expect(psLiveStartToken(child.pid as number)).toBeNull();
     // macOS: "ps: process id too large" on stderr with exit 1 — a diagnostic, not a missing process.
     if (process.platform === 'darwin') expect(psLiveStartToken(2147483646)).toBeUndefined();
+  });
+});
+
+describe('psLiveStartTokens — one batched identity read', () => {
+  const row = (pid: number, start: string) => `${pid} ${start}`;
+  it('a pid ps does not print is gone (null); a read that failed is unknown for all (undefined)', () => {
+    const out = psLiveStartTokens([10, 11], () => `${row(10, 'Mon Nov 23 10:00:00 2026')}\n`);
+    expect(out).toEqual(
+      new Map<number, string | null>([
+        [10, 'Mon Nov 23 10:00:00 2026'],
+        [11, null],
+      ]),
+    );
+    // ps exits 1, silently, when a pid is gone: the others it printed still count.
+    const partial = psLiveStartTokens([10, 11], () => {
+      throw Object.assign(new Error('exit 1'), {
+        status: 1,
+        stdout: `${row(11, 'Tue Nov 24 09:00:00 2026')}\n`,
+        stderr: '',
+      });
+    });
+    expect(partial?.get(10)).toBeNull();
+    expect(partial?.get(11)).toBe('Tue Nov 24 09:00:00 2026');
+    // Anything else — a message on stderr, a timeout, no ps — is unknown: nothing may be dropped or signalled.
+    expect(
+      psLiveStartTokens([10], () => {
+        throw Object.assign(new Error('exit 1'), { status: 1, stdout: '', stderr: 'ps: illegal option' });
+      }),
+    ).toBeUndefined();
+    expect(
+      psLiveStartTokens([10], () => {
+        throw Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' });
+      }),
+    ).toBeUndefined();
+    expect(psLiveStartTokens([], () => '')).toEqual(new Map());
   });
 });

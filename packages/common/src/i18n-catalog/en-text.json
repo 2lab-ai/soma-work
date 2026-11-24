@@ -2440,5 +2440,8 @@
   "🚫 대기를 취소했습니다 — 이 요청은 실행되지 않습니다.": "🚫 Removed from the queue — this request will not run.",
   "🚫 이어서 하기를 취소했습니다 — 이 작업은 멈춘 채로 둡니다.": "🚫 Resume cancelled — this task stays paused.",
   "비공개 작업": "Private task",
-  "작업 큐": "Task queue"
+  "작업 큐": "Task queue",
+  "CPU 한도가 꺼져 있습니다 (이 인스턴스에서 시작되지 않음)": "CPU caps are off (not started on this instance)",
+  "cpu는 25~6400(%), 'unlimited', 또는 null(기본값)입니다": "cpu is 25–6400 (%), 'unlimited', or null (the default)",
+  "CPU 한도를 저장하지 못했습니다": "Could not save the CPU cap"
 }

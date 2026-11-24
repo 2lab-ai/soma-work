@@ -1976,5 +1976,21 @@
   "<p class=\"px-hint\">운영체제가 주지 않은 항목: ": "<p class=\"px-hint\">Not given by the operating system: ",
   "\"><thead><tr><th scope=\"col\">프로세스</th><th scope=\"col\" class=\"pp-num\">CPU</th><th scope=\"col\" class=\"pp-num\">메모리</th>": "\"><thead><tr><th scope=\"col\">Process</th><th scope=\"col\" class=\"pp-num\">CPU</th><th scope=\"col\" class=\"pp-num\">Memory</th>",
   "<p class=\"px-hint\">디스크립터가 많아 앞의 일부만 살펴봤어요 — 종류별 개수와 목록은 그 안에서만 센 값이에요</p>": "<p class=\"px-hint\">Too many descriptors to look at all of them — the counts by kind and the lists cover only the first part</p>",
-  "다른 상세 조회가 줄을 서 있어요 — 잠시 뒤 다시 찍기로 읽어요": "Other detail reads are in line — Take again in a moment"
+  "다른 상세 조회가 줄을 서 있어요 — 잠시 뒤 다시 찍기로 읽어요": "Other detail reads are in line — Take again in a moment",
+  "\nCPU 한도 ": "\nCPU cap ",
+  " — 넘어서 맞추는 중": " — over it, being held to it",
+  "이 작업의 CPU 한도 — 넘으면 그 아래 프로세스를 아주 짧게 멈췄다 이어 가며 맞춰요 (Claude Code 자체는 멈추지 않아요)": "This task's CPU cap — over it, the processes under Claude Code are stopped for brief moments and continued to keep to it (Claude Code itself is never stopped)",
+  "\">CPU 한도 ": "\">CPU cap ",
+  " · 맞추는 중": " · holding",
+  "<span class=\"pp-role pp-throttled\" title=\"CPU 한도에 맞추느라 아주 짧게 멈췄다 이어 가는 중 — 일시중지가 아니에요\">한도</span>": "<span class=\"pp-role pp-throttled\" title=\"Stopped for brief moments and continued to keep to the CPU cap — not a pause\">cap</span>",
+  "CPU 한도는 그 사람의 작업 하나가 쓸 수 있는 CPU입니다(100% = 코어 1개). 기본은 100%, 관리자는 무제한입니다. 작업의 프로세스 트리 전체가 한도를 넘으면 그 아래 프로세스를 아주 짧게 멈췄다 이어 가며 한도에 맞춥니다(Claude Code 자체는 멈추지 않습니다).": "The CPU cap is how much CPU one of the person's tasks may use (100% = one core). It is 100% by default and none for an admin. When a task's whole process tree goes over it, the processes under it are stopped for brief moments and continued to keep to the cap (Claude Code itself is never stopped).",
+  ">기본값 (": ">Default (",
+  ">무제한</option>": ">Unlimited</option>",
+  "<label class=\"tq-cpu\">CPU 한도 <select data-user=\"": "<label class=\"tq-cpu\">CPU cap <select data-user=\"",
+  " 작업 하나의 CPU 한도": " — CPU cap per task",
+  " disabled title=\"관리자 모드를 켜야 바꿀 수 있습니다\"": " disabled title=\"Turn on admin mode to change it\"",
+  "<span>지금 ": "<span>now ",
+  " CPU 한도를 저장하지 못했습니다 — ": " — could not save the CPU cap — ",
+  ": 작업 하나의 CPU 한도 ": ": CPU cap per task ",
+  "(으)로 저장했습니다": " saved"
 }

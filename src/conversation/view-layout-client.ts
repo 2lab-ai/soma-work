@@ -162,8 +162,14 @@ function nodeBadgeOf(u) {
   b.title = '노드 ' + String(u.nodeId) + cores
     + '\n노드 CPU ' + (cpu === undefined ? '—' : Math.round(cpu) + '%') + ' · 노드 메모리 ' + (mem === undefined ? '—' : Math.round(mem) + '%')
     + '\n이 작업 CPU ' + procCpuText(u.cpuPercent) + ' (100% = 코어 1개) · 메모리 ' + procBytesText(u.rssBytes)
-    + (Number(u.stoppedCount) > 0 ? '\n일시중지 ' + Number(u.stoppedCount) + '개' : '');
+    + (Number(u.stoppedCount) > 0 ? '\n일시중지 ' + Number(u.stoppedCount) + '개' : '') + procCapLine(u);
   return b;
+}
+// The task's CPU cap, as a title line ('' when it has none).
+function procCapLine(u) {
+  var cap = Number(u && u.cpuCapPercent) || 0;
+  if (!cap) return '';
+  return '\nCPU 한도 ' + cap + '%' + (u.throttling ? ' — 넘어서 맞추는 중' : '');
 }
 function layoutTokens(n) {
   n = Math.max(0, Number(n) || 0);
@@ -249,7 +255,7 @@ function procChipOf(u) {
   var who = u.rootAlive ? 'Claude Code와 그 아래 프로세스 ' + n + '개' : 'Claude Code는 끝났고 남은 프로세스 ' + n + '개';
   var cores = Number(u.cpuCount) > 0 ? ', 이 노드 코어 ' + Number(u.cpuCount) + '개' : '';
   var title = who + '\nCPU ' + procCpuText(u.cpuPercent) + ' (100% = 코어 1개' + cores + ') · 메모리 ' + procBytesText(u.rssBytes)
-    + (stopped ? '\n일시중지 ' + stopped + '개' : '');
+    + (stopped ? '\n일시중지 ' + stopped + '개' : '') + procCapLine(u);
   var m = { text: text, title: title, label: text };
   if (stopped) m.tone = 'wait';
   return m;

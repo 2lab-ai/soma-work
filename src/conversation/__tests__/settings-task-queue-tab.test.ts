@@ -18,7 +18,7 @@ function clientFn(name: string): string {
   return ALL_JS.slice(start + 1, end + 2);
 }
 const VARS =
-  'var TQ_MAX = 10; var TQ_SWEEP = 270; var TQ_PX_PER_STEP = 14; var _tq = null; var _tqSaveTimers = { U1: 7 }; var _tqWriteSeq = {}; var _tqWriteChain = {};';
+  'var TQ_MAX = 10; var TQ_SWEEP = 270; var TQ_PX_PER_STEP = 14; var _tq = null; var _tqSaveTimers = { U1: 7 }; var _tqWriteSeq = {}; var _tqWriteChain = {}; var _tqCpuSeq = {}; var _tqCpuChain = {};';
 function load<T>(fns: string[], inject: Record<string, unknown> = {}): T {
   const names = Object.keys(inject);
   const body = `${VARS}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')}, setTq: function (v) { _tq = v; } };`;
@@ -37,6 +37,8 @@ const KNOB = [
   'tqStepFromDrag',
   'tqKnobSvg',
   'tqRow',
+  'tqCpuLabel',
+  'tqCpuHtml',
   'esc',
   'escAttr',
 ];
@@ -238,5 +240,147 @@ describe('the tab', () => {
   it('the shipped script has no template holes', () => {
     expect(TASK_QUEUE_CLIENT_JS).not.toContain('${');
     expect(TASK_QUEUE_CLIENT_JS).not.toContain('`');
+  });
+});
+
+describe('the CPU cap', () => {
+  it('each row picks the cap on one of the person’s tasks: 기본값 (100%), the choices, 무제한; what applies now is said', () => {
+    const k = load<any>(KNOB);
+    k.setTq({ cpuChoices: [50, 100, 200, 400, 800] });
+    const html = k.tqCpuHtml({ id: 'U1', name: 'Alice', cpu: { limit: 200, setting: 200, defaultLimit: 100 } }, true);
+    expect(html).toContain('<option value="">기본값 (100%)</option>');
+    expect(html).toContain('<option value="200" selected>200%</option>');
+    expect(html).toContain('<option value="unlimited">무제한</option>');
+    expect(html).toContain('onchange="tqCpuChange(this)"');
+    expect(html).toContain('<span>지금 200%</span>');
+    expect(html).toContain('aria-label="Alice 작업 하나의 CPU 한도"');
+    // An admin at the default: 무제한; without admin mode the choice is inert.
+    const admin = k.tqCpuHtml(
+      { id: 'U2', name: 'Admin', cpu: { limit: null, setting: null, defaultLimit: null } },
+      false,
+    );
+    expect(admin).toContain('<option value="" selected>기본값 (무제한)</option>');
+    expect(admin).toContain('disabled');
+    expect(admin).not.toContain('onchange');
+    // No cap wiring: nothing.
+    expect(k.tqCpuHtml({ id: 'U3', name: 'x' }, true)).toBe('');
+  });
+
+  it('a change writes the cap (null for 기본값, a number, or unlimited) and says what it saved', async () => {
+    const writes: Array<[string, string, unknown]> = [];
+    const statuses: string[] = [];
+    // The server's row for each request: what it now enforces.
+    const rowFor = (cpu: unknown) =>
+      cpu === null
+        ? { limit: 100, setting: null, defaultLimit: 100 }
+        : cpu === 'unlimited'
+          ? { limit: null, setting: 'unlimited', defaultLimit: 100 }
+          : { limit: cpu, setting: cpu, defaultLimit: 100 };
+    const k = load<any>([...KNOB, 'tqUser', 'tqCpuChange', 'tqCpuLabel'], {
+      apiWrite: async (m: string, u: string, b: { cpu: unknown }) => {
+        writes.push([m, u, b]);
+        return { ok: true, data: { user: { id: 'U1', name: 'Alice', cpu: rowFor(b.cpu) } } };
+      },
+      tqStatus: (t: string) => {
+        statuses.push(t);
+      },
+      tqRefreshRow: () => {},
+    });
+    const tq = { users: [{ id: 'U1', name: 'Alice' }] as Array<{ id: string; name: string; cpu?: unknown }> };
+    k.setTq(tq);
+    const sel = (value: string) => ({ value, getAttribute: () => 'U1' });
+    await k.tqCpuChange(sel('400'));
+    expect(statuses[statuses.length - 1]).toBe('Alice: 작업 하나의 CPU 한도 400%(으)로 저장했습니다');
+    expect(tq.users[0].cpu).toEqual(rowFor(400));
+    await k.tqCpuChange(sel(''));
+    expect(statuses[statuses.length - 1]).toBe('Alice: 작업 하나의 CPU 한도 100% (기본값)(으)로 저장했습니다');
+    expect(tq.users[0].cpu).toEqual(rowFor(null));
+    await k.tqCpuChange(sel('unlimited'));
+    expect(statuses[statuses.length - 1]).toBe('Alice: 작업 하나의 CPU 한도 무제한(으)로 저장했습니다');
+    expect(tq.users[0].cpu).toEqual(rowFor('unlimited'));
+    expect(writes).toEqual([
+      ['PUT', '/api/settings/cpu-limits/U1', { cpu: 400 }],
+      ['PUT', '/api/settings/cpu-limits/U1', { cpu: null }],
+      ['PUT', '/api/settings/cpu-limits/U1', { cpu: 'unlimited' }],
+    ]);
+  });
+
+  it('a later change that fails falls back to the last one the server took, not to what the page loaded with', async () => {
+    let n = 0;
+    const refreshed: unknown[] = [];
+    const tq = {
+      users: [{ id: 'U1', name: 'Alice', cpu: { limit: 100, setting: null, defaultLimit: 100 } }] as Array<{
+        id: string;
+        name: string;
+        cpu?: unknown;
+      }>,
+    };
+    const k = load<any>([...KNOB, 'tqUser', 'tqCpuChange', 'tqCpuLabel'], {
+      apiWrite: async (_m: string, _u: string, b: { cpu: unknown }) => {
+        n++;
+        if (n === 1)
+          return { ok: true, data: { user: { id: 'U1', name: 'Alice', cpu: { limit: 400, setting: 400 } } } };
+        void b;
+        return { ok: false, error: 'HTTP 500' };
+      },
+      tqStatus: () => {},
+      tqRefreshRow: () => {
+        refreshed.push(JSON.parse(JSON.stringify(tq.users[0].cpu)));
+      },
+    });
+    k.setTq(tq);
+    const sel = (value: string) => ({ value, getAttribute: () => 'U1' });
+    const first = k.tqCpuChange(sel('400'));
+    const second = k.tqCpuChange(sel('50'));
+    await Promise.all([first, second]);
+    // The 400% write was replaced on the page by the 50% one, which failed: the row shows 400% (what is enforced).
+    expect(tq.users[0].cpu).toEqual({ limit: 400, setting: 400 });
+    expect(refreshed[refreshed.length - 1]).toEqual({ limit: 400, setting: 400 });
+  });
+
+  it('a CPU save takes only the CPU fields: the row’s task limit (a knob save’s) is left as it is', async () => {
+    const tq = { users: [{ id: 'U1', name: 'Alice', limit: 3, setting: 3, cpu: { limit: 100, setting: null } }] };
+    const k = load<any>([...KNOB, 'tqUser', 'tqCpuChange', 'tqCpuLabel'], {
+      // The CPU route answers a row whose task limit is stale (read before the knob's save landed).
+      apiWrite: async () => ({
+        ok: true,
+        data: { user: { id: 'U1', name: 'Alice', limit: 1, setting: null, cpu: { limit: 200, setting: 200 } } },
+      }),
+      tqStatus: () => {},
+      tqRefreshRow: () => {},
+    });
+    k.setTq(tq);
+    await k.tqCpuChange({ value: '200', getAttribute: () => 'U1' });
+    expect(tq.users[0]).toEqual({ id: 'U1', name: 'Alice', limit: 3, setting: 3, cpu: { limit: 200, setting: 200 } });
+  });
+
+  it('changes for one person are written in the order they were made: a slow first write never lands last', async () => {
+    const started: unknown[] = [];
+    const finish: Array<() => void> = [];
+    const k = load<any>([...KNOB, 'tqUser', 'tqCpuChange'], {
+      apiWrite: (_m: string, _u: string, b: { cpu: unknown }) => {
+        started.push(b.cpu);
+        return new Promise((resolve) => {
+          finish.push(() =>
+            resolve({ ok: true, data: { user: { id: 'U1', name: 'Alice', cpu: { limit: b.cpu, setting: b.cpu } } } }),
+          );
+        });
+      },
+      tqStatus: () => {},
+      tqRefreshRow: () => {},
+    });
+    k.setTq({ users: [{ id: 'U1', name: 'Alice' }] });
+    const sel = (value: string) => ({ value, getAttribute: () => 'U1' });
+    const first = k.tqCpuChange(sel('400'));
+    const second = k.tqCpuChange(sel('50'));
+    await new Promise((r) => setTimeout(r, 0));
+    // The second waits for the first: only one write is out.
+    expect(started).toEqual([400]);
+    finish[0]();
+    await first;
+    await new Promise((r) => setTimeout(r, 0));
+    expect(started).toEqual([400, 50]);
+    finish[1]();
+    await second;
   });
 });
