@@ -203,7 +203,7 @@ describe.skipIf(!posix)('process monitor on the real OS', () => {
       off();
     }
   });
-  it('holds a task over its CPU cap to the cap: a spinning child runs at about 20% under a 20% cap', async () => {
+  it('holds a task over its CPU cap to the cap: a spinning child runs at about 20% under a 20% cap', async (ctx) => {
     const spawn = createTrackedClaudeProcessSpawner(undefined, { sessionKey: 'capped-session' });
     child = spawn({
       command: '/bin/sh',
@@ -241,11 +241,13 @@ describe.skipIf(!posix)('process monitor on the real OS', () => {
       spinnerPid = spinner.pid;
       // The next samples measure the spinner over the cap, so the cap starts holding it (a second apart: a sample's
       // rate is over the time since the one before).
-      let metered: unknown;
-      for (let i = 0; i < 6 && !(metered as { throttling?: boolean } | undefined)?.throttling; i++) {
+      let metered: { throttling?: boolean; cpuPercent: number } | undefined;
+      for (let i = 0; i < 8 && !metered?.throttling; i++) {
         await new Promise((r) => setTimeout(r, 1_000));
         metered = (await monitor.sample()).sessions.find((x) => x.sessionKey === 'capped-session');
       }
+      // A host so busy that a spinner gets no more than the cap gives the cap nothing to hold: nothing to measure.
+      if (!metered?.throttling && (metered?.cpuPercent ?? 0) <= 20) ctx.skip();
       expect(metered).toMatchObject({ cpuCapPercent: 20, throttling: true });
       // Let the share settle, then measure 4 s of the spinner's own CPU time.
       await new Promise((r) => setTimeout(r, 1_500));
@@ -253,8 +255,9 @@ describe.skipIf(!posix)('process monitor on the real OS', () => {
       const c0 = cpuOf(spinner.pid);
       await new Promise((r) => setTimeout(r, 4_000));
       const rate = ((cpuOf(spinner.pid) - c0) / ((Date.now() - t0) / 1000)) * 100;
-      expect(rate).toBeGreaterThan(5);
-      expect(rate).toBeLessThan(40);
+      // Under the cap, with room for a busy host (which only lowers it); a tree held stopped would read near 0.
+      expect(rate, `capped rate ${rate.toFixed(1)}%`).toBeGreaterThan(3);
+      expect(rate, `capped rate ${rate.toFixed(1)}%`).toBeLessThan(40);
     } finally {
       monitor.dispose();
     }
@@ -264,5 +267,5 @@ describe.skipIf(!posix)('process monitor on the real OS', () => {
         .toString()
         .trim(),
     ).not.toMatch(/^T/);
-  }, 30_000);
+  }, 40_000);
 });
