@@ -9,7 +9,7 @@ import { splitArgs } from './command-preview';
  * the task's owner and admins only, so it shows the whole line and masks what a value can hide a secret in:
  *   - JSON — everything between braces or brackets (`--mcp-config {…}` carries MCP servers' env and headers);
  *   - the value of a flag or `NAME=` whose name says secret (`--token x`, `--api-key=x`, `GITHUB_TOKEN=x`, mysql `-px`);
- *   - an HTTP credential (`Authorization: Bearer x`, `Cookie: x`, `Basic x`);
+ *   - an HTTP credential (`Authorization: Bearer x`, `Authorization:Bearer x`, `Cookie: x`, `Basic x`);
  *   - a URL's password (`https://user:x@host`) and a secret-named query value (`?token=x`);
  *   - every token shape the logger knows plus common provider keys (GitHub, AWS, Google, npm, JWT, `sk-…`);
  *   - any long high-entropy word (20+ characters mixing upper case, lower case and digits; or 48+ hex digits).
@@ -44,6 +44,12 @@ const CREDENTIAL_HEADER =
   /^(authorization|proxy-authorization|cookie|set-cookie|x-api-key|api-key|x-auth-token|private-token):?$/i;
 const INLINE_HEADER =
   /\b(authorization|proxy-authorization|cookie|x-api-key|api-key|x-auth-token|private-token)(\s*:\s*)(.+)$/gi;
+/**
+ * A credential header written into a word, no space after its colon: `Authorization:Bearer`, `Cookie:a=b;`,
+ * `--header=Authorization:`, `-HAuthorization:Basic`. No word boundary before the name (`-HAuthorization`).
+ */
+const HEADER_IN_WORD =
+  /(proxy-authorization|authorization|set-cookie|cookie|x-api-key|api-key|x-auth-token|private-token)(\s*:)(.*)$/is;
 const AUTH_SCHEME_WORD = /^(bearer|basic|token|digest)$/i;
 /** A word that opens a URL (where a header's unquoted value ends). */
 const URL_START = /^[a-z][a-z0-9+.-]*:\/\//i;
@@ -209,6 +215,19 @@ export function maskCommandLine(input: { readonly argv: readonly string[]; reado
     if (CREDENTIAL_HEADER.test(word)) {
       out.push(raw);
       value = { header: true, closing: lead, schemeSeen: false };
+      continue;
+    }
+    const inWord = HEADER_IN_WORD.exec(word);
+    if (inWord) {
+      // The scheme stays in view (`Authorization:Bearer`), anything else after the colon is the value. Unless the
+      // word's own quote closes it, the value runs on into the next words, like a header's value after a space.
+      const closed = lead !== '' && word.endsWith(lead);
+      const after = closed ? inWord[3].slice(0, -1) : inWord[3];
+      const scheme = AUTH_SCHEME_WORD.test(after);
+      const head = word.slice(0, inWord.index);
+      const shown = after === '' || scheme ? after : MASK;
+      out.push(`${lead}${head ? maskWord(head) : ''}${inWord[1]}${inWord[2]}${shown}${closed ? lead : ''}`);
+      if (!closed) value = { header: true, closing: lead, schemeSeen: after !== '' };
       continue;
     }
     if ((FLAG.test(word) && SECRET_NAME.test(word)) || AUTH_SCHEME_WORD.test(word)) {

@@ -107,6 +107,41 @@ describe('maskCommandLine', () => {
     expect(joined('x --token abc next')).toBe(`x --token ${MASK} next`);
   });
 
+  it('a credential header with no space after its colon is masked too (its value runs on like any header value)', () => {
+    expect(joined('curl -H Authorization:Bearer hunter2 https://h')).toBe(
+      `curl -H Authorization:Bearer ${MASK} https://h`,
+    );
+    expect(exact('curl', '-H', 'Authorization:Bearer hunter2', 'https://h')).toBe(
+      `curl -H 'Authorization:Bearer ${MASK}' https://h`,
+    );
+    expect(exact('curl', '-H', 'Authorization:Basic dXNlcjpwYXNz', 'https://h')).toBe(
+      `curl -H 'Authorization:Basic ${MASK}' https://h`,
+    );
+    expect(joined('curl -H "Proxy-Authorization:Token hunter2" https://h')).toBe(
+      `curl -H "Proxy-Authorization:Token ${MASK}" https://h`,
+    );
+    expect(joined('curl -H Authorization:hunter2 https://h')).toBe(`curl -H Authorization:${MASK} https://h`);
+    expect(joined('curl -H Cookie:theme=dark; sid=hunter2 -X GET https://h')).toBe(
+      `curl -H Cookie:${MASK} ${MASK} -X GET https://h`,
+    );
+    expect(joined('curl -H "Cookie:sid=hunter2" -v')).toBe(`curl -H "Cookie:${MASK}" -v`);
+    // Written into a flag's word: the value after it is masked all the same.
+    expect(joined('client --header=Authorization:Bearer hunter2 --verbose')).toBe(
+      `client --header=Authorization:Bearer ${MASK} --verbose`,
+    );
+    expect(joined('curl -HAuthorization:Bearer hunter2 https://h')).toBe(
+      `curl -HAuthorization:Bearer ${MASK} https://h`,
+    );
+    for (const line of [
+      joined('curl -H Authorization:Bearer hunter2 https://h'),
+      exact('curl', '-H', 'Authorization:Bearer hunter2', 'https://h'),
+      exact('curl', '-H', 'Authorization:Basic hunter2', 'https://h'),
+      joined('client --header=Authorization:Bearer hunter2 --verbose'),
+    ]) {
+      expect(line).not.toContain('hunter2');
+    }
+  });
+
   it('masks known key shapes and long high-entropy words anywhere', () => {
     const gh = `ghp_${'A1b2C3d4E5'.repeat(4)}`;
     expect(joined(`gh auth --with ${gh}`)).not.toContain(gh);

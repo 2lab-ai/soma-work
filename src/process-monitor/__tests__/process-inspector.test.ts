@@ -1,3 +1,6 @@
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import * as path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createProcessInspector,
@@ -11,6 +14,8 @@ import {
   parseProcNetUnix,
   parseProcStatus,
   parsePsDetail,
+  readFilePrefix,
+  statFdType,
 } from '../process-inspector';
 
 const START = 'Tue Nov 24 15:50:48 2026';
@@ -154,9 +159,24 @@ describe('process inspector parsers', () => {
       writeBytes: 8192,
     });
     expect(parseProcIo('')).toBeNull();
+    // A path's type is its mode's (a directory, a FIFO, a device have paths too): not guessed from the name.
     expect(['socket:[1]', 'pipe:[2]', 'anon_inode:[eventpoll]', '/dev/null', '/work/a', 'x'].map(fdTypeOfLink)).toEqual(
-      ['sock', 'PIPE', 'a_inode', 'CHR', 'REG', '?'],
+      ['sock', 'PIPE', 'a_inode', null, null, '?'],
     );
+  });
+});
+
+describe('readFilePrefix / statFdType', () => {
+  it('reads at most the bound — a file past it is never read whole — and types a path by its mode', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'inspector-'));
+    const big = path.join(dir, 'table');
+    writeFileSync(big, 'x'.repeat(10_000));
+    expect((await readFilePrefix(big, 4096)).length).toBe(4096);
+    writeFileSync(big, 'short\n');
+    expect(await readFilePrefix(big, 4096)).toBe('short\n');
+    expect(await statFdType(big)).toBe('REG');
+    expect(await statFdType(dir)).toBe('DIR');
+    expect(await statFdType('/dev/null')).toBe('CHR');
   });
 });
 
@@ -194,6 +214,18 @@ describe('createProcessInspector', () => {
       unreadable: [],
     });
     expect(run.mock.calls.every(([, args]) => !args.some((a) => /env|environ|-E/.test(a)))).toBe(true);
+  });
+
+  it('macOS: lsof that names no record for the pid (exit 1, nothing said — another uid) is unreadable, not 0 files', async () => {
+    const run = vi.fn(async (cmd: string, args: readonly string[]) => {
+      if (cmd === '/usr/sbin/lsof') return '';
+      if (args.includes('comm=')) return '/usr/bin/node\n';
+      if (args.includes('args=')) return 'node x.js\n';
+      if (args[0] === '-M') return 'USER PID\nz 4242\n';
+      return psLine();
+    });
+    const got = await createProcessInspector({ platform: 'darwin', run })?.(4242, START);
+    expect(got).toMatchObject({ fdCount: null, unreadable: ['files'], exe: '/usr/bin/node' });
   });
 
   it('refuses a reused pid — before the read (stale), after it (stale), or a pid gone (gone)', async () => {
@@ -247,8 +279,11 @@ describe('createProcessInspector', () => {
       '/proc/4242/fd/1': 'pipe:[9]',
       '/proc/4242/fd/3': 'socket:[5151]',
       '/proc/4242/fd/4': 'socket:[6000]',
+      '/proc/4242/fd/5': '/work/repo',
+      '/proc/4242/fd/6': '/tmp/fifo',
     };
     const fileReads: string[] = [];
+    const tableReads: Array<[string, number]> = [];
     const inspect = createProcessInspector({
       platform: 'linux',
       run: async () => psLine(),
@@ -261,7 +296,15 @@ describe('createProcessInspector', () => {
         if (p in links) return links[p];
         throw new Error('ENOENT');
       },
-      readDir: async () => ['0', '1', '3', '4'],
+      readDir: async () => ['0', '1', '3', '4', '5', '6'],
+      readFilePrefix: async (p, max) => {
+        tableReads.push([p, max]);
+        if (p in files) return files[p];
+        throw new Error('ENOENT');
+      },
+      // The type of a path-backed descriptor comes from its mode, not its name.
+      statType: async (p) =>
+        ({ '/proc/4242/fd/0': 'CHR', '/proc/4242/fd/5': 'DIR', '/proc/4242/fd/6': 'FIFO' })[p] ?? '?',
     });
     const got = await inspect?.(4242, START);
     expect(got).toMatchObject({
@@ -272,8 +315,8 @@ describe('createProcessInspector', () => {
       peakRssBytes: 1000 * 1024,
       contextSwitches: { voluntary: 5, involuntary: 6 },
       io: { readBytes: 10, writeBytes: 20 },
-      fdCount: 4,
-      fdByType: { CHR: 1, PIPE: 1, IPv4: 1, unix: 1 },
+      fdCount: 6,
+      fdByType: { CHR: 1, PIPE: 1, IPv4: 1, unix: 1, DIR: 1, FIFO: 1 },
       sockets: [
         { fd: '3', proto: 'TCP', local: '127.0.0.1:8080', remote: '', state: 'LISTEN' },
         { fd: '4', proto: 'unix', local: '/run/a.sock', remote: '', state: '' },
@@ -282,9 +325,25 @@ describe('createProcessInspector', () => {
     expect(got && got !== 'gone' && got !== 'stale' ? got.commandLine : '').toBe(
       `bash -c 'curl -H "Authorization: Bearer •••" https://x'`,
     );
+    expect(got && got !== 'gone' && got !== 'stale' ? got.files : []).toEqual([
+      { fd: '0', type: 'CHR', name: '/dev/null' },
+      { fd: '1', type: 'PIPE', name: 'pipe:[9]' },
+      { fd: '5', type: 'DIR', name: '/work/repo' },
+      { fd: '6', type: 'FIFO', name: '/tmp/fifo' },
+    ]);
     // The environment holds the session's credentials: never read.
     expect(fileReads.some((f) => /environ/.test(f))).toBe(false);
     expect(fileReads.length).toBeGreaterThan(0);
+    // Socket tables hold the whole namespace's sockets: read through a bounded prefix, never whole.
+    expect(fileReads.some((f) => f.includes('/net/'))).toBe(false);
+    expect(tableReads.map(([p]) => p)).toEqual([
+      '/proc/4242/net/tcp',
+      '/proc/4242/net/tcp6',
+      '/proc/4242/net/udp',
+      '/proc/4242/net/udp6',
+      '/proc/4242/net/unix',
+    ]);
+    expect(tableReads.every(([, max]) => max === 4 * 1024 * 1024)).toBe(true);
   });
 
   it('a pid gone before the first read (ps exits 1) is gone, not a failure; another ps failure still throws', async () => {
@@ -312,9 +371,12 @@ describe('createProcessInspector', () => {
       run: async () => psLine(),
       readFile: async (p) => {
         if (p.endsWith('/cmdline')) return 'node\0x.js\0';
-        if (p.includes('/net/')) throw new Error('EACCES');
         throw new Error('ENOENT');
       },
+      readFilePrefix: async () => {
+        throw new Error('EACCES');
+      },
+      statType: async () => 'CHR',
       // Descriptor 3 is a socket; 420 (beyond the scan) would have been a file.
       readLink: async (p) => {
         if (p.includes('/fd/')) fdReads.push(p);

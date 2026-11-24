@@ -334,14 +334,45 @@ export function parseProcIo(text: string): { readBytes: number; writeBytes: numb
   return r && w ? { readBytes: Number(r[1]), writeBytes: Number(w[1]) } : null;
 }
 
-/** A `/proc/<pid>/fd/<n>` link target → lsof's type word. */
-export function fdTypeOfLink(target: string): string {
+/**
+ * A `/proc/<pid>/fd/<n>` link target → lsof's type word; `null` for a path, whose type is its mode's (a directory, a
+ * FIFO, a device are paths too — see {@link statFdType}).
+ */
+export function fdTypeOfLink(target: string): string | null {
   if (target.startsWith('socket:')) return 'sock';
   if (target.startsWith('pipe:')) return 'PIPE';
   if (target.startsWith('anon_inode:')) return 'a_inode';
-  if (target.startsWith('/dev/')) return 'CHR';
-  if (target.startsWith('/')) return 'REG';
+  if (target.startsWith('/')) return null;
   return '?';
+}
+
+/** The type of what a path (or `/proc/<pid>/fd/<n>`, which `stat` follows) is open on, as lsof names it. */
+export async function statFdType(path: string): Promise<string> {
+  const st = await fs.stat(path);
+  if (st.isFile()) return 'REG';
+  if (st.isDirectory()) return 'DIR';
+  if (st.isCharacterDevice()) return 'CHR';
+  if (st.isBlockDevice()) return 'BLK';
+  if (st.isFIFO()) return 'FIFO';
+  if (st.isSocket()) return 'sock';
+  return '?';
+}
+
+/** At most `maxBytes` of a file, read through a handle: a large file is never loaded whole. */
+export async function readFilePrefix(path: string, maxBytes: number): Promise<string> {
+  const fh = await fs.open(path, 'r');
+  try {
+    const buf = Buffer.alloc(maxBytes);
+    let n = 0;
+    while (n < maxBytes) {
+      const { bytesRead } = await fh.read(buf, n, maxBytes - n, null);
+      if (bytesRead === 0) break;
+      n += bytesRead;
+    }
+    return buf.subarray(0, n).toString('utf8');
+  } finally {
+    await fh.close();
+  }
 }
 
 export interface InspectorDeps {
@@ -351,6 +382,10 @@ export interface InspectorDeps {
   readonly readFile?: (path: string) => Promise<string>;
   readonly readLink?: (path: string) => Promise<string>;
   readonly readDir?: (path: string) => Promise<string[]>;
+  /** A bounded read (the socket tables: a namespace's every socket). */
+  readonly readFilePrefix?: (path: string, maxBytes: number) => Promise<string>;
+  /** The type of what a path-backed descriptor is open on. */
+  readonly statType?: (path: string) => Promise<string>;
   /** The daemon's own uid and name (a ps `user` column on Linux truncates long names). */
   readonly self?: { readonly uid: number; readonly name: string };
 }
@@ -371,6 +406,8 @@ export function createProcessInspector(deps: InspectorDeps): InspectProcess | un
   const readFile = deps.readFile ?? ((p: string) => fs.readFile(p, 'utf8'));
   const readLink = deps.readLink ?? ((p: string) => fs.readlink(p));
   const readDir = deps.readDir ?? ((p: string) => fs.readdir(p));
+  const readPrefix = deps.readFilePrefix ?? readFilePrefix;
+  const statType = deps.statType ?? statFdType;
   const self = deps.self ?? selfUser();
   const linux = deps.platform === 'linux';
 
@@ -437,9 +474,10 @@ export function createProcessInspector(deps: InspectorDeps): InspectProcess | un
           if (links.some((l) => l.status === 'fulfilled' && l.value.startsWith('socket:'))) {
             // A table that cannot be read is said (`sockets`), and its sockets stay unknown — never guessed at.
             let tableFailed = false;
+            // A bounded read: at the bound, the last whole line.
             const table = (file: string) =>
-              readFile(`/proc/${pid}/net/${file}`).then(
-                (text) => (text.length > MAX_NET_TABLE ? text.slice(0, text.lastIndexOf('\n', MAX_NET_TABLE)) : text),
+              readPrefix(`/proc/${pid}/net/${file}`, MAX_NET_TABLE).then(
+                (text) => (text.length >= MAX_NET_TABLE ? text.slice(0, text.lastIndexOf('\n') + 1) : text),
                 () => {
                   tableFailed = true;
                   return '';
@@ -456,6 +494,17 @@ export function createProcessInspector(deps: InspectorDeps): InspectProcess | un
             unix = parseProcNetUnix(await table('unix'));
             if (tableFailed) unreadable.push('sockets');
           }
+          // A path-backed descriptor's type is its mode's: `stat` of the descriptor itself (what it is open on, even
+          // a deleted file). One that cannot be read is `?`, never guessed from the name.
+          const types = await Promise.all(
+            links.map((l, i) => {
+              if (l.status !== 'fulfilled') return Promise.resolve('?');
+              const byName = fdTypeOfLink(l.value);
+              return byName !== null
+                ? Promise.resolve(byName)
+                : statType(`/proc/${pid}/fd/${names[i]}`).catch(() => '?');
+            }),
+          );
           fds = emptyFds();
           fds.count = names.length;
           // A link that cannot be read (the descriptor closed in between, or it is not ours to read) is said.
@@ -464,7 +513,7 @@ export function createProcessInspector(deps: InspectorDeps): InspectProcess | un
           links.forEach((l, i) => {
             if (l.status !== 'fulfilled') return;
             const target = l.value;
-            const type = fdTypeOfLink(target);
+            const type = types[i];
             if (type === 'sock') {
               const inode = /^socket:\[(\d+)\]$/.exec(target)?.[1] ?? '';
               const s = inet.get(inode);
@@ -506,7 +555,11 @@ export function createProcessInspector(deps: InspectorDeps): InspectProcess | un
       await attempt(
         'files',
         async () => {
-          fds = parseLsofFds(await deps.run('/usr/sbin/lsof', ['-w', '-n', '-P', '-p', String(pid), '-F', 'ftnPT']));
+          const out = await deps.run('/usr/sbin/lsof', ['-w', '-n', '-P', '-p', String(pid), '-F', 'ftnPT']);
+          // lsof exits 1 and says nothing for a process it may not read (another uid): no record for the pid is an
+          // unread table, not a process with no files.
+          if (!new RegExp(`^p${pid}$`, 'm').test(out)) throw new Error('lsof: no record for the process');
+          fds = parseLsofFds(out);
           fdsRead = true;
         },
         undefined,

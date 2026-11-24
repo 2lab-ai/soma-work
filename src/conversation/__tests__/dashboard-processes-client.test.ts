@@ -665,6 +665,31 @@ describe('P7 — the detail: one process’s snapshot, read once', () => {
     }
   });
 
+  it('a slow answer for the process opened first never replaces the snapshot of the one opened after it', async () => {
+    const pending = new Map<string, (v: unknown) => void>();
+    const { e, el } = env(
+      (url) =>
+        new Promise((resolve) => {
+          pending.set(/\/processes\/(\d+)\//.exec(url)?.[1] ?? '', resolve);
+        }),
+    );
+    e.__get('_procs').key = 'C1:t1';
+    const b = { ...detail, pid: 3, exe: '/usr/bin/esbuild', takenAt: 2 };
+    e.procsOpenDetail(2, S);
+    e.procsOpenDetail(3, S);
+    pending.get('3')?.({ status: 200, json: async () => ({ ok: true, detail: b }) });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(el._html).toContain('/usr/bin/esbuild');
+    pending.get('2')?.({ status: 200, json: async () => ({ ok: true, detail }) });
+    await new Promise((r) => setTimeout(r, 0));
+    const shown = e.__get('_procDetail');
+    expect(shown.pid).toBe(3);
+    expect(shown.body.pid).toBe(3);
+    expect(shown.body.takenAt).toBe(2);
+    expect(el._html).toContain('/usr/bin/esbuild');
+    expect(el._html).not.toContain('/opt/homebrew/bin/node');
+  });
+
   it('while the tab polls the list every 3 s, the open snapshot is never read again nor repainted', async () => {
     vi.useFakeTimers();
     try {
