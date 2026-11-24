@@ -83,6 +83,24 @@ same snapshot, and work will be placed by each node's free CPU and memory.
    - Every word of a preview is a constant of that module or the program's (or script's) own name. The logger's token
      redaction runs over that name.
 
+7. **Where and what, by default; one process in depth, on purpose (2026-11-24).** Each sample also reads every
+   session process's working directory (Linux `/proc/<pid>/cwd`, macOS one `lsof -a -d cwd` for all pids), cached
+   15 seconds per (pid, start time). It travels with the command preview, under the same rule: the owner and admins
+   see it, everyone else gets `''`. The preview now names a multi-command tool's subcommand (`npm run build`,
+   `git status`, `gh pr view`): only for a fixed list of tools, only right after the program, only subcommand-shaped
+   words. A row of the tab opens the process in depth: `ProcessHost.inspect` checks the pid and its start time against
+   the session's tree, then reads the process once (ps fields, Linux `/proc` status, cmdline, fd links and net tables,
+   macOS `ps -M` and `lsof`), and checks the start time again after the reads. The answer is a snapshot: the route
+   (`GET …/processes/:pid/detail?start=`, owner and admins) never pushes it and the client never polls it. Its command
+   line is the full line with secret values masked (`command-mask.ts`: JSON spans, secret-named flags and variables,
+   HTTP credentials, URL passwords, known key shapes, long high-entropy runs). This is a deny-list, so a secret with no
+   shape after a flag whose name says nothing still shows. That is why the detail is the owner's and admins' only and
+   is read only on a click. The environment is never read.
+8. **The node on the card (2026-11-24).** A card with a live tree carries its node's load (`nodeCpuPercent`,
+   `nodeMemPercent`) next to its own usage. The face draws it as one badge in the head (`@2lab.ai/ui` 0.45.0
+   `card.node`): this card's CPU, the node's name, and the node's CPU and memory as two 10-step gauges. The head is the
+   part a one-line card keeps. A card is pushed again only when a gauge crosses a step.
+
 ## Consequences
 
 - One sample costs two `ps` runs (plus `vm_stat` on macOS) every 5 seconds, and only while a tracked root or a
@@ -91,11 +109,15 @@ same snapshot, and work will be placed by each node's free CPU and memory.
   process tab answers 409 here (open that instance's dashboard).
 - Placing work on worker nodes is not built. This ADR fixes the shape the placement will read.
 - Windows has no job-control signals: control answers `unsupported`. Sampling there is not supported.
+- The working directory costs one `lsof` (macOS) or one `readlink` per pid (Linux) every 15 seconds per process, and
+  nothing for the unattributed group. The detail read costs a handful of `ps`/`lsof` runs per click.
 
 ## Evidence
 
 - Code: `src/process-monitor/` (types, `ps-table.ts`, `tree-sampler.ts`, `node-capacity.ts`, `process-monitor.ts`,
-  `command-preview.ts`). The spawn owner is in `src/agent-runtime/claude-child-process-registry.ts`. The dashboard
+  `command-preview.ts`, `cwd-reader.ts`, `process-inspector.ts`, `command-mask.ts`). The spawn owner is in `src/agent-runtime/claude-child-process-registry.ts`. The dashboard
   side is `setDashboardProcessSource`, `procCardsToPush`, and the routes in `src/conversation/dashboard.ts`.
 - Tests: `src/process-monitor/__tests__/` include `process-monitor.real.test.ts`, which runs against the real `ps` and
   real signals on macOS and Linux. Route and client tests are `src/conversation/__tests__/dashboard-processes*.test.ts`.
+- Browser receipt: `scripts/screenshot-processes.ts` (real page, real routes, real monitor over a real tree). Research
+  behind the tree's design: [2026-11-24 process tree visualization](../misc/research/2026-11-24-process-tree-visualization.md).

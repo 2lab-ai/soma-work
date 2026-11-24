@@ -15,6 +15,43 @@ function machine(): FakePs {
 }
 
 describe('TreeSampler', () => {
+  it('reads each session process’s working directory, caches it for 15 s, never for the unattributed group', async () => {
+    const ps = machine();
+    let now = 1_000;
+    const calls: number[][] = [];
+    const readCwds = async (pids: readonly number[]) => {
+      calls.push([...pids].sort());
+      return new Map(pids.filter((p) => p !== 400).map((p) => [p, `/work/${p}`]));
+    };
+    const sampler = new TreeSampler(ps.run, () => now, undefined, readCwds);
+    const roots = [{ pid: 200, sessionKey: 'A' }, { pid: 250 }];
+    const first = await sampler.sample(roots, 'n1');
+    // 250 (no session) is never read; 400 did not answer: ''.
+    expect(calls).toEqual([[200, 300, 400]]);
+    expect(first.sessions[0].processes.map((p) => [p.pid, p.cwd])).toEqual([
+      [200, '/work/200'],
+      [300, '/work/300'],
+      [400, ''],
+    ]);
+    now += 5_000;
+    await sampler.sample(roots, 'n1');
+    expect(calls).toHaveLength(1);
+    now += 10_000;
+    await sampler.sample(roots, 'n1');
+    expect(calls).toHaveLength(2);
+    // A failing read leaves the column empty and the sample whole.
+    const broken = new TreeSampler(
+      ps.run,
+      () => 0,
+      undefined,
+      async () => {
+        throw new Error('lsof gone');
+      },
+    );
+    const out = await broken.sample(roots, 'n1');
+    expect(out.sessions[0].processes.every((p) => p.cwd === '')).toBe(true);
+  });
+
   it('does no ps work while nothing is tracked or remembered', async () => {
     const ps = machine();
     const sampler = new TreeSampler(ps.run, () => 0);

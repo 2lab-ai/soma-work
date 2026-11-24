@@ -210,8 +210,14 @@ import { VIEW_LAYOUT_CLIENT_JS } from './view-layout-client';
 import { CARD_FINISH_CLIENT_JS, CARD_FINISH_CSS } from './card-finish-client';
 import { type HostWait, hostWaitFor } from '../work-queue/host-wait';
 import type { WorkLogEntry } from './work-log';
-import type { ProcessControlInput } from '../process-monitor/process-monitor';
-import type { NodeProcessSnapshot, ProcessControlResult, SessionProcessUsage } from '../process-monitor/types';
+import type { ProcessControlInput, ProcessInspectInput } from '../process-monitor/process-monitor';
+import type {
+  NodeCapacity,
+  NodeProcessSnapshot,
+  ProcessControlResult,
+  ProcessInspectResult,
+  SessionProcessUsage,
+} from '../process-monitor/types';
 
 const logger = new Logger('Dashboard');
 
@@ -238,10 +244,15 @@ export function usageForViewer<T extends { byUser: unknown; tokenRankings: unkno
 // ── Types ──────────────────────────────────────────────────────────
 
 /**
- * A session's process tree in one line: `SessionProcessUsage` without the session key and the time, plus the node's
- * logical cores (`cpuCount` — 100% CPU is one of them).
+ * A session's process tree in one line: `SessionProcessUsage` without the session key and the time, plus the node it
+ * runs on — its logical cores (`cpuCount` — 100% CPU is one of them) and how loaded the whole node is, for the card's
+ * node badge: `nodeCpuPercent` (all cores, 0–100; `null` before a second sample) and `nodeMemPercent` (memory in use).
  */
-export type KanbanProcUsage = Omit<SessionProcessUsage, 'sessionKey' | 'sampledAt'> & { cpuCount: number };
+export type KanbanProcUsage = Omit<SessionProcessUsage, 'sessionKey' | 'sampledAt'> & {
+  cpuCount: number;
+  nodeCpuPercent: number | null;
+  nodeMemPercent: number | null;
+};
 
 export interface KanbanSession {
   key: string;
@@ -1279,6 +1290,7 @@ export interface DashboardProcessSource {
   latest(): NodeProcessSnapshot | null;
   fresh(maxAgeMs?: number): Promise<NodeProcessSnapshot>;
   control(input: ProcessControlInput): Promise<ProcessControlResult>;
+  inspect(input: ProcessInspectInput): Promise<ProcessInspectResult>;
   onSample(listener: (snapshot: NodeProcessSnapshot) => void): () => void;
 }
 let _processSource: DashboardProcessSource | null = null;
@@ -1287,11 +1299,37 @@ let _processUnsubscribe: (() => void) | null = null;
 const _procPushed = new Map<string, string>();
 
 /** What the card shows changes only at this grain: whole CPU percents, 10 MB of memory, the counts. */
-function procSignature(u: SessionProcessUsage): string {
+function procSignature(u: SessionProcessUsage, node?: NodeCapacity): string {
   // CPU in 5-point buckets (whole points under 10%): a busy tree's CPU moves every sample, and a push per sample per
-  // card to every viewer costs more than the chip's last few points are worth.
+  // card to every viewer costs more than the chip's last few points are worth. The node's load as the badge draws it:
+  // its 10-step gauges.
   const cpu = u.cpuPercent < 10 ? Math.round(u.cpuPercent) : 10 + Math.round((u.cpuPercent - 10) / 5);
-  return [cpu, Math.round(u.rssBytes / 10_000_000), u.processCount, u.stoppedCount, u.rootAlive].join('|');
+  const load = node ? nodeLoadOf(node) : null;
+  return [
+    cpu,
+    Math.round(u.rssBytes / 10_000_000),
+    u.processCount,
+    u.stoppedCount,
+    u.rootAlive,
+    gaugeStep(load?.cpu ?? null),
+    gaugeStep(load?.mem ?? null),
+  ].join('|');
+}
+
+/** A 0–100 value as the node badge's 10-step gauge fills it (0 → 0, anything above → at least 1). */
+export function gaugeStep(v: number | null): number {
+  if (v === null || !Number.isFinite(v) || v <= 0) return 0;
+  return Math.min(10, Math.max(1, Math.ceil(v / 10)));
+}
+
+/** The node's CPU (all cores) and memory in use, 0–100. */
+export function nodeLoadOf(node: NodeCapacity): { cpu: number | null; mem: number | null } {
+  const cpu = node.cpuBusyPercent === null ? null : Math.max(0, Math.min(100, Math.round(node.cpuBusyPercent)));
+  const mem =
+    node.totalMemBytes > 0
+      ? Math.max(0, Math.min(100, Math.round(((node.totalMemBytes - node.availableMemBytes) / node.totalMemBytes) * 100)))
+      : null;
+  return { cpu, mem };
 }
 
 /**
@@ -1318,12 +1356,15 @@ export function setDashboardProcessSource(
  * The cards a sample changes: a session whose chip reads differently now, and a session that had a chip and has no
  * process left. Updates `pushed` (sessionKey → the signature last pushed) in place.
  */
-export function procCardsToPush(pushed: Map<string, string>, snapshot: Pick<NodeProcessSnapshot, 'sessions'>): string[] {
+export function procCardsToPush(
+  pushed: Map<string, string>,
+  snapshot: Pick<NodeProcessSnapshot, 'sessions'> & Partial<Pick<NodeProcessSnapshot, 'node'>>,
+): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
   for (const s of snapshot.sessions) {
     seen.add(s.sessionKey);
-    const sig = procSignature(s);
+    const sig = procSignature(s, snapshot.node);
     if (pushed.get(s.sessionKey) === sig) continue;
     pushed.set(s.sessionKey, sig);
     out.push(s.sessionKey);
@@ -1340,10 +1381,13 @@ function procUsageField(key: string): { procUsage?: KanbanProcUsage } {
   const snapshot = _processSource?.latest();
   const u = snapshot?.sessions.find((x) => x.sessionKey === key);
   if (!snapshot || !u) return {};
+  const load = nodeLoadOf(snapshot.node);
   return {
     procUsage: {
       nodeId: u.nodeId,
       cpuCount: snapshot.node.cpuCount,
+      nodeCpuPercent: load.cpu,
+      nodeMemPercent: load.mem,
       rootAlive: u.rootAlive,
       processCount: u.processCount,
       stoppedCount: u.stoppedCount,
@@ -4893,11 +4937,55 @@ export async function registerDashboardRoutes(
         const ownerId = _getSessionsFn?.()?.get(originalKey)?.ownerId;
         const seesCommands = !!auth && (auth.isAdmin === true || (!!ownerId && auth.userId === ownerId));
         const session =
-          found && !seesCommands ? { ...found, processes: found.processes.map((p) => ({ ...p, command: '' })) } : found;
+          found && !seesCommands
+            ? { ...found, processes: found.processes.map((p) => ({ ...p, command: '', cwd: '' })) }
+            : found;
         reply.send({ node: snapshot.node, sampledAt: snapshot.sampledAt, session, commands: seesCommands });
       } catch (error) {
         logger.warn('Process sample failed', { error: error instanceof Error ? error.message : String(error) });
         reply.status(500).send({ error: 'Process sample failed' });
+      }
+    },
+  );
+
+  // One process in depth — the detail view a row opens (Process Explorer's Properties): image, full command line with
+  // secret values masked, working directory, user, times, priority, memory, threads, open files and sockets, its
+  // parents and children. A snapshot: read once per request, never pushed. Query: ?start=<the start time the tab
+  // showed>, so a reused pid is refused (409). The task's owner and admins only — the commands rule.
+  server.get<{ Params: { key: string; pid: string }; Querystring: { start?: unknown } }>(
+    '/api/dashboard/session/:key/processes/:pid/detail',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const originalKey = resolveSelfActionKey(request.params.key ?? '', reply);
+      if (originalKey === null) return;
+      const rawPid = request.params.pid ?? '';
+      const pid = /^[1-9]\d{0,9}$/.test(rawPid) ? Number(rawPid) : Number.NaN;
+      const startToken = request.query?.start;
+      if (!Number.isSafeInteger(pid) || typeof startToken !== 'string' || !startToken || startToken.length > 64) {
+        reply.status(400).send({ error: 'pid must be a process id and start the start time the tab showed' });
+        return;
+      }
+      const auth = (request as any).authContext;
+      const ownerId = _getSessionsFn?.()?.get(originalKey)?.ownerId;
+      if (!auth || (auth.isAdmin !== true && !(ownerId && auth.userId === ownerId))) {
+        reply.status(403).send({ error: 'Only the task owner and admins can open a process', code: 'forbidden' });
+        return;
+      }
+      if (!_processSource) {
+        reply.status(503).send({ error: 'Process monitor is not running', code: 'monitor_off' });
+        return;
+      }
+      try {
+        const result = await _processSource.inspect({ sessionKey: originalKey, pid, startToken });
+        if (result.ok) {
+          reply.send({ ok: true, detail: result.detail });
+          return;
+        }
+        const status = { 'not-found': 404, stale: 409, unsupported: 501 }[result.reason];
+        reply.status(status).send({ ok: false, code: result.reason });
+      } catch (error) {
+        logger.warn('Process inspect failed', { error: error instanceof Error ? error.message : String(error) });
+        reply.status(500).send({ error: 'Process inspect failed' });
       }
     },
   );
@@ -7656,19 +7744,74 @@ html[data-pdragging], html[data-pdragging] * { cursor: grabbing !important; user
 .pp-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-variant-numeric: tabular-nums; }
 .pp-table th { text-align: left; font-weight: 500; color: var(--text-tertiary); padding: 4px 6px; border-bottom: 1px solid var(--border); white-space: nowrap; }
 .pp-table td { padding: 4px 6px; border-bottom: 1px solid var(--border); vertical-align: middle; white-space: nowrap; }
-.pp-table th + th, .pp-table td + td { padding-left: 12px; }
-.pp-table th:nth-child(2) { width: 64px; }
-.pp-table th:nth-child(3) { width: 66px; }
-.pp-table th:nth-child(4) { width: 52px; }
-.pp-table th:nth-child(5) { width: 56px; }
-.pp-table th:nth-child(6) { width: 84px; }
+.pp-table th + th, .pp-table td + td { padding-left: 8px; }
+.pp-table th:nth-child(2) { width: 92px; }
+.pp-table th:nth-child(3) { width: 64px; }
+.pp-table th:nth-child(4) { width: 36px; }
+.pp-op { min-width: 28px; padding-inline: 6px; }
 .pp-num { text-align: right; white-space: nowrap; }
 .pp-name { overflow: hidden; text-overflow: ellipsis; }
-.pp-table tr.has-cmd td { border-bottom: 0; padding-bottom: 0; }
+.pp-table tr.pp-row:has(+ tr.pp-sub) td { border-bottom: 0; padding-bottom: 0; }
 .pp-table tr.pp-sub td { padding-top: 0; overflow: hidden; text-overflow: ellipsis; }
 .pp-role { margin-left: 6px; padding: 0 6px; border-radius: 999px; background: var(--border); color: var(--text-secondary); font-size: 11px; }
 .pp-cmd { color: var(--text-secondary); font-family: var(--mono, ui-monospace, monospace); font-size: 11px; }
 .pp-act { text-align: right; }
+/* The tree (htop's guides, btop's folds): each row's rails, its fold toggle, its name as the detail's opener. */
+.pp-guide { font-family: var(--mono, ui-monospace, monospace); color: var(--text-tertiary); white-space: pre; font-size: 12px; }
+.pp-fold, .pp-fold-sp { display: inline-grid; place-items: center; width: 18px; height: 18px; vertical-align: middle; }
+.pp-fold { margin: 0 2px 0 0; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text-secondary); font-size: 11px; cursor: pointer; }
+.pp-fold:focus-visible, .pp-open:focus-visible { outline: 2px solid var(--border-focus, var(--accent)); outline-offset: 1px; }
+.pp-open { padding: 0; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; text-align: left; }
+.pp-table tr.can-open { cursor: pointer; }
+@media (hover: hover) and (pointer: fine) {
+  .pp-fold:hover { background: var(--border); }
+  .pp-table tr.can-open:hover td { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+  .pp-open:hover { text-decoration: underline; }
+}
+.pp-hidden { margin-left: 6px; color: var(--text-tertiary); font-size: 11px; }
+.pp-cmdline { padding-left: 6px; }
+.pp-where { margin-right: 8px; padding: 0 5px; border-radius: 4px; background: var(--border); color: var(--text-secondary); font-family: var(--mono, ui-monospace, monospace); font-size: 11px; }
+.pp-legend { margin: 0 0 6px; color: var(--text-tertiary); font-size: 11.5px; }
+/* CPU: under 1% dim, 10%+ amber and bold, 100%+ (over one core) red with ▲ and the core count — never colour alone. */
+.pp-cpu, .pp-mem { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 2px 4px; min-width: 0; max-width: 100%; }
+.pp-bar { position: relative; flex: 0 0 100%; height: 3px; border-radius: 2px; background: var(--border); overflow: hidden; }
+.pp-bar > i { position: absolute; inset: 0 auto 0 0; border-radius: 3px; background: var(--text-tertiary); }
+.pp-cpu.is-idle .pp-v { color: var(--text-tertiary); }
+.pp-cpu.is-busy .pp-v, .pp-cpu-sum.is-busy, .pp-cpu-sum.is-hot { font-weight: 700; }
+.pp-cpu.is-busy .pp-v, .pp-cpu-sum.is-busy { color: color-mix(in srgb, var(--st-wait) calc(100% * var(--chroma, 1)), var(--text)); }
+.pp-cpu.is-busy .pp-bar > i { background: color-mix(in srgb, var(--st-wait) calc(100% * var(--chroma, 1)), var(--text-secondary)); }
+.pp-cpu.is-hot .pp-v, .pp-cpu-sum.is-hot { color: color-mix(in srgb, var(--st-fail) calc(100% * var(--chroma, 1)), var(--text)); font-weight: 800; }
+/* Hot: a striped meter (a pattern, so it reads in mono too). */
+.pp-cpu.is-hot .pp-bar > i { background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--st-fail) calc(100% * var(--chroma, 1)), var(--text)) 0 4px, transparent 4px 7px); }
+.pp-cores { padding: 0 4px; border-radius: 999px; background: color-mix(in srgb, var(--st-fail) calc(100% * var(--chroma, 1)), var(--text)); color: var(--surface); font-size: 10px; font-weight: 700; line-height: 1.4; }
+.pp-pid, .pp-st { margin-right: 8px; color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
+.pp-table tr.pp-row.is-hot td { background: color-mix(in srgb, var(--st-fail) calc(10% * var(--chroma, 1)), transparent); }
+.pp-table tr.pp-row.is-hot td:first-child { box-shadow: inset 3px 0 0 var(--st-fail); }
+@media (forced-colors: active) { .pp-bar > i { background: CanvasText; } .pp-cores { border: 1px solid CanvasText; } }
+/* The detail (a snapshot): sections of term · value, the command line in mono and wrapping. */
+.proc-detail-dialog .px-body { display: grid; gap: 14px; font-size: 13px; }
+.px-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.px-name { font-size: 15px; font-weight: 700; color: var(--ib-text, var(--text)); }
+.px-state { color: var(--text-secondary); }
+.px-sec { display: grid; gap: 6px; }
+.px-h { margin: 0; font-size: 12px; font-weight: 650; color: var(--text-tertiary); text-transform: none; }
+.px-dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 0; }
+.px-dl > div { display: contents; }
+.px-dl dt { color: var(--text-secondary); white-space: nowrap; }
+.px-dl dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.px-mono { font-family: var(--mono, ui-monospace, monospace); font-size: 12px; }
+code.px-mono { padding: 1px 4px; border-radius: 4px; background: var(--ib-pill, var(--border)); }
+.px-cmd { display: block; white-space: pre-wrap; word-break: break-all; max-height: 180px; overflow-y: auto; }
+.px-hint { margin: 4px 0 0; color: var(--text-tertiary); font-size: 11.5px; }
+.px-line { margin: 0; }
+.px-list { margin: 0; padding-left: 16px; display: grid; gap: 2px; }
+.px-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.px-table th { text-align: left; font-weight: 500; color: var(--text-tertiary); padding: 3px 6px; border-bottom: 1px solid var(--border); }
+.px-table td { padding: 3px 6px; border-bottom: 1px solid var(--border); }
+.px-path { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.px-chain { overflow-wrap: anywhere; }
+.px-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; width: 100%; }
+.px-when { margin-right: auto; color: var(--text-tertiary); font-size: 12px; }
 /* 세부 (re-agent-run D19): label left, value right. */
 /* 세부 and the token rows are the kit's fact list (.ui-dl, D3 E-10 — the disclosure itself stays: see D3-GAPS G6-2). */
 .pi-thread { font-variant-numeric: tabular-nums; }
@@ -8450,6 +8593,15 @@ ${CARD_FINISH_CSS}
         <div slot="footer" class="lc-actions">
           <button type="button" class="ui-btn" onclick="closeLifecycleDialog()">취소</button>
           <button type="submit" form="lifecycle-form" class="ui-btn is-primary lc-save" id="lifecycle-save">저장</button>
+        </div>
+      </ui-dialog>
+      <!-- A process in depth (the 프로세스 tab's row): a snapshot, read once when opened — see procsOpenDetail. -->
+      <ui-dialog id="proc-detail-dialog" class="proc-detail-dialog" heading="프로세스 상세" size="lg" lang="ko">
+        <div id="proc-detail-body" class="px-body"></div>
+        <div slot="footer" class="px-foot">
+          <span class="px-when" id="proc-detail-when"></span>
+          <button type="button" class="ui-btn" onclick="procDetailRetake()" title="지금 다시 읽어요 (자동으로는 새로 고치지 않아요)">다시 찍기</button>
+          <button type="button" class="ui-btn" onclick="closeProcDetail()">닫기</button>
         </div>
       </ui-dialog>
       <!-- llmux save mode (admin): the time to save until, 켜기 / 끄기. -->
@@ -16567,7 +16719,8 @@ var PROCS_POLL_MS = 3000;
 var PROCS_READ_TIMEOUT_MS = 10000;
 var PROCS_CONTROL_TIMEOUT_MS = 15000;
 // pending: the read in flight — its card's key and its AbortController; a read for another card retires it.
-var _procs = { key: '', status: 0, body: null, pending: null, again: false, busy: {}, timer: 0 };
+// collapsed: 'pid:start' → true for a parent the reader folded (its subtree reads as totals); kept across polls.
+var _procs = { key: '', status: 0, body: null, pending: null, again: false, busy: {}, timer: 0, collapsed: {} };
 var PROC_STATE_LABEL = { running: '실행', sleeping: '대기', stopped: '멈춤', zombie: '종료됨', other: '기타' };
 function renderPanelProcs() {
   var el = document.getElementById('panel-procs');
@@ -16575,9 +16728,26 @@ function renderPanelProcs() {
   if (!el._wired) {
     el._wired = true;
     el.addEventListener('click', function(e) {
-      var b = e.target && e.target.closest ? e.target.closest('[data-proc-op]') : null;
-      if (!b || b.disabled) return;
-      procsControl(b.getAttribute('data-proc-op'), Number(b.getAttribute('data-pid')), b.getAttribute('data-start') || '');
+      var t = e.target && e.target.closest ? e.target : null;
+      if (!t) return;
+      var b = t.closest('[data-proc-op]');
+      if (b) {
+        if (!b.disabled) procsControl(b.getAttribute('data-proc-op'), Number(b.getAttribute('data-pid')), b.getAttribute('data-start') || '');
+        return;
+      }
+      var f = t.closest('[data-proc-fold]');
+      if (f) {
+        var fk = f.getAttribute('data-proc-fold') + ':' + (f.getAttribute('data-start') || '');
+        if (_procs.collapsed[fk]) delete _procs.collapsed[fk];
+        else _procs.collapsed[fk] = true;
+        paintPanelProcs();
+        return;
+      }
+      // The name's button, or anywhere else on a row that opens (owner and admins): the process's snapshot.
+      var o = t.closest('[data-proc-open]') || t.closest('tr.can-open');
+      if (!o) return;
+      var pid = Number(o.getAttribute('data-proc-open') || o.getAttribute('data-proc-row'));
+      if (pid) procsOpenDetail(pid, o.getAttribute('data-start') || '');
     });
   }
   if (_panelMid !== 'procs' || !panelSessionKey) return;
@@ -16586,6 +16756,7 @@ function renderPanelProcs() {
     _procs.status = 0;
     _procs.body = null;
     _procs.busy = {};
+    _procs.collapsed = {};
   }
   paintPanelProcs();
   procsFetch(panelSessionKey);
@@ -16696,7 +16867,89 @@ function paintPanelProcs() {
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
   writePanelPart(el, s ? panelProcsHtml(_procs, viewerCanManage(s) && !isSiblingSession(s)) : '');
 }
-// Pure: the tab's content — the node line, the session's totals, one row per process in tree order.
+// Pure: how loud a CPU reading is — quiet under 1% of a core, busy from 10%, hot from 100% (more than one core).
+// Colour is never the only cue: busy is bold, hot also carries ▲ and the core count in words.
+function procCpuLevel(p) {
+  var v = Math.max(0, Number(p) || 0);
+  return v >= 100 ? 'hot' : v >= 10 ? 'busy' : v < 1 ? 'idle' : '';
+}
+// Pure: a CPU cell — a bar of one core (overflow striped past 100%), the number, and for a hot one ▲ and its cores.
+function procCpuCellHtml(p, total) {
+  var v = Math.max(0, Number(p) || 0);
+  var lv = procCpuLevel(v);
+  var w = Math.min(100, Math.round(v));
+  var cores = lv === 'hot' ? '<span class="pp-cores">' + (Math.round(v / 10) / 10) + '코어</span>' : '';
+  return '<span class="pp-cpu' + (lv ? ' is-' + lv : '') + '"><span class="pp-v">' + (lv === 'hot' ? '▲ ' : '') + (total ? 'Σ ' : '') + procCpuText(v) + '</span>' + cores
+    + '<span class="pp-bar" aria-hidden="true"><i style="width:' + w + '%"></i></span></span>';
+}
+// Pure: a memory cell — a bar against the tree's largest process, and the number.
+function procMemCellHtml(bytes, max, total) {
+  var b = Math.max(0, Number(bytes) || 0);
+  var w = max > 0 ? Math.max(b > 0 ? 2 : 0, Math.min(100, Math.round((b / max) * 100))) : 0;
+  return '<span class="pp-mem"><span class="pp-v">' + (total ? 'Σ ' : '') + procBytesText(b) + '</span><span class="pp-bar" aria-hidden="true"><i style="width:' + w + '%"></i></span></span>';
+}
+// Pure: a working directory as the row shows it — relative to the Claude Code process's folder when under it
+// ('.', './packages/x'), else its last two parts ('…/repo/src'); the full path is the title.
+function procCwdText(cwd, base) {
+  var c = String(cwd || '');
+  if (!c) return '';
+  var b = String(base || '');
+  if (b && c === b) return '.';
+  if (b && b !== '/' && c.indexOf(b + '/') === 0) return './' + c.slice(b.length + 1);
+  var parts = c.split('/').filter(function(x) { return x; });
+  return parts.length > 2 ? '…/' + parts.slice(-2).join('/') : c;
+}
+// Pure: the rows the table draws, in tree order — each with its tree guide (├ └ │ as htop draws them), whether it has
+// children, and, when folded, the processes it hides and their totals (btop's collapsed subtree).
+// collapsed: 'pid:start' → true.
+function procTreeRows(list, collapsed) {
+  var out = [];
+  var procs = list || [];
+  var fold = collapsed || {};
+  // last[i]: no later sibling — nothing at the same depth before the tree climbs above it.
+  var last = [];
+  for (var i = 0; i < procs.length; i++) {
+    var d = toNum(procs[i].depth);
+    var isLast = true;
+    for (var j = i + 1; j < procs.length; j++) {
+      var dj = toNum(procs[j].depth);
+      if (dj < d) break;
+      if (dj === d) { isLast = false; break; }
+    }
+    last.push(isLast);
+  }
+  var open = [];
+  for (var k = 0; k < procs.length; k++) {
+    var p = procs[k];
+    var depth = toNum(p.depth);
+    // Rails: for every ancestor level, │ while that ancestor still has a later sibling.
+    open.length = depth;
+    var guide = '';
+    for (var lv = 1; lv < depth; lv++) guide += open[lv] ? '│ ' : '  ';
+    if (depth > 0) guide += last[k] ? '└─' : '├─';
+    open[depth] = !last[k];
+    var end = k + 1;
+    while (end < procs.length && toNum(procs[end].depth) > depth) end++;
+    var kids = end - k - 1;
+    var folded = kids > 0 && !!fold[p.pid + ':' + (p.startToken || '')];
+    var row = { p: p, guide: guide, kids: kids, folded: folded };
+    if (folded) {
+      var cpu = 0;
+      var rss = 0;
+      for (var s = k; s < end; s++) {
+        cpu += Math.max(0, Number(procs[s].cpuPercent) || 0);
+        rss += Math.max(0, Number(procs[s].rssBytes) || 0);
+      }
+      row.sub = { count: kids, cpu: Math.round(cpu * 10) / 10, rss: rss };
+    }
+    out.push(row);
+    if (folded) k = end - 1;
+  }
+  return out;
+}
+// Pure: the tab's content — the node line, the session's totals, then the tree: one row per process with its guide,
+// CPU and memory bars (CPU ≥ 10% of a core busy, ≥ 100% hot), and under it where it works and what it runs. A row
+// opens the process's snapshot (owner and admins — the server checks again); a parent folds its subtree into totals.
 function panelProcsHtml(state, canControl) {
   var st = state || {};
   if (st.status === 409) return '<p class="pp-note">다른 soma-work 인스턴스의 작업이에요 — 프로세스는 그 인스턴스 대시보드에서 보세요.</p>';
@@ -16712,36 +16965,197 @@ function panelProcsHtml(state, canControl) {
   var html = '<div class="pp-node">' + nodeBits.join('<span class="pi-dot" aria-hidden="true">&middot;</span>') + '</div>';
   var sess = st.body.session;
   if (!sess || !sess.processes || !sess.processes.length) return html + '<p class="pp-note">지금 이 작업의 프로세스는 없어요 — 턴이 돌 때 Claude Code와 그 아래 프로세스가 여기 나와요.</p>';
-  var sum = ['프로세스 ' + toNum(sess.processCount) + '개', 'CPU ' + procCpuText(sess.cpuPercent), '메모리 ' + procBytesText(sess.rssBytes)];
+  var sum = ['프로세스 ' + toNum(sess.processCount) + '개', '<span class="pp-cpu-sum' + (procCpuLevel(sess.cpuPercent) ? ' is-' + procCpuLevel(sess.cpuPercent) : '') + '">CPU ' + procCpuText(sess.cpuPercent) + '</span>', '메모리 ' + procBytesText(sess.rssBytes)];
   if (toNum(sess.stoppedCount)) sum.push('<span class="pp-stopped">일시중지 ' + toNum(sess.stoppedCount) + '개</span>');
   if (!sess.rootAlive) sum.push('<span class="pi-muted">Claude Code는 끝났고 남은 프로세스</span>');
   html += '<div class="pp-sum">' + sum.join('<span class="pi-dot" aria-hidden="true">&middot;</span>') + '</div>';
-  html += '<div class="pp-wrap"><table class="pp-table"><thead><tr><th scope="col">프로세스</th><th scope="col" class="pp-num">PID</th><th scope="col">상태</th><th scope="col" class="pp-num">CPU</th><th scope="col" class="pp-num">메모리</th>'
+  var opens = st.body.commands === true;
+  html += '<p class="pp-legend">CPU 100% = 코어 1개 · <span class="pp-cpu is-busy"><span class="pp-v">10%+</span></span> 바쁨 · <span class="pp-cpu is-hot"><span class="pp-v">▲ 100%+</span></span> 코어 1개 넘김'
+    + (opens ? ' · 줄을 누르면 그 프로세스의 상세(스냅샷)' : '') + '</p>';
+  var procs = sess.processes;
+  var base = '';
+  var maxRss = 0;
+  for (var b = 0; b < procs.length; b++) {
+    if (!base && procs[b].role === 'root' && procs[b].cwd) base = String(procs[b].cwd);
+    maxRss = Math.max(maxRss, Math.max(0, Number(procs[b].rssBytes) || 0));
+  }
+  // Columns for a detail card's width: the tree, CPU, memory, the pause button; each row's PID, state, folder and
+  // command read on the line under it.
+  var cols = canControl ? 4 : 3;
+  html += '<div class="pp-wrap"><table class="pp-table' + (canControl ? ' can-control' : '') + '"><thead><tr><th scope="col">프로세스</th><th scope="col" class="pp-num">CPU</th><th scope="col" class="pp-num">메모리</th>'
     + (canControl ? '<th scope="col"><span class="ui-sr-only">동작</span></th>' : '') + '</tr></thead><tbody>';
-  for (var i = 0; i < sess.processes.length; i++) {
-    var p = sess.processes[i];
+  var rows = procTreeRows(procs, st.collapsed);
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i];
+    var p = r.p;
     var stopped = p.state === 'stopped';
+    var lvl = procCpuLevel(r.sub ? r.sub.cpu : p.cpuPercent);
     var role = p.role === 'root' ? '<span class="pp-role">Claude Code</span>' : p.role === 'orphan' ? '<span class="pp-role" title="부모가 끝나 운영체제가 다른 부모에게 넘긴 프로세스">떨어져 나옴</span>' : '';
-    var indent = Math.min(toNum(p.depth), 8) * 12;
-    var cls = 'pp-row' + (stopped ? ' is-stopped' : '') + (p.command ? ' has-cmd' : '');
-    html += '<tr class="' + cls + '"><td class="pp-name" style="padding-left:' + (6 + indent) + 'px">' + esc(p.name || '?') + role + '</td>'
-      + '<td class="pp-num">' + toNum(p.pid) + '</td>'
-      + '<td>' + esc(PROC_STATE_LABEL[p.state] || p.state || '') + '</td>'
-      + '<td class="pp-num">' + procCpuText(p.cpuPercent) + '</td>'
-      + '<td class="pp-num">' + procBytesText(p.rssBytes) + '</td>';
+    var start = escAttr(p.startToken || '');
+    var fold = r.kids > 0
+      ? '<button type="button" class="pp-fold" data-proc-fold="' + toNum(p.pid) + '" data-start="' + start + '" aria-expanded="' + (r.folded ? 'false' : 'true') + '" title="' + (r.folded ? '하위 프로세스 ' + r.kids + '개 펼치기' : '하위 프로세스 ' + r.kids + '개 접기') + '">' + (r.folded ? '▸' : '▾') + '</button>'
+      : '<span class="pp-fold-sp" aria-hidden="true"></span>';
+    var name = opens
+      ? '<button type="button" class="pp-open" data-proc-open="' + toNum(p.pid) + '" data-start="' + start + '" title="PID ' + toNum(p.pid) + ' 상세 보기 (스냅샷)">' + esc(p.name || '?') + '</button>'
+      : '<span class="pp-pname">' + esc(p.name || '?') + '</span>';
+    var hidden = r.folded ? '<span class="pp-hidden">+' + r.sub.count + '개</span>' : '';
+    var cls = 'pp-row' + (stopped ? ' is-stopped' : '') + (lvl ? ' is-' + lvl : '') + (opens ? ' can-open' : '');
+    html += '<tr class="' + cls + '" data-proc-row="' + toNum(p.pid) + '" data-start="' + start + '">'
+      + '<td class="pp-name"><span class="pp-guide" aria-hidden="true">' + r.guide + '</span>' + fold + name + role + hidden + '</td>'
+      + '<td class="pp-num">' + procCpuCellHtml(r.sub ? r.sub.cpu : p.cpuPercent, !!r.sub) + '</td>'
+      + '<td class="pp-num">' + procMemCellHtml(r.sub ? r.sub.rss : p.rssBytes, maxRss, !!r.sub) + '</td>';
     if (canControl) {
       var busy = st.busy && st.busy[p.pid];
       var op = stopped ? 'resume' : 'pause';
       var warn = p.role === 'root' && !stopped ? ' — 이 작업 전체가 멈춰요' : '';
-      html += '<td class="pp-act">' + (p.state === 'zombie' ? '' : '<button type="button" class="ui-btn is-sm" data-proc-op="' + op + '" data-pid="' + toNum(p.pid) + '" data-start="' + escAttr(p.startToken || '') + '"'
-        + (busy ? ' disabled' : '') + ' title="' + escAttr((stopped ? 'PID ' + p.pid + ' 재개' : 'PID ' + p.pid + ' 일시중지') + warn) + '">' + (stopped ? '재개' : '일시중지') + '</button>') + '</td>';
+      html += '<td class="pp-act">' + (p.state === 'zombie' ? '' : '<button type="button" class="ui-btn is-sm pp-op" data-proc-op="' + op + '" data-pid="' + toNum(p.pid) + '" data-start="' + start + '"'
+        + (busy ? ' disabled' : '') + ' title="' + escAttr((stopped ? 'PID ' + p.pid + ' 재개' : 'PID ' + p.pid + ' 일시중지') + warn) + '"><span aria-hidden="true">' + (stopped ? '▶' : '⏸') + '</span><span class="ui-sr-only">' + (stopped ? '재개' : '일시중지') + '</span></button>') + '</td>';
     }
     html += '</tr>';
-    // The command (a preview, secrets cut out server-side) under its row, the table's full width; the whole of it in
-    // the tooltip.
-    if (p.command) html += '<tr class="pp-sub' + (stopped ? ' is-stopped' : '') + '"><td colspan="' + (canControl ? 6 : 5) + '" class="pp-cmd" style="padding-left:' + (6 + indent) + 'px" title="' + escAttr(p.command) + '">' + esc(p.command) + '</td></tr>';
+    // Under the row: its PID and state, then where it works and what it runs (owner and admins; the server blanks
+    // both for anyone else).
+    var where = procCwdText(p.cwd, p.role === 'root' ? '' : base);
+    html += '<tr class="pp-sub' + (stopped ? ' is-stopped' : '') + '"><td colspan="' + cols + '" class="pp-cmdline"><span class="pp-guide" aria-hidden="true">' + r.guide.replace(/├─/g, '│ ').replace(/└─/g, '  ') + '</span>'
+      + '<span class="pp-pid">' + toNum(p.pid) + '</span><span class="pp-st">' + esc(PROC_STATE_LABEL[p.state] || p.state || '') + '</span>'
+      + (where ? '<span class="pp-where" title="' + escAttr('작업 폴더: ' + p.cwd) + '">' + esc(where) + '</span>' : '')
+      + (p.command ? '<span class="pp-cmd" title="' + escAttr(p.command) + '">' + esc(p.command) + '</span>' : '') + '</td></tr>';
   }
   return html + '</tbody></table></div>';
+}
+
+// ── A process in depth (the 프로세스 tab's row → Process Explorer's Properties) ──
+// Read once when the row is opened and never on a timer: what the reader sees is the moment they clicked (the
+// footer says when). 다시 찍기 reads again on purpose. Owner and admins only (GET …/processes/:pid/detail).
+var _procDetail = { key: '', pid: 0, start: '', status: 0, body: null, seq: 0 };
+function procsOpenDetail(pid, start) {
+  var key = _procs.key;
+  if (!key || !pid || !start) return;
+  var seq = _procDetail.seq + 1;
+  _procDetail = { key: key, pid: pid, start: start, status: 0, body: null, seq: seq };
+  paintProcDetail();
+  var dlg = document.getElementById('proc-detail-dialog');
+  if (dlg && typeof dlg.show === 'function' && !dlg.hasAttribute('open')) dlg.show();
+  var ctrl = new AbortController();
+  var timer = setTimeout(function() { ctrl.abort(); }, PROCS_CONTROL_TIMEOUT_MS);
+  fetch('/api/dashboard/session/' + encodeURIComponent(key) + '/processes/' + pid + '/detail?start=' + encodeURIComponent(start), { signal: ctrl.signal })
+    .then(function(r) {
+      return r.json().catch(function() { return null; }).then(function(j) { return { status: r.status, body: j }; });
+    }, function() { return { status: -1, body: null }; })
+    .then(function(res) {
+      clearTimeout(timer);
+      if (_procDetail.seq !== seq) return;
+      _procDetail.status = res.status;
+      _procDetail.body = res.status === 200 && res.body && res.body.detail ? res.body.detail : null;
+      _procDetail.code = res.body && res.body.code;
+      paintProcDetail();
+    });
+}
+function procDetailRetake() {
+  if (_procDetail.pid) procsOpenDetail(_procDetail.pid, _procDetail.start);
+}
+function closeProcDetail() {
+  var dlg = document.getElementById('proc-detail-dialog');
+  if (dlg && typeof dlg.hide === 'function') dlg.hide();
+}
+function paintProcDetail() {
+  var el = document.getElementById('proc-detail-body');
+  if (el) writePanelPart(el, procDetailHtml(_procDetail));
+  var when = document.getElementById('proc-detail-when');
+  if (when) setTextIfChanged(when, _procDetail.body ? '스냅샷 · ' + procClockText(_procDetail.body.takenAt, false) + ' 기준 — 자동으로 새로 고치지 않아요' : '');
+}
+// Pure: a moment as HH:MM:SS (withDate: YYYY-MM-DD HH:MM:SS), in the reader's time zone — the same in both languages.
+function procClockText(ms, withDate) {
+  var d = new Date(toNum(ms));
+  var two = function(n) { return (n < 10 ? '0' : '') + n; };
+  var time = two(d.getHours()) + ':' + two(d.getMinutes()) + ':' + two(d.getSeconds());
+  return withDate ? d.getFullYear() + '-' + two(d.getMonth() + 1) + '-' + two(d.getDate()) + ' ' + time : time;
+}
+// Pure: why a process could not be opened, in the reader's words.
+function procDetailFailText(status, code) {
+  if (status === -1) return '서버가 답하지 않았어요 — 다시 찍기로 다시 읽어요';
+  if (code === 'stale' || status === 409) return '그 사이 이 PID가 다른 프로세스가 됐어요 — 목록에서 다시 골라 주세요';
+  if (code === 'not-found' || status === 404) return '이 작업의 프로세스가 아니거나 이미 끝났어요';
+  if (code === 'unsupported' || status === 501) return '이 노드에서는 프로세스 상세를 읽을 수 없어요';
+  if (status === 503) return '이 노드에서 프로세스 모니터가 꺼져 있어요';
+  if (status === 403) return '작업 소유자와 관리자만 프로세스 상세를 볼 수 있어요';
+  return '서버 오류 (' + status + ')';
+}
+function procSecondsText(s) {
+  var v = Math.max(0, Number(s) || 0);
+  if (v < 60) return (Math.round(v * 10) / 10) + '초';
+  var m = Math.floor(v / 60);
+  if (m < 60) return m + '분 ' + Math.round(v - m * 60) + '초';
+  var h = Math.floor(m / 60);
+  if (h < 48) return h + '시간 ' + (m - h * 60) + '분';
+  return Math.floor(h / 24) + '일 ' + (h % 24) + '시간';
+}
+// Pure: the dialog's body for one snapshot (_procDetail).
+function procDetailHtml(state) {
+  var st = state || {};
+  if (!st.pid) return '';
+  if (!st.status) return '<p class="pp-note">PID ' + toNum(st.pid) + '의 상세를 읽는 중…</p>';
+  if (st.status !== 200 || !st.body) return '<p class="pp-note">' + esc(procDetailFailText(st.status, st.code)) + '</p>';
+  var d = st.body;
+  var dash = '<span class="pi-muted">—</span>';
+  var val = function(v) { return v === null || v === undefined || v === '' ? dash : esc(String(v)); };
+  var mono = function(v) { return v ? '<code class="px-mono">' + esc(String(v)) + '</code>' : dash; };
+  var section = function(title, rows) {
+    var body = rows.filter(function(r) { return r; }).map(function(r) { return '<div><dt>' + r[0] + '</dt><dd>' + r[1] + '</dd></div>'; }).join('');
+    return '<section class="px-sec"><h3 class="px-h">' + title + '</h3><dl class="ui-dl px-dl">' + body + '</dl></section>';
+  };
+  var lvl = procCpuLevel(d.cpuPercent);
+  var head = '<div class="px-head"><span class="px-name">' + esc(d.name || '?') + '</span>'
+    + (d.role === 'root' ? '<span class="pp-role">Claude Code</span>' : d.role === 'orphan' ? '<span class="pp-role">떨어져 나옴</span>' : '')
+    + '<span class="px-state">' + esc(PROC_STATE_LABEL[d.state] || d.state || '') + (d.stat ? ' (' + esc(d.stat) + ')' : '') + '</span>'
+    + '<span class="pp-cpu' + (lvl ? ' is-' + lvl : '') + '"><span class="pp-v">' + (lvl === 'hot' ? '▲ ' : '') + 'CPU ' + procCpuText(d.cpuPercent) + '</span></span></div>';
+  var chain = (d.ancestors || []).map(function(a) { return esc(a.name || '?') + ' <span class="pi-muted">' + toNum(a.pid) + '</span>'; });
+  chain.push('<b>' + esc(d.name || '?') + '</b> <span class="pi-muted">' + toNum(d.pid) + '</span>');
+  var startedAt = toNum(d.startedAt) ? procClockText(d.startedAt, true) : '';
+  var html = head;
+  html += section('이미지', [
+    ['실행 파일', mono(d.exe)],
+    ['명령줄', (d.commandLine ? '<code class="px-mono px-cmd">' + esc(d.commandLine) + '</code>' : dash)
+      + '<div class="px-hint">비밀 값(토큰 · 비밀번호 · 인증 헤더 · JSON 설정)은 •••로 가렸어요' + (d.argvExact ? '' : ' · ps가 인자를 공백으로 이어 붙인 줄이라 인자 경계는 보이지 않아요') + '</div>'],
+    ['작업 폴더', mono(d.cwd)],
+    ['사용자', val(d.user) + (d.uid !== null && d.uid !== undefined ? ' <span class="pi-muted">uid ' + toNum(d.uid) + '</span>' : '')],
+    ['시작', (startedAt ? esc(startedAt) : dash) + (d.elapsedSeconds !== null && d.elapsedSeconds !== undefined ? ' <span class="pi-muted">(' + procSecondsText(d.elapsedSeconds) + ' 전)</span>' : '')],
+    ['PID', toNum(d.pid) + ' <span class="pi-muted">부모 ' + toNum(d.ppid) + (d.pgid !== null && d.pgid !== undefined ? ' · 그룹 ' + toNum(d.pgid) : '') + '</span>'],
+    ['부모 체인', '<span class="px-chain">' + chain.join(' <span class="pi-muted">›</span> ') + '</span>'],
+    ['노드', val(d.nodeId)],
+  ]);
+  html += section('성능', [
+    ['CPU (지금)', procCpuCellHtml(d.cpuPercent, false) + ' <span class="pi-muted">100% = 코어 1개</span>'],
+    ['CPU 시간', d.cpuSeconds !== null && d.cpuSeconds !== undefined ? procSecondsText(d.cpuSeconds) : dash],
+    ['ps %CPU', d.psCpuPercent !== null && d.psCpuPercent !== undefined ? procCpuText(d.psCpuPercent) + ' <span class="pi-muted">(운영체제의 평균값)</span>' : dash],
+    ['우선순위', val(d.priority) + (d.nice !== null && d.nice !== undefined ? ' <span class="pi-muted">nice ' + d.nice + '</span>' : '')],
+    ['스레드', val(d.threads)],
+    ['메모리 (상주)', d.rssBytes !== null && d.rssBytes !== undefined ? procBytesText(d.rssBytes) + (d.memPercent !== null && d.memPercent !== undefined ? ' <span class="pi-muted">노드의 ' + d.memPercent + '%</span>' : '') : dash],
+    d.peakRssBytes ? ['메모리 (최대 상주)', procBytesText(d.peakRssBytes)] : null,
+    ['가상 메모리', d.vszBytes !== null && d.vszBytes !== undefined ? procBytesText(d.vszBytes) : dash],
+    d.contextSwitches ? ['문맥 전환', '자발 ' + toNum(d.contextSwitches.voluntary) + ' · 비자발 ' + toNum(d.contextSwitches.involuntary)] : null,
+    d.io ? ['디스크 I/O', '읽기 ' + procBytesText(d.io.readBytes) + ' · 쓰기 ' + procBytesText(d.io.writeBytes)] : null,
+  ]);
+  var sub = d.subtree || {};
+  var kids = (d.children || []).map(function(c) {
+    return '<li><span class="pp-pname">' + esc(c.name || '?') + '</span> <span class="pi-muted">' + toNum(c.pid) + '</span> ' + procCpuCellHtml(c.cpuPercent, false) + ' <span class="pi-muted">' + procBytesText(c.rssBytes) + '</span></li>';
+  }).join('');
+  html += '<section class="px-sec"><h3 class="px-h">하위 프로세스</h3><p class="px-line">이 프로세스와 그 아래 ' + toNum(sub.processCount) + '개 · CPU ' + procCpuText(sub.cpuPercent) + ' · 메모리 ' + procBytesText(sub.rssBytes) + '</p>'
+    + (kids ? '<ul class="px-list">' + kids + '</ul>' : '<p class="pp-note">직속 자식 프로세스 없음</p>') + '</section>';
+  var types = [];
+  var byType = d.fdByType || {};
+  for (var t in byType) if (Object.prototype.hasOwnProperty.call(byType, t)) types.push(esc(t) + ' ' + toNum(byType[t]));
+  var socks = (d.sockets || []).map(function(s) {
+    return '<tr><td class="pp-num">' + esc(s.fd) + '</td><td>' + esc(s.proto) + '</td><td class="px-mono">' + esc(s.local || '') + '</td><td class="px-mono">' + esc(s.remote || '') + '</td><td>' + esc(s.state || '') + '</td></tr>';
+  }).join('');
+  var files = (d.files || []).map(function(f) {
+    return '<tr><td class="pp-num">' + esc(f.fd) + '</td><td>' + esc(f.type) + '</td><td class="px-mono px-path" title="' + escAttr(f.name || '') + '">' + esc(f.name || '') + '</td></tr>';
+  }).join('');
+  html += '<section class="px-sec"><h3 class="px-h">열린 파일 · 소켓</h3><p class="px-line">' + (d.fdCount === null || d.fdCount === undefined ? '읽지 못했어요' : '디스크립터 ' + toNum(d.fdCount) + '개' + (types.length ? ' <span class="pi-muted">(' + types.join(' · ') + ')</span>' : '')) + '</p>'
+    + (socks ? '<div class="pp-wrap"><table class="px-table"><thead><tr><th scope="col" class="pp-num">FD</th><th scope="col">종류</th><th scope="col">로컬</th><th scope="col">상대</th><th scope="col">상태</th></tr></thead><tbody>' + socks + '</tbody></table></div>' + (d.socketsTruncated ? '<p class="px-hint">소켓이 더 있어요 — 앞의 ' + (d.sockets || []).length + '개만</p>' : '') : '')
+    + (files ? '<div class="pp-wrap"><table class="px-table"><thead><tr><th scope="col" class="pp-num">FD</th><th scope="col">종류</th><th scope="col">이름</th></tr></thead><tbody>' + files + '</tbody></table></div>' + (d.filesTruncated ? '<p class="px-hint">파일이 더 있어요 — 앞의 ' + (d.files || []).length + '개만</p>' : '') : '')
+    + '</section>';
+  if (d.unreadable && d.unreadable.length) html += '<p class="px-hint">운영체제가 주지 않은 항목: ' + d.unreadable.map(esc).join(', ') + '</p>';
+  return html;
 }
 
 // 세션 정보: a <ui-disclosure> (D4 K-06) whose row is the one-line summary (owner ·

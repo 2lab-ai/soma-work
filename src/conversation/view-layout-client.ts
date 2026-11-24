@@ -137,7 +137,33 @@ function faceOf(card, model, face, asks, effort, asked) {
   if (f.kind && !out.lead) out.lead = { glyph: 'task', title: '일반 작업' };
   var foot = faceFootMetrics(card, model, f.foot || [], effort, asked);
   if (foot.length) out.metrics = foot;
+  // Where the work runs (@2lab.ai/ui 0.45.0 card.node): one badge in the head, next to the owner — the node's name,
+  // its CPU and memory as two 10-step gauges, and this card's own CPU. In the head, so a one-line card keeps it.
+  var node = card && nodeBadgeOf(card.procUsage);
+  if (node) out.node = node;
   return out;
+}
+// A node's name as the badge shows it: the host part (no domain, no .local suffix), at most 12 characters.
+function nodeShortName(id) {
+  var s = String(id || '').split('.')[0] || String(id || '');
+  return s.length > 12 ? s.slice(0, 11) + '…' : s;
+}
+// The card's node badge (card.node) from its process usage: none while nothing of the task is alive.
+function nodeBadgeOf(u) {
+  if (!u || !(Number(u.processCount) > 0) || !u.nodeId) return null;
+  var pct = function(v) { return v === null || v === undefined || !isFinite(Number(v)) ? undefined : Math.max(0, Math.min(100, Number(v))); };
+  var b = { text: nodeShortName(u.nodeId) };
+  var cpu = pct(u.nodeCpuPercent);
+  var mem = pct(u.nodeMemPercent);
+  if (cpu !== undefined) b.cpu = cpu;
+  if (mem !== undefined) b.mem = mem;
+  b.load = Math.max(0, Number(u.cpuPercent) || 0);
+  var cores = Number(u.cpuCount) > 0 ? ' · 코어 ' + Number(u.cpuCount) + '개' : '';
+  b.title = '노드 ' + String(u.nodeId) + cores
+    + '\n노드 CPU ' + (cpu === undefined ? '—' : Math.round(cpu) + '%') + ' · 노드 메모리 ' + (mem === undefined ? '—' : Math.round(mem) + '%')
+    + '\n이 작업 CPU ' + procCpuText(u.cpuPercent) + ' (100% = 코어 1개) · 메모리 ' + procBytesText(u.rssBytes)
+    + (Number(u.stoppedCount) > 0 ? '\n일시중지 ' + Number(u.stoppedCount) + '개' : '');
+  return b;
 }
 function layoutTokens(n) {
   n = Math.max(0, Number(n) || 0);

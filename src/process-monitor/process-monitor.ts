@@ -1,6 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import type { TrackedClaudeRootInfo } from '../agent-runtime/claude-child-process-registry';
+import type { ReadCwds } from './cwd-reader';
 import { createNodeCapacityReader, type RunCommand } from './node-capacity';
+import type { InspectProcess } from './process-inspector';
 import { type ReadCpuSeconds, type RunPs, TreeSampler } from './tree-sampler';
 import type {
   NodeCapacity,
@@ -8,6 +10,8 @@ import type {
   NodeProcessSnapshot,
   ProcessControlAction,
   ProcessControlResult,
+  ProcessInspectResult,
+  ProcessRelative,
   ProcessSample,
   ProcessState,
   SessionProcessDetail,
@@ -38,6 +42,15 @@ export interface ProcessHost {
   /** A sample no older than `maxAgeMs` (takes one when the latest is older). */
   fresh(maxAgeMs?: number): Promise<NodeProcessSnapshot>;
   control(input: ProcessControlInput): Promise<ProcessControlResult>;
+  /** One process of a session's tree in depth (the detail view) — a snapshot, read once. */
+  inspect(input: ProcessInspectInput): Promise<ProcessInspectResult>;
+}
+
+export interface ProcessInspectInput {
+  readonly sessionKey: string;
+  readonly pid: number;
+  /** The start time the caller saw for this pid: a pid the OS has since reused is refused (`stale`). */
+  readonly startToken: string;
 }
 
 export interface ProcessControlInput {
@@ -55,6 +68,10 @@ export interface ProcessMonitorDeps {
   readonly runCommand?: RunCommand;
   /** Finer CPU time than ps `time` where the platform has it (Linux `/proc`). */
   readonly readCpuSeconds?: ReadCpuSeconds;
+  /** Each process's working directory (Linux `/proc/<pid>/cwd`, macOS `lsof`); none: the column stays empty. */
+  readonly readCwds?: ReadCwds;
+  /** Reads one process in depth for the detail view; none: `inspect` answers `unsupported`. */
+  readonly inspectProcess?: InspectProcess;
   /** Signal delivery; `process.kill` in production. */
   readonly kill?: (pid: number, signal: NodeJS.Signals) => void;
   readonly platform?: string;
@@ -151,7 +168,7 @@ export class LocalProcessMonitor implements ProcessHost {
   constructor(private readonly deps: ProcessMonitorDeps) {
     this.nodeId = deps.nodeId;
     this.now = deps.now ?? Date.now;
-    this.sampler = new TreeSampler(deps.runPs, this.now, deps.readCpuSeconds);
+    this.sampler = new TreeSampler(deps.runPs, this.now, deps.readCpuSeconds, deps.readCwds);
     this.platform = deps.platform ?? process.platform;
     this.kill = deps.kill ?? ((pid, signal) => process.kill(pid, signal));
     this.readCapacity =
@@ -349,6 +366,68 @@ export class LocalProcessMonitor implements ProcessHost {
       this.deps.logger?.warn('process sample after control failed', { error: String(err) });
     }
     return { ok: true, pid: input.pid, state };
+  }
+
+  /**
+   * One process of a session's tree in depth. The pid must be in the session's tree in a sample at most a second old
+   * and have started when the caller says; the inspector checks the start time again before and after its reads, so
+   * a pid the OS reused is never described as the process the reader clicked.
+   */
+  async inspect(input: ProcessInspectInput): Promise<ProcessInspectResult> {
+    const inspectProcess = this.deps.inspectProcess;
+    if (!inspectProcess) return { ok: false, reason: 'unsupported' };
+    const snapshot = await this.fresh(1_000);
+    const tree = snapshot.sessions.find((s) => s.sessionKey === input.sessionKey);
+    const proc = tree?.processes.find((p) => p.pid === input.pid);
+    if (!tree || !proc) return { ok: false, reason: 'not-found' };
+    if (proc.startToken !== input.startToken) return { ok: false, reason: 'stale' };
+    const read = await inspectProcess(input.pid, input.startToken);
+    if (read === 'gone') return { ok: false, reason: 'not-found' };
+    if (read === 'stale') return { ok: false, reason: 'stale' };
+
+    const relative = (p: ProcessSample): ProcessRelative => ({
+      pid: p.pid,
+      startToken: p.startToken,
+      name: p.name,
+      role: p.role,
+      state: p.state,
+      cpuPercent: p.cpuPercent,
+      rssBytes: p.rssBytes,
+    });
+    const byPid = new Map(tree.processes.map((p) => [p.pid, p]));
+    const ancestors: ProcessRelative[] = [];
+    const seen = new Set<number>([proc.pid]);
+    for (let up = byPid.get(proc.ppid); up && !seen.has(up.pid); up = byPid.get(up.ppid)) {
+      seen.add(up.pid);
+      ancestors.unshift(relative(up));
+    }
+    const children = tree.processes.filter((p) => p.ppid === proc.pid && p.pid !== proc.pid).map(relative);
+    // The subtree: tree order puts every descendant right after its process, deeper than it.
+    const at = tree.processes.indexOf(proc);
+    let end = at + 1;
+    while (end < tree.processes.length && tree.processes[end].depth > proc.depth) end++;
+    const under = tree.processes.slice(at, end);
+    return {
+      ok: true,
+      detail: {
+        ...read,
+        sessionKey: input.sessionKey,
+        nodeId: this.nodeId,
+        name: proc.name,
+        command: proc.command,
+        role: proc.role,
+        depth: proc.depth,
+        cpuPercent: proc.cpuPercent,
+        sampledAt: snapshot.sampledAt,
+        ancestors,
+        children,
+        subtree: {
+          processCount: under.length,
+          cpuPercent: Math.round(under.reduce((n, p) => n + p.cpuPercent, 0) * 10) / 10,
+          rssBytes: under.reduce((n, p) => n + p.rssBytes, 0),
+        },
+      },
+    };
   }
 
   /** An aborted turn must end: continue every process this monitor paused in that session. */

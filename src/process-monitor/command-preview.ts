@@ -91,6 +91,53 @@ export const SHOWN_FLAGS: ReadonlySet<string> = new Set<string>([...BARE_FLAGS, 
 const TAKES_VALUE: ReadonlySet<string> = new Set<string>(VALUE_FLAGS);
 
 const INTERPRETER = /^(node|bun|deno|python[0-9.]*|ruby|perl|sh|bash|zsh)$/;
+
+/**
+ * What a multi-command tool is doing: its subcommand words, right after the program and before any flag — `npm run
+ * build`, `git status`, `gh pr view`, `docker compose up`. Only these tools, only that position, only words shaped like a
+ * subcommand (lowercase, short), and the second word only after a first word that takes one. A value (a branch, a PR
+ * number, a path) never sits there.
+ */
+const SUBCOMMAND_DEPTH: Readonly<Record<string, number>> = {
+  npm: 2,
+  pnpm: 2,
+  yarn: 2,
+  bun: 2,
+  uv: 2,
+  gh: 2,
+  docker: 2,
+  npx: 1,
+  bunx: 1,
+  git: 1,
+  kubectl: 1,
+  cargo: 1,
+  go: 1,
+  make: 1,
+  pip: 1,
+  pip3: 1,
+  brew: 1,
+  deno: 1,
+  rustup: 1,
+  terraform: 1,
+};
+/** First words that take a second one (`npm run build`, `gh pr view`, `docker compose up`, `uv pip install`). */
+const TAKES_SUBCOMMAND = new Set([
+  'run',
+  'run-script',
+  'exec',
+  'x',
+  'dlx',
+  'pr',
+  'issue',
+  'repo',
+  'workflow',
+  'compose',
+  'pip',
+  'tool',
+]);
+const SUBCOMMAND_WORD = /^[a-z][a-z0-9:_-]{0,24}$/;
+/** `python -m <module>`: the module the interpreter runs. */
+const MODULE_NAME = /^[A-Za-z_][\w.]{0,40}$/;
 /** A script argument that is a file: path-like (a `/` or a script extension), with no quotes, spaces or brackets. */
 const SCRIPT_FILE = /^(?=[\w./@+-]+$)(?:.*\/.*|.*\.(?:js|mjs|cjs|ts|mts|py|rb|pl|sh|php|lua))$/;
 const LONG_TOKEN = /[A-Za-z0-9_\-+/=.]{32,}/g;
@@ -114,7 +161,9 @@ interface Walked {
 function walk(argv: readonly string[]): Walked {
   const exe = safeName(basename(argv[0]));
   const interpreter = INTERPRETER.test(basename(argv[0]));
+  const subDepth = SUBCOMMAND_DEPTH[basename(argv[0])] ?? 0;
   const rest: string[] = [];
+  const subcommands: string[] = [];
   let script: string | undefined;
   // A value was cut: from here on a word may be its spill, so none is taken as the script.
   let afterValue = false;
@@ -126,6 +175,29 @@ function walk(argv: readonly string[]): Walked {
       break;
     }
     shown++;
+    // A subcommand: right after the program (nothing else shown yet), a known tool, a subcommand-shaped word.
+    if (
+      subcommands.length < subDepth &&
+      rest.length === subcommands.length &&
+      SUBCOMMAND_WORD.test(arg) &&
+      (subcommands.length === 0 || TAKES_SUBCOMMAND.has(subcommands[0]))
+    ) {
+      subcommands.push(arg);
+      rest.push(arg);
+      continue;
+    }
+    // `python -m pytest`: the module, then nothing else is a script.
+    if (
+      /^python[0-9.]*$/.test(basename(argv[0])) &&
+      arg === '-m' &&
+      rest.length === 0 &&
+      MODULE_NAME.test(argv[i + 1] ?? '')
+    ) {
+      rest.push('-m', argv[i + 1]);
+      afterValue = true;
+      i++;
+      continue;
+    }
     const eq = arg.indexOf('=');
     const name = arg.startsWith('--') && eq > 0 ? arg.slice(0, eq) : arg;
     if (SHOWN_FLAGS.has(name)) {

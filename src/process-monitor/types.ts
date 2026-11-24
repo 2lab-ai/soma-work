@@ -8,6 +8,8 @@
  * scheduler read `node.capacity` and `sessions` without caring where they ran.
  */
 
+import type { ProcessInspection } from './process-inspector';
+
 /** Stable id of the node a snapshot was taken on (`SOMA_NODE_ID`, else the host name). */
 export type NodeId = string;
 
@@ -57,6 +59,8 @@ export interface ProcessSample {
   readonly name: string;
   /** Command line with secrets, long values and JSON blobs cut out — never the raw argv. */
   readonly command: string;
+  /** Its working directory (`''` when it could not be read). Owner and admins only on the dashboard, like `command`. */
+  readonly cwd: string;
 }
 
 /** Totals over one session's tree. */
@@ -86,6 +90,47 @@ export interface NodeProcessSnapshot {
   /** Claude Code processes the SDK spawned with no session (title, dispatch, voice one-shots) and their trees. */
   readonly unattributed: { readonly processCount: number; readonly cpuPercent: number; readonly rssBytes: number };
 }
+
+/** A process next to the one in a detail view (its parent chain, its children), as the tree sampled it. */
+export interface ProcessRelative {
+  readonly pid: number;
+  readonly startToken: string;
+  readonly name: string;
+  readonly role: ProcessSample['role'];
+  readonly state: ProcessState;
+  readonly cpuPercent: number;
+  readonly rssBytes: number;
+}
+
+/**
+ * One process in depth (the detail view): what the OS says of it ({@link ProcessInspection}) plus where it sits in its
+ * session's tree. A snapshot — read once, never refreshed on a timer.
+ */
+export interface ProcessDetailSnapshot extends ProcessInspection {
+  readonly sessionKey: string;
+  readonly nodeId: NodeId;
+  readonly name: string;
+  /** The table's allow-list preview of the command (the full line is `commandLine`). */
+  readonly command: string;
+  readonly role: ProcessSample['role'];
+  readonly depth: number;
+  /** CPU in the sample the tree was checked against (percent of one core). */
+  readonly cpuPercent: number;
+  readonly sampledAt: number;
+  /** From the session's Claude Code process down to this one's parent. */
+  readonly ancestors: readonly ProcessRelative[];
+  readonly children: readonly ProcessRelative[];
+  /** This process and everything under it. */
+  readonly subtree: { readonly processCount: number; readonly cpuPercent: number; readonly rssBytes: number };
+}
+
+export type ProcessInspectResult =
+  | { readonly ok: true; readonly detail: ProcessDetailSnapshot }
+  | {
+      readonly ok: false;
+      /** As {@link ProcessControlResult}: `not-found`, `stale` (reused pid), `unsupported` (no inspector on this node). */
+      readonly reason: 'not-found' | 'stale' | 'unsupported';
+    };
 
 export type ProcessControlAction = 'pause' | 'resume';
 

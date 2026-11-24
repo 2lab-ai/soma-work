@@ -41,10 +41,28 @@ describe('commandPreview — a known prefix of the command, never a value', () =
     expect(preview('/usr/local/bin/claude --model opus --verbose')).toBe('claude --model … --verbose');
     expect(preview('/usr/bin/node /app/dist/server.js --port 3000')).toBe('node server.js --port …');
     expect(preview('/usr/bin/git -C /work/repo status --short')).toBe('git …');
-    expect(preview('/usr/bin/git status /work/repo')).toBe('git …');
+    expect(preview('/usr/bin/git status /work/repo')).toBe('git status …');
     expect(preview('tool --level=debug -n5 -rf build')).toBe('tool …');
     expect(preview('env MODE=fast API_KEY=sk live 1 node x.js')).toBe('env …');
     expect(preview('node ./x.js {"k":"v"} "quoted words"')).toBe('node x.js …');
+  });
+
+  it('says what a multi-command tool is doing: its subcommand words right after the program, nothing after', () => {
+    expect(preview('npm run build')).toBe('npm run build');
+    expect(preview('/usr/local/bin/npm run test -- --watch')).toBe('npm run test …');
+    expect(preview('npm install lodash')).toBe('npm install …');
+    expect(preview('git checkout feature/s3cret-branch')).toBe('git checkout …');
+    expect(preview('gh pr view 1410 --json state')).toBe('gh pr view …');
+    expect(preview('gh api repos/o/r/pulls')).toBe('gh api …');
+    expect(preview('docker compose up -d')).toBe('docker compose up …');
+    expect(preview('npx tsc --noEmit')).toBe('npx tsc …');
+    expect(preview('python3 -m pytest -q tests/')).toBe('python3 -m pytest …');
+    // A flag first, or a word that does not look like a subcommand: nothing is shown.
+    expect(preview('git -C /work/repo status')).toBe('git …');
+    expect(preview('npm Hunter2Pass')).toBe('npm …');
+    expect(preview('npm run S3cret')).toBe('npm run …');
+    // Not a known tool: no subcommand at all.
+    expect(preview('mysql s3cretpass')).toBe('mysql …');
   });
 
   it("the SDK's own CLI line keeps its known flags and loses every value", () => {
@@ -89,7 +107,8 @@ describe('commandPreview — a known prefix of the command, never a value', () =
       '--',
       '{"k":1}',
     ];
-    const programs = ['node', '/usr/bin/python3', 'claude', 'jq', 'git'];
+    // Tools without subcommands (those are pinned by the test above): every word after the program is a known flag or ….
+    const programs = ['node', '/usr/bin/python3', 'claude', 'jq', 'rg'];
     let seed = 7;
     const next = (n: number) => {
       seed = (Math.imul(seed, 1103515245) + 12345) >>> 0; // 32-bit LCG, exact in integer arithmetic

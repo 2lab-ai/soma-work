@@ -6,6 +6,9 @@
  *   P2  the tab bar: 프로세스 right of 세부 with the process count; disabled while none lives
  *   P3  the tab: node line, totals, one row per process in tree order; pause · resume only for a manager
  *   P4  the page: the tab's panel exists and its content shows only while the tab is open
+ *   P6  the tree: htop guides, folds with subtree totals, CPU levels (≥10% busy, ≥100% hot), where · what per row
+ *   P7  the detail: a row opens one process's snapshot (read once, never polled) in a dialog
+ *   P8  the card's node badge (@2lab.ai/ui 0.45.0 card.node): node name, its CPU · memory gauges, this card's CPU
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -42,6 +45,18 @@ function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> 
   const body = `${VIEW_LAYOUT_CLIENT_JS}\n${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')}, procChipOf: procChipOf, faceFootMetrics: faceFootMetrics, ${setter}, ${getter} };`;
   return new Function(...names, body)(...names.map((n) => all[n])) as T;
 }
+/** The tab's renderer and the pure helpers it calls. */
+const TAB_FNS = [
+  'toNum',
+  'esc',
+  'escAttr',
+  'procCpuLevel',
+  'procCpuCellHtml',
+  'procMemCellHtml',
+  'procCwdText',
+  'procTreeRows',
+  'panelProcsHtml',
+];
 const PAGE = cook(TEMPLATE.slice(TEMPLATE.indexOf('<body'), TEMPLATE.indexOf('<script>', TEMPLATE.indexOf('<body'))));
 const CSS = cook(
   TEMPLATE.slice(TEMPLATE.indexOf('<style>'), TEMPLATE.indexOf('</style>', TEMPLATE.indexOf('<style>'))),
@@ -134,7 +149,7 @@ describe('P3 — the tab’s content', () => {
     load<{
       panelProcsHtml: (st: unknown, canControl: boolean) => string;
       procsFailText: (s: number, c?: string) => string;
-    }>(['toNum', 'esc', 'escAttr', 'panelProcsHtml', 'procsFailText'], ['PROC_STATE_LABEL']);
+    }>([...TAB_FNS, 'procsFailText'], ['PROC_STATE_LABEL']);
   const body = {
     node: { nodeId: 'n1', cpuCount: 12, cpuBusyPercent: 23, totalMemBytes: 64e9, availableMemBytes: 40e9 },
     session: {
@@ -194,9 +209,9 @@ describe('P3 — the tab’s content', () => {
     expect(html).toContain('이 작업 전체가 멈춰요');
     // A zombie has nothing to pause.
     expect(html).not.toContain('data-pid="400"');
-    // Tree order and indentation by depth.
+    // Tree order, each child under its parent with the tree's guide.
     expect(html.indexOf('>claude<')).toBeLessThan(html.indexOf('>bash<'));
-    expect(html).toContain('padding-left:30px');
+    expect(html).toContain('<span class="pp-guide" aria-hidden="true">└─</span>');
   });
 
   it('a reader sees the same table with no buttons', () => {
@@ -266,17 +281,7 @@ describe('P5 — executed: the tab polls while open and stops when closed; reads
     const el = { _wired: false, addEventListener: () => {} };
     const holder: { e?: Env } = {};
     const e = load<Env>(
-      [
-        'toNum',
-        'esc',
-        'escAttr',
-        'panelProcsHtml',
-        'procsFailText',
-        'paintPanelProcs',
-        'procsFetch',
-        'procsControl',
-        'renderPanelProcs',
-      ],
+      [...TAB_FNS, 'procsFailText', 'paintPanelProcs', 'procsFetch', 'procsControl', 'renderPanelProcs'],
       ['PROCS_POLL_MS', 'PROCS_READ_TIMEOUT_MS', 'PROCS_CONTROL_TIMEOUT_MS', '_procs', 'PROC_STATE_LABEL'],
       {
         document: { getElementById: () => el, hidden: false },
@@ -389,5 +394,358 @@ describe('P5 — executed: the tab polls while open and stops when closed; reads
     expect(e.__get('_procs').busy[300]).toBeUndefined();
     expect(toasts[toasts.length - 1]?.title).toBe('요청을 보내지 못했어요');
     expect(gets(calls)).toHaveLength(1);
+  });
+});
+
+describe('P6 — the tree: guides, folds, CPU levels, where · what', () => {
+  type Row = {
+    p: { pid: number };
+    guide: string;
+    kids: number;
+    folded: boolean;
+    sub?: { count: number; cpu: number; rss: number };
+  };
+  const env = () =>
+    load<{
+      procTreeRows: (l: unknown[], c?: Record<string, boolean>) => Row[];
+      procCpuLevel: (p: number) => string;
+      procCpuCellHtml: (p: number, total?: boolean) => string;
+      procCwdText: (c: string, b: string) => string;
+      panelProcsHtml: (st: unknown, canControl: boolean) => string;
+    }>(TAB_FNS, ['PROC_STATE_LABEL']);
+  const S = 'Mon Nov 23 10:00:00 2026';
+  const p = (pid: number, depth: number, extra: Record<string, unknown> = {}) => ({
+    pid,
+    depth,
+    role: depth === 0 ? 'root' : 'child',
+    state: 'sleeping',
+    cpuPercent: 0,
+    rssBytes: 1e6,
+    name: `p${pid}`,
+    command: '',
+    cwd: '',
+    startToken: S,
+    ...extra,
+  });
+  // claude 1 ─┬ bash 2 ─┬ node 3
+  //           │         └ node 4
+  //           └ tsc 5
+  const tree = [p(1, 0), p(2, 1), p(3, 2), p(4, 2), p(5, 1)];
+
+  it('draws htop’s guides: ├─ for a child with a later sibling, └─ for the last, │ for an open rail above', () => {
+    expect(
+      env()
+        .procTreeRows(tree)
+        .map((r) => [r.p.pid, r.guide, r.kids]),
+    ).toEqual([
+      [1, '', 4],
+      [2, '├─', 2],
+      [3, '│ ├─', 0],
+      [4, '│ └─', 0],
+      [5, '└─', 0],
+    ]);
+  });
+
+  it('a folded parent hides its subtree and carries its totals (itself included)', () => {
+    const rows = env().procTreeRows(
+      [
+        p(1, 0),
+        p(2, 1, { cpuPercent: 5, rssBytes: 1e6 }),
+        p(3, 2, { cpuPercent: 120, rssBytes: 2e9 }),
+        p(4, 2),
+        p(5, 1),
+      ],
+      { [`2:${S}`]: true },
+    );
+    expect(rows.map((r) => r.p.pid)).toEqual([1, 2, 5]);
+    expect(rows[1]).toMatchObject({ folded: true, kids: 2, sub: { count: 2, cpu: 125, rss: 1e6 + 2e9 + 1e6 } });
+  });
+
+  it('CPU levels: under 1% idle, 10% busy, 100% hot — hot says ▲ and its cores in words, not by colour only', () => {
+    const e = env();
+    expect([0, 0.5, 1, 9.9, 10, 99, 100, 250].map(e.procCpuLevel)).toEqual([
+      'idle',
+      'idle',
+      '',
+      '',
+      'busy',
+      'busy',
+      'hot',
+      'hot',
+    ]);
+    const hot = e.procCpuCellHtml(113);
+    expect(hot).toContain('is-hot');
+    expect(hot).toContain('▲ 113%');
+    expect(hot).toContain('1.1코어');
+    expect(hot).toContain('width:100%');
+    expect(e.procCpuCellHtml(42)).toContain('is-busy');
+    expect(e.procCpuCellHtml(42)).toContain('width:42%');
+    expect(e.procCpuCellHtml(42)).not.toContain('▲');
+    expect(e.procCpuCellHtml(125, true)).toContain('Σ 125%');
+  });
+
+  it('a working directory reads relative to the Claude Code process’s folder, else by its last two parts', () => {
+    const e = env();
+    expect(e.procCwdText('/work/repo', '/work/repo')).toBe('.');
+    expect(e.procCwdText('/work/repo/packages/ui', '/work/repo')).toBe('./packages/ui');
+    expect(e.procCwdText('/Users/z/other/place/deep', '/work/repo')).toBe('…/place/deep');
+    expect(e.procCwdText('/tmp', '/work/repo')).toBe('/tmp');
+    expect(e.procCwdText('', '/work/repo')).toBe('');
+  });
+
+  it('the table: where and what under each row (owner view), the hot row marked, rows open the snapshot', () => {
+    const body = {
+      node: { nodeId: 'n1' },
+      commands: true,
+      session: {
+        processCount: 3,
+        cpuPercent: 160,
+        rssBytes: 4e9,
+        rootAlive: true,
+        processes: [
+          p(1, 0, { name: 'claude', cwd: '/work/repo', command: 'claude --model …', cpuPercent: 40 }),
+          p(2, 1, {
+            name: 'node tsc',
+            cwd: '/work/repo/packages/a',
+            command: 'npx tsc …',
+            cpuPercent: 113,
+            rssBytes: 3e9,
+          }),
+          p(3, 1, { name: 'git', cwd: '/work/repo', command: 'git status …' }),
+        ],
+      },
+    };
+    const html = env().panelProcsHtml({ status: 200, body, busy: {}, collapsed: {} }, true);
+    expect(html).toContain('<span class="pp-cpu-sum is-hot">CPU 160%</span>');
+    expect(html).toMatch(/<tr class="pp-row is-hot can-open" data-proc-row="2"/);
+    expect(html).toContain('title="작업 폴더: /work/repo/packages/a">./packages/a</span>');
+    expect(html).toContain('<span class="pp-cmd" title="npx tsc …">npx tsc …</span>');
+    expect(html).toContain(`data-proc-open="2" data-start="${S}"`);
+    // The root's own folder is shown by its last two parts (its children read relative to it).
+    expect(html).toContain('title="작업 폴더: /work/repo">/work/repo</span>');
+    // A fold toggle on the parent, with its count.
+    expect(html).toContain('data-proc-fold="1"');
+    expect(html).toContain('하위 프로세스 2개 접기');
+    // A reader who does not see commands: no opener, no where · what rows (the server blanked them).
+    const reader = env().panelProcsHtml(
+      {
+        status: 200,
+        body: {
+          ...body,
+          commands: false,
+          session: { ...body.session, processes: body.session.processes.map((x) => ({ ...x, cwd: '', command: '' })) },
+        },
+        busy: {},
+      },
+      false,
+    );
+    expect(reader).not.toContain('data-proc-open');
+    expect(reader).not.toContain('can-open');
+    expect(reader).not.toContain('pp-where');
+    expect(reader).not.toContain('class="pp-cmd"');
+    // Its PID and state still read under the row.
+    expect(reader).toContain('<span class="pp-pid">2</span><span class="pp-st">대기</span>');
+  });
+
+  it('the CSS colours busy amber and hot red, and gives hot rows a tint and a rail', () => {
+    expect(CSS).toContain('.pp-cpu.is-busy .pp-v, .pp-cpu-sum.is-busy { color: color-mix(in srgb, var(--st-wait)');
+    expect(CSS).toContain('.pp-cpu.is-hot .pp-v, .pp-cpu-sum.is-hot { color: color-mix(in srgb, var(--st-fail)');
+    expect(CSS).toContain('.pp-table tr.pp-row.is-hot td { background:');
+  });
+});
+
+describe('P7 — the detail: one process’s snapshot, read once', () => {
+  type Env = {
+    procsOpenDetail(pid: number, start: string): void;
+    procDetailHtml(st: unknown): string;
+    procDetailFailText(s: number, c?: string): string;
+    __get(n: string): any;
+  };
+  const S = 'Mon Nov 23 10:00:00 2026';
+  const detail = {
+    pid: 2,
+    ppid: 1,
+    pgid: 1,
+    name: 'node tsc',
+    role: 'child',
+    state: 'running',
+    stat: 'R+',
+    cpuPercent: 113,
+    exe: '/opt/homebrew/bin/node',
+    commandLine: 'node /work/repo/node_modules/.bin/tsc --token ••• -p tsconfig.json',
+    argvExact: false,
+    cwd: '/work/repo',
+    user: 'z',
+    uid: 501,
+    startedAt: new Date(2026, 10, 23, 10, 0, 0).getTime(),
+    elapsedSeconds: 125,
+    cpuSeconds: 61.5,
+    psCpuPercent: 98,
+    priority: 31,
+    nice: 0,
+    threads: 7,
+    rssBytes: 3e9,
+    memPercent: 4.5,
+    vszBytes: 4e11,
+    peakRssBytes: null,
+    contextSwitches: null,
+    io: null,
+    fdCount: 14,
+    fdByType: { REG: 3, IPv4: 1 },
+    files: [{ fd: '5', type: 'REG', name: '/work/repo/tsconfig.json' }],
+    filesTruncated: false,
+    sockets: [{ fd: '12', proto: 'TCP', local: '*:8764', remote: '', state: 'LISTEN' }],
+    socketsTruncated: false,
+    ancestors: [{ pid: 1, name: 'claude' }],
+    children: [{ pid: 3, name: 'esbuild', cpuPercent: 12, rssBytes: 5e7 }],
+    subtree: { processCount: 2, cpuPercent: 125, rssBytes: 3.05e9 },
+    takenAt: 1,
+    nodeId: 'n1',
+    unreadable: ['threads'],
+  };
+
+  function env(answer: (url: string) => Promise<unknown>) {
+    const calls: string[] = [];
+    const dlg = {
+      shown: 0,
+      hasAttribute: () => false,
+      show() {
+        this.shown++;
+      },
+    };
+    const el = { _html: '' };
+    const e = load<Env>(
+      [
+        ...TAB_FNS,
+        'procSecondsText',
+        'procClockText',
+        'procDetailFailText',
+        'procDetailHtml',
+        'paintProcDetail',
+        'procsOpenDetail',
+      ],
+      ['PROC_STATE_LABEL', 'PROCS_CONTROL_TIMEOUT_MS', '_procs', '_procDetail'],
+      {
+        document: {
+          getElementById: (id: string) => (id === 'proc-detail-dialog' ? dlg : id === 'proc-detail-body' ? el : null),
+        },
+        fetch: (url: string) => {
+          calls.push(url);
+          return answer(url);
+        },
+        writePanelPart: (target: { _html: string }, html: string) => {
+          target._html = html;
+        },
+        setTextIfChanged: () => {},
+      },
+    );
+    return { e, calls, dlg, el };
+  }
+
+  it('a row’s open reads the process once, with its start time, and paints the dialog — no timer re-reads it', async () => {
+    vi.useFakeTimers();
+    try {
+      const { e, calls, dlg, el } = env(() =>
+        Promise.resolve({ status: 200, json: async () => ({ ok: true, detail }) }),
+      );
+      e.__get('_procs').key = 'C1:t1';
+      e.procsOpenDetail(2, S);
+      expect(dlg.shown).toBe(1);
+      expect(el._html).toContain('읽는 중');
+      await vi.runAllTimersAsync();
+      expect(calls).toEqual([
+        `/api/dashboard/session/${encodeURIComponent('C1:t1')}/processes/2/detail?start=${encodeURIComponent(S)}`,
+      ]);
+      expect(el._html).toContain('/opt/homebrew/bin/node');
+      // Nothing polls the snapshot.
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(calls).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('the body: image, performance, subtree, files and sockets — the masked command line and its hint', () => {
+    const { e } = env(() => new Promise(() => {}));
+    const html = e.procDetailHtml({ pid: 2, status: 200, body: detail });
+    for (const want of [
+      '실행 파일',
+      '<code class="px-mono">/opt/homebrew/bin/node</code>',
+      '--token ••• -p tsconfig.json',
+      '비밀 값(토큰 · 비밀번호 · 인증 헤더 · JSON 설정)은 •••로 가렸어요',
+      '인자 경계는 보이지 않아요',
+      '<code class="px-mono">/work/repo</code>',
+      'uid 501',
+      '2026-11-23 10:00:00',
+      '2분 5초 전',
+      '부모 1',
+      'claude <span class="pi-muted">1</span>',
+      '▲ CPU 113%',
+      '1분 2초',
+      '스레드',
+      '3.0GB',
+      '이 프로세스와 그 아래 2개 · CPU 125%',
+      'esbuild',
+      '디스크립터 14개',
+      'REG 3 · IPv4 1',
+      '*:8764',
+      'LISTEN',
+      '/work/repo/tsconfig.json',
+      '운영체제가 주지 않은 항목: threads',
+    ]) {
+      expect(html, want).toContain(want);
+    }
+  });
+
+  it('a refusal reads in the reader’s words; nothing open draws nothing', () => {
+    const { e } = env(() => new Promise(() => {}));
+    expect(e.procDetailHtml({ pid: 0 })).toBe('');
+    expect(e.procDetailHtml({ pid: 2, status: 0 })).toContain('읽는 중');
+    expect(e.procDetailHtml({ pid: 2, status: 409, code: 'stale' })).toContain('다른 프로세스가 됐어요');
+    expect(e.procDetailFailText(403)).toContain('작업 소유자와 관리자만');
+    expect(e.procDetailFailText(404, 'not-found')).toContain('이미 끝났어요');
+    expect(e.procDetailFailText(501, 'unsupported')).toContain('읽을 수 없어요');
+    expect(e.procDetailFailText(-1)).toContain('답하지 않았어요');
+  });
+
+  it('the page has the dialog, its footer says it is a snapshot, and 다시 찍기 reads again on purpose', () => {
+    expect(PAGE).toContain(
+      '<ui-dialog id="proc-detail-dialog" class="proc-detail-dialog" heading="프로세스 상세" size="lg" lang="ko">',
+    );
+    expect(PAGE).toContain('onclick="procDetailRetake()"');
+    expect(clientFn('paintProcDetail')).toContain('기준 — 자동으로 새로 고치지 않아요');
+    expect(clientFn('renderPanelProcs')).toContain("t.closest('[data-proc-open]') || t.closest('tr.can-open')");
+  });
+});
+
+describe('P8 — the card’s node badge (card.node)', () => {
+  type Node = { text: string; title: string; cpu?: number; mem?: number; load?: number } | null;
+  const u = (over: Record<string, unknown> = {}) =>
+    usage({ nodeId: 'build-box.local', nodeCpuPercent: 72, nodeMemPercent: 41, cpuPercent: 113, ...over });
+
+  it('names the node and carries its CPU and memory (the 10-step gauges) and this card’s own CPU', () => {
+    // The shared layout script alone (the face is built from it on the board and in the settings preview).
+    const src = `${VIEW_LAYOUT_CLIENT_JS}\nreturn { nodeBadgeOf: nodeBadgeOf, faceOf: faceOf };`;
+    const fns = new Function('VIEW_BUILTINS', src)(BUILTIN_PRESETS) as {
+      nodeBadgeOf: (u: unknown) => Node;
+      faceOf: (...a: unknown[]) => Record<string, unknown>;
+    };
+    const b = fns.nodeBadgeOf(u()) as NonNullable<Node>;
+    expect(b).toMatchObject({ text: 'build-box', cpu: 72, mem: 41, load: 113 });
+    expect(b.title).toContain('노드 build-box.local · 코어 12개');
+    expect(b.title).toContain('노드 CPU 72% · 노드 메모리 41%');
+    expect(b.title).toContain('이 작업 CPU 113% (100% = 코어 1개)');
+    // Before the node's second sample there is no CPU reading: no gauge value, the title says so.
+    const early = fns.nodeBadgeOf(u({ nodeCpuPercent: null })) as NonNullable<Node>;
+    expect(early.cpu).toBeUndefined();
+    expect(early.title).toContain('노드 CPU —');
+    expect(fns.nodeBadgeOf(u({ nodeId: 'a-very-long-node-name' }))?.text).toBe('a-very-long…');
+    expect(fns.nodeBadgeOf(undefined)).toBeNull();
+    expect(fns.nodeBadgeOf(u({ processCount: 0 }))).toBeNull();
+    // On every face (one-line cards too: the element draws it in the head); none without a live process.
+    expect(fns.faceOf({ title: 'x', procUsage: u() }, '', { rows: [], foot: [] }).node).toMatchObject({
+      text: 'build-box',
+    });
+    expect(fns.faceOf({ title: 'x' }, '', { rows: [], foot: [] }).node).toBeUndefined();
   });
 });
