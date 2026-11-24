@@ -89,6 +89,8 @@ export interface ProcessMonitorDeps {
    * OS reused since the last sample is never signalled. Synchronous: it runs on exit paths.
    */
   readonly liveStartToken?: (pid: number) => string | null | undefined;
+  /** Several live start times in one read (the CPU cap's release and shutdown); default: one `ps`. */
+  readonly liveStartTokens?: (pids: readonly number[]) => Map<number, string | null> | undefined;
   readonly logger?: { info(msg: string, meta?: unknown): void; warn(msg: string, meta?: unknown): void };
 }
 
@@ -122,6 +124,34 @@ export function psLiveStartToken(pid: number, run: RunPsSync = runPsSync): strin
     const silent = String(e.stdout ?? '').trim() === '' && String(e.stderr ?? '').trim() === '';
     return e.status === 1 && silent ? null : undefined;
   }
+}
+
+/**
+ * Live start times of several pids in one `ps -o pid=,lstart= -p …` (the CPU cap's identity check on release and
+ * shutdown): pid → its token, `null` for a pid that is gone. `undefined` when ps itself failed (unknown for all).
+ */
+export function psLiveStartTokens(
+  pids: readonly number[],
+  run: RunPsSync = runPsSync,
+): Map<number, string | null> | undefined {
+  const out = new Map<number, string | null>(pids.map((pid) => [pid, null]));
+  if (pids.length === 0) return out;
+  let text: string;
+  try {
+    text = run(['-o', 'pid=,lstart=', '-p', pids.join(',')]);
+  } catch (err) {
+    const e = err as { status?: unknown; stdout?: unknown; stderr?: unknown };
+    // ps exits 1, silently, when one of the pids is gone; the others still print.
+    if (e.status !== 1 || String(e.stderr ?? '').trim() !== '') return undefined;
+    text = String(e.stdout ?? '');
+  }
+  for (const line of text.split('\n')) {
+    const t = line.trim().split(/\s+/);
+    if (t.length < 6 || !/^\d+$/.test(t[0])) continue;
+    const pid = Number(t[0]);
+    if (out.has(pid)) out.set(pid, t.slice(1, 6).join(' '));
+  }
+  return out;
 }
 
 /** One process this monitor paused: its start time and the turn whose tree held it. */
@@ -196,7 +226,7 @@ export class LocalProcessMonitor implements ProcessHost {
       kill: this.kill,
       read: deps.readThrottle ?? createThrottleReader(deps.runPs, deps.readCpuSeconds),
       readParents: createParentReader(deps.runPs),
-      liveStartToken: (pid) => this.liveStartToken(pid),
+      liveStartTokens: deps.liveStartTokens ?? ((pids) => psLiveStartTokens(pids)),
       now: this.now,
       userPaused: (sessionKey, pid, startToken) => this.paused.get(sessionKey)?.get(pid)?.startToken === startToken,
       setTimer: deps.setTimer,
@@ -309,6 +339,8 @@ export class LocalProcessMonitor implements ProcessHost {
         const roots = this.deps.roots.roots();
         // Both reads settle before the lock is released: a rejected capacity read must not let a second sampler run
         // against the tree sampler's memory while the first is still in it.
+        // The span the tree's ps ran in: a `T` it read is the CPU cap's only if a cap hold overlapped it.
+        const window = { from: this.now(), to: 0 };
         const [treeRead, nodeRead] = await Promise.allSettled([
           this.sampler.sample(roots, this.nodeId),
           this.readCapacity(),
@@ -317,10 +349,11 @@ export class LocalProcessMonitor implements ProcessHost {
         if (nodeRead.status === 'rejected') throw nodeRead.reason;
         const tree = treeRead.value;
         const node = nodeRead.value;
+        window.to = this.now();
         const snapshot: NodeProcessSnapshot = {
           node,
           sampledAt: this.now(),
-          sessions: this.applyCpuCaps(tree.sessions),
+          sessions: this.applyCpuCaps(tree.sessions, window),
           unattributed: tree.unattributed,
         };
         this.snapshot = snapshot;
@@ -498,28 +531,36 @@ export class LocalProcessMonitor implements ProcessHost {
    * running and `throttled`: it is not a pause, it runs part of every period, and its 일시중지 is still the person's
    * own. Any other stop — a person's pause, job control — stays a stop.
    */
-  private applyCpuCaps(sessions: readonly SessionProcessDetail[]): SessionProcessDetail[] {
+  private applyCpuCaps(
+    sessions: readonly SessionProcessDetail[],
+    window: { from: number; to: number },
+  ): SessionProcessDetail[] {
     const capFor = this.cpuCapFor;
-    if (!capFor) return [...sessions];
-    this.throttler.update(sessions, capFor);
+    if (capFor) this.throttler.update(sessions, capFor);
     return sessions.map((s) => {
-      const cap = capFor(s.sessionKey);
+      const cap = capFor ? capFor(s.sessionKey) : null;
       const metered = this.throttler.meteredCap(s.sessionKey) !== null;
-      if (cap === null && !metered) return s;
+      // Every session, capped or not now: a hold the cap just released (a cap removed, an abort) still read `T`.
       const mine = this.paused.get(s.sessionKey);
-      const processes = s.processes.map((p) =>
-        p.state === 'stopped' &&
-        mine?.get(p.pid)?.startToken !== p.startToken &&
-        this.throttler.holds(s.sessionKey, p.pid, p.startToken)
-          ? { ...p, state: 'running' as const, throttled: true }
-          : p,
-      );
+      let shaped = false;
+      const processes = s.processes.map((p) => {
+        if (
+          p.state !== 'stopped' ||
+          mine?.get(p.pid)?.startToken === p.startToken ||
+          !this.throttler.holds(s.sessionKey, p.pid, p.startToken, window)
+        ) {
+          return p;
+        }
+        shaped = true;
+        return { ...p, state: 'running' as const, throttled: true };
+      });
+      if (cap === null && !metered && !shaped) return s;
       return {
         ...s,
         processes,
         stoppedCount: processes.filter((p) => p.state === 'stopped').length,
         ...(cap !== null ? { cpuCapPercent: cap } : {}),
-        throttling: metered,
+        ...(cap !== null || metered ? { throttling: metered } : {}),
       };
     });
   }

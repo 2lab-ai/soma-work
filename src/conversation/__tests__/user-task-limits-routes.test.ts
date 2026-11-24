@@ -209,6 +209,9 @@ describe('user task limit routes (작업 큐 tab)', () => {
       expect(
         (await call('PUT', '/api/settings/cpu-limits/U_ALICE', await signIn('U_ALICE'), { cpu: 800 })).status,
       ).toBe(403);
+      // A person who is not an admin is refused with admin mode on too.
+      const aliceMode = { ...(await signIn('U_ALICE')), 'x-admin-mode': 'on' };
+      expect((await call('PUT', '/api/settings/cpu-limits/U_ALICE', aliceMode, { cpu: 800 })).status).toBe(403);
       expect(
         (await call('PUT', '/api/settings/cpu-limits/U_ALICE', await signIn('U_ADMIN'), { cpu: 800 })).status,
       ).toBe(403);

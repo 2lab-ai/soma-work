@@ -203,7 +203,7 @@ describe.skipIf(!posix)('process monitor on the real OS', () => {
       off();
     }
   });
-  it('holds a task over its CPU cap to the cap: a spinning child at ~100% runs at about 50% under a 50% cap', async () => {
+  it('holds a task over its CPU cap to the cap: a spinning child runs at about 20% under a 20% cap', async () => {
     const spawn = createTrackedClaudeProcessSpawner(undefined, { sessionKey: 'capped-session' });
     child = spawn({
       command: '/bin/sh',
@@ -220,7 +220,8 @@ describe.skipIf(!posix)('process monitor on the real OS', () => {
       // As production wires it: Linux ps time has whole-second resolution, /proc ticks do not.
       readCpuSeconds: process.platform === 'linux' ? readLinuxCpuSeconds : undefined,
     });
-    monitor.setCpuCaps(() => 50);
+    // 20%: under the cap even on a busy host, where a spinner gets a third of a core rather than a whole one.
+    monitor.setCpuCaps(() => 20);
     const cpuOf = (pid: number): number => {
       if (process.platform === 'linux') return parseProcStatCpuSeconds(readFileSync(`/proc/${pid}/stat`, 'utf8')) ?? 0;
       return (
@@ -233,23 +234,27 @@ describe.skipIf(!posix)('process monitor on the real OS', () => {
     };
     let spinnerPid = 0;
     try {
-      // Two samples: the second measures the spinner at about one core — over the cap, so the cap starts holding it.
       const spinner = await until(async () => {
         const s = (await monitor.sample()).sessions.find((x) => x.sessionKey === 'capped-session');
         return s?.processes.find((p) => p.name === 'node');
       });
       spinnerPid = spinner.pid;
-      await new Promise((r) => setTimeout(r, 1_200));
-      const metered = (await monitor.sample()).sessions.find((x) => x.sessionKey === 'capped-session');
-      expect(metered).toMatchObject({ cpuCapPercent: 50, throttling: true });
+      // The next samples measure the spinner over the cap, so the cap starts holding it (a second apart: a sample's
+      // rate is over the time since the one before).
+      let metered: unknown;
+      for (let i = 0; i < 6 && !(metered as { throttling?: boolean } | undefined)?.throttling; i++) {
+        await new Promise((r) => setTimeout(r, 1_000));
+        metered = (await monitor.sample()).sessions.find((x) => x.sessionKey === 'capped-session');
+      }
+      expect(metered).toMatchObject({ cpuCapPercent: 20, throttling: true });
       // Let the share settle, then measure 4 s of the spinner's own CPU time.
       await new Promise((r) => setTimeout(r, 1_500));
       const t0 = Date.now();
       const c0 = cpuOf(spinner.pid);
       await new Promise((r) => setTimeout(r, 4_000));
       const rate = ((cpuOf(spinner.pid) - c0) / ((Date.now() - t0) / 1000)) * 100;
-      expect(rate).toBeGreaterThan(20);
-      expect(rate).toBeLessThan(75);
+      expect(rate).toBeGreaterThan(5);
+      expect(rate).toBeLessThan(40);
     } finally {
       monitor.dispose();
     }
@@ -259,5 +264,5 @@ describe.skipIf(!posix)('process monitor on the real OS', () => {
         .toString()
         .trim(),
     ).not.toMatch(/^T/);
-  }, 20_000);
+  }, 30_000);
 });

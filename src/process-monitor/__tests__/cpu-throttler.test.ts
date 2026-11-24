@@ -32,7 +32,10 @@ class Machine {
     });
   }
 
-  readonly liveStartToken = (pid: number): string | null => this.procs.get(pid)?.startToken ?? null;
+  /** One "ps" for several pids; `unknown` makes the whole read fail (as a ps that timed out). */
+  unknown = false;
+  readonly liveStartTokens = (pids: readonly number[]): Map<number, string | null> | undefined =>
+    this.unknown ? undefined : new Map(pids.map((pid) => [pid, this.procs.get(pid)?.startToken ?? null]));
 
   readonly readParents = async () => new Map([...this.procs].map(([pid, p]) => [pid, p.ppid]));
 
@@ -55,7 +58,16 @@ class Machine {
     if (signal === 'SIGCONT') p.stopped = false;
   };
 
+  /** How long each read takes (a slow ps on a busy host); it reads the processes when it ends. */
+  readDelayMs = 0;
+  /** The next read waits for this before it reads (a ps the test holds up). */
+  gate: Promise<void> | null = null;
+
   readonly read = async (pids: readonly number[]) => {
+    const gate = this.gate;
+    this.gate = null;
+    if (gate) await gate;
+    if (this.readDelayMs > 0) await new Promise((r) => setTimeout(r, this.readDelayMs));
     const out = new Map<number, { cpuSeconds: number; startToken: string; stat: string }>();
     for (const pid of pids) {
       const p = this.procs.get(pid);
@@ -105,7 +117,7 @@ function setup(opts: { paused?: (pid: number) => boolean } = {}) {
     kill: m.kill,
     read: m.read,
     readParents: m.readParents,
-    liveStartToken: m.liveStartToken,
+    liveStartTokens: m.liveStartTokens,
     now: () => Date.now(),
     userPaused: (_k, pid) => opts.paused?.(pid) ?? false,
   });
@@ -144,6 +156,43 @@ describe('CpuThrottler — a task tree held to its cap by a duty cycle', () => {
     expect(rate).toBeLessThan(130);
     expect(m.signals.some(([pid]) => pid === 10)).toBe(false);
     expect(m.signals.filter(([pid, s]) => pid === 11 && s === 'SIGSTOP').length).toBeGreaterThan(10);
+  });
+
+  it('holds a tree to its cap when ps is slow: the period grows so the read before each stop is a small part of it', async () => {
+    const { m, t } = setup();
+    // 150 ms per read: in a 250 ms period the tree would run through every read before its stop — 60% at least.
+    m.readDelayMs = 150;
+    m.add(10, 0).add(11, 2).add(12, 2);
+    t.update([session(400, [proc(10, 'root'), proc(11, 'child'), proc(12, 'child')])], () => 100);
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(t.periodMs()).toBeGreaterThan(THROTTLE_PERIOD_MS);
+    expect(t.periodMs()).toBeLessThanOrEqual(1_000);
+    const before = [11, 12].reduce((n, p) => n + m.cpuOf(p), 0);
+    await vi.advanceTimersByTimeAsync(8_000);
+    const rate = (([11, 12].reduce((n, p) => n + m.cpuOf(p), 0) - before) / 8) * 100;
+    expect(rate).toBeGreaterThan(70);
+    expect(rate).toBeLessThan(130);
+  });
+
+  it('a stop whose read comes back after the next period continued is not sent (it would hold the tree a period)', async () => {
+    const { m, t } = setup();
+    m.add(10, 0).add(11, 4);
+    t.update([session(400, [proc(10, 'root'), proc(11, 'child')])], () => 100);
+    // The first period read the tree and planned its stop; hold up the read that stop makes first.
+    await vi.advanceTimersByTimeAsync(0);
+    let open = (): void => {};
+    m.gate = new Promise<void>((r) => {
+      open = r;
+    });
+    await vi.advanceTimersByTimeAsync(THROTTLE_PERIOD_MS - 1);
+    expect(m.signals.filter(([, s]) => s === 'SIGSTOP')).toEqual([]);
+    // The next period starts, reads and continues (nothing held yet); then the held-up read returns.
+    await vi.advanceTimersByTimeAsync(2);
+    const n = m.signals.length;
+    open();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(m.signals.slice(n)).toEqual([]);
+    expect(m.procs.get(11)?.stopped).toBe(false);
   });
 
   it('never stops or continues a process a person paused', async () => {
@@ -243,7 +292,7 @@ describe('CpuThrottler — a task tree held to its cap by a duty cycle', () => {
         if (fail) throw new Error('ps timed out');
         return m.read(pids);
       },
-      liveStartToken: m.liveStartToken,
+      liveStartTokens: m.liveStartTokens,
       now: () => Date.now(),
       userPaused: () => false,
     });
@@ -277,12 +326,11 @@ describe('CpuThrottler — a task tree held to its cap by a duty cycle', () => {
   });
 
   it('a continue the OS refuses keeps the hold and is tried again; an unreadable identity on release is retried', async () => {
-    const live = new Map<number, string | null | undefined>();
     const m = new Machine().add(10, 0).add(11, 4);
     const t = new CpuThrottler({
       kill: m.kill,
       read: m.read,
-      liveStartToken: (pid) => (live.has(pid) ? live.get(pid) : m.liveStartToken(pid)),
+      liveStartTokens: m.liveStartTokens,
       now: () => Date.now(),
       userPaused: () => false,
     });
@@ -298,11 +346,93 @@ describe('CpuThrottler — a task tree held to its cap by a duty cycle', () => {
     // Unknown identity at release: kept, continued by the next period's read.
     t.update([session(400, [proc(10, 'root'), proc(11, 'child')])], () => 100);
     for (let i = 0; i < 80 && !m.procs.get(11)?.stopped; i++) await vi.advanceTimersByTimeAsync(10);
-    live.set(11, undefined);
+    m.unknown = true;
     t.release('A');
     expect(m.procs.get(11)?.stopped).toBe(true);
+    m.unknown = false;
     await vi.advanceTimersByTimeAsync(THROTTLE_PERIOD_MS * 2);
     expect(m.procs.get(11)?.stopped).toBe(false);
+    t.releaseAll();
+  });
+
+  it('a pid reused between the hold and the next period is not continued; one reused before its stop is not stopped', async () => {
+    const { m, t } = setup();
+    m.add(10, 0).add(11, 4).add(12, 4);
+    t.update([session(800, [proc(10, 'root'), proc(11, 'child'), proc(12, 'child')])], () => 100);
+    for (let i = 0; i < 80 && !m.procs.get(11)?.stopped; i++) await vi.advanceTimersByTimeAsync(5);
+    // 11 is held; it dies and its pid goes to another program, stopped by someone else, before the next period.
+    m.reuse(11, true);
+    const n = m.signals.length;
+    await vi.advanceTimersByTimeAsync(THROTTLE_PERIOD_MS);
+    expect(m.signals.slice(n).some(([pid, sig]) => pid === 11 && sig === 'SIGCONT')).toBe(false);
+    expect(m.procs.get(11)?.stopped).toBe(true);
+    // 12: reused after a period planned its stop, before the stop lands — the hold's own read refuses it.
+    for (let i = 0; i < 80 && m.procs.get(12)?.stopped; i++) await vi.advanceTimersByTimeAsync(5);
+    m.reuse(12);
+    (m.procs.get(12) as { demand: number }).demand = 4;
+    const k = m.signals.length;
+    await vi.advanceTimersByTimeAsync(THROTTLE_PERIOD_MS * 2);
+    expect(m.signals.slice(k).some(([pid, sig]) => pid === 12 && sig === 'SIGSTOP')).toBe(false);
+    t.releaseAll();
+  });
+
+  it('never adopts the children of a member whose pid now names another program', async () => {
+    const { m, t } = setup();
+    m.add(10, 0).add(11, 4, START, 10);
+    t.update([session(400, [proc(10, 'root'), proc(11, 'child', { ppid: 10 })])], () => 100);
+    await vi.advanceTimersByTimeAsync(500);
+    // 11 exits; its pid goes to an unrelated program, which starts a busy child of its own.
+    m.reuse(11);
+    m.add(99, 4, START, 11);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(m.signals.some(([pid]) => pid === 99)).toBe(false);
+    t.releaseAll();
+  });
+
+  it('a held pid missing from a period read is checked live, and kept while unknown — never dropped while stopped', async () => {
+    const m = new Machine().add(10, 0).add(11, 4);
+    let skip = false;
+    const t = new CpuThrottler({
+      kill: m.kill,
+      read: async (pids) => {
+        const r = await m.read(pids);
+        if (skip) r.delete(11);
+        return r;
+      },
+      liveStartTokens: m.liveStartTokens,
+      now: () => Date.now(),
+      userPaused: () => false,
+    });
+    t.update([session(400, [proc(10, 'root'), proc(11, 'child')])], () => 100);
+    for (let i = 0; i < 80 && !m.procs.get(11)?.stopped; i++) await vi.advanceTimersByTimeAsync(5);
+    skip = true;
+    m.unknown = true;
+    await vi.advanceTimersByTimeAsync(THROTTLE_PERIOD_MS * 2);
+    expect(m.procs.get(11)?.stopped).toBe(true);
+    expect(t.holds('A', 11, START)).toBe(true);
+    m.unknown = false;
+    await vi.advanceTimersByTimeAsync(THROTTLE_PERIOD_MS * 2);
+    expect(m.procs.get(11)?.stopped).toBe(false);
+    t.releaseAll();
+  });
+
+  it('a stop the OS refuses is said once', async () => {
+    const m = new Machine().add(10, 0).add(11, 4);
+    const warn = vi.fn();
+    const t = new CpuThrottler({
+      kill: (pid, sig) => {
+        if (sig === 'SIGSTOP') throw Object.assign(new Error('not permitted'), { code: 'EPERM' });
+        m.kill(pid, sig);
+      },
+      read: m.read,
+      liveStartTokens: m.liveStartTokens,
+      now: () => Date.now(),
+      userPaused: () => false,
+      logger: { warn },
+    });
+    t.update([session(400, [proc(10, 'root'), proc(11, 'child')])], () => 100);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(warn.mock.calls.filter(([msg]) => /refused to stop/.test(msg))).toHaveLength(1);
     t.releaseAll();
   });
 

@@ -26,15 +26,27 @@ controller; it would replace the throttler there, not sit beside it.
 ## How the duty cycle works here
 
 - **When.** The monitor samples every 5 s. A task whose tree used more than its cap over a sample starts being
-  metered. A metered task that runs under its cap for 8 periods in a row (2 s) is let go.
-- **Each period (250 ms).** The parent map (`ps -A -o pid=,ppid=`) finds what the tree started since the sample;
-  one `ps -o pid=,stat=,lstart=,time=` reads every member (Linux: `/proc/<pid>/stat` ticks over ps's whole seconds).
-  The tree's rate since the last period sets the share of the next period it may run: `share = share × cap / rate`,
-  at least 5%. Everything held is continued — each only if the read shows the same start time it was stopped with;
-  after `share × 250 ms` the candidates are read once more and stopped, each only if it is still that process,
-  running, and not a person's pause. A failed read skips one period, never the loop.
+  metered. A metered task that runs under half its cap for 8 periods in a row (2 s on an idle host) is let go; one
+  held to its cap reads at its cap, so it stays metered.
+- **Each period (250 ms, longer while `ps` is slow).** The parent map (`ps -A -o pid=,ppid=`) finds what the tree
+  started since the sample — only under members whose start time this period's read matched, so a member pid reused
+  by another program lends no children. One `ps -o pid=,stat=,lstart=,time=` reads every member (Linux:
+  `/proc/<pid>/stat` ticks over ps's whole seconds). The tree's rate since the last period sets the share of the
+  period it may run: `share = share × cap / rate`, at least 5%. Everything held is continued — each only if the read
+  shows the same start time it was stopped with (a pid the read did not answer for is checked with one batched `ps`
+  for all of them, and kept held while unknown); the candidates are read once more and stopped at the share's end,
+  each only if it is still that process, running, and not a person's pause. A failed read skips one period, never the
+  loop.
+- **Slow `ps`.** The tree runs through the read before each stop, so that read sets a floor under the share: a 150 ms
+  `ps` in a 250 ms period let a tree run 60% of it whatever its cap (a 400% tree under a 100% cap read 163% in the
+  simulated test). So a period is at least six reads long (the read time is smoothed; at most 1 s), the stop's read
+  starts early so the stop lands at the share's end, and a stop whose read comes back after the next period already
+  continued is dropped — it would hold the tree a whole period.
+- **What it cannot see.** A process that starts and exits between two periods is never read; it runs uncapped for its
+  short life (under 250 ms–1 s).
 - **Measured:** a two-thread spinner at 184–190% free runs at 102–105% under a 100% cap (owner-mac, 4 s windows); a
-  one-thread spinner under a 50% cap stays between 20% and 75% in the real-OS test on macOS and Linux CI.
+  one-thread spinner under a 20% cap ran at 18.0–19.6% on owner-mac at a load average of 13–30 (the real-OS test
+  allows 5–40% on macOS and Linux CI).
 
 ## What it never does
 

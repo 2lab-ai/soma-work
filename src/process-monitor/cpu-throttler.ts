@@ -8,7 +8,8 @@ import type { SessionProcessDetail } from './types';
  *
  * Neither OS gives an unprivileged quota a daemon can put on a running process tree: Linux has one (cgroup v2
  * `cpu.max`) only when systemd delegates the cpu controller to the user's slice, and macOS has none. So the cap is a
- * duty cycle, as `cpulimit` does it. Every period (250 ms) the throttler reads the tree — its members from the last
+ * duty cycle, as `cpulimit` does it. Every period (250 ms; longer when `ps` is slow, see `periodMs`) the throttler
+ * reads the tree — its members from the last
  * monitor sample plus whatever they started since (the parent map is read again each period) — and its cumulative CPU
  * time, works out the share of the period the tree may run so that its rate meets the cap, lets it run that long
  * (SIGCONT) and holds it the rest (SIGSTOP). The share adapts each period (share × cap / measured rate), so a tree
@@ -26,16 +27,28 @@ import type { SessionProcessDetail } from './types';
  *     whose identity cannot be read at that moment is kept and tried again every period (and by shutdown).
  */
 
-/** One period of the duty cycle. */
+/** One period of the duty cycle: the shortest, on a host where `ps` answers fast. */
 export const THROTTLE_PERIOD_MS = 250;
+/** The longest period, when `ps` is slow. */
+const MAX_PERIOD_MS = 1_000;
+/**
+ * A period is at least this many reads long. The tree runs through the read before each stop (the stop needs the
+ * process's identity read first), so a slow `ps` would otherwise set a floor under the share: a 150 ms read in a
+ * 250 ms period lets a tree run 60% of it whatever its cap.
+ */
+const READS_PER_PERIOD = 6;
 /** The smallest share of a period a capped tree runs (so a runaway tree still makes progress, and stops are short). */
 const MIN_SHARE = 0.05;
-/** A tree that ran free (share 1) this many periods in a row is let go until a sample finds it over its cap again. */
+/**
+ * A tree that stayed under half its cap this many periods in a row is let go until a sample finds it over its cap
+ * again (well under, not merely at it: a tree held to its cap reads at its cap).
+ */
 const IDLE_PERIODS = 8;
-/** A stop the cap made this recently still explains a `T` in a monitor sample (the sample may predate the continue). */
-const RECENT_HOLD_MS = 4 * THROTTLE_PERIOD_MS;
-/** How many passes shutdown makes over holds it could not continue yet. */
+/** How long a hold's interval is kept for reading a monitor sample taken during it. */
+const INTERVAL_KEEP_MS = 30_000;
+/** Shutdown's passes over holds it could not continue yet, within this budget. */
 const SHUTDOWN_PASSES = 3;
+const SHUTDOWN_BUDGET_MS = 5_000;
 
 /** One process as the throttler reads it each period. */
 export interface ThrottleRead {
@@ -48,16 +61,19 @@ export interface ThrottleRead {
 /** Reads every pid's cumulative CPU time, start time and state now; a pid that is gone is absent. */
 export type ReadThrottle = (pids: readonly number[]) => Promise<Map<number, ThrottleRead>>;
 
+/**
+ * Live start times of several pids at once, synchronously (one `ps`): pid → its start token, or `null` for a pid that
+ * is gone. `undefined` when the read itself failed (unknown for all).
+ */
+export type LiveStartTokens = (pids: readonly number[]) => Map<number, string | null> | undefined;
+
 export interface CpuThrottlerDeps {
   readonly kill: (pid: number, signal: NodeJS.Signals) => void;
   readonly read: ReadThrottle;
   /** The whole parent map (pid → ppid), to find what a capped tree started since the last sample. */
   readonly readParents?: () => Promise<Map<number, number>>;
-  /**
-   * A pid's live start time, synchronously (the monitor's `psLiveStartToken`): a string, `null` when the pid is gone,
-   * `undefined` when it could not be read. Used where no period read is at hand — release and shutdown.
-   */
-  readonly liveStartToken: (pid: number) => string | null | undefined;
+  /** Used where no period read answers for a pid — release, shutdown, a row missing from a read. */
+  readonly liveStartTokens: LiveStartTokens;
   readonly now: () => number;
   /** A person's pause (the monitor's own record): never continued, never stopped again by the throttler. */
   readonly userPaused: (sessionKey: string, pid: number, startToken: string) => boolean;
@@ -81,7 +97,8 @@ interface Capped {
   prevAt: number;
   /** The share of a period the tree runs. */
   share: number;
-  freePeriods: number;
+  /** Periods in a row the tree ran well under its cap. */
+  calmPeriods: number;
 }
 
 /** What this throttler stopped and has not continued. */
@@ -90,14 +107,40 @@ interface Hold {
   readonly startToken: string;
 }
 
+/** Add members, one per pid (a sample and a period can both bring the same process). */
+function withMembers(into: Member[], more: readonly Member[]): Member[] {
+  const seen = new Set(into.map((m) => m.pid));
+  const out = [...into];
+  for (const m of more) {
+    if (seen.has(m.pid)) continue;
+    seen.add(m.pid);
+    out.push(m);
+  }
+  return out;
+}
+
 export class CpuThrottler {
   private readonly sessions = new Map<string, Capped>();
   /** pid → the hold: every stop this throttler made and has not continued (or seen gone). */
   private readonly held = new Map<number, Hold>();
-  /** `pid:start` → when the cap last stopped it (for reading a monitor sample taken while it was held). */
-  private readonly recent = new Map<string, number>();
+  /** `pid:start` → when the cap stopped it and continued it (`to` null while held): which `T` in a sample is the cap's. */
+  private readonly intervals = new Map<string, { from: number; to: number | null }>();
+  /** Stops the OS refused, said once each. */
+  private readonly refused = new Set<string>();
   private timer: unknown = null;
   private ticking = false;
+  /** Counts periods. */
+  private periodSeq = 0;
+  /**
+   * The last period that continued what was held. A stop planned in an earlier period is not sent after it: it would
+   * outlast that continue and hold the tree a whole period. (One that lands during the next period's reads is fine —
+   * that period continues it.)
+   */
+  private continuedSeq = 0;
+  /** How long one read takes, smoothed (ms); sets the period's length. */
+  private readMs = 0;
+  /** When the next period starts, from the end of this one: its reads land the continue one period after this one's. */
+  private nextDelay = THROTTLE_PERIOD_MS;
   private disposed = false;
   private readonly setTimer: (fn: () => void, ms: number) => unknown;
   private readonly clearTimer: (handle: unknown) => void;
@@ -123,9 +166,12 @@ export class CpuThrottler {
     for (const s of sessions) {
       seen.add(s.sessionKey);
       const cap = capFor(s.sessionKey);
-      const members: Member[] = s.processes
-        .filter((p) => p.state !== 'zombie')
-        .map((p) => ({ pid: p.pid, startToken: p.startToken, root: p.role === 'root' }));
+      const members: Member[] = withMembers(
+        [],
+        s.processes
+          .filter((p) => p.state !== 'zombie')
+          .map((p) => ({ pid: p.pid, startToken: p.startToken, root: p.role === 'root' })),
+      );
       const cur = this.sessions.get(s.sessionKey);
       if (cap === null || !(cap > 0)) {
         if (cur) this.release(s.sessionKey);
@@ -133,9 +179,11 @@ export class CpuThrottler {
       }
       if (cur) {
         cur.cap = cap;
-        // Keep what a period discovered since that the sample has not seen yet (it is in the next sample).
-        const sampled = new Set(members.map((m) => m.pid));
-        cur.members = [...members, ...cur.members.filter((m) => !sampled.has(m.pid) && !m.root)];
+        // Keep what a period discovered that the sample has not seen yet (it is in the next sample).
+        cur.members = withMembers(
+          members,
+          cur.members.filter((m) => !m.root),
+        );
         continue;
       }
       // Metering starts only when the tree is over its cap (a whole 5 s sample of it).
@@ -146,7 +194,7 @@ export class CpuThrottler {
         prev: new Map(),
         prevAt: 0,
         share: Math.max(MIN_SHARE, Math.min(1, cap / Math.max(s.cpuPercent, 1))),
-        freePeriods: 0,
+        calmPeriods: 0,
       });
     }
     for (const key of [...this.sessions.keys()]) if (!seen.has(key)) this.release(key);
@@ -154,14 +202,15 @@ export class CpuThrottler {
   }
 
   /**
-   * Whether the cap holds this process now, or held it a moment ago — a `T` in a monitor sample for it is the cap's,
-   * not a pause.
+   * Whether a `T` that a monitor sample read for this process is the cap's: it is held now, or one of its holds
+   * overlapped the sample's ps run (`window`). A stop made by anyone else after the cap continued it stays a stop.
    */
-  holds(sessionKey: string, pid: number, startToken: string): boolean {
+  holds(sessionKey: string, pid: number, startToken: string, window?: { from: number; to: number }): boolean {
     const h = this.held.get(pid);
     if (h && h.sessionKey === sessionKey && h.startToken === startToken) return true;
-    const at = this.recent.get(`${pid}:${startToken}`);
-    return at !== undefined && this.deps.now() - at <= RECENT_HOLD_MS;
+    const iv = this.intervals.get(`${pid}:${startToken}`);
+    if (!iv || !window) return false;
+    return iv.from <= window.to && (iv.to === null || iv.to >= window.from);
   }
 
   /** The cap being enforced on a session now (`null`: not metered). */
@@ -171,7 +220,10 @@ export class CpuThrottler {
 
   /** A person paused a process: it is theirs now — the throttler neither continues nor stops it again. */
   forget(sessionKey: string, pid: number): void {
-    if (this.held.get(pid)?.sessionKey === sessionKey) this.held.delete(pid);
+    const h = this.held.get(pid);
+    if (h?.sessionKey !== sessionKey) return;
+    this.held.delete(pid);
+    this.intervals.delete(`${pid}:${h.startToken}`);
   }
 
   /** Continue everything held for a session and stop metering it (an abort, a cap change, the tree gone). */
@@ -182,12 +234,15 @@ export class CpuThrottler {
     else if (this.sessions.size === 0) this.cancelTimer();
   }
 
-  /** Shutdown: continue everything held, in every session; nothing is metered after this. Synchronous. */
+  /** Shutdown: continue everything held, in every session, within a budget; nothing is metered after this. */
   releaseAll(): void {
     this.disposed = true;
     this.cancelTimer();
     this.sessions.clear();
-    for (let i = 0; i < SHUTDOWN_PASSES && this.held.size > 0; i++) this.continueHolds(() => true);
+    const until = this.deps.now() + SHUTDOWN_BUDGET_MS;
+    for (let i = 0; i < SHUTDOWN_PASSES && this.held.size > 0 && this.deps.now() < until; i++) {
+      this.continueHolds(() => true);
+    }
     if (this.held.size > 0) {
       this.deps.logger?.warn('cpu cap: could not continue held processes; continue them by hand (kill -CONT)', {
         pids: [...this.held.keys()],
@@ -209,34 +264,43 @@ export class CpuThrottler {
   }
 
   /**
-   * Continue the holds `which` picks, each only after its identity is read: from this period's read when there is
-   * one, else live. Gone or another process now: dropped, never signalled. Unknown, or a continue the OS refused:
-   * kept, and tried again next period.
+   * Continue the holds `which` picks, each only after its identity is read: from this period's read for a pid it
+   * answers for, else one live `ps` for all the rest. Gone or another process now: dropped, never signalled. Unknown,
+   * or a continue the OS refused: kept, and tried again next period.
    */
   private continueHolds(which: (h: Hold) => boolean, read?: Map<number, ThrottleRead>): void {
-    for (const [pid, h] of [...this.held]) {
-      if (!which(h)) continue;
+    const picked = [...this.held].filter(([pid, h]) => {
+      if (!which(h)) return false;
       if (this.deps.userPaused(h.sessionKey, pid, h.startToken)) {
         this.held.delete(pid);
-        continue;
+        return false;
       }
-      const live = read ? (read.get(pid)?.startToken ?? null) : this.deps.liveStartToken(pid);
-      if (live === undefined) continue;
-      if (live !== h.startToken) {
+      return true;
+    });
+    if (picked.length === 0) return;
+    const unanswered = picked.filter(([pid]) => !read?.has(pid)).map(([pid]) => pid);
+    const live = unanswered.length > 0 ? this.deps.liveStartTokens(unanswered) : new Map<number, string | null>();
+    const at = this.deps.now();
+    for (const [pid, h] of picked) {
+      const token = read?.has(pid) ? read.get(pid)?.startToken : live?.has(pid) ? live.get(pid) : undefined;
+      if (token === undefined) continue;
+      if (token !== h.startToken) {
         this.held.delete(pid);
         continue;
       }
       try {
         this.deps.kill(pid, 'SIGCONT');
         this.held.delete(pid);
+        const iv = this.intervals.get(`${pid}:${h.startToken}`);
+        if (iv) iv.to = at;
       } catch (err) {
         if ((err as NodeJS.ErrnoException)?.code === 'ESRCH') this.held.delete(pid);
       }
     }
   }
 
-  /** The members' children that started since the sample (any depth), read from this period's parent map. */
-  private discover(s: Capped, parents: Map<number, number>): number[] {
+  /** Children (any depth) of the members this period verified, that are not members yet. */
+  private discover(verified: readonly Member[], known: ReadonlySet<number>, parents: Map<number, number>): number[] {
     const childrenOf = new Map<number, number[]>();
     for (const [pid, ppid] of parents) {
       if (pid === ppid) continue;
@@ -244,14 +308,14 @@ export class CpuThrottler {
       if (list) list.push(pid);
       else childrenOf.set(ppid, [pid]);
     }
-    const known = new Set(s.members.map((m) => m.pid));
+    const seen = new Set(known);
     const found: number[] = [];
-    const queue = [...known];
+    const queue = verified.map((m) => m.pid);
     while (queue.length > 0) {
       const pid = queue.shift() as number;
       for (const child of childrenOf.get(pid) ?? []) {
-        if (known.has(child)) continue;
-        known.add(child);
+        if (seen.has(child)) continue;
+        seen.add(child);
         found.push(child);
         queue.push(child);
       }
@@ -263,50 +327,89 @@ export class CpuThrottler {
   async tick(): Promise<void> {
     if (this.ticking || this.disposed) return;
     this.ticking = true;
+    this.nextDelay = THROTTLE_PERIOD_MS;
     try {
       await this.period();
     } finally {
       this.ticking = false;
       // Every period arms the next one while anything is metered or held — a failed read skips one period, never
       // the loop.
-      this.schedule(THROTTLE_PERIOD_MS);
+      this.schedule(this.nextDelay);
     }
+  }
+
+  /** The period's length now: `THROTTLE_PERIOD_MS`, longer while `ps` is slow (at most `MAX_PERIOD_MS`). */
+  periodMs(): number {
+    return Math.min(MAX_PERIOD_MS, Math.max(THROTTLE_PERIOD_MS, Math.round(READS_PER_PERIOD * this.readMs)));
+  }
+
+  /** `deps.read`, timed: how long reads take sets the period's length. */
+  private async timedRead(pids: readonly number[]): Promise<Map<number, ThrottleRead>> {
+    const start = this.deps.now();
+    const out = await this.deps.read(pids);
+    const ms = Math.max(0, this.deps.now() - start);
+    this.readMs = this.readMs === 0 ? ms : 0.7 * this.readMs + 0.3 * ms;
+    return out;
   }
 
   private async period(): Promise<void> {
     if (this.sessions.size === 0 && this.held.size === 0) return;
-    // New descendants since the sample: their start time comes from this period's read.
-    const fresh = new Map<string, number[]>();
-    if (this.deps.readParents && this.sessions.size > 0) {
-      const parents = await this.deps.readParents().catch(() => null);
-      if (parents) for (const [key, s] of this.sessions) fresh.set(key, this.discover(s, parents));
-    }
+    const seq = ++this.periodSeq;
+    const started = this.deps.now();
+    const parents =
+      this.deps.readParents && this.sessions.size > 0 ? await this.deps.readParents().catch(() => null) : null;
     const pids = new Set<number>(this.held.keys());
-    for (const [key, s] of this.sessions) {
-      for (const m of s.members) pids.add(m.pid);
-      for (const pid of fresh.get(key) ?? []) pids.add(pid);
-    }
+    for (const s of this.sessions.values()) for (const m of s.members) pids.add(m.pid);
     let read: Map<number, ThrottleRead>;
     try {
-      read = await this.deps.read([...pids]);
+      read = await this.timedRead([...pids]);
     } catch (err) {
-      // Unknown this period: hold nothing more, and continue what is held only where its identity can be read live.
+      // Unknown this period: hold nothing more; what is held is continued where one live ps can tell who it is.
       this.deps.logger?.warn('cpu throttle read failed', { error: String(err) });
+      this.continuedSeq = seq;
       this.continueHolds(() => true);
       return;
     }
     if (this.disposed) return;
-    for (const [key, s] of this.sessions) {
-      for (const pid of fresh.get(key) ?? []) {
-        const r = read.get(pid);
-        if (r) s.members.push({ pid, startToken: r.startToken, root: false });
+    // New descendants, found only under members this read verified (a member pid reused by another program must not
+    // lend its children), then read themselves.
+    const discovered = new Map<string, number[]>();
+    if (parents) {
+      const all = new Set<number>(pids);
+      for (const [key, s] of this.sessions) {
+        const verified = s.members.filter((m) => read.get(m.pid)?.startToken === m.startToken);
+        const found = this.discover(verified, all, parents);
+        for (const pid of found) all.add(pid);
+        if (found.length > 0) discovered.set(key, found);
       }
+      const extra = [...discovered.values()].flat();
+      if (extra.length > 0) {
+        const more = await this.deps.read(extra).catch(() => new Map<number, ThrottleRead>());
+        for (const [pid, r] of more) read.set(pid, r);
+      }
+      if (this.disposed) return;
     }
     // Held processes of sessions no longer metered (released while unknown): continue them now that they read.
     this.continueHolds((h) => !this.sessions.has(h.sessionKey), read);
+    // From here to the end of the sessions loop nothing awaits: a planned stop lands before this or after all of it.
+    this.continuedSeq = seq;
     const at = this.deps.now();
+    // The next period's reads end, and its continue lands, one period after this continue.
+    const period = this.periodMs();
+    this.nextDelay = Math.max(0, period - (at - started));
     for (const [key, s] of [...this.sessions]) {
-      // The tree's rate since the last read: members whose start time still matches.
+      const fresh = new Set<number>();
+      const added: Member[] = [];
+      for (const pid of discovered.get(key) ?? []) {
+        const r = read.get(pid);
+        if (!r) continue;
+        added.push({ pid, startToken: r.startToken, root: false });
+        fresh.add(pid);
+      }
+      // The sample may have replaced the members while this period awaited: one entry per pid.
+      s.members = withMembers(s.members, added);
+      // The tree's rate since the last read: members whose start time still matches. A worker found this period
+      // started since the last one (the previous parent map did not have it): all its CPU time is this window's.
       let used = 0;
       const next = new Map<number, number>();
       for (const m of s.members) {
@@ -314,26 +417,30 @@ export class CpuThrottler {
         if (!r || r.startToken !== m.startToken) continue;
         next.set(m.pid, r.cpuSeconds);
         const before = s.prev.get(m.pid);
-        if (before !== undefined && r.cpuSeconds >= before) used += r.cpuSeconds - before;
+        if (before !== undefined) used += Math.max(0, r.cpuSeconds - before);
+        else if (fresh.has(m.pid) && s.prevAt > 0) used += r.cpuSeconds;
       }
       // Members that are gone, or whose pid now names another process, leave the tree.
       s.members = s.members.filter((m) => read.get(m.pid)?.startToken === m.startToken);
       const elapsed = s.prevAt > 0 ? (at - s.prevAt) / 1000 : 0;
       s.prev = next;
       s.prevAt = at;
+      let rate = Number.NaN;
       if (elapsed > 0) {
-        const rate = (used / elapsed) * 100;
+        rate = (used / elapsed) * 100;
         s.share = rate > 0 ? Math.max(MIN_SHARE, Math.min(1, (s.share * s.cap) / rate)) : 1;
       }
       // The run part of this period: what the cap held (it read stopped just now, which is the cap's stop) continues.
       const heldHere = new Set([...this.held].filter(([, h]) => h.sessionKey === key).map(([pid]) => pid));
       this.continueHolds((h) => h.sessionKey === key, read);
-      if (s.share >= 1) {
-        s.freePeriods++;
-        if (s.freePeriods >= IDLE_PERIODS) this.sessions.delete(key);
+      // Let go only a tree well under its cap for a while (one held to its cap reads at its cap).
+      if (rate < s.cap / 2) s.calmPeriods++;
+      else s.calmPeriods = 0;
+      if (s.calmPeriods >= IDLE_PERIODS) {
+        this.sessions.delete(key);
         continue;
       }
-      s.freePeriods = 0;
+      if (s.share >= 1) continue;
       // What may be held: not the Claude Code process, a matching start time, not stopped by anyone else, not a
       // person's pause.
       const stop = s.members.filter((m) => {
@@ -344,34 +451,46 @@ export class CpuThrottler {
         return !this.deps.userPaused(key, m.pid, m.startToken);
       });
       if (stop.length > 0) {
-        this.setTimer(() => void this.hold(key, s, stop), Math.round(s.share * THROTTLE_PERIOD_MS));
+        // The stop follows a read of who each one is: start that read early so the stop lands at the share's end.
+        const runMs = Math.max(0, Math.round(s.share * period - this.readMs));
+        this.setTimer(() => void this.hold(key, s, stop, seq), runMs);
       }
     }
+    for (const [k, iv] of this.intervals) if (iv.to !== null && at - iv.to > INTERVAL_KEEP_MS) this.intervals.delete(k);
   }
 
   /**
    * The hold part of a period: read the candidates again and stop only those that are still the process the period
    * read, running, and not a person's pause.
    */
-  private async hold(key: string, s: Capped, stop: readonly Member[]): Promise<void> {
-    // Released or replaced since this period was planned: nothing to hold.
-    if (this.disposed || this.sessions.get(key) !== s) return;
-    const read = await this.deps.read(stop.map((m) => m.pid)).catch(() => null);
-    if (!read || this.disposed || this.sessions.get(key) !== s) return;
+  private async hold(key: string, s: Capped, stop: readonly Member[], seq: number): Promise<void> {
+    // Released or replaced since this period was planned, or a later period already continued: nothing to hold.
+    if (this.disposed || this.sessions.get(key) !== s || this.continuedSeq !== seq) return;
+    const read = await this.timedRead(stop.map((m) => m.pid)).catch(() => null);
+    if (!read || this.disposed || this.sessions.get(key) !== s || this.continuedSeq !== seq) return;
     const at = this.deps.now();
     for (const m of stop) {
       const r = read.get(m.pid);
       if (!r || r.startToken !== m.startToken || r.stat.startsWith('T')) continue;
       if (this.deps.userPaused(key, m.pid, m.startToken)) continue;
+      const id = `${m.pid}:${m.startToken}`;
       try {
         this.deps.kill(m.pid, 'SIGSTOP');
         this.held.set(m.pid, { sessionKey: key, startToken: m.startToken });
-        this.recent.set(`${m.pid}:${m.startToken}`, at);
-      } catch {
-        // Gone or refused: not held.
+        this.intervals.set(id, { from: at, to: null });
+      } catch (err) {
+        // Gone: nothing to hold. Refused: the cap cannot hold this one — said once, so a cap that does not bite is
+        // not silent.
+        if ((err as NodeJS.ErrnoException)?.code !== 'ESRCH' && !this.refused.has(id)) {
+          this.refused.add(id);
+          this.deps.logger?.warn('cpu cap: the OS refused to stop a process; it runs uncapped', {
+            sessionKey: key,
+            pid: m.pid,
+            error: String(err),
+          });
+        }
       }
     }
-    for (const [k, t] of this.recent) if (at - t > RECENT_HOLD_MS) this.recent.delete(k);
   }
 }
 

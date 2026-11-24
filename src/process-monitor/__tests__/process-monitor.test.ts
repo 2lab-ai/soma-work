@@ -75,6 +75,16 @@ function setup(
       const fallback = ps.procs.get(pid)?.start ?? (ps.procs.has(pid) ? 'Mon Nov 23 10:00:00 2026' : null);
       return opts.live ? opts.live(pid, fallback) : fallback;
     },
+    liveStartTokens: (pids) => {
+      const out = new Map<number, string | null>();
+      for (const pid of pids) {
+        const fallback = ps.procs.get(pid)?.start ?? (ps.procs.has(pid) ? 'Mon Nov 23 10:00:00 2026' : null);
+        const v = opts.live ? opts.live(pid, fallback) : fallback;
+        if (v === undefined) return undefined;
+        out.set(pid, v);
+      }
+      return out;
+    },
     platform: opts.platform ?? 'darwin',
     now: () => now,
     readCapacity: opts.readCapacity ?? (async () => capacity),
@@ -101,13 +111,6 @@ function setup(
     },
     fireShutdown: () => {
       for (const l of shutdown) l();
-    },
-    /** Run the throttler's timers for a few rounds (each round runs what the previous one armed). */
-    runTimers: async (rounds = 4) => {
-      for (let r = 0; r < rounds; r++) {
-        for (const fn of timers.splice(0)) fn();
-        for (let i = 0; i < 20; i++) await Promise.resolve();
-      }
     },
     /** Run the oldest armed throttler timer only (a period's hold lands before the next period continues it). */
     runOne: async () => {
@@ -330,6 +333,34 @@ describe('LocalProcessMonitor — the CPU cap on each task', () => {
     expect(held?.processes.find((p) => p.pid === 310)).not.toHaveProperty('throttled');
     expect(held?.stoppedCount).toBe(1);
     monitor.dispose();
+    expect(ps.procs.get(300)?.stat).not.toBe('T');
+  });
+
+  it('the sample in which a cap is removed still reads the cap’s last hold as throttled, not paused', async () => {
+    const { monitor, ps, runOne } = setup({
+      readThrottle: async (pids) =>
+        new Map(
+          pids
+            .filter((pid) => ps.procs.has(pid))
+            .map((pid) => {
+              const p = ps.procs.get(pid) as { stat?: string; start?: string; cpu?: number };
+              return [pid, { stat: p.stat ?? 'S', startToken: p.start ?? start, cpuSeconds: p.cpu ?? 0 }];
+            }),
+        ),
+    });
+    ps.set(300, { ppid: 200, args: '/bin/bash -c make', psCpu: 400 });
+    let cap: number | null = 100;
+    monitor.setCpuCaps(() => cap);
+    await monitor.sample();
+    await runOne();
+    await runOne();
+    expect(ps.procs.get(300)?.stat).toBe('T');
+    // An admin sets the owner to 무제한: the next sample reads 300 stopped, then the update releases it.
+    cap = null;
+    const a = (await monitor.sample()).sessions.find((x) => x.sessionKey === 'A');
+    expect(a?.processes.find((p) => p.pid === 300)).toMatchObject({ state: 'running', throttled: true });
+    expect(a?.stoppedCount).toBe(0);
+    expect(a).not.toHaveProperty('cpuCapPercent');
     expect(ps.procs.get(300)?.stat).not.toBe('T');
   });
 

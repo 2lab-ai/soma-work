@@ -107,10 +107,12 @@ same snapshot, and work will be placed by each node's free CPU and memory.
    none for an admin, an admin's choice per person in the settings page's 작업 큐 tab (`DATA_DIR/user-cpu-limits.json`,
    `cpu-limits.ts`). Neither OS gives an unprivileged quota on a running tree (Linux cgroup `cpu.max` needs delegated
    systemd; macOS has none), so the monitor holds a task over its cap with a duty cycle (`cpu-throttler.ts`): each
-   250 ms period it reads the tree's CPU time, sets the share of the period the tree may run (share × cap / rate), runs
-   it that long and stops it (`SIGSTOP`) the rest. It never stops the Claude Code process itself, never continues
-   what it did not stop (a person's pause becomes theirs), never signals a reused pid, and continues everything it
-   holds on an abort, a cap change and shutdown (before the monitor's own resume pass). A held process reads as
+   period (250 ms, up to 1 s while `ps` is slow — a period is at least six reads long, since the tree runs through the
+   identity read before each stop) it reads the tree's CPU time, sets the share of the period the tree may run
+   (share × cap / rate), runs it that long and stops it (`SIGSTOP`) the rest. It never stops the Claude Code process
+   itself, never continues what it did not stop (a person's pause becomes theirs), never signals a reused pid, and
+   continues everything it holds on an abort, a cap change and shutdown (before the monitor's own resume pass). A held
+   process reads as
    running with `throttled`, not as paused; a session says its `cpuCapPercent` and whether the cap is `throttling`.
    Research: [2026-11-24 task CPU cap](../misc/research/2026-11-24-task-cpu-cap.md).
 
@@ -122,8 +124,9 @@ same snapshot, and work will be placed by each node's free CPU and memory.
   process tab answers 409 here (open that instance's dashboard).
 - Placing work on worker nodes is not built. This ADR fixes the shape the placement will read.
 - Windows has no job-control signals: control answers `unsupported`. Sampling there is not supported.
-- A capped task over its cap costs one `ps` every 250 ms while it is over (none otherwise), and its processes see
-  brief stops — what a cap is.
+- A capped task over its cap costs three `ps` runs a period (the parent map, the tree, the read before the stop)
+  while it is over (none otherwise), and its processes see brief stops — what a cap is. A process that starts and
+  exits within one period is never read by the cap and runs uncapped for that short life.
 - The working directory costs one `lsof` (macOS) or one `readlink` per pid (Linux) every 15 seconds per process, and
   nothing for the unattributed group. The detail read costs a handful of `ps`/`lsof` runs per click.
 
