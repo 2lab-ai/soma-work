@@ -2,7 +2,8 @@ import { createSocket } from 'node:dgram';
 import * as os from 'node:os';
 
 /**
- * Rendering helpers for the personal llmux key DM (`key` / `auth key`).
+ * Rendering helpers for the personal llmux key DM (`key` / `auth key`, and
+ * `key rotate` / `auth key rotate`).
  *
  * The DM tells a Slack user how to run a LOCAL Claude Code or Codex against the llmux
  * daemon soma-work itself dispatches through, using the SAME per-user client
@@ -166,6 +167,8 @@ export interface LlmuxKeyDmInput {
   keyName?: string;
   issuedAtMs?: number;
   rotatedAtMs?: number;
+  /** Set by `key rotate`: this DM carries a secret that replaced the previous one just now. */
+  rotatedNow?: boolean;
 }
 
 /** A `scheme://` prefix. Without one, WHATWG reads `llmux-box:3456` as scheme `llmux-box:` with an empty host. */
@@ -250,10 +253,20 @@ export function buildLlmuxKeyDmText(input: LlmuxKeyDmInput): string {
     identity.push(`발급 ${new Date(input.issuedAtMs).toISOString().slice(0, 10)}`);
   }
 
+  const header = input.rotatedNow
+    ? [
+        ':key: *새 llmux 클라이언트 키로 교체했습니다*',
+        '',
+        '이전 키는 방금 폐기되어 지금부터 401(`Invalid proxy API key`)을 받습니다. 로컬 Claude Code / Codex / llmux CLI에 넣어 둔 키를 아래 키로 바꾸세요. 사용량 기록은 같은 테넌트로 이어집니다.',
+      ]
+    : [
+        ':key: *당신의 llmux 클라이언트 키*',
+        '',
+        '이 키는 당신 전용입니다 — 봇에서의 사용량과 아래 로컬 사용량이 전부 이 키(테넌트)로 계측됩니다. `key rotate`로 교체하기 전까지 같은 유저는 항상 같은 키를 받습니다.',
+      ];
+
   return [
-    ':key: *당신의 llmux 클라이언트 키*',
-    '',
-    '이 키는 당신 전용입니다 — 봇에서의 사용량과 아래 로컬 사용량이 전부 이 키(테넌트)로 계측됩니다. 같은 유저는 항상 같은 키를 받습니다.',
+    ...header,
     '',
     `• 키: \`${secret}\`${identity.length > 0 ? ` (${identity.join(', ')})` : ''}`,
     `• 서버: \`${rootUrl}\``,
@@ -285,6 +298,6 @@ export function buildLlmuxKeyDmText(input: LlmuxKeyDmInput): string {
     `{ "remote": { "host": ${JSON.stringify(remoteHost)}, "api_key": ${JSON.stringify(secret)} } }`,
     '```',
     '',
-    ':lock: 이 키는 비밀입니다. 채널·코드·커밋에 붙여넣지 마세요. 유출이 의심되면 관리자에게 로테이션(`llmux key rotate`)을 요청하세요 — 로테이션되면 이 DM의 키는 무효가 되고, `key`를 다시 호출하면 새 키를 받습니다.',
+    ':lock: 이 키는 비밀입니다. 채널·코드·커밋에 붙여넣지 마세요. 유출이 의심되거나 401이 나면 봇에게 `key rotate`를 보내세요 — 이 키는 즉시 폐기되고 새 키가 DM으로 옵니다. (관리자가 llmux에서 직접 로테이션하면 봇이 가진 키와 어긋나므로, 교체는 `key rotate`로 하세요.)',
   ].join('\n');
 }

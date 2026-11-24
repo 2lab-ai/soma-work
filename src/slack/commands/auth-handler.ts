@@ -2,7 +2,13 @@ import { isAdminUser } from '../../admin-utils';
 import { getAuthMode } from '../../auth/auth-runtime';
 import { switchLlmuxAccount } from '../../auth/llmux-client';
 import { advertisedLlmuxBaseUrl, buildLlmuxKeyDmText } from '../../auth/llmux-key-info';
-import { describeTenantKey, ensureTenantKey } from '../../auth/llmux-tenant-keys';
+import {
+  checkTenantKey,
+  describeTenantKey,
+  ensureTenantKey,
+  rotateTenantKey,
+  type TenantKeyLease,
+} from '../../auth/llmux-tenant-keys';
 import { CommandParser } from '../command-parser';
 import { deliverImageCard, type FilesUploadClient, slackImageUploader } from '../slack-file-image';
 import { applyAuthMode, renderAuthCard } from '../z/topics/auth-topic';
@@ -36,6 +42,8 @@ export interface AuthHandlerDeps {
  *   - `auth key` / bare `key`    — DM the caller their personal llmux client
  *                                  key + local Claude Code / Codex setup (any user:
  *                                  it is THEIR key; llmux meters them by it).
+ *   - `auth key rotate` / `key rotate` — revoke the caller's current secret and
+ *                                  DM a new one (any user, their own key only).
  *
  * llmux settings (`ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY`) and account
  * add/remove are card-modal only — secrets must not transit chat text. The
@@ -54,7 +62,10 @@ export class AuthHandler implements CommandHandler {
     const action = CommandParser.parseAuthCommand(text);
 
     if (action.action === 'key') {
-      return this.executeKey(ctx);
+      return this.executeKey(ctx, 'show');
+    }
+    if (action.action === 'key-rotate') {
+      return this.executeKey(ctx, 'rotate');
     }
 
     const denyNonAdmin = async (): Promise<CommandResult> => {
@@ -98,12 +109,17 @@ export class AuthHandler implements CommandHandler {
   }
 
   /**
-   * `key` — issue-or-reuse the caller's llmux client key and DM it to them
-   * with local Claude Code / Codex / llmux CLI setup. `ensureTenantKey` guarantees the
-   * SAME user always gets the SAME key (per daemon); a fresh issuance and a
-   * repeat request are indistinguishable here on purpose.
+   * `key` / `key rotate` — DM the caller their llmux client key with local
+   * Claude Code / Codex / llmux CLI setup.
+   *
+   * - `show`: issue-or-reuse via `ensureTenantKey` (the SAME user gets the SAME
+   *   key per daemon). Before sending, llmux is asked whether it still accepts
+   *   the stored secret: a key rotated outside soma-work (`llmux key rotate`)
+   *   is dead, so it is NOT sent — the user is told to run `key rotate`.
+   * - `rotate`: `rotateTenantKey` revokes the current secret and stores a new
+   *   one under the same llmux id; only the new secret is DMed.
    */
-  private async executeKey(ctx: CommandContext): Promise<CommandResult> {
+  private async executeKey(ctx: CommandContext, mode: 'show' | 'rotate'): Promise<CommandResult> {
     const { user, channel, threadTs, say } = ctx;
 
     if (getAuthMode() !== 'llmux') {
@@ -121,13 +137,33 @@ export class AuthHandler implements CommandHandler {
     }
 
     const settings = this.deps?.userSettingsStore?.getUserSettings(user);
-    const lease = await ensureTenantKey(user, { name: settings?.slackName, email: settings?.email });
-    if (!lease) {
-      await say({
-        text: '❌ llmux 키 발급에 실패했습니다 — 데몬 상태를 확인해주세요 (`auth` 카드). 잠시 후 다시 시도하면 재발급을 시도합니다.',
-        thread_ts: threadTs,
-      });
-      return { handled: true };
+    const profile = { name: settings?.slackName, email: settings?.email };
+    let lease: TenantKeyLease | null;
+    if (mode === 'rotate') {
+      lease = await rotateTenantKey(user, profile);
+      if (!lease) {
+        await say({
+          text: '❌ llmux 키 교체에 실패했습니다 — 기존 키는 그대로입니다. 잠시 후 `key rotate`를 다시 보내주세요 (계속 실패하면 `auth` 카드로 데몬 상태를 확인).',
+          thread_ts: threadTs,
+        });
+        return { handled: true };
+      }
+    } else {
+      lease = await ensureTenantKey(user, profile);
+      if (!lease) {
+        await say({
+          text: '❌ llmux 키 발급에 실패했습니다 — 데몬 상태를 확인해주세요 (`auth` 카드). 잠시 후 다시 시도하면 재발급을 시도합니다.',
+          thread_ts: threadTs,
+        });
+        return { handled: true };
+      }
+      if ((await checkTenantKey(user)) === 'stale') {
+        await say({
+          text: '⚠️ 봇이 가진 당신의 llmux 키는 llmux에서 이미 교체·폐기되어 401(`Invalid proxy API key`)을 받습니다 (봇 밖에서 로테이션됨). `key rotate`를 보내면 새 키를 DM으로 받습니다.',
+          thread_ts: threadTs,
+        });
+        return { handled: true };
+      }
     }
 
     // IP-only contract: never DM a hostname a plain-office-network client
@@ -149,6 +185,7 @@ export class AuthHandler implements CommandHandler {
       ...(meta?.name ? { keyName: meta.name } : {}),
       ...(meta?.issuedAtMs ? { issuedAtMs: meta.issuedAtMs } : {}),
       ...(meta?.rotatedAtMs ? { rotatedAtMs: meta.rotatedAtMs } : {}),
+      ...(mode === 'rotate' ? { rotatedNow: true } : {}),
     });
 
     // Secret-safe error boundary: `dmText` carries the plaintext key, so a
@@ -164,11 +201,20 @@ export class AuthHandler implements CommandHandler {
       // Invoked from a channel → confirm there WITHOUT the secret. Invoked
       // from the DM itself → the key message above IS the response.
       if (channel !== dmChannel) {
-        await say({ text: '🔑 llmux 키와 로컬 Claude Code / Codex 사용법을 DM으로 보냈습니다.', thread_ts: threadTs });
+        await say({
+          text:
+            mode === 'rotate'
+              ? '🔑 llmux 키를 새 키로 교체했습니다 — 이전 키는 폐기됐고, 새 키와 사용법을 DM으로 보냈습니다.'
+              : '🔑 llmux 키와 로컬 Claude Code / Codex 사용법을 DM으로 보냈습니다.',
+          thread_ts: threadTs,
+        });
       }
     } catch {
       await say({
-        text: '❌ DM 발송에 실패했습니다 — 봇과의 DM이 열려 있는지 확인한 뒤 다시 시도해주세요.',
+        text:
+          mode === 'rotate'
+            ? '❌ 키는 교체됐지만 DM 발송에 실패했습니다 — 이전 키는 이미 폐기됐습니다. 봇과의 DM이 열려 있는지 확인한 뒤 `key`를 보내면 새 키를 받습니다.'
+            : '❌ DM 발송에 실패했습니다 — 봇과의 DM이 열려 있는지 확인한 뒤 다시 시도해주세요.',
         thread_ts: threadTs,
       });
     }

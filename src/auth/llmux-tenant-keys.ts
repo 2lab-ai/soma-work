@@ -479,6 +479,108 @@ export async function ensureTenantKey(
   return attempt;
 }
 
+/**
+ * Replace the stored key's secret at `target` (`key rotate`). llmux rotates in
+ * place: same id (usage history continues), new secret, and the old secret is
+ * refused from the next request. A stored id llmux no longer has (revoked or
+ * removed outside soma-work) falls back to {@link issue}, which reclaims the
+ * user's live key by name or creates one. Any other refusal keeps the stored key.
+ */
+async function rotateStored(
+  userId: string,
+  target: ControlPlaneTarget,
+  profile?: { name?: string; email?: string },
+): Promise<TenantKeyLease | null> {
+  const stored = state().tenants[userId]?.[target.baseUrl];
+  if (!stored) return issue(userId, target, profile);
+  try {
+    const rotated = await llmuxPost<{ key?: LlmuxIssuedKey }>(target, '/llmux/keys/rotate', { id: stored.id });
+    if (rotated.status === 404) return await issue(userId, target, profile);
+    const secret = nonEmptyString(rotated.body?.key?.key);
+    if (rotated.status !== 200 || !secret) {
+      return fail(userId, target.baseUrl, `POST /llmux/keys/rotate → ${rotated.status}`);
+    }
+    const email = profile?.email?.trim() || stored.email;
+    return remember(userId, {
+      ...stored,
+      secret,
+      keyPrefix: nonEmptyString(rotated.body?.key?.key_prefix) ?? '',
+      baseUrl: target.baseUrl,
+      ...(email ? { email } : {}),
+      rotatedAtMs: Date.now(),
+    });
+  } catch (err) {
+    return fail(userId, target.baseUrl, (err as Error).message);
+  }
+}
+
+/**
+ * `key rotate`: revoke `userId`'s current llmux secret and issue a new one under
+ * the same llmux id, then store it so the user's dispatches use it too. Returns
+ * the new lease, or `null` (never a throw) when not in llmux mode or llmux
+ * refused — the stored key is then left as it was.
+ *
+ * An explicit request is not held back by an earlier failed issuance (the
+ * negative cache), and it waits for an issuance already in flight so it rotates
+ * the key that issuance produced instead of racing it.
+ */
+export async function rotateTenantKey(
+  userId: string,
+  profile?: { name?: string; email?: string },
+): Promise<TenantKeyLease | null> {
+  if (getAuthMode() !== 'llmux') return null;
+  if (!userId.trim()) return null;
+
+  const baseUrl = currentBaseUrl();
+  const target: ControlPlaneTarget = { baseUrl, adminKey: getLlmuxAdminKey(baseUrl) };
+  const cacheKey = tenantCacheKey(baseUrl, userId);
+
+  // Loop, not a single await: two rotations queued behind the same issuance
+  // must not both resume and run at once — llmux and the store could then keep
+  // different secrets. Nothing awaits between the loop exit and the `set` below.
+  for (let pending = _inFlight.get(cacheKey); pending; pending = _inFlight.get(cacheKey)) {
+    await pending;
+  }
+  _negativeCache.delete(cacheKey);
+
+  const attempt = rotateStored(userId, target, profile).finally(() => _inFlight.delete(cacheKey));
+  _inFlight.set(cacheKey, attempt);
+  return attempt;
+}
+
+/**
+ * What llmux thinks of a stored secret:
+ * - `valid`   — llmux lists the stored id, not revoked, with the secret's prefix.
+ * - `stale`   — the id is gone or revoked, or its prefix moved on: someone rotated
+ *               it outside soma-work (`llmux key rotate`). The stored secret now
+ *               401s from any non-loopback client; only a rotation recovers it,
+ *               because llmux shows a secret once.
+ * - `unknown` — nothing stored, or llmux could not be asked.
+ */
+export type TenantKeyHealth = 'valid' | 'stale' | 'unknown';
+
+/**
+ * Whether llmux still accepts the stored secret of `userId` on the current
+ * daemon (see {@link TenantKeyHealth}). Never throws. One `GET /llmux/keys` per
+ * call — meant for the `key` command, not for every dispatch.
+ */
+export async function checkTenantKey(userId: string): Promise<TenantKeyHealth> {
+  const baseUrl = currentBaseUrl();
+  const record = state().tenants[userId]?.[baseUrl];
+  if (!record) return 'unknown';
+  try {
+    const listed = await llmuxGetKeys({ baseUrl, adminKey: getLlmuxAdminKey(baseUrl) });
+    if (listed.status !== 200 || !Array.isArray(listed.body?.keys)) return 'unknown';
+    const live = listed.body.keys.find((entry) => entry?.id === record.id);
+    if (!live || (live.revoked_at_ms !== null && live.revoked_at_ms !== undefined)) return 'stale';
+    const prefix = nonEmptyString(live.key_prefix);
+    if (!prefix) return 'unknown';
+    return record.secret.startsWith(prefix) ? 'valid' : 'stale';
+  } catch {
+    return 'unknown';
+  }
+}
+
 /** Non-secret metadata of a user's stored key — safe to render/log. */
 export interface TenantKeyDescription {
   id: string;

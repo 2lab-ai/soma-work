@@ -394,7 +394,7 @@ try {
 `packages/slack/src/z/` 모듈 (`src/slack/z/`는 re-export shim):
 
 1. **normalize** (`normalize.ts`) — `/z` 엔트리 text → `ZInvocation` (`/z` prefix 제거한 `remainder`).
-2. **whitelist** (`whitelist.ts`) — `isDmAllowedForNonAdmin`: 비-admin DM에서 받는 입력(안전한 `/z` topic, `help`/`sessions`/`theme`/`key`, `%…`/`$…`).
+2. **whitelist** (`whitelist.ts`) — `isDmAllowedForNonAdmin`: 비-admin DM에서 받는 입력(안전한 `/z` topic, `help`/`sessions`/`theme`/`key`/`key rotate`, `%…`/`$…`).
 3. **capability** (`capability.ts`) — slash 엔트리에서 스레드 컨텍스트가 필요한 명령 (`new`, `close`, `renew`, `context`, `restore`, `link`, `compact`, `session:set:*`) 차단.
 4. **router** (`router.ts`) — `translateToLegacy()`로 `/z <topic> <verb> …` → 기존 legacy 문법으로 브리지한 뒤 `CommandRouter`에 dispatch. Phase 2에서 handler 가 직접 `/z` 문법을 수용하도록 이관 예정.
 5. **ui-builder** (`ui-builder.ts`) — `buildHelpCard` (결정적 `block_id = z_<topic>_<issuedAt>_<idx>`), `buildSettingCard`, `buildConfirmationCard`.

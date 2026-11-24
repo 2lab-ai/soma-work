@@ -68,10 +68,11 @@ export function isDmAllowedForNonAdmin(text: string): boolean {
   // Personal llmux client key — DM is the PRIMARY surface for this command
   // (the response carries a secret, delivered by DM). Grammar mirrors
   // CommandParser.isAuthCommand's `key` arm exactly: bare word, optional
-  // leading slash, `auth key` (with the legacy `set` prefix). Anything wider
-  // would let prose through; anything narrower rejects forms the router runs.
-  if (/^\/?key$/.test(lower)) return true;
-  if (/^\/?(?:set\s+)?auth\s+key$/.test(lower)) return true;
+  // leading slash, `auth key` (with the legacy `set` prefix), each optionally
+  // followed by `rotate` (replace the caller's own key). Anything wider would
+  // let prose through; anything narrower rejects forms the router runs.
+  if (/^\/?key(?:\s+rotate)?$/.test(lower)) return true;
+  if (/^\/?(?:set\s+)?auth\s+key(?:\s+rotate)?$/.test(lower)) return true;
   if (/^sessions?$/.test(lower)) return true;
   if (/^sessions?\s+public$/.test(lower)) return true;
   if (/^sessions?\s+terminate\s+\S+$/.test(lower)) return true;

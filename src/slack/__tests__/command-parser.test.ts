@@ -1651,11 +1651,26 @@ describe('CommandParser', () => {
       expect(CommandParser.isAuthCommand('auth key')).toBe(true);
       expect(CommandParser.isAuthCommand('/auth key')).toBe(true);
       // bare-word only — prose that merely starts with "key" must stay chat text
-      expect(CommandParser.isAuthCommand('key rotate')).toBe(false);
+      expect(CommandParser.isAuthCommand('key rotate please')).toBe(false);
+      expect(CommandParser.isAuthCommand('key rotation')).toBe(false);
       expect(CommandParser.isAuthCommand('keys')).toBe(false);
       expect(CommandParser.isAuthCommand('monkey')).toBe(false);
       expect(CommandParser.parseAuthCommand('key')).toEqual({ action: 'key' });
       expect(CommandParser.parseAuthCommand('auth key')).toEqual({ action: 'key' });
+    });
+
+    it('accepts `key rotate` in every form `key` has', () => {
+      for (const t of [
+        'key rotate',
+        '/key rotate',
+        'KEY ROTATE',
+        'auth key rotate',
+        '/auth key rotate',
+        'set auth key rotate',
+      ]) {
+        expect(CommandParser.isAuthCommand(t), t).toBe(true);
+        expect(CommandParser.parseAuthCommand(t), t).toEqual({ action: 'key-rotate' });
+      }
     });
   });
 

@@ -318,7 +318,7 @@ throw err;
 ### 11-2. ~~tombstone 탐지~~ (삭제 — #531)
 
 ### 11-3. 비-admin DM 게이트
-- `isDmAllowedForNonAdmin`: 안전한 `/z` topic, `help`/`sessions`/`theme`/`key`, `%…`/`$…` 허용; prose와 `new`/`renew` 거부
+- `isDmAllowedForNonAdmin`: 안전한 `/z` topic, `help`/`sessions`/`theme`/`key`/`key rotate`, `%…`/`$…` 허용; prose와 `new`/`renew` 거부
 
 ### 11-4. slash forbidden capability
 - slash × (new, close, renew, context, restore, link, compact, session set model, session set verbosity, session set effort, session set thinking, session set thinking_summary) → denied
