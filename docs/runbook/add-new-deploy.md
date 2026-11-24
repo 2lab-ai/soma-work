@@ -901,6 +901,29 @@ npm ci && npm run build
 ./scripts/service.sh ${DEPLOY_ENV} restart
 ```
 
+### 배포 알림의 "변경 사항"이 이상하다
+
+`DEFAULT_UPDATE_CHANNEL`에 오는 배포 알림은 **그 호스트**에서 무엇이 바뀌었는지를 보여 준다.
+dev 태그는 어느 호스트에 배포하든 하나씩 생긴다. 그래서 직전 태그 기준으로 노트를 만들면 문제가 생긴다.
+하루 한 번 배포되는 호스트는 건너뛴 변경을 놓친다. 다른 호스트가 먼저 받은 커밋을 받으면 범위가 비어 버린다.
+예전에는 이 경우 노트가 "Initial release"로만 나왔다.
+
+알림은 다음 세 파일로 만든다.
+
+- 이전 버전: `dist/previous-version.json`. 배포가 덮어쓰기 직전의 `version.json`이다. `scripts/deploy/sync-bundle.sh`가 남긴다.
+- 변경 목록: `dist/release-history.json`. main의 first-parent 이력을 PR 제목으로 적은 것이다. `scripts/version-bump.sh`가 `scripts/release-notes.mjs`로 만든다.
+- 알린 기록: `data/release-notified.json`. 같은 빌드로 재시작하면 이 기록이 있어 알림을 다시 올리지 않는다.
+
+```bash
+cd /opt/soma-work/${DEPLOY_ENV}
+jq '.tag, .commitHashShort' dist/previous-version.json dist/version.json
+jq '.entries[:5]' dist/release-history.json
+cat data/release-notified.json
+```
+
+이전 버전 파일이 없으면 번들의 기본 노트를 쓴다. 기본 노트는 같은 커밋이 아닌 직전 태그부터의 PR 목록이다.
+첫 배포나 예전 배포 스크립트로 배포한 경우가 여기에 해당한다.
+
 ---
 
 ## (삭제됨) 부록 A · 부록 B

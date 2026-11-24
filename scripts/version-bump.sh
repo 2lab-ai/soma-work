@@ -1,5 +1,5 @@
 #!/bin/bash
-# version-bump.sh — Find last version tag, bump patch, generate AI release notes, write version.json
+# version-bump.sh — Find last version tag, bump patch, write release notes (PR titles from main's first-parent chain) and version.json
 #
 # Usage: ./scripts/version-bump.sh [git-ref]
 #   git-ref: 'main' or 'deploy/prod' (default: current git branch)
@@ -9,7 +9,7 @@
 #   deploy/prod: v0.2.1, v0.2.2, ... (auto patch bump from latest non-dev tag)
 #   main:        v0.2.1-dev, v0.2.2-dev, ... (auto patch bump, -dev suffix)
 #
-# Outputs: dist/version.json with version metadata and release notes
+# Outputs: dist/version.json with version metadata and release notes, dist/release-history.json (main's recent PRs)
 # Side effect: creates and pushes a new git tag (vX.Y.Z or vX.Y.Z-dev). A dev tag whose push is refused is dropped and
 # the deploy goes on (the next dev deploy reuses the number); a production tag whose push is refused stops the deploy.
 
@@ -185,50 +185,50 @@ COMMIT_TIME=$(git log -1 --format='%aI' HEAD)
 BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 # --- Generate release notes ---
+#
+# One line per PR merged to main since the last deploy of a DIFFERENT commit (scripts/release-notes.mjs walks the
+# first-parent chain). Dev tags are global — every deploy to any host makes one — so the newest tag often names this
+# very commit (one host got it an hour ago, this run deploys it to another). Its range would be empty, and the notes
+# used to fall to "Initial release". Walk back to the newest tag on another commit instead.
+#
+# These are the bundle's default notes. Each host announces its own range at startup (packages/slack/src/
+# release-notes.ts): from the version.json this deploy replaced there (scripts/deploy/sync-bundle.sh keeps it as
+# dist/previous-version.json) to this commit, out of dist/release-history.json written here.
 
-# Git log between versions (or last 20 commits if no previous tag)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+mkdir -p "$DIST_DIR"
+node "$SCRIPT_DIR/release-notes.mjs" history "$DIST_DIR/release-history.json" 500
+
+NOTES_BASE=""
 if [[ -n "$PREV_TAG" ]]; then
-  GIT_LOG=$(git log "${PREV_TAG}..HEAD" --oneline --no-merges 2>/dev/null || echo "")
-  GIT_DIFF_STAT=$(git diff "${PREV_TAG}..HEAD" --stat 2>/dev/null || echo "")
-else
-  GIT_LOG=$(git log --oneline --no-merges -20 2>/dev/null || echo "")
-  GIT_DIFF_STAT=$(git diff HEAD~20..HEAD --stat 2>/dev/null || echo "")
-fi
-
-RELEASE_NOTES=""
-
-# Try AI-based release notes (Claude CLI)
-if command -v claude &>/dev/null && [[ -n "$GIT_LOG" ]]; then
-  echo "[version-bump] Generating AI release notes via Claude CLI..."
-
-  AI_PROMPT="Generate a concise Korean release note for a Slack bot deployment.
-Version: ${PREV_VERSION} → ${NEW_VERSION}
-
-Git commits:
-${GIT_LOG}
-
-File changes:
-${GIT_DIFF_STAT}
-
-Rules:
-- Use bullet points with emoji prefixes (🐛 fix, ✨ feat, ♻️ refactor, 📝 docs, 🔧 chore)
-- Group by type
-- Each item: 1 line, Korean
-- Max 10 items
-- No markdown headers, just bullets
-- Output only the bullet list, nothing else"
-
-  RELEASE_NOTES=$(claude --print -m haiku "$AI_PROMPT" 2>/dev/null || echo "")
-fi
-
-# Fallback: simple git log
-if [[ -z "$RELEASE_NOTES" ]]; then
-  echo "[version-bump] Using git log for release notes"
-  if [[ -n "$GIT_LOG" ]]; then
-    RELEASE_NOTES=$(echo "$GIT_LOG" | head -15 | sed 's/^/• /')
+  HEAD_COMMIT=$(git rev-parse HEAD)
+  if [[ "$RELEASE_TRACK" == "dev" ]]; then
+    TRACK_TAGS=$(git tag -l 'v*-dev' --sort=-version:refname)
   else
-    RELEASE_NOTES="• Initial release"
+    TRACK_TAGS=$(git tag -l 'v*' --sort=-version:refname | grep -v '\-dev$' || true)
   fi
+  for candidate in $PREV_TAG $TRACK_TAGS; do
+    candidate_commit=$(git rev-parse "${candidate}^{commit}" 2>/dev/null || echo "")
+    [[ -z "$candidate_commit" || "$candidate_commit" == "$HEAD_COMMIT" ]] && continue
+    if git merge-base --is-ancestor "$candidate_commit" HEAD 2>/dev/null; then
+      NOTES_BASE="$candidate"
+      break
+    fi
+  done
+fi
+
+if [[ -n "$NOTES_BASE" ]]; then
+  echo "[version-bump] Release notes: ${NOTES_BASE}..HEAD (first-parent)"
+  # A failure is a failure, not "no change": the deploy goes on and the notes say so.
+  if ! RELEASE_NOTES=$(node "$SCRIPT_DIR/release-notes.mjs" notes "$NOTES_BASE"); then
+    echo "[version-bump] WARNING: release notes for ${NOTES_BASE}..HEAD could not be generated"
+    RELEASE_NOTES="• (릴리즈 노트를 만들지 못함 — 배포 로그 확인)"
+  fi
+  [[ -z "$RELEASE_NOTES" ]] && RELEASE_NOTES="• 코드 변경 없음 — ${NOTES_BASE}와 같은 내용"
+elif [[ -n "$PREV_TAG" ]]; then
+  RELEASE_NOTES="• 코드 변경 없음 — ${PREV_TAG}와 같은 커밋 재배포"
+else
+  RELEASE_NOTES="• 첫 배포"
 fi
 
 # Override release notes for rollback
@@ -241,8 +241,6 @@ if [[ "$IS_ROLLBACK" == "true" ]]; then
 fi
 
 # --- Write version.json ---
-
-mkdir -p "$DIST_DIR"
 
 # Use node to safely generate JSON (handles escaping)
 node -e "
@@ -261,11 +259,12 @@ const data = {
   isRollback: process.argv[12] === 'true',
   rollbackTargetTag: process.argv[13] || null,
   rollbackTargetVersion: process.argv[14] || null,
+  releaseNotesBase: process.argv[15] || null,
 };
 process.stdout.write(JSON.stringify(data, null, 2) + '\n');
 " "$NEW_VERSION" "$PREV_VERSION" "$NEW_TAG" "${PREV_TAG:-none}" \
   "$COMMIT_HASH" "$COMMIT_HASH_SHORT" "$COMMIT_TIME" "$GIT_REF" \
-  "$RELEASE_TRACK" "$BUILD_TIME" "$RELEASE_NOTES" "$IS_ROLLBACK" "$ROLLBACK_TARGET" "$ROLLBACK_TARGET_VERSION" > "$DIST_DIR/version.json"
+  "$RELEASE_TRACK" "$BUILD_TIME" "$RELEASE_NOTES" "$IS_ROLLBACK" "$ROLLBACK_TARGET" "$ROLLBACK_TARGET_VERSION" "$NOTES_BASE" > "$DIST_DIR/version.json"
 
 echo "[version-bump] Wrote $DIST_DIR/version.json"
 cat "$DIST_DIR/version.json"
