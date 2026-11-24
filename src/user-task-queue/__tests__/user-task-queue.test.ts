@@ -168,8 +168,9 @@ describe('UserTaskQueue.gate', () => {
     const h = harness();
     h.running.set('U1', [taskA]);
     h.queue.gate(input());
-    expect(h.queue.gate(input({ continuation: 'drop' }))).toEqual({ action: 'drop' });
-    const host = h.queue.gate(input({ continuation: 'pass', text: 'PR checks finished' }));
+    // Each is its own message (its own ts): a copy of the first would be a duplicate instead.
+    expect(h.queue.gate(input({ continuation: 'drop', message: { ts: '2.7' } }))).toEqual({ action: 'drop' });
+    const host = h.queue.gate(input({ continuation: 'pass', text: 'PR checks finished', message: { ts: '2.8' } }));
     expect(host.action).toBe('queued');
     if (host.action === 'queued') expect(host.position).toBe(2);
   });
@@ -619,5 +620,93 @@ describe('host turn reservations', () => {
     h.queue.reserveHostTurn('U1', 'C1:9.0');
     h.clock.now += 3 * 60_000;
     expect(h.queue.hasFreeSlot('U1', 'C1:8.0')).toBe(true);
+  });
+});
+
+// A shared dev host (2026-11-24): the bot acked one app_mention too late, Slack sent it four more times
+// (retry_attempt 1..3, reason timeout), and each copy lined up as a new entry with its own notice — the same request
+// five times in line, which would have run five times.
+describe('a Slack redelivery is one request', () => {
+  const msg = (ts: string) => ({ user: 'U1', channel: 'C1', ts, text: 'review PR #816' });
+
+  it('the same message for the same thread lines up once; the copies are duplicates', () => {
+    const h = harness();
+    h.running.set('U1', [taskA]);
+    expect(h.queue.gate(input({ message: msg('2.5') })).action).toBe('queued');
+    expect(h.queue.gate(input({ message: msg('2.5') }))).toMatchObject({ action: 'duplicate' });
+    expect(h.queue.gate(input({ message: msg('2.5') }))).toMatchObject({ action: 'duplicate' });
+    expect(h.queue.snapshot().entries).toHaveLength(1);
+    expect(h.notices.filter((n) => n.startsWith('queued:'))).toHaveLength(1);
+    // Another message in that thread is not a copy.
+    expect(h.queue.gate(input({ message: msg('2.6') })).action).toBe('queued');
+  });
+
+  it('a copy that arrives after the entry started, or after it was cancelled, is still a duplicate', () => {
+    const h = harness();
+    h.running.set('U1', [taskA]);
+    h.queue.gate(input({ message: msg('2.5') }));
+    h.running.set('U1', []);
+    h.queue.release('U1');
+    expect(h.queue.takeAdmission('t1', 'C1:2.0')).toBe(true);
+    h.running.set('U1', [taskA]);
+    expect(h.queue.gate(input({ message: msg('2.5') }))).toMatchObject({ action: 'duplicate' });
+
+    h.queue.gate(input({ sessionKey: 'C1:3.0', threadTs: '3.0', message: msg('3.5') }));
+    h.queue.cancel('t2', 'U1');
+    expect(h.queue.gate(input({ sessionKey: 'C1:3.0', threadTs: '3.0', message: msg('3.5') }))).toMatchObject({
+      action: 'duplicate',
+    });
+  });
+
+  it('the memory of a message that left the line lasts long enough for Slack to stop retrying, not forever', () => {
+    const h = harness();
+    h.running.set('U1', [taskA]);
+    h.queue.gate(input({ message: msg('2.5') }));
+    h.queue.cancel('t1', 'U1');
+    h.clock.now += 31 * 60_000;
+    expect(h.queue.gate(input({ message: msg('2.5') })).action).toBe('queued');
+  });
+
+  it('copies already in a saved line are folded into the first on load', () => {
+    const entry = (id: string, ts: string, sessionKey = 'C1:2.0') => ({
+      id,
+      userId: 'U1',
+      kind: 'request' as const,
+      sessionKey,
+      channel: 'C1',
+      threadTs: sessionKey.split(':')[1],
+      preview: 'p',
+      enqueuedAt: 1,
+      state: 'waiting' as const,
+      message: { channel: 'C1', ts },
+    });
+    const h = harness({
+      ledger: {
+        ...emptyLedger(),
+        entries: [entry('a', '2.5'), entry('b', '9.9', 'C1:9.0'), entry('c', '2.5'), entry('d', '2.5')],
+      },
+    });
+    expect(h.queue.snapshot().entries.map((e) => e.id)).toEqual(['a', 'b']);
+  });
+});
+
+// Z (2026-11-24): raising a person's limit starts what waits at once — even when the first in line cannot start yet
+// because its own thread still runs.
+describe('a freed slot goes to the first entry that can start', () => {
+  it('an entry whose own thread still runs is passed over; the next one takes the slot', () => {
+    const h = harness();
+    const busyThread: RunningTask = { ...taskA, sessionKey: 'C1:2.0', threadTs: '2.0' };
+    h.running.set('U1', [taskA]);
+    h.queue.gate(input());
+    h.queue.gate(input({ sessionKey: 'C1:3.0', threadTs: '3.0', message: { ts: '3.5' } }));
+    // The first entry's thread runs (a turn of it went on); the limit goes to 3.
+    h.running.set('U1', [taskA, busyThread]);
+    h.limits.set('U1', 3);
+    h.queue.release('U1');
+    expect(h.started.map((e) => e.sessionKey)).toEqual(['C1:3.0']);
+    expect(h.queue.snapshot().entries.map((e) => [e.sessionKey, e.state])).toEqual([
+      ['C1:2.0', 'waiting'],
+      ['C1:3.0', 'admitted'],
+    ]);
   });
 });

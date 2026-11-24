@@ -85,6 +85,8 @@ export interface GateInput extends UserTaskThread {
 export type GateResult =
   | { action: 'run' }
   | { action: 'drop' }
+  /** A redelivery (Slack retried an event it thinks was not acked) of a message already in line, or just gone from it. */
+  | { action: 'duplicate'; entryId?: string }
   | { action: 'queued'; entry: UserTaskEntry; position: number; limit: number; running: RunningTask[] };
 
 export interface QueuedNoticeContext {
@@ -169,6 +171,15 @@ function cronJobOf(message: Record<string, unknown> | undefined): string | undef
   return typeof cron?.jobId === 'string' && cron.jobId ? cron.jobId : undefined;
 }
 
+/** How long a message that left the line is remembered: past Slack's retries (seconds to minutes), with room. */
+export const REDELIVERY_MEMORY_MS = 30 * 60_000;
+
+/** One Slack message in one thread (its `ts`); undefined for a message with no ts of its own (a host turn's). */
+function messageKeyOf(sessionKey: string, message: Record<string, unknown> | undefined): string | undefined {
+  const ts = message?.ts;
+  return typeof ts === 'string' && ts ? `${sessionKey}|${ts}` : undefined;
+}
+
 function previewOf(text: string | undefined): string {
   const flat = (text ?? '').replace(/\s+/g, ' ').trim();
   if (flat.length <= PREVIEW_MAX) return flat;
@@ -181,13 +192,26 @@ export class UserTaskQueue {
   private readonly pendingStops = new Map<string, { victim: RunningTask; firstId: string; resumeId: string }>();
   /** Slots host events reserved on their way to the gate (in memory: a restart drops them, as it drops the events). */
   private readonly hostReservations = new Map<string, { userId: string; at: number }>();
+  /** Messages that left the line (started, cancelled, closed) — a late Slack retry of one is not a new request. */
+  private readonly recentlyLeft = new Map<string, number>();
   private readonly now: () => number;
   private readonly newId: () => string;
 
   constructor(private readonly deps: UserTaskQueueDeps) {
     this.now = deps.now ?? Date.now;
     this.newId = deps.newId ?? (() => `utq_${randomUUID().slice(0, 8)}`);
-    this.ledger = recoverAfterRestart(deps.store.load() ?? emptyLedger());
+    const loaded = recoverAfterRestart(deps.store.load() ?? emptyLedger());
+    // Copies of one message saved before redeliveries were recognised are folded into the first.
+    const seen = new Set<string>();
+    const folded = loaded.entries.filter((e) => {
+      const key = messageKeyOf(e.sessionKey, e.message);
+      if (!key) return true;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    this.ledger = folded.length === loaded.entries.length ? loaded : { ...loaded, entries: folded };
+    if (this.ledger !== loaded) deps.store.save(this.ledger);
   }
 
   /** Decide, synchronously, whether a message may start its turn now. */
@@ -202,6 +226,15 @@ export class UserTaskQueue {
       // Its reservation is gone (taken, or expired on the way): it runs only into a free slot. It never lines up as a
       // request — in the ledger a merged PR or a closed session could no longer take it back.
       return this.hasFreeSlot(input.userId, input.sessionKey) ? { action: 'run' } : { action: 'drop' };
+    }
+    // Slack resends an event it thinks was not acked in time (retry_attempt, reason timeout): the copy of a message
+    // already in line — or one that just left it — is not a second request.
+    const key = messageKeyOf(input.sessionKey, input.message);
+    if (key) {
+      const same = this.ledger.entries.find((e) => messageKeyOf(e.sessionKey, e.message) === key);
+      if (same) return { action: 'duplicate', entryId: same.id };
+      this.pruneRecentlyLeft();
+      if (this.recentlyLeft.has(key)) return { action: 'duplicate' };
     }
     const limit = this.deps.limitFor(input.userId);
     if (limit === UNLIMITED) return { action: 'run' };
@@ -239,6 +272,7 @@ export class UserTaskQueue {
     const entry = findEntry(this.ledger, entryId);
     if (!entry || entry.state !== 'admitted' || entry.sessionKey !== sessionKey) return false;
     this.commit(remove(this.ledger, entryId));
+    this.rememberLeft(entry);
     return true;
   }
 
@@ -337,6 +371,7 @@ export class UserTaskQueue {
     if (entry.userId !== by && !opts.admin) return { ok: false, reason: 'forbidden' };
     if (entry.state !== 'waiting') return { ok: false, reason: 'not-waiting' };
     this.commit(remove(this.ledger, entryId));
+    this.rememberLeft(entry);
     this.safe(() => this.deps.notify?.cancelled(entry, 'person'));
     this.release(entry.userId);
     return { ok: true };
@@ -353,6 +388,7 @@ export class UserTaskQueue {
     let next = this.ledger;
     for (const e of gone) next = remove(next, e.id);
     this.commit(next);
+    for (const e of gone) this.rememberLeft(e);
     for (const e of gone) this.safe(() => this.deps.notify?.cancelled(e, 'closed'));
     for (const user of new Set(gone.map((e) => e.userId))) this.release(user);
     return gone.length;
@@ -462,17 +498,33 @@ export class UserTaskQueue {
     const limit = this.deps.limitFor(userId);
     // Bounded: every pass admits or drops one entry.
     for (let guard = 0; guard < 1000; guard++) {
-      const next = waitingOf(this.ledger, userId)[0];
-      if (!next) return;
-      if (limit !== UNLIMITED) {
-        // Reservations of host events on their way hold their slots too.
-        const holding = this.holdingElsewhere(userId, next.sessionKey);
-        // The next entry's own thread still running (a turn of it went on): wait for it too.
-        const ownBusy = this.deps.runningTasks(userId).some((t) => t.sessionKey === next.sessionKey);
-        if (holding >= limit || ownBusy) return;
+      const line = waitingOf(this.ledger, userId);
+      let next: UserTaskEntry | undefined;
+      for (const candidate of line) {
+        if (limit !== UNLIMITED) {
+          // Reservations of host events on their way hold their slots too.
+          if (this.holdingElsewhere(userId, candidate.sessionKey) >= limit) return;
+          // Its own thread still runs (a turn of it went on): it cannot start yet — the free slot goes to the next one
+          // in line instead of waiting behind it (a raised limit starts what can start at once).
+          if (this.deps.runningTasks(userId).some((t) => t.sessionKey === candidate.sessionKey)) continue;
+        }
+        next = candidate;
+        break;
       }
+      if (!next) return;
       this.admitAndStart(next, next.bypass ? 'bypass' : 'turn', false);
     }
+  }
+
+  /** A message that left the line (started, cancelled, closed): its late Slack retries are duplicates for a while. */
+  private rememberLeft(entry: UserTaskEntry): void {
+    const key = messageKeyOf(entry.sessionKey, entry.message);
+    if (key) this.recentlyLeft.set(key, this.now());
+  }
+
+  private pruneRecentlyLeft(): void {
+    const cutoff = this.now() - REDELIVERY_MEMORY_MS;
+    for (const [key, at] of this.recentlyLeft) if (at < cutoff) this.recentlyLeft.delete(key);
   }
 
   private admitAndStart(entry: UserTaskEntry, how: 'turn' | 'bypass', first: boolean): void {
