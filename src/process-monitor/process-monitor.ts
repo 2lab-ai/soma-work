@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import type { TrackedClaudeRootInfo } from '../agent-runtime/claude-child-process-registry';
-import { CpuThrottler, createThrottleReader, type ReadThrottle } from './cpu-throttler';
+import { CpuThrottler, createParentReader, createThrottleReader, type ReadThrottle } from './cpu-throttler';
 import type { ReadCwds } from './cwd-reader';
 import { createNodeCapacityReader, type RunCommand } from './node-capacity';
 import type { InspectProcess } from './process-inspector';
@@ -195,6 +195,8 @@ export class LocalProcessMonitor implements ProcessHost {
     this.throttler = new CpuThrottler({
       kill: this.kill,
       read: deps.readThrottle ?? createThrottleReader(deps.runPs, deps.readCpuSeconds),
+      readParents: createParentReader(deps.runPs),
+      liveStartToken: (pid) => this.liveStartToken(pid),
       now: this.now,
       userPaused: (sessionKey, pid, startToken) => this.paused.get(sessionKey)?.get(pid)?.startToken === startToken,
       setTimer: deps.setTimer,
@@ -492,8 +494,9 @@ export class LocalProcessMonitor implements ProcessHost {
 
   /**
    * Hand the sample to the CPU throttler (a session over its owner's cap starts being metered) and say on each session
-   * what it is held to. A process the cap holds reads as running and `throttled` — it is not a pause: it runs part of
-   * every period, and its 일시중지 is still the person's own.
+   * what it is held to. A process the cap holds (or held a moment ago — the sample may predate its continue) reads as
+   * running and `throttled`: it is not a pause, it runs part of every period, and its 일시중지 is still the person's
+   * own. Any other stop — a person's pause, job control — stays a stop.
    */
   private applyCpuCaps(sessions: readonly SessionProcessDetail[]): SessionProcessDetail[] {
     const capFor = this.cpuCapFor;
@@ -504,13 +507,13 @@ export class LocalProcessMonitor implements ProcessHost {
       const metered = this.throttler.meteredCap(s.sessionKey) !== null;
       if (cap === null && !metered) return s;
       const mine = this.paused.get(s.sessionKey);
-      const processes = metered
-        ? s.processes.map((p) =>
-            p.state === 'stopped' && mine?.get(p.pid)?.startToken !== p.startToken
-              ? { ...p, state: 'running' as const, throttled: true }
-              : p,
-          )
-        : s.processes;
+      const processes = s.processes.map((p) =>
+        p.state === 'stopped' &&
+        mine?.get(p.pid)?.startToken !== p.startToken &&
+        this.throttler.holds(s.sessionKey, p.pid, p.startToken)
+          ? { ...p, state: 'running' as const, throttled: true }
+          : p,
+      );
       return {
         ...s,
         processes,

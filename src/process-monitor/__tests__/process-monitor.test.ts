@@ -54,6 +54,8 @@ function setup(
       p.stat = signal === 'SIGSTOP' ? 'T' : 'S';
     });
   let now = 1_000;
+  // The CPU throttler's timers: run by hand (runTimers), never on their own.
+  const timers: Array<() => void> = [];
   const monitor = new LocalProcessMonitor({
     nodeId: 'n1',
     roots: {
@@ -80,8 +82,14 @@ function setup(
     inspectProcess: opts.inspectProcess,
     readThrottle: opts.readThrottle,
     // The throttler's periods do not run on their own here; a test drives what it needs.
-    setTimer: () => null,
-    clearTimer: () => {},
+    setTimer: (fn: () => void) => {
+      timers.push(fn);
+      return fn;
+    },
+    clearTimer: (h: unknown) => {
+      const i = timers.indexOf(h as () => void);
+      if (i >= 0) timers.splice(i, 1);
+    },
   });
   return {
     ps,
@@ -93,6 +101,18 @@ function setup(
     },
     fireShutdown: () => {
       for (const l of shutdown) l();
+    },
+    /** Run the throttler's timers for a few rounds (each round runs what the previous one armed). */
+    runTimers: async (rounds = 4) => {
+      for (let r = 0; r < rounds; r++) {
+        for (const fn of timers.splice(0)) fn();
+        for (let i = 0; i < 20; i++) await Promise.resolve();
+      }
+    },
+    /** Run the oldest armed throttler timer only (a period's hold lands before the next period continues it). */
+    runOne: async () => {
+      timers.shift()?.();
+      for (let i = 0; i < 20; i++) await Promise.resolve();
     },
     tick: (ms: number) => {
       now += ms;
@@ -273,10 +293,22 @@ describe('LocalProcessMonitor.inspect — one process in depth, a snapshot', () 
 });
 
 describe('LocalProcessMonitor — the CPU cap on each task', () => {
-  it('a task over its cap is metered: what the cap holds reads running + throttled, a person’s pause stays a pause', async () => {
-    const { monitor, ps } = setup();
-    // Session A: 300 burns 4 cores (ps's own %cpu on a first sample).
+  it('a task over its cap is metered: what the cap holds reads running + throttled, any other stop stays a stop', async () => {
+    const { monitor, ps, runOne, signals } = setup({
+      // The period read, from the fake process table.
+      readThrottle: async (pids) =>
+        new Map(
+          pids
+            .filter((pid) => ps.procs.has(pid))
+            .map((pid) => {
+              const p = ps.procs.get(pid) as { stat?: string; start?: string; cpu?: number };
+              return [pid, { stat: p.stat ?? 'S', startToken: p.start ?? start, cpuSeconds: p.cpu ?? 0 }];
+            }),
+        ),
+    });
+    // Session A: 300 burns 4 cores (ps's own %cpu on a first sample); 310 was stopped by someone else (job control).
     ps.set(300, { ppid: 200, args: '/bin/bash -c make', psCpu: 400 });
+    ps.set(310, { ppid: 200, args: '/bin/bash -c vim', stat: 'T' });
     monitor.setCpuCaps((key) => (key === 'A' ? 100 : null));
     const first = await monitor.sample();
     const a = first.sessions.find((x) => x.sessionKey === 'A');
@@ -285,11 +317,20 @@ describe('LocalProcessMonitor — the CPU cap on each task', () => {
     const b = first.sessions.find((x) => x.sessionKey === 'B');
     expect(b).not.toHaveProperty('cpuCapPercent');
     expect(b).not.toHaveProperty('throttling');
-    // The cap holds 300 at the next sample: ps says T, the tab says running and throttled, not 일시중지.
-    ps.set(300, { ppid: 200, args: '/bin/bash -c make', psCpu: 400, stat: 'T' });
+    // A period runs (it arms its hold, then the next period), then its hold lands: 300 is held (a real SIGSTOP); 310,
+    // stopped by someone else, is never signalled.
+    await runOne();
+    await runOne();
+    expect(signals).toContainEqual([300, 'SIGSTOP']);
+    expect(signals.some(([pid]) => pid === 310)).toBe(false);
     const held = (await monitor.sample()).sessions.find((x) => x.sessionKey === 'A');
+    // ps says T for both: the cap's hold reads running and throttled; the foreign stop stays a stop.
     expect(held?.processes.find((p) => p.pid === 300)).toMatchObject({ state: 'running', throttled: true });
-    expect(held?.stoppedCount).toBe(0);
+    expect(held?.processes.find((p) => p.pid === 310)).toMatchObject({ state: 'stopped' });
+    expect(held?.processes.find((p) => p.pid === 310)).not.toHaveProperty('throttled');
+    expect(held?.stoppedCount).toBe(1);
+    monitor.dispose();
+    expect(ps.procs.get(300)?.stat).not.toBe('T');
   });
 
   it('a person’s pause in a metered task still reads stopped and counts as paused', async () => {

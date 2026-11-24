@@ -9,14 +9,32 @@ import type { ProcessSample, SessionProcessDetail } from '../types';
 class Machine {
   readonly procs = new Map<
     number,
-    { demand: number; cpu: number; at: number; stopped: boolean; startToken: string; foreignStop?: boolean }
+    { demand: number; cpu: number; at: number; stopped: boolean; startToken: string; ppid: number }
   >();
   readonly signals: Array<[number, NodeJS.Signals]> = [];
+  /** A continue the OS refuses (EPERM) for these pids. */
+  readonly refuse = new Set<number>();
 
-  add(pid: number, demand: number, startToken = 'Mon Nov 23 10:00:00 2026'): this {
-    this.procs.set(pid, { demand, cpu: 0, at: Date.now(), stopped: false, startToken });
+  add(pid: number, demand: number, startToken = 'Mon Nov 23 10:00:00 2026', ppid = 1): this {
+    this.procs.set(pid, { demand, cpu: 0, at: Date.now(), stopped: false, startToken, ppid });
     return this;
   }
+
+  /** The pid exits and the OS hands it to a new process (a new start time), optionally stopped by someone else. */
+  reuse(pid: number, stopped = false): void {
+    this.procs.set(pid, {
+      demand: 0,
+      cpu: 0,
+      at: Date.now(),
+      stopped,
+      startToken: 'Wed Nov 25 08:00:00 2026',
+      ppid: 1,
+    });
+  }
+
+  readonly liveStartToken = (pid: number): string | null => this.procs.get(pid)?.startToken ?? null;
+
+  readonly readParents = async () => new Map([...this.procs].map(([pid, p]) => [pid, p.ppid]));
 
   private settle(pid: number): void {
     const p = this.procs.get(pid);
@@ -30,6 +48,8 @@ class Machine {
     this.signals.push([pid, signal]);
     const p = this.procs.get(pid);
     if (!p) throw Object.assign(new Error('no such process'), { code: 'ESRCH' });
+    if (signal === 'SIGCONT' && this.refuse.has(pid))
+      throw Object.assign(new Error('not permitted'), { code: 'EPERM' });
     this.settle(pid);
     if (signal === 'SIGSTOP') p.stopped = true;
     if (signal === 'SIGCONT') p.stopped = false;
@@ -84,6 +104,8 @@ function setup(opts: { paused?: (pid: number) => boolean } = {}) {
   const t = new CpuThrottler({
     kill: m.kill,
     read: m.read,
+    readParents: m.readParents,
+    liveStartToken: m.liveStartToken,
     now: () => Date.now(),
     userPaused: (_k, pid) => opts.paused?.(pid) ?? false,
   });
@@ -221,6 +243,7 @@ describe('CpuThrottler — a task tree held to its cap by a duty cycle', () => {
         if (fail) throw new Error('ps timed out');
         return m.read(pids);
       },
+      liveStartToken: m.liveStartToken,
       now: () => Date.now(),
       userPaused: () => false,
     });
@@ -229,7 +252,74 @@ describe('CpuThrottler — a task tree held to its cap by a duty cycle', () => {
     fail = true;
     await vi.advanceTimersByTimeAsync(THROTTLE_PERIOD_MS * 2);
     expect(m.procs.get(11)?.stopped).toBe(false);
+    // The read recovers: the loop kept running, metering resumes with no new sample.
+    fail = false;
+    await vi.advanceTimersByTimeAsync(1_500);
+    const before = m.cpuOf(11) + m.cpuOf(10);
+    await vi.advanceTimersByTimeAsync(4_000);
+    const rate = ((m.cpuOf(11) + m.cpuOf(10) - before) / 4) * 100;
+    expect(rate).toBeLessThan(140);
+    expect(t.meteredCap('A')).toBe(100);
     t.releaseAll();
+  });
+
+  it('a held pid reused by another process is never continued — on release, on shutdown, or in a period', async () => {
+    const { m, t } = setup();
+    m.add(10, 0).add(11, 4);
+    t.update([session(400, [proc(10, 'root'), proc(11, 'child')])], () => 100);
+    for (let i = 0; i < 40 && !t.holds('A', 11, START); i++) await vi.advanceTimersByTimeAsync(10);
+    // 11 is killed while held and its pid goes to another program, which someone else stopped.
+    m.reuse(11, true);
+    const n = m.signals.length;
+    t.releaseAll();
+    expect(m.signals.slice(n).some(([pid]) => pid === 11)).toBe(false);
+    expect(m.procs.get(11)?.stopped).toBe(true);
+  });
+
+  it('a continue the OS refuses keeps the hold and is tried again; an unreadable identity on release is retried', async () => {
+    const live = new Map<number, string | null | undefined>();
+    const m = new Machine().add(10, 0).add(11, 4);
+    const t = new CpuThrottler({
+      kill: m.kill,
+      read: m.read,
+      liveStartToken: (pid) => (live.has(pid) ? live.get(pid) : m.liveStartToken(pid)),
+      now: () => Date.now(),
+      userPaused: () => false,
+    });
+    t.update([session(400, [proc(10, 'root'), proc(11, 'child')])], () => 100);
+    for (let i = 0; i < 40 && !t.holds('A', 11, START); i++) await vi.advanceTimersByTimeAsync(10);
+    m.refuse.add(11);
+    t.release('A');
+    expect(m.procs.get(11)?.stopped).toBe(true);
+    expect(t.holds('A', 11, START)).toBe(true);
+    m.refuse.delete(11);
+    await vi.advanceTimersByTimeAsync(THROTTLE_PERIOD_MS * 2);
+    expect(m.procs.get(11)?.stopped).toBe(false);
+    // Unknown identity at release: kept, continued by the next period's read.
+    t.update([session(400, [proc(10, 'root'), proc(11, 'child')])], () => 100);
+    for (let i = 0; i < 80 && !m.procs.get(11)?.stopped; i++) await vi.advanceTimersByTimeAsync(10);
+    live.set(11, undefined);
+    t.release('A');
+    expect(m.procs.get(11)?.stopped).toBe(true);
+    await vi.advanceTimersByTimeAsync(THROTTLE_PERIOD_MS * 2);
+    expect(m.procs.get(11)?.stopped).toBe(false);
+    t.releaseAll();
+  });
+
+  it('holds what the tree started since the sample: a new worker under a capped tree is metered too', async () => {
+    const { m, t } = setup();
+    m.add(10, 0).add(11, 0.01, START, 10);
+    t.update([session(150, [proc(10, 'root'), proc(11, 'child', { ppid: 10 })])], () => 100);
+    // A new worker appears under 11 after the sample: two cores.
+    m.add(12, 2, START, 11);
+    await vi.advanceTimersByTimeAsync(2_000);
+    const before = m.cpuOf(12);
+    await vi.advanceTimersByTimeAsync(4_000);
+    const rate = ((m.cpuOf(12) - before) / 4) * 100;
+    expect(rate).toBeLessThan(130);
+    expect(m.signals.some(([pid, sig]) => pid === 12 && sig === 'SIGSTOP')).toBe(true);
+    t.releaseAll();
+    expect(m.procs.get(12)?.stopped).toBe(false);
   });
 });
 

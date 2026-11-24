@@ -61,7 +61,8 @@ export function parseProcStatCpuSeconds(stat: string, clkTck = LINUX_CLK_TCK): n
   return Number.isFinite(utime) && Number.isFinite(stime) ? (utime + stime) / clkTck : null;
 }
 
-const readLinuxCpuSeconds: ReadCpuSeconds = async (pids) => {
+/** Linux CPU seconds per pid from `/proc/<pid>/stat` ticks (ps `time` there has whole-second resolution). */
+export const readLinuxCpuSeconds: ReadCpuSeconds = async (pids) => {
   const out = new Map<number, number>();
   await Promise.all(
     pids.map(async (pid) => {

@@ -27,11 +27,13 @@ controller; it would replace the throttler there, not sit beside it.
 
 - **When.** The monitor samples every 5 s. A task whose tree used more than its cap over a sample starts being
   metered. A metered task that runs under its cap for 8 periods in a row (2 s) is let go.
-- **Each period (250 ms).** One `ps -o pid=,stat=,lstart=,time=` for every metered pid (Linux: `/proc/<pid>/stat`
-  ticks over ps's whole seconds). The tree's rate since the last period sets the share of the next period it may run:
-  `share = share × cap / rate`, at least 5%. Everything held is continued; after `share × 250 ms` the tree's
-  processes are stopped until the next period.
-- **Measured:** a two-thread spinner at 190% free runs at 102% under a 100% cap (owner-mac, 4 s windows); a
+- **Each period (250 ms).** The parent map (`ps -A -o pid=,ppid=`) finds what the tree started since the sample;
+  one `ps -o pid=,stat=,lstart=,time=` reads every member (Linux: `/proc/<pid>/stat` ticks over ps's whole seconds).
+  The tree's rate since the last period sets the share of the next period it may run: `share = share × cap / rate`,
+  at least 5%. Everything held is continued — each only if the read shows the same start time it was stopped with;
+  after `share × 250 ms` the candidates are read once more and stopped, each only if it is still that process,
+  running, and not a person's pause. A failed read skips one period, never the loop.
+- **Measured:** a two-thread spinner at 184–190% free runs at 102–105% under a 100% cap (owner-mac, 4 s windows); a
   one-thread spinner under a 50% cap stays between 20% and 75% in the real-OS test on macOS and Linux CI.
 
 ## What it never does
@@ -41,7 +43,9 @@ controller; it would replace the throttler there, not sit beside it.
   who pauses a held process makes it theirs.
 - Signal a pid whose start time is not the one the tree sampled (a reused pid).
 - Leave anything stopped: an abort of the task, a cap change, the tree leaving the sample and daemon shutdown continue
-  everything it holds — shutdown first, before the monitor's own resume pass.
+  everything it holds — shutdown first, before the monitor's own resume pass. Release and shutdown read each held
+  pid's start time live first; a hold whose identity cannot be read, or whose continue the OS refuses, is kept and
+  tried again every period (shutdown: three passes, then a warning naming the pids).
 
 ## What a person sees
 

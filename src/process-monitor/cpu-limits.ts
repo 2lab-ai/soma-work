@@ -58,7 +58,6 @@ export class UserCpuLimits {
   constructor(
     dataDir: string,
     private readonly isAdmin: (userId: string) => boolean,
-    private readonly defaultCap = DEFAULT_CPU_CAP,
   ) {
     this.file = path.join(dataDir, USER_CPU_LIMITS_FILE);
     try {
@@ -81,7 +80,7 @@ export class UserCpuLimits {
 
   /** The cap the person gets with no setting (`null` = none: an admin). */
   defaultFor(userId: string): number | null {
-    return this.isAdmin(userId) ? null : this.defaultCap;
+    return this.isAdmin(userId) ? null : DEFAULT_CPU_CAP;
   }
 
   settingFor(userId: string): CpuCapSetting | undefined {

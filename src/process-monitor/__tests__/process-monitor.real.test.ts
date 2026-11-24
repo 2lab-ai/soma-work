@@ -9,7 +9,7 @@ import {
   createTrackedClaudeProcessSpawner,
   getClaudeChildProcessRegistry,
 } from '../../agent-runtime/claude-child-process-registry';
-import { LocalProcessMonitor, parseProcStatCpuSeconds, runReadOnly } from '../index';
+import { LocalProcessMonitor, parseProcStatCpuSeconds, readLinuxCpuSeconds, runReadOnly } from '../index';
 import { parseCpuTime } from '../ps-table';
 import type { SessionProcessDetail } from '../types';
 
@@ -217,6 +217,8 @@ describe.skipIf(!posix)('process monitor on the real OS', () => {
       roots: getClaudeChildProcessRegistry(),
       runPs: (args) => runReadOnly('ps', args),
       runCommand: runReadOnly,
+      // As production wires it: Linux ps time has whole-second resolution, /proc ticks do not.
+      readCpuSeconds: process.platform === 'linux' ? readLinuxCpuSeconds : undefined,
     });
     monitor.setCpuCaps(() => 50);
     const cpuOf = (pid: number): number => {
