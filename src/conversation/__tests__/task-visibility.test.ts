@@ -351,6 +351,7 @@ describe('task-visibility — board, live pushes and routes', () => {
     );
     const pushes = (c: { messages: any[] }) =>
       c.messages.filter((m) => m.type === 'sessionUpdated' || m.type === 'sessionPatch');
+    const lastPush = (c: { messages: any[] }) => pushes(c)[pushes(c).length - 1];
     // The clock stands still: a slow run must not reach the 30 s whole-card refresh (CARD_KEYFRAME_MS) by itself.
     const frozen = Date.now();
     const clock = vi.spyOn(Date, 'now').mockReturnValue(frozen);
@@ -391,9 +392,9 @@ describe('task-visibility — board, live pushes and routes', () => {
     sessions.get(key).title = 'After resync';
     await vi.waitFor(() => {
       dashboard.broadcastSingleSessionUpdate(key);
-      expect(pushes(owner).at(-1)?.type).toBe('sessionUpdated');
+      expect(lastPush(owner)?.type).toBe('sessionUpdated');
     });
-    expect(pushes(owner).at(-1)?.session.title).toBe('After resync');
+    expect(lastPush(owner)?.session.title).toBe('After resync');
     // Patches before the resync arrived, then the whole card — never a whole card without it.
     expect(
       pushes(owner)
