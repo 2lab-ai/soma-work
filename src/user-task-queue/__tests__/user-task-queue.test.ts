@@ -663,7 +663,11 @@ describe('a Slack redelivery is one request', () => {
     h.running.set('U1', [taskA]);
     h.queue.gate(input({ message: msg('2.5') }));
     h.queue.cancel('t1', 'U1');
-    h.clock.now += 31 * 60_000;
+    // Slack's retries come seconds to minutes later: still a duplicate just before the memory ends…
+    h.clock.now += 29 * 60_000;
+    expect(h.queue.gate(input({ message: msg('2.5') }))).toMatchObject({ action: 'duplicate' });
+    // …and a new request once it has.
+    h.clock.now += 2 * 60_000;
     expect(h.queue.gate(input({ message: msg('2.5') })).action).toBe('queued');
   });
 

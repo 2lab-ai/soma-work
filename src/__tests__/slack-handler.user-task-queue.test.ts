@@ -404,13 +404,16 @@ describe('SlackHandler — per-user task queue gate', () => {
   // each copy lined up — the same request five times in line, five notices.
   it('a Slack redelivery of a message that waits in line is one entry; each copy still gets its receipt', async () => {
     const a = await startBusy('100.0');
-    const accepted = vi.fn();
-    handler.onTurnAccepted(CHANNEL, '200.01', accepted);
-    for (let i = 0; i < 4; i++) {
+    await handler.handleMessage(message('200.0', { ts: '200.01', text: 'review PR #816' }), vi.fn());
+    expect(ledger.entries).toHaveLength(1);
+    // A host waiting on the copy hears its receipt from the duplicate branch itself.
+    for (let i = 0; i < 3; i++) {
+      const accepted = vi.fn();
+      handler.onTurnAccepted(CHANNEL, '200.01', accepted);
       await handler.handleMessage(message('200.0', { ts: '200.01', text: 'review PR #816' }), vi.fn());
+      expect(accepted).toHaveBeenCalledTimes(1);
     }
     expect(ledger.entries).toHaveLength(1);
-    expect(accepted).toHaveBeenCalled();
     expect(startWithContinuation).toHaveBeenCalledTimes(1);
     await a.settle();
   });
