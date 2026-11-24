@@ -18,7 +18,7 @@ function clientFn(name: string): string {
   return ALL_JS.slice(start + 1, end + 2);
 }
 const VARS =
-  'var TQ_MAX = 10; var TQ_SWEEP = 270; var TQ_PX_PER_STEP = 14; var _tq = null; var _tqSaveTimers = { U1: 7 }; var _tqWriteSeq = {}; var _tqWriteChain = {};';
+  'var TQ_MAX = 10; var TQ_SWEEP = 270; var TQ_PX_PER_STEP = 14; var _tq = null; var _tqSaveTimers = { U1: 7 }; var _tqWriteSeq = {}; var _tqWriteChain = {}; var _tqCpuSeq = {}; var _tqCpuChain = {};';
 function load<T>(fns: string[], inject: Record<string, unknown> = {}): T {
   const names = Object.keys(inject);
   const body = `${VARS}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')}, setTq: function (v) { _tq = v; } };`;
@@ -293,5 +293,35 @@ describe('the CPU cap', () => {
       ['PUT', '/api/settings/cpu-limits/U1', { cpu: 'unlimited' }],
     ]);
     expect(status).toContain('Alice: 작업 하나의 CPU 한도 400%');
+  });
+
+  it('changes for one person are written in the order they were made: a slow first write never lands last', async () => {
+    const started: unknown[] = [];
+    const finish: Array<() => void> = [];
+    const k = load<any>([...KNOB, 'tqUser', 'tqCpuChange'], {
+      apiWrite: (_m: string, _u: string, b: { cpu: unknown }) => {
+        started.push(b.cpu);
+        return new Promise((resolve) => {
+          finish.push(() =>
+            resolve({ ok: true, data: { user: { id: 'U1', name: 'Alice', cpu: { limit: b.cpu, setting: b.cpu } } } }),
+          );
+        });
+      },
+      tqStatus: () => {},
+      tqRefreshRow: () => {},
+    });
+    k.setTq({ users: [{ id: 'U1', name: 'Alice' }] });
+    const sel = (value: string) => ({ value, getAttribute: () => 'U1' });
+    const first = k.tqCpuChange(sel('400'));
+    const second = k.tqCpuChange(sel('50'));
+    await new Promise((r) => setTimeout(r, 0));
+    // The second waits for the first: only one write is out.
+    expect(started).toEqual([400]);
+    finish[0]();
+    await first;
+    await new Promise((r) => setTimeout(r, 0));
+    expect(started).toEqual([400, 50]);
+    finish[1]();
+    await second;
   });
 });

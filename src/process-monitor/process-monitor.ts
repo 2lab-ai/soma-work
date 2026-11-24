@@ -346,14 +346,16 @@ export class LocalProcessMonitor implements ProcessHost {
           this.readCapacity(),
         ]);
         if (treeRead.status === 'rejected') throw treeRead.reason;
-        if (nodeRead.status === 'rejected') throw nodeRead.reason;
         const tree = treeRead.value;
-        const node = nodeRead.value;
         window.to = this.now();
+        // The cap is enforced from the tree read alone: a failing capacity read (telemetry) must not stop it.
+        const sessions = this.applyCpuCaps(tree.sessions, window, new Map(roots.map((r) => [r.pid, r.turnId])));
+        if (nodeRead.status === 'rejected') throw nodeRead.reason;
+        const node = nodeRead.value;
         const snapshot: NodeProcessSnapshot = {
           node,
           sampledAt: this.now(),
-          sessions: this.applyCpuCaps(tree.sessions, window, new Map(roots.map((r) => [r.pid, r.turnId]))),
+          sessions,
           unattributed: tree.unattributed,
         };
         this.snapshot = snapshot;

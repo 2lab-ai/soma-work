@@ -29,14 +29,14 @@ import type { SessionProcessDetail } from './types';
 
 /** One period of the duty cycle: the shortest, on a host where `ps` answers fast. */
 export const THROTTLE_PERIOD_MS = 250;
-/** The longest period: for a slow `ps` or a small share. */
-const MAX_PERIOD_MS = 4_000;
 /**
- * A period is at least this many reads long, and its run part at least this many reads (`READ_MARGIN`): the tree runs
- * through the read before each stop (the stop needs the process's identity read first), so that read sets a floor
- * under the share — a 150 ms read in a 250 ms period lets a tree run 60% of it whatever its cap, and a 6% share needs
- * a period of 2.5 s to hold a 150 ms read.
+ * The longest period. A period must hold its reads in the right parts: the run part the identity read before the
+ * stop (the tree runs through it — a 150 ms read in a 250 ms period lets a tree run 60% of it whatever its cap), the
+ * stopped part the period's own reads (the parent scan included). A 32-core tree under 50% (a 1.6% share) with
+ * 150 ms reads needs a 14 s period; past this one the cap cannot be met and says so.
  */
+const MAX_PERIOD_MS = 30_000;
+/** A period is at least this many identity reads long; its run part holds `READ_MARGIN` of them. */
 const READS_PER_PERIOD = 6;
 const READ_MARGIN = 1.5;
 /**
@@ -148,6 +148,11 @@ export class CpuThrottler {
   private continuedSeq = 0;
   /** How long one read takes, smoothed (ms); sets the period's length. */
   private readMs = 0;
+  /** How long a period's reads take together — the parent scan, the tree, new workers — smoothed (ms). */
+  private phaseMs = 0;
+  /** Said once while it lasts: a period the cap needs is longer than `MAX_PERIOD_MS`; a parent scan failing. */
+  private saidTooSlow = false;
+  private saidNoParents = false;
   /** When the next period starts, from the end of this one: its reads land the continue one period after this one's. */
   private nextDelay = THROTTLE_PERIOD_MS;
   private disposed = false;
@@ -367,12 +372,28 @@ export class CpuThrottler {
    * run part would not hold the read before the stop (at most `MAX_PERIOD_MS`).
    */
   periodMs(): number {
-    let share = 1;
-    for (const s of this.sessions.values()) share = Math.min(share, s.share);
-    const forShare = share < 1 ? (READ_MARGIN * this.readMs) / share : 0;
-    return Math.min(
-      MAX_PERIOD_MS,
-      Math.max(THROTTLE_PERIOD_MS, Math.round(READS_PER_PERIOD * this.readMs), Math.round(forShare)),
+    return Math.min(MAX_PERIOD_MS, this.neededPeriodMs());
+  }
+
+  /**
+   * The period the cap needs: its run part holds the identity read before the stop (for the smallest share), its
+   * stopped part holds the period's reads (for the largest share under 1).
+   */
+  private neededPeriodMs(): number {
+    let least = 1;
+    let most = 0;
+    for (const s of this.sessions.values()) {
+      if (s.share >= 1) continue;
+      least = Math.min(least, s.share);
+      most = Math.max(most, s.share);
+    }
+    const forRun = least < 1 ? (READ_MARGIN * this.readMs) / least : 0;
+    const forStop = most > 0 ? this.phaseMs / Math.max(0.1, 1 - most) : 0;
+    return Math.max(
+      THROTTLE_PERIOD_MS,
+      Math.round(READS_PER_PERIOD * this.readMs),
+      Math.round(forRun),
+      Math.round(forStop),
     );
   }
 
@@ -389,8 +410,24 @@ export class CpuThrottler {
     if (this.sessions.size === 0 && this.held.size === 0) return;
     const seq = ++this.periodSeq;
     const started = this.deps.now();
-    const parents =
-      this.deps.readParents && this.sessions.size > 0 ? await this.deps.readParents().catch(() => null) : null;
+    let parents: Map<number, number> | null = null;
+    if (this.deps.readParents && this.sessions.size > 0) {
+      try {
+        parents = await this.deps.readParents();
+        this.saidNoParents = false;
+      } catch (err) {
+        // New workers go unseen until a scan reads again; what is known is still held.
+        if (!this.saidNoParents) {
+          this.saidNoParents = true;
+          this.deps.logger?.warn(
+            'cpu cap: the parent map could not be read; new workers are not metered until it can',
+            {
+              error: String(err),
+            },
+          );
+        }
+      }
+    }
     const pids = new Set<number>(this.held.keys());
     for (const s of this.sessions.values()) for (const m of s.members) pids.add(m.pid);
     let read: Map<number, ThrottleRead>;
@@ -432,8 +469,19 @@ export class CpuThrottler {
     this.continuedSeq = seq;
     const at = this.deps.now();
     // The next period's reads end, and its continue lands, one period after this continue.
-    const period = this.periodMs();
-    this.nextDelay = Math.max(0, period - (at - started));
+    const phase = Math.max(0, at - started);
+    this.phaseMs = this.phaseMs === 0 ? phase : 0.7 * this.phaseMs + 0.3 * phase;
+    const needed = this.neededPeriodMs();
+    if (needed > MAX_PERIOD_MS && !this.saidTooSlow) {
+      this.saidTooSlow = true;
+      this.deps.logger?.warn('cpu cap: reads are too slow for this share; it cannot hold the tree to its cap', {
+        readMs: Math.round(this.readMs),
+        phaseMs: Math.round(this.phaseMs),
+        periodMs: needed,
+      });
+    } else if (needed <= MAX_PERIOD_MS) this.saidTooSlow = false;
+    const period = Math.min(MAX_PERIOD_MS, needed);
+    this.nextDelay = Math.max(0, period - phase);
     for (const [key, s] of [...this.sessions]) {
       const fresh = new Set<number>();
       const added: Member[] = [];

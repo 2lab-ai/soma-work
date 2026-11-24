@@ -26,9 +26,9 @@ controller; it would replace the throttler there, not sit beside it.
 ## How the duty cycle works here
 
 - **When.** The monitor samples every 5 s. A task whose tree used more than its cap over a sample starts being
-  metered. A metered task that runs under half its cap for 8 periods in a row (2 s on an idle host) is let go; one
+  metered (from the tree read alone — a failing capacity read does not stop it). A metered task that runs under half its cap for 8 periods in a row (2 s on an idle host) is let go; one
   held to its cap reads at its cap, so it stays metered.
-- **Each period (250 ms; up to 4 s, see below).** The parent map (`ps -A -o pid=,ppid=`) finds what the tree started
+- **Each period (250 ms; up to 30 s, see below).** The parent map (`ps -A -o pid=,ppid=`) finds what the tree started
   since the sample — only under members whose start time this period's read matched. One
   `ps -o pid=,ppid=,stat=,lstart=,time=` reads every member (Linux: `/proc/<pid>/stat` ticks over ps's whole seconds);
   a new worker is adopted only if that read, which gives its identity, names a parent already in the tree — a pid
@@ -39,11 +39,15 @@ controller; it would replace the throttler there, not sit beside it.
   later read of the period). The candidates are read once more and stopped at the share's end, each only if it is
   still that process, running, and not a person's pause. A failed read skips one period, never the loop.
 - **The period's length.** The tree runs through the read before each stop, so that read sets a floor under the
-  share: a 150 ms `ps` in a 250 ms period let a tree run 60% of it whatever its cap, and a 16-core tree under a 100%
-  cap (a 6% share) read 274% in the simulated test with a 900 ms period. So a period is at least six reads long and
-  its run part at least 1.5 reads (`period ≥ 1.5 × read ÷ share`, the read time smoothed), at most 4 s; the stop's
-  read starts early so the stop lands at the share's end; a stop whose read comes back after the next period already
-  continued is dropped (it would hold the tree a whole period).
+  share, and the period's own reads (the whole-host parent scan, the tree, new workers) happen while it is stopped.
+  So the period sizes itself for both: its run part holds 1.5 identity reads for the smallest share
+  (`period ≥ 1.5 × read ÷ share`), its stopped part holds the read phase for the largest share
+  (`period ≥ phase ÷ (1 − share)`), at least six reads, at most 30 s — past that the cap cannot be met and the daemon
+  says so once. Simulated, before → after: a 16-core tree under 100% with 150 ms reads 274% → ~100%; a 32-core tree
+  under 50% with 150 ms reads 121% → under 90% (a 14 s period); a 400% tree under 100% with a 1.2 s parent scan
+  210% → ~100%. The stop's read starts early so the stop lands at the share's end; a stop whose read comes back after
+  the next period already continued is dropped (it would hold the tree a whole period). A long period is the price of a
+  wide tree under a small cap: its processes run in a burst, then wait.
 - **An aborted turn.** Its processes are never metered again: not by a sample that was in flight when the turn
   aborted (the abort released them), nor by later samples while its workers clean up. The session's next turn is.
 - **What it cannot see.** A process that starts and exits between two periods is never read; it runs uncapped for its

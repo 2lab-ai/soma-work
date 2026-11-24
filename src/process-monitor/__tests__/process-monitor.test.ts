@@ -90,7 +90,26 @@ function setup(
     readCapacity: opts.readCapacity ?? (async () => capacity),
     logger: opts.logger,
     inspectProcess: opts.inspectProcess,
-    readThrottle: opts.readThrottle,
+    // The period read, from the fake process table (a test may bring its own).
+    readThrottle:
+      opts.readThrottle ??
+      (async (pids) =>
+        new Map(
+          pids
+            .filter((pid) => ps.procs.has(pid))
+            .map((pid) => {
+              const p = ps.procs.get(pid) as { ppid: number; stat?: string; start?: string; cpu?: number };
+              return [
+                pid,
+                {
+                  ppid: p.ppid,
+                  stat: p.stat ?? 'S',
+                  startToken: p.start ?? 'Mon Nov 23 10:00:00 2026',
+                  cpuSeconds: p.cpu ?? 0,
+                },
+              ];
+            }),
+        )),
     // The throttler's periods do not run on their own here; a test drives what it needs.
     setTimer: (fn: () => void) => {
       timers.push(fn);
@@ -300,18 +319,7 @@ describe('LocalProcessMonitor.inspect — one process in depth, a snapshot', () 
 
 describe('LocalProcessMonitor — the CPU cap on each task', () => {
   it('a task over its cap is metered: what the cap holds reads running + throttled, any other stop stays a stop', async () => {
-    const { monitor, ps, runOne, signals } = setup({
-      // The period read, from the fake process table.
-      readThrottle: async (pids) =>
-        new Map(
-          pids
-            .filter((pid) => ps.procs.has(pid))
-            .map((pid) => {
-              const p = ps.procs.get(pid) as { ppid: number; stat?: string; start?: string; cpu?: number };
-              return [pid, { ppid: p.ppid, stat: p.stat ?? 'S', startToken: p.start ?? start, cpuSeconds: p.cpu ?? 0 }];
-            }),
-        ),
-    });
+    const { monitor, ps, runOne, signals } = setup();
     // Session A: 300 burns 4 cores (ps's own %cpu on a first sample); 310 was stopped by someone else (job control).
     ps.set(300, { ppid: 200, args: '/bin/bash -c make', psCpu: 400 });
     ps.set(310, { ppid: 200, args: '/bin/bash -c vim', stat: 'T' });
@@ -340,17 +348,7 @@ describe('LocalProcessMonitor — the CPU cap on each task', () => {
   });
 
   it('the sample in which a cap is removed still reads the cap’s last hold as throttled, not paused', async () => {
-    const { monitor, ps, runOne } = setup({
-      readThrottle: async (pids) =>
-        new Map(
-          pids
-            .filter((pid) => ps.procs.has(pid))
-            .map((pid) => {
-              const p = ps.procs.get(pid) as { ppid: number; stat?: string; start?: string; cpu?: number };
-              return [pid, { ppid: p.ppid, stat: p.stat ?? 'S', startToken: p.start ?? start, cpuSeconds: p.cpu ?? 0 }];
-            }),
-        ),
-    });
+    const { monitor, ps, runOne } = setup();
     ps.set(300, { ppid: 200, args: '/bin/bash -c make', psCpu: 400 });
     let cap: number | null = 100;
     monitor.setCpuCaps(() => cap);
@@ -377,15 +375,6 @@ describe('LocalProcessMonitor — the CPU cap on each task', () => {
               gate = () => r(capacity);
             })
           : Promise.resolve(capacity),
-      readThrottle: async (pids) =>
-        new Map(
-          pids
-            .filter((pid) => ps.procs.has(pid))
-            .map((pid) => {
-              const p = ps.procs.get(pid) as { ppid: number; stat?: string; start?: string; cpu?: number };
-              return [pid, { ppid: p.ppid, stat: p.stat ?? 'S', startToken: p.start ?? start, cpuSeconds: p.cpu ?? 0 }];
-            }),
-        ),
     });
     ps.set(300, { ppid: 200, args: '/bin/bash -c make', psCpu: 400 });
     monitor.setCpuCaps(() => 100);
@@ -415,17 +404,7 @@ describe('LocalProcessMonitor — the CPU cap on each task', () => {
   });
 
   it('a stop someone else makes after the cap’s hold ended reads stopped, not throttled', async () => {
-    const { monitor, ps, runOne, tick } = setup({
-      readThrottle: async (pids) =>
-        new Map(
-          pids
-            .filter((pid) => ps.procs.has(pid))
-            .map((pid) => {
-              const p = ps.procs.get(pid) as { ppid: number; stat?: string; start?: string; cpu?: number };
-              return [pid, { ppid: p.ppid, stat: p.stat ?? 'S', startToken: p.start ?? start, cpuSeconds: p.cpu ?? 0 }];
-            }),
-        ),
-    });
+    const { monitor, ps, runOne, tick } = setup();
     ps.set(300, { ppid: 200, args: '/bin/bash -c make', psCpu: 400 });
     let cap: number | null = 100;
     monitor.setCpuCaps(() => cap);
@@ -445,6 +424,44 @@ describe('LocalProcessMonitor — the CPU cap on each task', () => {
     expect(a?.processes.find((x) => x.pid === 300)).toMatchObject({ state: 'stopped' });
     expect(a?.processes.find((x) => x.pid === 300)).not.toHaveProperty('throttled');
     expect(a?.stoppedCount).toBe(1);
+  });
+
+  it('the cap is enforced from the tree read even when the node-capacity read fails', async () => {
+    const { monitor, ps, runOne, signals } = setup({
+      readCapacity: () => Promise.reject(new Error('vm_stat failed')),
+    });
+    ps.set(300, { ppid: 200, args: '/bin/bash -c make', psCpu: 400 });
+    monitor.setCpuCaps(() => 100);
+    await expect(monitor.sample()).rejects.toThrow(/vm_stat/);
+    await runOne();
+    await runOne();
+    expect(signals).toContainEqual([300, 'SIGSTOP']);
+    monitor.dispose();
+    expect(ps.procs.get(300)?.stat).not.toBe('T');
+  });
+
+  it('a person who pauses a process the cap holds owns it: the cap never continues it, nor reads it as throttled', async () => {
+    const { monitor, ps, runOne, signals } = setup();
+    ps.set(300, { ppid: 200, args: '/bin/bash -c make', psCpu: 400 });
+    let cap: number | null = 100;
+    monitor.setCpuCaps(() => cap);
+    await monitor.sample();
+    await runOne();
+    await runOne();
+    expect(signals).toContainEqual([300, 'SIGSTOP']);
+    expect(ps.procs.get(300)?.stat).toBe('T');
+    // The owner presses 일시중지 on it while the cap holds it.
+    expect((await monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' })).ok).toBe(true);
+    const n = signals.length;
+    // More periods, then the cap goes away: nothing continues the person's pause.
+    for (let i = 0; i < 6; i++) await runOne();
+    cap = null;
+    const a = (await monitor.sample()).sessions.find((x) => x.sessionKey === 'A');
+    for (let i = 0; i < 4; i++) await runOne();
+    expect(signals.slice(n).filter(([pid, sig]) => pid === 300 && sig === 'SIGCONT')).toEqual([]);
+    expect(ps.procs.get(300)?.stat).toBe('T');
+    expect(a?.processes.find((x) => x.pid === 300)).toMatchObject({ state: 'stopped' });
+    expect(a?.processes.find((x) => x.pid === 300)).not.toHaveProperty('throttled');
   });
 
   it('a person’s pause in a metered task still reads stopped and counts as paused', async () => {

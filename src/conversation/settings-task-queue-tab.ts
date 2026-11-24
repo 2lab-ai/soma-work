@@ -180,13 +180,25 @@ function tqCpuHtml(u, editable) {
     + (editable ? ' onchange="tqCpuChange(this)"' : ' disabled title="관리자 모드를 켜야 바꿀 수 있습니다"') + '>' + opts + '</select>'
     + '<span>지금 ' + esc(tqCpuLabel(c.limit)) + '</span></label>';
 }
+var _tqCpuSeq = {};
+var _tqCpuChain = {};
 async function tqCpuChange(sel) {
   var id = sel.getAttribute('data-user');
   var u = tqUser(id);
   var who = (u && u.name) || id;
   var v = sel.value;
   var cpu = v === '' ? null : v === 'unlimited' ? 'unlimited' : Number(v);
-  var r = await apiWrite('PUT', '/api/settings/cpu-limits/' + encodeURIComponent(id), { cpu: cpu });
+  // One person's cap changes reach the server one after another, in the order they were made (the last one stays);
+  // an answer to a change a later one replaced moves nothing on the page.
+  var seq = (_tqCpuSeq[id] || 0) + 1;
+  _tqCpuSeq[id] = seq;
+  var before = _tqCpuChain[id] || Promise.resolve();
+  var write = before.then(function() {
+    return apiWrite('PUT', '/api/settings/cpu-limits/' + encodeURIComponent(id), { cpu: cpu });
+  });
+  _tqCpuChain[id] = write.catch(function() {});
+  var r = await write;
+  if (_tqCpuSeq[id] !== seq) return;
   if (!r.ok) {
     tqStatus(who + ' CPU 한도를 저장하지 못했습니다 — ' + r.error, true);
     tqRefreshRow(id);

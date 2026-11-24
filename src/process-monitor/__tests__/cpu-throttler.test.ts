@@ -14,6 +14,8 @@ class Machine {
   readonly signals: Array<[number, NodeJS.Signals]> = [];
   /** A continue the OS refuses (EPERM) for these pids. */
   readonly refuse = new Set<number>();
+  /** The next continues the OS refuses, whatever the pid, then it accepts them again. */
+  refuseContinues = 0;
 
   add(pid: number, demand: number, startToken = 'Mon Nov 23 10:00:00 2026', ppid = 1): this {
     this.procs.set(pid, { demand, cpu: 0, at: Date.now(), stopped: false, startToken, ppid });
@@ -34,12 +36,24 @@ class Machine {
 
   /** One "ps" for several pids; `unknown` makes the whole read fail (as a ps that timed out). */
   unknown = false;
-  readonly liveStartTokens = (pids: readonly number[]): Map<number, string | null> | undefined =>
-    this.unknown ? undefined : new Map(pids.map((pid) => [pid, this.procs.get(pid)?.startToken ?? null]));
+  /** The next live probes that fail (a ps that timed out), then they answer again. */
+  unknownProbes = 0;
+  readonly liveStartTokens = (pids: readonly number[]): Map<number, string | null> | undefined => {
+    if (this.unknownProbes > 0) {
+      this.unknownProbes--;
+      return undefined;
+    }
+    return this.unknown ? undefined : new Map(pids.map((pid) => [pid, this.procs.get(pid)?.startToken ?? null]));
+  };
 
   /** Runs right after the parent map is read (a pid can change hands between that map and the next read). */
   afterParents: (() => void) | null = null;
+  /** How long the whole-host parent scan takes (a crowded host); `parentsFail` makes it fail. */
+  parentsDelayMs = 0;
+  parentsFail = false;
   readonly readParents = async () => {
+    if (this.parentsDelayMs > 0) await new Promise((r) => setTimeout(r, this.parentsDelayMs));
+    if (this.parentsFail) throw new Error('ps -A timed out');
     const map = new Map([...this.procs].map(([pid, p]) => [pid, p.ppid]));
     this.afterParents?.();
     return map;
@@ -59,8 +73,10 @@ class Machine {
     this.signals.push([pid, signal]);
     const p = this.procs.get(pid);
     if (!p) throw Object.assign(new Error('no such process'), { code: 'ESRCH' });
-    if (signal === 'SIGCONT' && this.refuse.has(pid))
+    if (signal === 'SIGCONT' && (this.refuse.has(pid) || this.refuseContinues > 0)) {
+      if (this.refuseContinues > 0) this.refuseContinues--;
       throw Object.assign(new Error('not permitted'), { code: 'EPERM' });
+    }
     this.settle(pid);
     if (signal === 'SIGSTOP') p.stopped = true;
     if (signal === 'SIGCONT') p.stopped = false;
@@ -296,6 +312,74 @@ describe('CpuThrottler — a task tree held to its cap by a duty cycle', () => {
     await vi.advanceTimersByTimeAsync(3_000);
     expect(warnings.filter((w) => /refused to continue/.test(w))).toHaveLength(1);
     expect(t.holds('A', 11, START)).toBe(true);
+  });
+
+  it('a 32-core tree under 50% with slow reads is held to its cap: the period is as long as its 1.6% share needs', async () => {
+    const { m, t, warnings } = setup();
+    m.readDelayMs = 150;
+    m.add(10, 0);
+    const kids = Array.from({ length: 32 }, (_, i) => 20 + i);
+    for (const pid of kids) m.add(pid, 1);
+    t.update([session(3200, [proc(10, 'root'), ...kids.map((pid) => proc(pid, 'child'))])], () => 50);
+    await vi.advanceTimersByTimeAsync(120_000);
+    const before = kids.reduce((n, p) => n + m.cpuOf(p), 0);
+    await vi.advanceTimersByTimeAsync(120_000);
+    const rate = ((kids.reduce((n, p) => n + m.cpuOf(p), 0) - before) / 120) * 100;
+    expect(rate).toBeGreaterThan(20);
+    expect(rate).toBeLessThan(90);
+    expect(warnings.filter((w) => /cannot hold/.test(w))).toEqual([]);
+  });
+
+  it('a cap the reads are too slow for is said once (a 1 s identity read cannot hold a 1% share in 30 s)', async () => {
+    const { m, t, warnings } = setup();
+    m.readDelayMs = 1_000;
+    m.add(10, 0);
+    const kids = Array.from({ length: 64 }, (_, i) => 20 + i);
+    for (const pid of kids) m.add(pid, 1);
+    t.update([session(6400, [proc(10, 'root'), ...kids.map((pid) => proc(pid, 'child'))])], () => 25);
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(warnings.filter((w) => /cannot hold/.test(w))).toHaveLength(1);
+    expect(t.periodMs()).toBe(30_000);
+  });
+
+  it('a slow whole-host parent scan is part of the period: a 400% tree still runs at about its cap', async () => {
+    const { m, t } = setup();
+    m.parentsDelayMs = 1_200;
+    m.add(10, 0).add(11, 4);
+    t.update([session(400, [proc(10, 'root'), proc(11, 'child')])], () => 100);
+    await vi.advanceTimersByTimeAsync(30_000);
+    const before = m.cpuOf(11);
+    await vi.advanceTimersByTimeAsync(60_000);
+    const rate = ((m.cpuOf(11) - before) / 60) * 100;
+    expect(rate).toBeGreaterThan(70);
+    expect(rate).toBeLessThan(135);
+  });
+
+  it('a parent scan that fails is said (new workers go unseen until it reads again)', async () => {
+    const { m, t, warnings } = setup();
+    m.parentsFail = true;
+    m.add(10, 0).add(11, 4);
+    t.update([session(400, [proc(10, 'root'), proc(11, 'child')])], () => 100);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(warnings.filter((w) => /parent map/.test(w))).toHaveLength(1);
+    // It still holds what it knows.
+    expect(m.signals.some(([pid, sig]) => pid === 11 && sig === 'SIGSTOP')).toBe(true);
+  });
+
+  it('shutdown retries within itself: an unknown identity, then a refused continue, then the process runs', async () => {
+    const { m, t } = setup();
+    m.add(10, 0).add(11, 4);
+    t.update([session(400, [proc(10, 'root'), proc(11, 'child')])], () => 100);
+    for (let i = 0; i < 100 && !t.holds('A', 11, START); i++) await vi.advanceTimersByTimeAsync(5);
+    expect(m.procs.get(11)?.stopped).toBe(true);
+    // The first identity probe fails; the next continue is refused; the third pass goes through.
+    m.unknownProbes = 1;
+    m.refuseContinues = 1;
+    t.releaseAll();
+    expect(m.procs.get(11)?.stopped).toBe(false);
+    const n = m.signals.length;
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(m.signals.slice(n)).toEqual([]);
   });
 
   it('never stops or continues a process a person paused', async () => {
