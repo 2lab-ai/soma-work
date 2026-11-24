@@ -67,7 +67,11 @@ describe('uqSplitWaiting', () => {
 });
 
 describe('uqCardOf', () => {
-  const { uqCardOf } = load<any>(['uqCardOf', 'uqCardKey', 'uqSibling'], { SELF_INSTANCE_NAME: 'dev' });
+  // One person's board (currentUserId set): every card is theirs, so no badge — the summary names them.
+  const { uqCardOf } = load<any>(['uqCardOf', 'uqCardKey', 'uqSibling'], {
+    SELF_INSTANCE_NAME: 'dev',
+    currentUserId: 'U1',
+  });
 
   it('first in line: whose it is, that it starts when the running task ends, and both buttons', () => {
     const card = uqCardOf(item(), undefined);
@@ -141,6 +145,7 @@ describe('uqCardOf', () => {
   it('someone who may not act on it sees the buttons inert, with the reason', () => {
     const { uqCardOf: asStranger } = load<any>(['uqCardOf', 'uqCardKey', 'uqSibling'], {
       SELF_INSTANCE_NAME: 'dev',
+      currentUserId: 'U1',
       viewerCanManage: () => false,
       OWNER_ONLY_MSG: '소유자나 관리자 모드를 켠 관리자만 할 수 있어요',
     });
@@ -159,6 +164,68 @@ describe('uqCardOf', () => {
     const card = uqCardOf(item({ environment: { instanceName: 'main' }, limit: null }), undefined);
     expect(card.primary).toBeUndefined();
     expect(JSON.stringify(card.details)).toContain('한 번에 무제한');
+  });
+});
+
+// Z 2026-11-24: "대기큐에도 누구 대기큐인지도 이름 뱃지" — on the All Users board an entry's card names its owner with the
+// same badge the session cards carry: one person, one colour; the viewer's own with the ring.
+describe('uqCardOf — the owner badge', () => {
+  const hue = vi.fn((id: string) => (id === 'U1' ? 5 : 2));
+  const allUsers = (over: Record<string, unknown> = {}) =>
+    load<any>(['uqCardOf', 'uqCardKey', 'uqSibling'], {
+      SELF_INSTANCE_NAME: 'dev',
+      currentUserId: '',
+      ownerBadgeHue: hue,
+      viewerOwns: () => false,
+      ...over,
+    }).uqCardOf;
+
+  it('All Users: the badge names the owner in their colour, and the summary does not say the name again', () => {
+    const card = allUsers()(item(), undefined);
+    expect(card.badge).toEqual({ text: 'Zed', hue: 5, title: 'Zed' });
+    expect(hue).toHaveBeenCalledWith('U1');
+    expect(card.summary).toBe('다음 차례 — 첫 일 끝나면 바로 시작');
+  });
+
+  it('another owner gets their own colour; no name falls back to the id', () => {
+    const card = allUsers()(item({ entryId: 'q2', ownerId: 'U2', ownerName: undefined }), undefined);
+    expect(card.badge).toEqual({ text: 'U2', hue: 2, title: 'U2' });
+  });
+
+  it("the viewer's own entry: the ring (self), and no host title — the element says the name (나)", () => {
+    const card = allUsers({ viewerOwns: (x: any) => x && x.ownerId === 'U1' })(item(), undefined);
+    expect(card.badge).toEqual({ text: 'Zed', hue: 5, self: true });
+  });
+
+  it("one person's board: no badge (every card is theirs), the summary keeps the name", () => {
+    const { uqCardOf } = load<any>(['uqCardOf', 'uqCardKey', 'uqSibling'], {
+      SELF_INSTANCE_NAME: 'dev',
+      currentUserId: 'U1',
+      ownerBadgeHue: hue,
+    });
+    const card = uqCardOf(item(), undefined);
+    expect(card.badge).toBeUndefined();
+    expect(card.summary).toBe('Zed · 다음 차례 — 첫 일 끝나면 바로 시작');
+  });
+});
+
+// The board's owner hues count the 대기큐 owners too, so an owner who only waits in line still gets a colour no one else
+// on the board has.
+describe('boardOwnerIds', () => {
+  it("the cached sessions' owners and the line's owners", () => {
+    const { boardOwnerIds } = load<any>(['boardOwnerIds']);
+    const cache = { a: { ownerId: 'U1' }, b: { ownerName: 'Bo' } };
+    expect(boardOwnerIds(cache, [item({ ownerId: 'U3' }), item({ ownerId: undefined, ownerName: 'Kay' })])).toEqual([
+      'U1',
+      'Bo',
+      'U3',
+      'Kay',
+    ]);
+    expect(boardOwnerIds(cache, undefined)).toEqual(['U1', 'Bo']);
+  });
+
+  it('renderBoard assigns the hues from it, with the board line', () => {
+    expect(TEMPLATE).toContain('_ownerIndex = assignOwnerHues(boardOwnerIds(_sessionCache, board.userQueue));');
   });
 });
 
