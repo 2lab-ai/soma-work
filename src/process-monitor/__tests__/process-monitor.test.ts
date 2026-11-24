@@ -187,6 +187,51 @@ describe('LocalProcessMonitor.inspect — one process in depth, a snapshot', () 
     });
   });
 
+  it('the line of detail reads is bounded, turns away a read that waited too long, and survives a failing read', async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let calls = 0;
+    const inspectProcess = vi.fn(async (pid: number, token: string) => {
+      calls++;
+      if (calls === 1) {
+        await gate;
+        throw new Error('lsof hung up');
+      }
+      return inspection(pid, token);
+    });
+    const { monitor, tick } = setup({ inspectProcess });
+    const ask = () => monitor.inspect({ sessionKey: 'A', pid: 300, startToken: start });
+    const first = ask();
+    await new Promise((r) => setTimeout(r, 5));
+    const waiting = [ask(), ask(), ask()];
+    // The line holds four (the running one does not count once started); a fifth is turned away at once.
+    const extra = [ask(), ask()];
+    expect(await extra[1]).toEqual({ ok: false, reason: 'busy' });
+    release();
+    await expect(first).rejects.toThrow(/lsof/);
+    // After the failure the line goes on.
+    expect((await waiting[0]).ok).toBe(true);
+    await Promise.all([...waiting, extra[0]]);
+    // A read that waited longer than a reader waits is not started.
+    let hold: () => void = () => {};
+    const slow = new Promise<void>((r) => {
+      hold = r;
+    });
+    inspectProcess.mockImplementationOnce(async (pid: number, token: string) => {
+      await slow;
+      return inspection(pid, token);
+    });
+    const busy = ask();
+    await new Promise((r) => setTimeout(r, 5));
+    const late = ask();
+    tick(11_000);
+    hold();
+    expect((await busy).ok).toBe(true);
+    expect(await late).toEqual({ ok: false, reason: 'busy' });
+  });
+
   it('detail reads run one at a time on a node (a burst of clicks does not multiply ps / lsof)', async () => {
     let running = 0;
     let most = 0;

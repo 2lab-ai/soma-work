@@ -164,8 +164,13 @@ export class LocalProcessMonitor implements ProcessHost {
   private readonly listeners = new Set<Listener>();
   /** session → pid → what was paused, for every process this monitor paused and has not resumed. */
   private readonly paused = new Map<string, Map<number, PausedEntry>>();
-  /** The detail read in progress (inspect runs one at a time). */
+  /** The detail read in progress (inspect runs one at a time) and how many wait behind it. */
   private inspecting: Promise<void> = Promise.resolve();
+  private inspectWaiting = 0;
+  /** At most this many detail reads wait in line. */
+  private static readonly INSPECT_QUEUE = 4;
+  /** A read that waited longer than this is not started (the page gives up on it after 15 s). */
+  private static readonly INSPECT_WAIT_MS = 10_000;
 
   constructor(private readonly deps: ProcessMonitorDeps) {
     this.nodeId = deps.nodeId;
@@ -377,8 +382,17 @@ export class LocalProcessMonitor implements ProcessHost {
    */
   async inspect(input: ProcessInspectInput): Promise<ProcessInspectResult> {
     // One detail read at a time on a node: each runs several ps / lsof calls (and reads Linux socket tables), and a
-    // burst of clicks must not multiply that.
-    const run = this.inspecting.then(() => this.inspectNow(input));
+    // burst of clicks must not multiply that. A bounded line: past it, or after waiting longer than a reader waits
+    // for the answer, the request is turned away (`busy`) instead of reading for nobody.
+    if (this.inspectWaiting >= LocalProcessMonitor.INSPECT_QUEUE) return { ok: false, reason: 'busy' };
+    this.inspectWaiting++;
+    const queuedAt = this.now();
+    const run = this.inspecting.then(() => {
+      this.inspectWaiting--;
+      if (this.now() - queuedAt > LocalProcessMonitor.INSPECT_WAIT_MS)
+        return { ok: false as const, reason: 'busy' as const };
+      return this.inspectNow(input);
+    });
     this.inspecting = run.then(
       () => undefined,
       () => undefined,

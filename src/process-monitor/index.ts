@@ -38,7 +38,9 @@ export const runReadOnly: RunCommand = (cmd, args) =>
         if ((error as { code?: unknown }).code === 1 && typeof stdout === 'string' && !String(stderr ?? '').trim()) {
           return resolve(stdout);
         }
-        reject(error);
+        // The output so far travels with the failure: a reader whose tool exits 1 for one gone pid (lsof) keeps the
+        // others' rows.
+        reject(Object.assign(error, { stdout, stderr }));
       },
     );
   });

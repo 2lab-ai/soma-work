@@ -249,6 +249,7 @@ describe('Dashboard — the 프로세스 tab and the CPU · 메모리 chip', () 
     ['not-found', 404],
     ['stale', 409],
     ['unsupported', 501],
+    ['busy', 429],
   ])('GET …/detail answers the monitor’s refusal %s with %i; 503 with no monitor', async (reason, status) => {
     expect((await detail(300, 'x')).statusCode).toBe(503);
     const src = fakeSource();
@@ -425,6 +426,8 @@ describe('Dashboard — the 프로세스 tab and the CPU · 메모리 chip', () 
     expect(dashboard.procCardsToPush(pushed, at(21))).toEqual([KEY]);
     expect(dashboard.procCardsToPush(pushed, at(21, 7e9))).toEqual([KEY]);
     expect(dashboard.procCardsToPush(pushed, at(null, 7e9))).toEqual([KEY]);
+    // The first CPU reading after none — even an empty gauge — pushes (unknown is not 0).
+    expect(dashboard.procCardsToPush(pushed, at(0, 7e9))).toEqual([KEY]);
     // The badge's busy / hot edges push even inside one CPU bucket (9.6 and 10.2 share a bucket; 98 and 101 too).
     const lv = (cpuPercent: number) => snapshot([{ ...sessionA, stoppedCount: 2, cpuPercent }]);
     dashboard.procCardsToPush(pushed, lv(9.6));

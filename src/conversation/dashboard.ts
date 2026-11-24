@@ -1314,8 +1314,9 @@ function procSignature(u: SessionProcessUsage, node?: NodeCapacity): string {
     u.processCount,
     u.stoppedCount,
     u.rootAlive,
-    gaugeStep(load?.cpu ?? null),
-    gaugeStep(load?.mem ?? null),
+    // Unknown (no second sample yet) is not the empty gauge: -1, so the first reading pushes.
+    load?.cpu == null ? -1 : gaugeStep(load.cpu),
+    load?.mem == null ? -1 : gaugeStep(load.mem),
   ].join('|');
 }
 
@@ -4984,7 +4985,7 @@ export async function registerDashboardRoutes(
           reply.send({ ok: true, detail: result.detail });
           return;
         }
-        const status = { 'not-found': 404, stale: 409, unsupported: 501 }[result.reason];
+        const status = { 'not-found': 404, stale: 409, unsupported: 501, busy: 429 }[result.reason];
         reply.status(status).send({ ok: false, code: result.reason });
       } catch (error) {
         logger.warn('Process inspect failed', { error: error instanceof Error ? error.message : String(error) });
@@ -17079,6 +17080,7 @@ function procDetailFailText(status, code) {
   if (code === 'stale' || status === 409) return '그 사이 이 PID가 다른 프로세스가 됐어요 — 목록에서 다시 골라 주세요';
   if (code === 'not-found' || status === 404) return '이 작업의 프로세스가 아니거나 이미 끝났어요';
   if (code === 'unsupported' || status === 501) return '이 노드에서는 프로세스 상세를 읽을 수 없어요';
+  if (code === 'busy' || status === 429) return '다른 상세 조회가 줄을 서 있어요 — 잠시 뒤 다시 찍기로 읽어요';
   if (status === 503) return '이 노드에서 프로세스 모니터가 꺼져 있어요';
   if (status === 403) return '작업 소유자와 관리자만 프로세스 상세를 볼 수 있어요';
   return '서버 오류 (' + status + ')';

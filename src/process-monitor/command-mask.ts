@@ -45,6 +45,8 @@ const CREDENTIAL_HEADER =
 const INLINE_HEADER =
   /\b(authorization|proxy-authorization|cookie|x-api-key|api-key|x-auth-token|private-token)(\s*:\s*)(.+)$/gi;
 const AUTH_SCHEME_WORD = /^(bearer|basic|token|digest)$/i;
+/** A word that opens a URL (where a header's unquoted value ends). */
+const URL_START = /^[a-z][a-z0-9+.-]*:\/\//i;
 const INLINE_SCHEME = /\b(bearer|basic)(\s+)\S+/gi;
 const URL_PASSWORD = /\b([a-z][a-z0-9+.-]*:\/\/[^\s/@:]+):[^\s/@]+@/gi;
 /** A query parameter (`?name=value`, `&name=value`): masked when its name says secret. Bounded name, linear scan. */
@@ -150,16 +152,29 @@ export function maskCommandLine(input: { readonly argv: readonly string[]; reado
   if (words.length === 0) return '';
   const program = (words[0].split('/').pop() ?? '').toLowerCase();
   const out: string[] = [];
-  let maskNext = 0;
+  // The value after a secret flag, a credential header or an auth scheme word: one word — or, when it opens with a
+  // quote, every word up to the one that closes it (`--cookie "a=b; sid=x"`); a header's value runs to the next flag
+  // or URL (`-H Cookie: a=b; sid=x https://…`), with its scheme (`Bearer`) left in view.
+  let value: { header: boolean; closing: string; schemeSeen: boolean } | null = null;
   for (const raw of words) {
-    if (maskNext > 0) {
-      maskNext--;
-      // `Authorization: Bearer x` — the scheme stays, its value goes.
-      if (AUTH_SCHEME_WORD.test(raw.replace(/^["']/, ''))) {
-        out.push(raw);
-        maskNext = 1;
-      } else out.push(MASK);
-      continue;
+    if (value) {
+      const bare = raw.replace(/^["']/, '');
+      if (value.header && !value.closing && (raw.startsWith('-') || URL_START.test(bare))) {
+        value = null;
+      } else {
+        if (value.header && !value.schemeSeen && AUTH_SCHEME_WORD.test(bare.replace(/["']$/, ''))) {
+          value.schemeSeen = true;
+          out.push(raw);
+          continue;
+        }
+        const opens = !value.closing && /^["']/.test(raw) ? raw[0] : '';
+        const closing = value.closing || opens;
+        const ends = closing !== '' && raw.length > (opens ? 1 : 0) && raw.endsWith(closing);
+        out.push(`${opens}${MASK}${ends ? closing : ''}`);
+        if (ends || (!closing && !value.header)) value = null;
+        else if (opens) value.closing = opens;
+        continue;
+      }
     }
     // ps keeps the quotes a shell command line had (`-H "Authorization: Bearer x"`): a word is matched without its
     // opening quote, and keeps it.
@@ -168,11 +183,17 @@ export function maskCommandLine(input: { readonly argv: readonly string[]; reado
     const flag = FLAG_WITH_VALUE.exec(word);
     if (flag && SECRET_NAME.test(flag[1])) {
       out.push(`${lead}${flag[1]}=${MASK}`);
+      // `--cookie="a=b; sid=x"`: the quoted value runs on.
+      if (/^["']/.test(flag[2]) && !flag[2].endsWith(flag[2][0]))
+        value = { header: false, closing: flag[2][0], schemeSeen: true };
       continue;
     }
     const assignment = !flag && ASSIGNMENT.exec(word);
     if (assignment && SECRET_NAME.test(assignment[1])) {
       out.push(`${lead}${assignment[1]}=${MASK}`);
+      if (/^["']/.test(assignment[2]) && !assignment[2].endsWith(assignment[2][0])) {
+        value = { header: false, closing: assignment[2][0], schemeSeen: true };
+      }
       continue;
     }
     // Not a secret flag or variable as a whole: an exact argument with spaces in it is a command of its own
@@ -185,9 +206,14 @@ export function maskCommandLine(input: { readonly argv: readonly string[]; reado
       out.push(`${lead}-p${MASK}`);
       continue;
     }
-    if ((FLAG.test(word) && SECRET_NAME.test(word)) || CREDENTIAL_HEADER.test(word) || AUTH_SCHEME_WORD.test(word)) {
+    if (CREDENTIAL_HEADER.test(word)) {
       out.push(raw);
-      maskNext = 1;
+      value = { header: true, closing: lead, schemeSeen: false };
+      continue;
+    }
+    if ((FLAG.test(word) && SECRET_NAME.test(word)) || AUTH_SCHEME_WORD.test(word)) {
+      out.push(raw);
+      value = { header: false, closing: '', schemeSeen: true };
       continue;
     }
     out.push(input.exact ? quoted(maskWord(raw)) : maskWord(raw));

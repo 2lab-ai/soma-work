@@ -83,13 +83,28 @@ describe('maskCommandLine', () => {
     );
     // ps keeps a shell line's quotes: the header is still found behind its opening quote.
     expect(joined('curl -H "Authorization: Bearer abc" https://h')).toBe(
-      `curl -H "Authorization: Bearer ${MASK} https://h`,
+      `curl -H "Authorization: Bearer ${MASK}" https://h`,
     );
     expect(joined('x "--password=hunter2"')).toBe(`x "--password=${MASK}`);
     expect(joined('git clone https://bot:s3cr3t@github.com/o/r.git')).toBe(
       `git clone https://bot:${MASK}@github.com/o/r.git`,
     );
     expect(joined('curl https://h/x?a=1&access_token=zzz&b=2')).toBe(`curl https://h/x?a=1&access_token=${MASK}&b=2`);
+  });
+
+  it('a value spanning words is masked whole: several cookies, a quoted flag value, a header up to the next flag or URL', () => {
+    expect(joined('curl -H "Cookie: theme=dark; sid=hunter2" https://h')).toBe(
+      `curl -H "Cookie: ${MASK} ${MASK}" https://h`,
+    );
+    expect(joined('curl -H Cookie: theme=dark; sid=hunter2 -X GET https://h')).toBe(
+      `curl -H Cookie: ${MASK} ${MASK} -X GET https://h`,
+    );
+    expect(exact('curl', '-H', 'Cookie: theme=dark; sid=hunter2', 'https://h')).toBe(
+      `curl -H 'Cookie: ${MASK} ${MASK}' https://h`,
+    );
+    expect(joined('client --cookie "a=b; sid=hunter2" --verbose')).toBe(`client --cookie "${MASK} ${MASK}" --verbose`);
+    expect(joined('client --password="two words" --verbose')).toBe(`client --password=${MASK} ${MASK}" --verbose`);
+    expect(joined('x --token abc next')).toBe(`x --token ${MASK} next`);
   });
 
   it('masks known key shapes and long high-entropy words anywhere', () => {

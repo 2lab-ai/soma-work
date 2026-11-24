@@ -458,6 +458,9 @@ export function createProcessInspector(deps: InspectorDeps): InspectProcess | un
           }
           fds = emptyFds();
           fds.count = names.length;
+          // A link that cannot be read (the descriptor closed in between, or it is not ours to read) is said.
+          const failed = links.filter((l) => l.status === 'rejected').length;
+          if (failed > 0) unreadable.push(`descriptors (${failed})`);
           links.forEach((l, i) => {
             if (l.status !== 'fulfilled') return;
             const target = l.value;

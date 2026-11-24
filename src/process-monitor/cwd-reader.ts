@@ -46,7 +46,13 @@ export function createCwdReader(
     return async (pids) => {
       if (pids.length === 0) return new Map();
       // -a: AND the selections (this pid list AND the cwd descriptor); -w: no warnings on stderr; -F pn: parseable.
-      const out = await run('/usr/sbin/lsof', ['-a', '-w', '-d', 'cwd', '-F', 'pn', '-p', pids.join(',')]);
+      // lsof exits 1 when any listed pid is gone (one exited since the sample); what it printed for the others stands.
+      const out = await run('/usr/sbin/lsof', ['-a', '-w', '-d', 'cwd', '-F', 'pn', '-p', pids.join(',')]).catch(
+        (err: { code?: unknown; stdout?: unknown }) => {
+          if (err?.code === 1 && typeof err.stdout === 'string') return err.stdout;
+          throw err;
+        },
+      );
       return parseLsofCwds(out);
     };
   }

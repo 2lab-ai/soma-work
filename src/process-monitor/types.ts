@@ -128,8 +128,11 @@ export type ProcessInspectResult =
   | { readonly ok: true; readonly detail: ProcessDetailSnapshot }
   | {
       readonly ok: false;
-      /** As {@link ProcessControlResult}: `not-found`, `stale` (reused pid), `unsupported` (no inspector on this node). */
-      readonly reason: 'not-found' | 'stale' | 'unsupported';
+      /**
+       * As {@link ProcessControlResult}: `not-found`, `stale` (reused pid), `unsupported` (no inspector on this node);
+       * `busy` — other detail reads are in line (try again shortly).
+       */
+      readonly reason: 'not-found' | 'stale' | 'unsupported' | 'busy';
     };
 
 export type ProcessControlAction = 'pause' | 'resume';

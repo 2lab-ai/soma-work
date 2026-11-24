@@ -25,6 +25,23 @@ describe('cwd reader', () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
+  it('macOS: lsof exiting 1 for a pid gone since the sample keeps the others’ rows; another failure still throws', async () => {
+    const gone = createCwdReader(
+      'darwin',
+      vi.fn(async () => {
+        throw Object.assign(new Error('lsof exited 1'), { code: 1, stdout: 'p1\nn/a\n' });
+      }),
+    );
+    expect(await gone?.([1, 2])).toEqual(new Map([[1, '/a']]));
+    const broken = createCwdReader(
+      'darwin',
+      vi.fn(async () => {
+        throw Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' });
+      }),
+    );
+    await expect(broken?.([1])).rejects.toThrow(/ENOENT/);
+  });
+
   it('Linux: /proc/<pid>/cwd per pid; a pid that does not answer is left out', async () => {
     const readLink = vi.fn(async (p: string) => {
       if (p === '/proc/2/cwd') throw new Error('EACCES');
