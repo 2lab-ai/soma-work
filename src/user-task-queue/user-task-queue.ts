@@ -86,7 +86,7 @@ export type GateResult =
   | { action: 'run' }
   | { action: 'drop' }
   /** A redelivery (Slack retried an event it thinks was not acked) of a message already in line, or just gone from it. */
-  | { action: 'duplicate'; entryId?: string }
+  | { action: 'duplicate' }
   | { action: 'queued'; entry: UserTaskEntry; position: number; limit: number; running: RunningTask[] };
 
 export interface QueuedNoticeContext {
@@ -231,8 +231,8 @@ export class UserTaskQueue {
     // already in line — or one that just left it — is not a second request.
     const key = messageKeyOf(input.sessionKey, input.message);
     if (key) {
-      const same = this.ledger.entries.find((e) => messageKeyOf(e.sessionKey, e.message) === key);
-      if (same) return { action: 'duplicate', entryId: same.id };
+      if (this.ledger.entries.some((e) => messageKeyOf(e.sessionKey, e.message) === key))
+        return { action: 'duplicate' };
       this.pruneRecentlyLeft();
       if (this.recentlyLeft.has(key)) return { action: 'duplicate' };
     }

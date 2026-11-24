@@ -658,6 +658,34 @@ describe('a Slack redelivery is one request', () => {
     });
   });
 
+  // Review of #1414: the memory comes before the capacity checks — a free slot must not rerun what already left.
+  it('a late copy is a duplicate even when the person has a free slot again', () => {
+    const h = harness();
+    h.running.set('U1', [taskA]);
+    h.queue.gate(input({ message: msg('2.5') }));
+    h.running.set('U1', []);
+    h.queue.release('U1');
+    h.queue.takeAdmission('t1', 'C1:2.0');
+    expect(h.queue.gate(input({ message: msg('2.5') }))).toEqual({ action: 'duplicate' });
+    h.running.set('U1', [taskA]);
+    h.queue.gate(input({ sessionKey: 'C1:3.0', threadTs: '3.0', message: msg('3.5') }));
+    h.queue.cancel('t2', 'U1');
+    h.running.set('U1', []);
+    expect(h.queue.gate(input({ sessionKey: 'C1:3.0', threadTs: '3.0', message: msg('3.5') }))).toEqual({
+      action: 'duplicate',
+    });
+  });
+
+  it('host turns without a Slack ts of their own are never taken for copies', () => {
+    const h = harness();
+    h.running.set('U1', [taskA]);
+    h.queue.gate(input());
+    const first = h.queue.gate(input({ continuation: 'pass', text: 'CI passed', message: { text: 'CI passed' } }));
+    const second = h.queue.gate(input({ continuation: 'pass', text: 'review in', message: { text: 'review in' } }));
+    expect([first.action, second.action]).toEqual(['queued', 'queued']);
+    expect(h.queue.snapshot().entries).toHaveLength(3);
+  });
+
   it('the memory of a message that left the line lasts long enough for Slack to stop retrying, not forever', () => {
     const h = harness();
     h.running.set('U1', [taskA]);
