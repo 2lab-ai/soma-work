@@ -676,6 +676,15 @@ describe('a Slack redelivery is one request', () => {
     });
   });
 
+  it('a late copy of a message whose session was closed is a duplicate, free slot or not', () => {
+    const h = harness();
+    h.running.set('U1', [taskA]);
+    h.queue.gate(input({ message: msg('2.5') }));
+    expect(h.queue.dropSession('C1:2.0')).toBe(1);
+    h.running.set('U1', []);
+    expect(h.queue.gate(input({ message: msg('2.5') }))).toEqual({ action: 'duplicate' });
+  });
+
   it('host turns without a Slack ts of their own are never taken for copies', () => {
     const h = harness();
     h.running.set('U1', [taskA]);
