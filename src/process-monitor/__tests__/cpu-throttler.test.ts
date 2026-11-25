@@ -921,6 +921,34 @@ describe('CpuThrottler — hardening (#1421)', () => {
     expect(events.indexOf('probe')).toBeLessThan(events.indexOf('11:SIGCONT'));
   });
 
+  it('a pid reused during another tree’s slow live probe is not continued: the probe answers for every hold', async () => {
+    const m = new Machine();
+    let reusedInProbe = false;
+    const { t, events, ctl } = probed(m, () => {
+      // The probe blocks for 1.5 s; meanwhile tree A's 11 (read fine before it) exits and its pid is reused.
+      vi.setSystemTime(Date.now() + 1_500);
+      if (!reusedInProbe) {
+        reusedInProbe = true;
+        m.reuse(11, true);
+      }
+    });
+    m.add(10, 0).add(11, 2).add(20, 0).add(12, 2);
+    t.update(
+      [
+        session(200, [proc(10, 'root'), proc(11, 'child')], 'A'),
+        session(200, [proc(20, 'root'), proc(12, 'child')], 'B'),
+      ],
+      () => 100,
+    );
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(await until(() => !!m.procs.get(11)?.stopped && !!m.procs.get(12)?.stopped)).toBe(true);
+    events.length = 0;
+    ctl.dropTwelve = 2; // tree B's 12: the period read and its re-read both miss it — probed live
+    expect(await until(() => events.includes('12:SIGCONT'))).toBe(true);
+    expect(reusedInProbe).toBe(true);
+    expect(events).not.toContain('11:SIGCONT');
+  });
+
   it('a live probe (a pid two reads missed) runs while the tree is still stopped: a slow probe lets nothing run free', async () => {
     const m = new Machine();
     let ranDuringProbe = -1;
@@ -939,6 +967,8 @@ describe('CpuThrottler — hardening (#1421)', () => {
     expect(await until(() => events.includes('probe'))).toBe(true);
     expect(ranDuringProbe).toBe(0);
     expect(events.indexOf('probe')).toBeLessThan(events.indexOf('11:SIGCONT'));
+    // The probe answered for 12: it is continued too, not left stopped.
+    expect(await until(() => events.includes('12:SIGCONT'))).toBe(true);
   });
 
   it('a shell that forks a worker after each continue, gone within the period: the whole tree stays near its cap', async () => {
@@ -1124,7 +1154,9 @@ describe('CpuThrottler — hardening (#1421)', () => {
   it('a failed re-read of the holds never takes a valid sample from the rate: the worker stays held, nothing collapses', async () => {
     const m = new Machine();
     const ctl = { dropTwelve: 0, failNext: 0 };
+    const warnings: string[] = [];
     const t = new CpuThrottler({
+      logger: { warn: (msg: string) => warnings.push(msg) },
       kill: m.kill,
       read: async (pids) => {
         if (ctl.failNext > 0 && !pids.includes(10)) {
@@ -1154,6 +1186,8 @@ describe('CpuThrottler — hardening (#1421)', () => {
     // The next period read misses 12, and the re-read of the holds that follows fails.
     ctl.dropTwelve = 1;
     ctl.failNext = 1;
+    const cpu = () => m.cpuOf(11) + m.cpuOf(12);
+    const before = cpu();
     let lowest = 1;
     for (let i = 0; i < 80; i++) {
       await vi.advanceTimersByTimeAsync(25);
@@ -1161,6 +1195,9 @@ describe('CpuThrottler — hardening (#1421)', () => {
     }
     // (It dipped to 0.4 × steady when the failed re-read dropped the workers from the rate and they came back as new.)
     expect(lowest).toBeGreaterThan(steady * 0.7);
+    // The cap still holds through it, and the failed re-read is said.
+    expect(((cpu() - before) / 2) * 100).toBeLessThan(150);
+    expect(warnings.filter((w) => w.includes('re-read of held processes failed'))).toHaveLength(1);
     t.releaseAll();
   });
 
@@ -1182,6 +1219,30 @@ describe('CpuThrottler — hardening (#1421)', () => {
     const rate = ((m.cpuOf(11) - before) / 5) * 100;
     expect(rate).toBeGreaterThan(140);
     expect(rate).toBeLessThan(260);
+  });
+
+  it('a cap raised while a period reads: the rate that period measured under the old share does not raise the new one again', async () => {
+    const { m, t } = setup();
+    m.add(10, 0).add(11, 4);
+    t.update([session(400, [proc(10, 'root'), proc(11, 'child')])], () => 100);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(await until(() => !!m.procs.get(11)?.stopped)).toBe(true);
+    // The next period's read (it carries the Claude Code process) is out when the admin raises the cap to 200%: the
+    // share becomes about 0.25 × 2. The window that read closes was spent under 0.25 (about 100%); applied to 0.5 it
+    // would raise the share to 1 — a free period.
+    let raised = false;
+    m.onRead = (pids) => {
+      if (raised || !pids.includes(10)) return;
+      raised = true;
+      t.update([session(100, [proc(10, 'root'), proc(11, 'child')])], () => 200);
+    };
+    let top = 0;
+    for (let i = 0; i < 400; i++) {
+      await vi.advanceTimersByTimeAsync(5);
+      if (raised) top = Math.max(top, t.meteredShare('A') ?? 1);
+    }
+    expect(raised).toBe(true);
+    expect(top).toBeLessThan(0.8);
   });
 
   it('a pid an update names a Claude Code process while it is being read is never stopped as a worker', async () => {

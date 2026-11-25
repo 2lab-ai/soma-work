@@ -183,6 +183,7 @@ export class CpuThrottler {
   /** Said once while it lasts: a period the cap needs is longer than `MAX_PERIOD_MS`; a parent scan failing. */
   private saidTooSlow = false;
   private saidNoParents = false;
+  private saidReReadFailed = false;
   /**
    * The period whose own parent scan succeeded last. A worker a period finds started since the previous period's scan
    * only if that one succeeded (`scanOkSeq === seq - 1`); after a failed scan it may be old, so it is baselined, not
@@ -241,7 +242,8 @@ export class CpuThrottler {
         // seconds). A tree held to its old cap reads at that cap in the sample, so the sample cannot say whether it is
         // over the new one: its free rate is about old cap ÷ share, and the new share follows from it. Over the new
         // cap it stays metered (a replaced plan's pending stop is dropped: it belongs to the old object); under it,
-        // it is let go.
+        // it is let go. The new plan starts a fresh window: the next period only baselines, so a rate measured under
+        // the old share is never applied to the rescaled one (that would raise it twice — a free period).
         replanned = true;
         this.continueHolds((h) => h.sessionKey === s.sessionKey);
         const share = cur.share * (cap / cur.cap);
@@ -258,6 +260,9 @@ export class CpuThrottler {
           ),
           share: Math.max(MIN_SHARE, Math.min(1, share)),
           calmPeriods: 0,
+          prev: new Map(),
+          prevAt: 0,
+          charge: 0,
         });
         continue;
       } else if (cur) {
@@ -374,7 +379,8 @@ export class CpuThrottler {
 
   /**
    * Continue the holds `which` picks, each only after its identity is read: from this period's read for a pid it
-   * answers for, else the period's live probe (`probed`) or, without one, one live `ps` for all the rest. Gone or
+   * answers for, else the period's live probe (`probed`, which wins: it is newer) or, without one, one live `ps` for
+   * all the rest. Gone or
    * another process now: dropped, never signalled. Unknown,
    * or a continue the OS refused: kept, and tried again next period.
    */
@@ -405,7 +411,7 @@ export class CpuThrottler {
     const live = probed ?? (unanswered.length > 0 ? this.deps.liveStartTokens(unanswered) : undefined);
     for (const [pid, h] of picked) {
       // Unknown (no read or probe answered for it): kept, tried again next period.
-      const token = read?.has(pid) ? read.get(pid)?.startToken : live?.has(pid) ? live.get(pid) : undefined;
+      const token = live?.has(pid) ? live.get(pid) : read?.has(pid) ? read.get(pid)?.startToken : undefined;
       if (token === undefined) continue;
       if (token !== h.startToken) {
         drop(pid, h);
@@ -547,7 +553,7 @@ export class CpuThrottler {
     if (this.disposed) return;
     // What a continue trusts (each hold's identity), kept apart from what the rate and the members are read from: a
     // re-read for the continues that fails must not take a valid sample away from the accounting.
-    const verify = new Map(read);
+    let verify = new Map(read);
     // New descendants, found only under members this read verified (a member pid reused by another program must not
     // lend its children), then read themselves.
     const discovered = new Map<string, number[]>();
@@ -590,20 +596,36 @@ export class CpuThrottler {
     // A hold the read did not answer would be probed live, synchronously, at its continue: the event loop stops for
     // that probe, and an identity read before it ages by as long. Read every hold again first — one async read, which
     // blocks nothing — and continue all of them on it; only a pid missing from this read too is probed live.
+    // It replaces what the continues trust: a hold it misses (one that landed while it was out too), or every hold if
+    // it fails, is probed below.
     if ([...this.held.keys()].some((pid) => !verify.has(pid))) {
-      const again = await this.timedRead([...this.held.keys()]).catch(() => null);
-      for (const pid of this.held.keys()) {
-        const r = again?.get(pid);
-        if (r) verify.set(pid, r);
-        else verify.delete(pid);
-      }
+      verify = await this.timedRead([...this.held.keys()]).then(
+        (again) => {
+          this.saidReReadFailed = false;
+          return again;
+        },
+        (err) => {
+          if (!this.saidReReadFailed) {
+            this.saidReReadFailed = true;
+            this.deps.logger?.warn(
+              'cpu cap: the re-read of held processes failed; each is probed live before it is continued',
+              {
+                error: String(err),
+              },
+            );
+          }
+          return new Map<number, ThrottleRead>();
+        },
+      );
       if (this.disposed) return;
     }
     // A pid even that read could not answer is probed live — every tree's at once, before the first continue: the
-    // probe is synchronous, and a tree continued before another tree's probe would run uncapped through it.
+    // probe is synchronous, and a tree continued before another tree's probe would run uncapped through it. It asks
+    // for every hold: an identity read before a probe that took long is that much older at its continue (a pid
+    // reused meanwhile), so its answers win. If it fails, the read's answers stand and the rest wait a period.
     const missing = [...this.held.keys()].filter((pid) => !verify.has(pid));
     const probed: Map<number, string | null> =
-      missing.length > 0 ? (this.deps.liveStartTokens(missing) ?? new Map()) : new Map();
+      missing.length > 0 ? (this.deps.liveStartTokens([...this.held.keys()]) ?? new Map()) : new Map();
     // Held processes of sessions no longer metered (released while unknown): continue them now that they read.
     this.continueHolds((h) => !this.sessions.has(h.sessionKey), verify, probed);
     // From here to the end of the sessions loop nothing awaits: a planned stop lands before this or after all of it.
