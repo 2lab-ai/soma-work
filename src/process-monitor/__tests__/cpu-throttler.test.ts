@@ -1319,6 +1319,48 @@ describe('CpuThrottler — hardening (#1421)', () => {
     expect(r.stopped).toBe(false);
   });
 
+  it.each([
+    'a cap change',
+    'the same cap',
+  ])('a worker the sample now names another session’s root (with %s) is not kept: it is never stopped again', async (how) => {
+    const { m, t } = setup();
+    m.add(10, 0).add(11, 2, START, 10).add(40, 2, START, 11);
+    const a = () => session(400, [proc(10, 'root'), proc(11, 'child', { ppid: 10 })], 'A');
+    t.update([a()], () => 100);
+    await vi.advanceTimersByTimeAsync(3_000);
+    // 40 is not in A's sample: A found it as a worker and holds it each period.
+    expect(m.signals.some(([pid, sig]) => pid === 40 && sig === 'SIGSTOP')).toBe(true);
+    // One update changes (or keeps) A's cap and names 40 session B's Claude Code process.
+    t.update([a(), session(50, [proc(40, 'root', { ppid: 11 })], 'B')], (k) =>
+      k === 'A' && how === 'a cap change' ? 150 : 100,
+    );
+    const from = m.signals.length;
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(m.signals.slice(from).some(([pid, sig]) => pid === 40 && sig === 'SIGSTOP')).toBe(false);
+    expect(m.procs.get(40)?.stopped).toBe(false);
+  });
+
+  it('a stop already planned for a worker the sample then names a Claude Code process does not stop it', async () => {
+    const { m, t } = setup();
+    m.add(10, 0).add(11, 2, START, 10).add(40, 2, START, 11);
+    const a = () => session(400, [proc(10, 'root'), proc(11, 'child', { ppid: 10 })], 'A');
+    t.update([a()], () => 100);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(m.signals.some(([pid, sig]) => pid === 40 && sig === 'SIGSTOP')).toBe(true);
+    // The update lands while a stop that lists 40 reads who to stop (that read does not carry the Claude Code process).
+    let named = false;
+    let from = -1;
+    m.onRead = (pids) => {
+      if (named || pids.includes(10) || !pids.includes(40)) return;
+      named = true;
+      from = m.signals.length;
+      t.update([a(), session(50, [proc(40, 'root', { ppid: 11 })], 'B')], () => 100);
+    };
+    expect(await until(() => named)).toBe(true);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(m.signals.slice(from).some(([pid, sig]) => pid === 40 && sig === 'SIGSTOP')).toBe(false);
+  });
+
   it('a worker the last scan already listed, whose read missed it, is baselined when found later — not charged its lifetime', async () => {
     const m = new Machine();
     // The first read that asks for 30 misses it (a partial ps).
@@ -1444,7 +1486,7 @@ describe('CpuThrottler — hardening (#1421)', () => {
     expect(m.signals.some(([pid, sig]) => pid === 30 && sig === 'SIGSTOP')).toBe(true);
   });
 
-  it('a member that comes back through the sample drops its remembered counter: a later find does not charge it again', async () => {
+  it('a member back through the sample, then a cap change and a missed read: no stale counter charges it again', async () => {
     const m = new Machine();
     let dropNext = 0;
     let dropped = 0;

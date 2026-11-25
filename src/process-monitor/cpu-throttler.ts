@@ -221,6 +221,12 @@ export class CpuThrottler {
   update(sessions: readonly SessionProcessDetail[], capFor: (sessionKey: string) => number | null): void {
     if (this.disposed) return;
     this.roots = new Set(sessions.flatMap((s) => s.processes.filter((p) => p.role === 'root').map((p) => p.pid)));
+    // Who each sampled process belongs to now: a worker a tree found earlier that the sample names another
+    // session's (its root, or one of its processes) is not kept as this tree's.
+    const sampledBy = new Map<number, string>();
+    for (const s of sessions) for (const p of s.processes) sampledBy.set(p.pid, s.sessionKey);
+    const kept = (key: string, old: readonly Member[]): Member[] =>
+      old.filter((m) => !m.root && !this.roots.has(m.pid) && (sampledBy.get(m.pid) ?? key) === key);
     const seen = new Set<string>();
     let replanned = false;
     for (const s of sessions) {
@@ -255,10 +261,7 @@ export class CpuThrottler {
         this.sessions.set(s.sessionKey, {
           ...cur,
           cap,
-          members: withMembers(
-            members,
-            cur.members.filter((m) => !m.root),
-          ),
+          members: withMembers(members, kept(s.sessionKey, cur.members)),
           share: Math.max(MIN_SHARE, Math.min(1, share)),
           calmPeriods: 0,
           prev: new Map(),
@@ -269,10 +272,7 @@ export class CpuThrottler {
         continue;
       } else if (cur) {
         // Keep what a period discovered that the sample has not seen yet (it is in the next sample).
-        cur.members = withMembers(
-          members,
-          cur.members.filter((m) => !m.root),
-        );
+        cur.members = withMembers(members, kept(s.sessionKey, cur.members));
         continue;
       }
       // Metering starts only when the tree is over its cap (a whole 5 s sample of it).
@@ -875,7 +875,11 @@ export class CpuThrottler {
   /** Stop each candidate that is still the process `read` names, running, and not a person's pause. */
   private stopEach(key: string, stop: readonly Member[], read: Map<number, ThrottleRead>): void {
     const at = this.deps.now();
+    // Every stop passes here: never a Claude Code process, never another tree's member, whatever list it came from.
+    const elsewhere = new Set<number>(this.roots);
+    for (const [k, t] of this.sessions) if (k !== key) for (const o of t.members) elsewhere.add(o.pid);
     for (const m of stop) {
+      if (m.root || elsewhere.has(m.pid)) continue;
       const r = read.get(m.pid);
       if (!r || r.startToken !== m.startToken || r.stat.startsWith('T')) continue;
       if (this.deps.userPaused(key, m.pid, m.startToken)) continue;

@@ -138,7 +138,9 @@ same snapshot, and work will be placed by each node's free CPU and memory.
    its next read; a re-read for the continues never takes a valid sample from
    the rate. Discovery — a period's and a stop's — skips every metered tree's members and every Claude Code process the
    last update named, and checks again after its read (an update may name a found pid a session's root meanwhile), so
-   a nested tree's process is never taken for a worker. A worker the last good scan already listed (its read missed it)
+   a nested tree's process is never taken for a worker. A worker found earlier that the sample now names another
+   session's is dropped from the tree, and every stop skips Claude Code processes and other trees' members whatever
+   list it came from. A worker the last good scan already listed (its read missed it)
    is baselined when found later, not charged its lifetime. A stop whose identity read, parent scan or new-worker read keeps failing is said once per tree, and a
    saved cap that does not parse is said in the log. It never stops the Claude Code
    process itself, never continues what it did not stop (a person's pause becomes theirs), never signals a reused pid,
