@@ -2010,7 +2010,7 @@
   "작업 워커를 불러오지 못했습니다 (HTTP ": "Could not load the work workers (HTTP ",
   "<div class=\"notice is-error\" role=\"alert\">작업 워커를 불러오지 못했습니다. 다시 시도하세요.</div>": "<div class=\"notice is-error\" role=\"alert\">Could not load the work workers. Try again.</div>",
   "<div class=\"notice\">작업 워커가 없습니다 — 이 인스턴스에서 프로세스 모니터가 꺼져 있어요.</div>": "<div class=\"notice\">No work workers — the process monitor is off on this instance.</div>",
-  " 닉네임을 저장하지 못했습니다 — ": ": could not save the nickname — ",
+  " 닉네임을 저장하지 못했습니다 — ": " nickname could not be saved — ",
   ": 닉네임을 지웠습니다 — 노드 이름으로 나옵니다": ": nickname cleared — the node name shows",
   ": 닉네임을 ": ": nickname saved as ",
   "(으)로 저장했습니다 — 작업 카드에는 몇 초 안에 반영됩니다": " — task cards show it within seconds",
