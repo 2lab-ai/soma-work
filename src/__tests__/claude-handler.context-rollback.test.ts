@@ -19,6 +19,8 @@ vi.mock('../credential-alert', () => ({ sendCredentialAlert: vi.fn(async () => {
 vi.mock('../token-manager', () => ({ getTokenManager: () => ({}) }));
 vi.mock('../auth/llmux-tenant-keys', () => ({ ensureTenantKey: vi.fn(async () => null) }));
 vi.mock('../auth/query-env-builder', () => ({ buildQueryEnv: () => ({ env: {} }) }));
+const { markRewoundTurnsMock } = vi.hoisted(() => ({ markRewoundTurnsMock: vi.fn(async () => 0) }));
+vi.mock('../conversation/recorder', () => ({ markRewoundTurns: markRewoundTurnsMock }));
 vi.mock('../agent-runtime/claude-code/build-stream-options', () => ({
   buildStreamOptions: vi.fn(async ({ session }: { session?: { sessionId?: string } }) => ({
     options: { model: 'claude-test', ...(session?.sessionId ? { resume: session.sessionId } : {}) },
@@ -67,7 +69,113 @@ async function drain(handler: ClaudeHandler, session: any): Promise<void> {
 }
 
 describe('ClaudeHandler — context rollback', () => {
-  afterEach(() => queryMock.mockReset());
+  afterEach(() => {
+    queryMock.mockReset();
+    markRewoundTurnsMock.mockClear();
+  });
+
+  // SSOT 2026-11-25: what a rollback dropped is stamped on the conversation record (`rewoundAt`) so the dashboard
+  // chat leaves it out for good — the session keeps only its latest 10 spans and new/renew clears them.
+  const anchorOf = (n: number) => encodeContextAnchor({ sid: SID, epoch: 0, uuid: U(n) });
+  const rollingBack = (over: Record<string, unknown> = {}): any => ({
+    sessionId: SID,
+    compactionCount: 0,
+    ownerId: 'U1',
+    channelId: 'C1',
+    threadTs: '1.1',
+    conversationId: 'conv-1',
+    contextAnchor: anchorOf(9),
+    pendingRewind: {
+      anchor: anchorOf(3),
+      label: '입력 직전: 배포해',
+      requestedAt: 500,
+      requestedBy: 'U1',
+      source: 'input',
+      keptUntil: 199,
+    },
+    ...over,
+  });
+  const opened = (opening: Record<string, unknown>, n: number) => [
+    { type: 'system', subtype: 'init', session_id: SID, model: 'claude-test', tools: [] },
+    { type: 'assistant', uuid: U(n), message: { content: [{ type: 'text', text: 'ok' }] } },
+    result(opening),
+  ];
+
+  it('stamps once the CLI opens the resumed turn — the applied span and the spans the session already had', async () => {
+    // A span applied before stamps existed is stamped too, before the cap or new/renew can drop it.
+    const session = rollingBack({ contextRewinds: [{ from: 10, to: 20, label: '입력 직전: 옛 지시', at: 21 }] });
+    installTurn((opening) => opened(opening, 10));
+    const handler = new ClaudeHandler({ getPluginManager: () => null } as unknown as McpManager);
+    await drain(handler, session);
+    expect(queryMock.mock.calls[0][0].options.resumeSessionAt).toBe(U(3));
+    expect(markRewoundTurnsMock.mock.calls).toEqual([
+      ['conv-1', { from: 10, to: 20, at: 21, keepsFinalReply: false }],
+      ['conv-1', { from: 199, to: 500, at: expect.any(Number), keepsFinalReply: false }],
+    ]);
+  });
+
+  it('a resume the CLI refuses (it never opens the turn) stamps nothing', async () => {
+    const session = rollingBack();
+    // The CLI fails the resume while loading the transcript ("No message found with message.uuid"): no system/init.
+    installTurn((opening) => [{ ...result(opening), subtype: 'error_during_execution', is_error: true }]);
+    const handler = new ClaudeHandler({ getPluginManager: () => null } as unknown as McpManager);
+    await drain(handler, session).catch(() => undefined);
+    expect(queryMock.mock.calls[0][0].options.resumeSessionAt).toBe(U(3));
+    expect(markRewoundTurnsMock).not.toHaveBeenCalled();
+  });
+
+  it('an older request with no kept point is applied but marks nothing; no conversation, nothing to stamp', async () => {
+    const legacy = rollingBack();
+    delete legacy.pendingRewind.keptUntil;
+    installTurn((opening) => opened(opening, 10));
+    const handler = new ClaudeHandler({ getPluginManager: () => null } as unknown as McpManager);
+    await drain(handler, legacy);
+    expect(queryMock.mock.calls[0][0].options.resumeSessionAt).toBe(U(3));
+    expect(markRewoundTurnsMock).not.toHaveBeenCalled();
+
+    const noConversation = rollingBack({ conversationId: undefined });
+    installTurn((opening) => opened(opening, 11));
+    await drain(handler, noConversation);
+    expect(queryMock.mock.calls[1][0].options.resumeSessionAt).toBe(U(3));
+    expect(markRewoundTurnsMock).not.toHaveBeenCalled();
+  });
+
+  it('a span kept up to a final reply says so (an older one kept up to the reply’s entry, before its answer)', async () => {
+    const final = { from: 30, to: 40, label: '최종 답까지: 배포했어요', at: 41 };
+    const session = rollingBack({ contextRewinds: [final] });
+    installTurn((opening) => opened(opening, 10));
+    const handler = new ClaudeHandler({ getPluginManager: () => null } as unknown as McpManager);
+    await drain(handler, session);
+    expect(markRewoundTurnsMock.mock.calls[0]).toEqual(['conv-1', { from: 30, to: 40, at: 41, keepsFinalReply: true }]);
+  });
+
+  it('the span the cap of 10 lets go is stamped with the rest', async () => {
+    const old = Array.from({ length: 10 }, (_, i) => ({
+      from: i * 10,
+      to: i * 10 + 5,
+      label: `p${i}`,
+      at: i * 10 + 6,
+    }));
+    const session = rollingBack({ contextRewinds: [...old] });
+    installTurn((opening) => opened(opening, 10));
+    const handler = new ClaudeHandler({ getPluginManager: () => null } as unknown as McpManager);
+    await drain(handler, session);
+    expect(session.contextRewinds).toHaveLength(10);
+    expect(session.contextRewinds[0]).toEqual(old[1]);
+    const stamped = markRewoundTurnsMock.mock.calls.map((c: any[]) => c[1].from);
+    expect(stamped).toEqual([0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 199]);
+  });
+
+  it('a rollback the CLI never opened is undone: no span, the old anchor — nothing to stamp later', async () => {
+    const earlier = { from: 10, to: 20, label: '입력 직전: 옛 지시', at: 21 };
+    const session = rollingBack({ contextRewinds: [earlier] });
+    installTurn((opening) => [{ ...result(opening), subtype: 'error_during_execution', is_error: true }]);
+    const handler = new ClaudeHandler({ getPluginManager: () => null } as unknown as McpManager);
+    await drain(handler, session).catch(() => undefined);
+    expect(session.contextRewinds).toEqual([earlier]);
+    expect(session.contextAnchor).toBe(anchorOf(9));
+    expect(markRewoundTurnsMock).not.toHaveBeenCalled();
+  });
 
   it('a waiting rollback becomes resumeSessionAt once, and the anchor follows the new chain', async () => {
     const session: any = {

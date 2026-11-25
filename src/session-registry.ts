@@ -3385,7 +3385,8 @@ export class SessionRegistry {
     // A fresh conversation has no cut points of its own yet (#743).
     session.contextAnchor = undefined;
     session.pendingRewind = undefined;
-    session.contextRewinds = undefined;
+    // What applied rollbacks dropped stays (SSOT 2026-11-25): its spans are times, not cut points of the old SDK
+    // session, and the dashboard chat keeps leaving those turns out after new/renew.
     session.rewindRedo = undefined;
     session.summaryTitle = undefined;
     session.summaryTitleTurnId = undefined;

@@ -656,6 +656,39 @@ export async function getTurnRawContent(conversationId: string, turnId: string):
 }
 
 /**
+ * SSOT 2026-11-25 ("해당 프롬프트까지 히스토리에서 삭제") — a context rollback ran: stamp the turns it dropped
+ * (`rewoundAt`), so the dashboard chat leaves them out for good — the session's own list of dropped spans keeps only
+ * the latest 10. Nothing is deleted. `span` is the rollback's: every turn recorded after `from` (the last moment it
+ * keeps) and up to `to` (when it was asked for) left the context. A turn is stamped once. A save that fails takes
+ * this call's stamps back (and throws), so the next try writes them. Returns how many turns this call stamped.
+ */
+export async function markRewoundTurns(
+  conversationId: string,
+  /** `keepsFinalReply`: kept up to a final reply — an older span (no turn recorded at `from`) keeps the answer first after it. */
+  span: { from: number; to: number; at: number; keepsFinalReply?: boolean },
+): Promise<number> {
+  const record = await getOrLoadConversation(conversationId);
+  if (!record) return 0;
+  // An older span starts before its answer; a newer one starts at it (a turn recorded exactly there) — nothing to keep.
+  let first: ConversationTurn | undefined;
+  for (const t of record.turns) if (t.timestamp > span.from && (!first || t.timestamp < first.timestamp)) first = t;
+  const older = span.keepsFinalReply && !record.turns.some((t) => t.timestamp === span.from);
+  const kept = older && first?.role === 'assistant' ? first : undefined;
+  const stamped = record.turns.filter(
+    (t) => t !== kept && t.rewoundAt === undefined && t.timestamp > span.from && t.timestamp <= span.to,
+  );
+  if (stamped.length === 0) return 0;
+  for (const t of stamped) t.rewoundAt = span.at;
+  try {
+    await serializedSave(conversationId, record);
+  } catch (error) {
+    for (const t of stamped) t.rewoundAt = undefined;
+    throw error;
+  }
+  return stamped.length;
+}
+
+/**
  * Update the subordinate-model generated title (titleSub) for a conversation
  */
 export async function updateConversationTitleSub(conversationId: string, titleSub: string): Promise<boolean> {

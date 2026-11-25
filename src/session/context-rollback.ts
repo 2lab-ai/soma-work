@@ -160,7 +160,11 @@ export function requestContextRollback(
   if (deps.requestActive) return { ok: false, reason: 'busy' };
   const refusal = anchorRefusal(session, target.anchor);
   if (refusal) return { ok: false, reason: refusal };
-  if (target.anchor === session.contextAnchor && !session.pendingRewind) return { ok: false, reason: 'no-change' };
+  // An input at the tail is not "no change": its turn was stopped before any reply, so the tail stayed where the
+  // turn started, but the instruction is in the transcript after it — rolling back to just before it drops it.
+  if (target.anchor === session.contextAnchor && !session.pendingRewind && target.source !== 'input') {
+    return { ok: false, reason: 'no-change' };
+  }
   const { uuid } = decodeContextAnchor(target.anchor)!;
   // The point must be on the ACTIVE branch: after a rollback the dropped branch's uuids stay in
   // the file, but the SDK cannot resume there ("No message found with message.uuid").
@@ -274,7 +278,11 @@ export interface RollbackInputPoint {
  * The person's inputs in this context that can be rolled back to, oldest
  * first: recorded with an anchor that is still usable. System turns (goal
  * continuations, resumes, compaction) are left out — the owner picks among
- * what they said.
+ * what they said. Left out too: the anchor a waiting rollback already resumes
+ * from (what came after it leaves anyway). The current tail is offered: an
+ * input starts at the tail when its turn was stopped before any reply, and its
+ * words are still in the context after the tail (found on dev, 2026-11-25 —
+ * the person's latest instruction had no button).
  */
 export function rollbackInputPoints(
   session: ConversationSession,
@@ -285,12 +293,12 @@ export function rollbackInputPoints(
   derived?: ReadonlyMap<string, string>,
 ): RollbackInputPoint[] {
   if (!record) return [];
-  const tail = turnStartAnchor(session);
+  const waiting = session.pendingRewind?.anchor;
   const out: RollbackInputPoint[] = [];
   for (const t of record.turns as ConversationTurn[]) {
     if (t.role !== 'user' || t.origin?.by === 'system') continue;
     const anchor = typeof t.anchor === 'string' ? t.anchor : derived?.get(t.id);
-    if (!anchor || anchor === tail || anchorRefusal(session, anchor)) continue;
+    if (!anchor || anchor === waiting || anchorRefusal(session, anchor)) continue;
     if (onChain && !onChain(decodeContextAnchor(anchor)?.uuid ?? '')) continue;
     out.push({ turnId: t.id, timestamp: t.timestamp, text: t.rawContent, anchor });
   }
@@ -453,7 +461,7 @@ export interface RollbackInstructionPoint {
 /**
  * The work log's instructions the owner can roll back before, oldest first: a person's (not a
  * system turn's) instruction recorded with a usable anchor — the point the turn started from — on
- * the active branch, and not the current tail (nothing would leave).
+ * the active branch, and not where a waiting rollback already resumes (as `rollbackInputPoints`).
  */
 export function rollbackWorkLogInstructionPoints(
   session: ConversationSession,
@@ -461,11 +469,11 @@ export function rollbackWorkLogInstructionPoints(
   /** Keep only points on the active branch (`activeChainFilter`); absent = no filter. */
   onChain?: (uuid: string) => boolean,
 ): RollbackInstructionPoint[] {
-  const tail = turnStartAnchor(session);
+  const waiting = session.pendingRewind?.anchor;
   const out: RollbackInstructionPoint[] = [];
   for (const e of [...entries].sort((a, b) => a.seq - b.seq)) {
     if (e.kind !== 'instruction' || e.by === 'system' || typeof e.anchor !== 'string') continue;
-    if (e.anchor === tail || anchorRefusal(session, e.anchor)) continue;
+    if (e.anchor === waiting || anchorRefusal(session, e.anchor)) continue;
     if (onChain && !onChain(decodeContextAnchor(e.anchor)?.uuid ?? '')) continue;
     out.push({ seq: e.seq, ts: e.ts, text: e.text, anchor: e.anchor });
   }
@@ -512,18 +520,45 @@ export function toolCallLabel(call: string, max = 80): string {
 
 const WORK_LOG_KIND_LABEL: Record<string, string> = { narration: '응답', final: '최종 답', tool_result: '툴 결과' };
 
+/**
+ * A rollback kept up to a final reply (its label starts so). Before 2026-11-25 such a span kept up to the reply's
+ * work-log entry, before its answer was recorded: the answer recorded first after the span's start stays.
+ */
+export function keepsFinalReply(label: unknown): boolean {
+  return typeof label === 'string' && label.startsWith(`${WORK_LOG_KIND_LABEL.final}까지:`);
+}
+
+/**
+ * The time a work-log point keeps up to. A final reply keeps its answer: the answer is recorded at teardown, after
+ * the reply's work-log entry, so the point keeps up to the answer's recorded time — the first turn recorded at or
+ * after the entry, when it is an answer (2026-11-25). Every other point keeps its own entry's time.
+ */
+function workLogKeptAt(
+  p: RollbackWorkLogPoint,
+  turns: ReadonlyArray<Pick<ConversationTurn, 'role' | 'timestamp'>>,
+): number {
+  if (p.kind !== 'final') return p.ts;
+  let next: Pick<ConversationTurn, 'role' | 'timestamp'> | undefined;
+  for (const t of turns) if (t.timestamp >= p.ts && (!next || t.timestamp < next.timestamp)) next = t;
+  return next?.role === 'assistant' ? next.timestamp : p.ts;
+}
+
 export function buildRollbackPointsView(
   session: ConversationSession,
   inputs: RollbackInputPoint[],
   worklog: RollbackWorkLogPoint[],
   gate: { actor: string | undefined; requestActive: boolean },
   instructions: RollbackInstructionPoint[] = [],
+  /** The conversation's turns: a final reply's point keeps up to its recorded answer (`workLogKeptAt`). */
+  turns: ReadonlyArray<Pick<ConversationTurn, 'role' | 'timestamp'>> = [],
 ): RollbackPointsView {
   const refusal: ContextRollbackRefusal | undefined =
     gate.actor !== session.ownerId ? 'not-owner' : gate.requestActive ? 'busy' : undefined;
   const pending = session.pendingRewind;
   // The same instruction is recorded twice — the conversation's input and the work log's entry —
-  // with the same anchor; its rollback drops both, so it keeps up to the earlier of the two.
+  // with the same anchor; its rollback drops both, so it keeps up to the earlier of the two. Two
+  // instructions start from one anchor when the first was stopped before any reply: a rollback to
+  // just before either resumes there and drops both, so both keep up to the earlier one.
   const inputAt = new Map<string, number>();
   for (const p of inputs) if (!inputAt.has(p.anchor)) inputAt.set(p.anchor, p.timestamp);
   return {
@@ -544,7 +579,7 @@ export function buildRollbackPointsView(
       anchor: p.anchor,
       label: `입력 직전: ${rollbackInputLabel(p.text)}`,
       text: String(p.text ?? '').slice(0, ROLLBACK_TEXT_MAX),
-      at: p.timestamp,
+      at: Math.min(p.timestamp, inputAt.get(p.anchor) ?? p.timestamp),
     })),
     instructions: instructions.slice(-500).map((p) => ({
       seq: p.seq,
@@ -557,7 +592,7 @@ export function buildRollbackPointsView(
       seq: p.seq,
       anchor: p.anchor,
       label: `${WORK_LOG_KIND_LABEL[p.kind] ?? p.kind}까지: ${p.call ? toolCallLabel(p.call) : rollbackInputLabel(p.text)}`,
-      at: p.ts,
+      at: workLogKeptAt(p, turns),
       kind: p.kind,
     })),
   };

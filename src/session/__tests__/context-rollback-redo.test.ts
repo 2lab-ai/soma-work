@@ -96,7 +96,7 @@ describe('Redo — a rollback is taken back until the next turn runs', () => {
 });
 
 describe('the work log’s instructions are points: just before each person’s instruction', () => {
-  it('a person’s instruction with a usable anchor on the active branch; system turns and the tail are not', () => {
+  it('a person’s instruction with a usable anchor on the active branch; system turns are not', () => {
     const s = session({ contextAnchor: A(9) });
     const points = rollbackWorkLogInstructionPoints(
       s,
@@ -106,12 +106,13 @@ describe('the work log’s instructions are points: just before each person’s 
         { seq: 3, ts: 12, kind: 'instruction', text: '[goal-continuation] …', anchor: A(2), by: 'system' },
         { seq: 4, ts: 13, kind: 'instruction', text: '롤백 테스트', anchor: A(4) },
         { seq: 5, ts: 14, kind: 'instruction', text: 'old', anchor: A(5, 3) }, // another epoch
-        { seq: 6, ts: 15, kind: 'instruction', text: '지금', anchor: A(9) }, // the tail: nothing to drop
+        // At the tail: its turn was stopped before any reply — its words are after the tail (2026-11-25).
+        { seq: 6, ts: 15, kind: 'instruction', text: '지금', anchor: A(9) },
         { seq: 7, ts: 16, kind: 'instruction', text: 'dropped', anchor: A(7) },
       ],
       (uuid) => uuid !== U(7),
     );
-    expect(points.map((p) => p.seq)).toEqual([1, 4]);
+    expect(points.map((p) => p.seq)).toEqual([1, 4, 6]);
     expect(points[0]).toEqual({ seq: 1, ts: 10, text: '배포해', anchor: A(1) });
   });
 });

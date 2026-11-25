@@ -82,7 +82,7 @@ describe('SessionRegistry — context rollback fields', () => {
     expect(r?.pendingRewind).toBeUndefined();
   });
 
-  it('a reset clears both', () => {
+  it('a reset clears the anchor, a waiting rollback and Redo; what applied rollbacks dropped stays (SSOT 2026-11-25)', () => {
     const reg = new SessionRegistry();
     const s = reg.createSession('U1', 'Tester', 'C1', '171.3');
     s.sessionId = SID;
@@ -93,7 +93,8 @@ describe('SessionRegistry — context rollback fields', () => {
     reg.resetSessionContext('C1', '171.3');
     expect(s.contextAnchor).toBeUndefined();
     expect(s.pendingRewind).toBeUndefined();
-    expect(s.contextRewinds).toBeUndefined();
+    // The spans are times, not SDK cut points: the chat keeps leaving those turns out after new/renew.
+    expect(s.contextRewinds).toEqual([{ from: 1, to: 3, label: 'x', at: 3 }]);
     expect(s.rewindRedo).toBeUndefined();
   });
 });

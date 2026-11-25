@@ -101,7 +101,7 @@ import {
 } from '../session/agent-registry';
 import { resolveEffectiveAutoCompact } from '../session/autocompact-policy';
 import type { PhoneCallSummary as PhoneCallSummaryLike } from '../phone/call-store';
-import { CONTEXT_ROLLBACK_REFUSAL_TEXT } from '../session/context-rollback';
+import { CONTEXT_ROLLBACK_REFUSAL_TEXT, keepsFinalReply } from '../session/context-rollback';
 import { sanitizeCronJob } from '../session/cron-job';
 import { effortMenuOf } from '../session/effort-menu';
 import { EffortSwitchError, type EffortSwitchResult } from '../session/effort-switch';
@@ -3197,6 +3197,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
             source: String(s.pendingRewind.source || ''),
             // What it keeps: the entries after it read "문맥에서 빠짐" as soon as it is asked for.
             ...(typeof s.pendingRewind.keptUntil === 'number' ? { keptUntil: s.pendingRewind.keptUntil } : {}),
+            ...(keepsFinalReply(s.pendingRewind.label) ? { keepsFinalReply: true } : {}),
           },
           // How many rollbacks Redo can take back (until the next turn runs).
           ...(Array.isArray(s.rewindRedo) && s.rewindRedo.length ? { rewindRedo: s.rewindRedo.length } : {}),
@@ -3211,6 +3212,8 @@ function sessionToKanban(key: string, s: any): KanbanSession {
               to: Number(r.to) || 0,
               label: String(r.label ?? '').slice(0, 300),
               at: Number(r.at) || 0,
+              // Kept up to a final reply: an older span starts before its answer (rewindSpansOf, given the turns).
+              ...(keepsFinalReply(r.label) ? { keepsFinalReply: true } : {}),
             })),
         }
       : {}),
@@ -4857,6 +4860,8 @@ export async function registerDashboardRoutes(
         // line), and a /compact turn's compaction (estimate, then its result).
         origin: t.role === 'user' ? t.origin : undefined,
         compact: t.role === 'user' ? t.compact : undefined,
+        // SSOT 2026-11-25: a rollback that ran dropped this turn — the chat leaves it out for good.
+        rewoundAt: t.rewoundAt,
       }));
 
       reply.send({
@@ -18606,11 +18611,13 @@ var _naSent = Object.create(null); // card key → the answer whose step was sen
 var NEXT_ACTIONS_LABEL = '다음 행동';
 // Pure: the steps of the latest answer — the answers after the latest instruction, newest first; null once a newer
 // instruction (a person's or the host's, an optimistic one included) follows it.
-function nextActionsOfTurns(turns) {
+function nextActionsOfTurns(turns, spans) {
   var list = Array.isArray(turns) ? turns : [];
   for (var i = list.length - 1; i >= 0; i--) {
     var t = list[i];
     if (!t) continue;
+    // SSOT 2026-11-25: a turn a rollback took out of the chat is not there to follow (spans: the session's).
+    if ((spans || t.rewoundAt) && convRewound(t, spans)) continue;
     if (t.role === 'user') return null;
     if (t.role === 'assistant' && Array.isArray(t.nextActions) && t.nextActions.length) {
       return { turnId: String(t.id || ''), list: t.nextActions };
@@ -18772,7 +18779,7 @@ function renderPanelNext() {
   // gets none, so their steps count only when the turns were fetched at the session's latest activity — never an
   // answer a later turn already followed (trinity R2, astra P2).
   var fresh = !!s && (viewerOwns(s) || _viewerIsAdmin || _panelTurnsAct === String(s.lastActivity || ''));
-  var na = s && fresh && _panelTurnsCid && _panelTurnsCid === s.conversationId ? nextActionsOfTurns(_panelTurnsList) : null;
+  var na = s && fresh && _panelTurnsCid && _panelTurnsCid === s.conversationId ? nextActionsOfTurns(_panelTurnsList, typeof rewindSpansOf === 'function' ? rewindSpansOf(s, _panelTurnsList) : null) : null;
   var html = s ? nextActionsHtml(s, na, 'panel') : '';
   var key = s ? s.key : '';
   // The step just sent is still swallowing the others (naMergeInto): on that card the bar goes when that is over;
@@ -20259,8 +20266,9 @@ function closeLifecycleDialog() {
 }
 // ── Context rollback: 되돌리기 모드 (#744 → 2026-11-03) ──
 // The panel head's 되돌리기 모드 puts a button on each entry it can roll back to: a person's
-// instruction in 지시와 답변 and in 작업 로그 ("이 지시 전으로" — the instruction leaves with what came
-// after it, and goes back into the composer: Claude Code's rewind), a reply or a tool card in 작업 로그
+// instruction in 지시와 답변 and in 작업 로그 ("여기로 되돌리기" — the instruction leaves with what came
+// after it: 지시와 답변 no longer shows them, and the instruction goes back into the composer to be edited,
+// cleared or replaced: Claude Code's rewind, SSOT 2026-11-25), a reply or a tool card in 작업 로그
 // ("여기까지 유지" — it stays). A button opens the confirmation (the instruction quoted, what leaves);
 // 되돌리기 asks the server (POST …/rollback, the one gate). ↪︎ Redo takes the last rollback back until
 // the next instruction runs. The points come from GET …/rollback-points (active branch only).
@@ -20278,14 +20286,41 @@ function rewoundBy(spans, ts) {
 }
 // Pure: the spans the marks read — the applied rollbacks, and the one waiting (asked, not yet run):
 // what it drops reads "문맥에서 빠짐" as soon as it is asked for, as an applied one does.
-function rewindSpansOf(s) {
+// Given the turns (list), a span kept up to a final reply (keepsFinalReply) starts at the answer recorded first after
+// it: before 2026-11-25 such a span kept up to the reply's work-log entry, before its answer was recorded, and that
+// answer stays (a newer span already starts there).
+function rewindSpansOf(s, list) {
   if (!s) return null;
   var spans = Array.isArray(s.contextRewinds) ? s.contextRewinds.slice() : [];
   var p = s.pendingRewind;
   if (p && typeof p.keptUntil === 'number' && Number(p.requestedAt) > p.keptUntil) {
     spans.push({ from: p.keptUntil, to: Number(p.requestedAt), label: String(p.label || ''), pending: true });
+    if (p.keepsFinalReply) spans[spans.length - 1].keepsFinalReply = true;
+  }
+  if (Array.isArray(list)) {
+    spans = spans.map(function(r) {
+      if (!r || !r.keepsFinalReply) return r;
+      var first = null;
+      for (var i = 0; i < list.length; i++) {
+        var t = list[i];
+        var ts = t ? Number(t.timestamp) || 0 : 0;
+        // A newer span starts at its answer (a turn recorded exactly there): nothing to keep.
+        if (t && !t._optimistic && !t._queued && ts === r.from) return r;
+        if (t && !t._optimistic && !t._queued && ts > r.from && (!first || ts < Number(first.timestamp))) first = t;
+      }
+      return first && first.role === 'assistant' ? Object.assign({}, r, { from: Number(first.timestamp) }) : r;
+    });
   }
   return spans.length ? spans : null;
+}
+// Pure: is this turn out of the chat — did a rollback take it out (SSOT 2026-11-25)? Stamped on the record once the
+// rollback ran (rewoundAt — kept past the session's latest 10 spans), or recorded inside a span (waiting, or applied
+// before the stamp). A final reply's point keeps up to its answer's recorded time (the server's view), so that answer
+// stays. This browser's own instruction (its own clock) and a row of the queue are not recorded turns: never.
+function convRewound(t, spans) {
+  if (!t || t._optimistic || t._queued) return false;
+  if (t.rewoundAt) return true;
+  return !!spans && !!rewoundBy(spans, toNum(t.timestamp));
 }
 // The open log keeps the panel session's spans (st.rewinds); a change repaints it.
 function wlSyncRewinds() {
@@ -20379,7 +20414,7 @@ function rbIndex() {
   return rbIndexOf(_rb.view, wlCallRows(_wl && _wl.entries));
 }
 function rbButtonLabel(kind) {
-  return kind === 'input' ? '⏪ 이 지시 전으로 되돌리기' : '⏪ 여기까지 유지하고 되돌리기';
+  return kind === 'input' ? '⏪ 여기로 되돌리기' : '⏪ 여기까지 유지하고 되돌리기';
 }
 // A person's instruction in 지시와 답변: the button above its words (the turn's media slot).
 function rbTurnButtonHtml(pt, turnId) {
@@ -20496,9 +20531,9 @@ function rbConfirmHtml(pick, ctx) {
   var n = ctx && ctx.dropped ? ' ' + ctx.dropped + '개' : '';
   var redo = '<p class="rb-note">다음 지시를 보내기 전까지 ↪︎ Redo 로 취소할 수 있어요. 파일 변경은 되돌리지 않습니다.</p>';
   if (pick.kind === 'input') {
-    return '<p class="rb-lead">이 지시를 보내기 <b>전</b>으로 모델의 대화 문맥을 되돌립니다.</p>'
+    return '<p class="rb-lead">이 지시를 보내기 <b>전</b>으로 대화를 되돌립니다.</p>'
       + '<blockquote class="rb-quote">' + esc(String(p.text || p.label || '')) + '</blockquote>'
-      + '<p class="rb-note">이 지시와 그 뒤의 대화' + n + '가 모델 문맥에서 빠집니다. 확인하면 이 지시를 입력창에 다시 넣어 드려요 — 고쳐서 보내면 거기서 이어집니다.</p>'
+      + '<p class="rb-note">이 지시와 그 뒤의 대화' + n + '가 채팅과 모델 문맥에서 빠지고, 이 지시는 지시창에 다시 들어갑니다 — 고치거나 지우고 새 지시를 보내면 거기서 이어집니다.</p>'
       + redo;
   }
   var under = ctx && ctx.under ? '<p class="rb-note">이 지점의 지시</p><blockquote class="rb-quote rb-under">' + esc(ctx.under) + '</blockquote>' : '';
@@ -20525,7 +20560,13 @@ function rbOpenConfirm(pt) {
   var body = document.getElementById('rollback-body');
   if (!key || !dlg || !body || typeof dlg.show !== 'function') return;
   var kept = rbKeptUntil(pt);
-  var dropped = (_panelTurnsList || []).filter(function(t) { return t && toNum(t.timestamp) > kept; }).length;
+  // What leaves the chat now, by the chat's own rule (convRewound): in this rollback's span, and not already out by
+  // an earlier one.
+  var spans = rewindSpansOf(panelSessionKey ? _sessionCache[panelSessionKey] : null, _panelTurnsList);
+  var proposed = [{ from: kept, to: Number.MAX_SAFE_INTEGER }];
+  var dropped = (_panelTurnsList || []).filter(function(t) {
+    return convRewound(t, proposed) && !convRewound(t, spans);
+  }).length;
   _rbPick = { key: key, kind: pt.kind, p: pt.p };
   body.innerHTML = rbConfirmHtml(pt, { dropped: dropped, under: pt.kind === 'worklog' ? rbUnderOf(Number(pt.p.seq)) : '' });
   setRollbackStatus('', false);
@@ -20558,7 +20599,8 @@ async function rbConfirm() {
       if (typeof c.focus === 'function') c.focus();
     }
   }
-  dashToast({ title: '문맥을 되돌렸어요', description: p.label + ' · 다음 지시부터 적용 · ↪︎ Redo 로 취소', tone: 'success' });
+  if (pick.kind === 'input') dashToast({ title: '여기로 되돌렸어요', description: '지시를 지시창에 다시 넣었어요 · 고쳐서 보내면 거기서 이어집니다 · ↪︎ Redo 로 취소', tone: 'success' });
+  else dashToast({ title: '문맥을 되돌렸어요', description: p.label + ' · 다음 지시부터 적용 · ↪︎ Redo 로 취소', tone: 'success' });
   await loadSessions();
   if (rbOn(pick.key)) await rbLoad(pick.key);
 }
@@ -23929,10 +23971,39 @@ function convTurnsOf(list, c) {
   var slots = [];
   var used = Object.create(null);
   var start = 0;
+  // An answer's files and phone calls: those in its turn's window (from the turn before it to the answer), each once.
+  // .prd/30 §3.2 — a phone call goes under the answer of the turn that placed it (its start in the turn's window).
+  function ownedBy(from, to) {
+    var arts = (c.arts || []).filter(function(x) { return x && !used[x.id] && artInTurn(x, from, to); });
+    arts.forEach(function(x) { used[x.id] = true; });
+    var calls = (c.calls || []).filter(function(x) {
+      var t0 = x ? toNum(x.createdAt) : 0;
+      return x && x.id && !used['call:' + x.id] && t0 > 0 && t0 >= toNum(from) - 5000 && t0 <= to;
+    });
+    calls.forEach(function(x) { used['call:' + x.id] = true; });
+    return { arts: arts, calls: calls };
+  }
   for (var i = 0; i < list.length; i++) {
     var t = list[i];
     if (!t) continue;
     var ts = toNum(t.timestamp);
+    // SSOT 2026-11-25: a turn a rollback drops — waiting or applied — leaves the chat (the instruction rolled
+    // back before went back into the composer; convRewound). Redo brings a waiting one's back; 작업 로그 keeps
+    // them, marked. A dropped answer keeps its files and calls, out of the chat with it: none moves to another turn.
+    if ((c.rewinds || t.rewoundAt) && convRewound(t, c.rewinds)) {
+      if (t.role !== 'user') ownedBy(start, ts);
+      else {
+        // A dropped instruction's own calls (it may have no answer): up to the next turn, never a later answer's.
+        var nx = list[i + 1];
+        var until = nx ? toNum(nx.timestamp) : Infinity;
+        (c.calls || []).forEach(function(x) {
+          var t0 = x ? toNum(x.createdAt) : 0;
+          if (x && x.id && t0 >= ts && t0 < until) used['call:' + x.id] = true;
+        });
+      }
+      start = ts;
+      continue;
+    }
     var id = String(t.id || (t.role + ':' + ts + ':' + i));
     var at = ts > 0 ? ts : 0;
     var prev = i > 0 ? list[i - 1] : null;
@@ -23958,15 +24029,9 @@ function convTurnsOf(list, c) {
         if (rbp) slots[slots.length - 1].rb = rbp;
         if (chip) slots[slots.length - 1].chip = chip;
       }
-      // #744: a turn a rollback dropped says so (a person's by its name, a system turn in its line).
-      if (c.rewinds && rewoundBy(c.rewinds, ts)) {
-        if (u.role === 'user') u.name = u.name + ' · ' + REWOUND_MARK;
-        else u.text = REWOUND_MARK + ' · ' + (u.text || '');
-      }
       turns.push(u);
     } else {
       var a = { id: id, role: 'assistant', name: c.bot };
-      if (c.rewinds && rewoundBy(c.rewinds, ts)) a.name = (c.bot || '') + ' · ' + REWOUND_MARK;
       if (at) a.at = at;
       var sum = convSummaryOf(t, c);
       if (sum.title || sum.text || sum.error) a.summary = sum;
@@ -23986,14 +24051,7 @@ function convTurnsOf(list, c) {
           a.canRetry = true;
         } else a.loading = true;
       } else a.markdown = '';
-      var mine = (c.arts || []).filter(function(x) { return x && !used[x.id] && artInTurn(x, start, ts); });
-      mine.forEach(function(x) { used[x.id] = true; });
-      // .prd/30 §3.2 — a phone call goes under the answer of the turn that placed it (its start in the turn's window).
-      var calls = (c.calls || []).filter(function(x) {
-        var t0 = x ? toNum(x.createdAt) : 0;
-        return x && x.id && !used['call:' + x.id] && t0 > 0 && t0 >= toNum(start) - 5000 && t0 <= ts;
-      });
-      calls.forEach(function(x) { used['call:' + x.id] = true; });
+      var own = ownedBy(start, ts), mine = own.arts, calls = own.calls;
       if (mine.length || calls.length) {
         a.attachments = true;
         slots.push({ name: 'attachments-' + id, kind: 'arts', list: mine, start: start, end: ts });
@@ -24141,7 +24199,7 @@ function convPaint() {
   var shown = q.extra.length ? _panelTurnsList.concat(q.extra) : _panelTurnsList;
   var built = convTurnsOf(shown, {
     cid: cid, bot: botNameOf(s), now: Date.now(), working: working,
-    rewinds: rewindSpansOf(s),
+    rewinds: rewindSpansOf(s, shown),
     rb: rbIdx ? rbIdx.turns : null,
     chips: q.chips,
     answers: _rawLoadedCache, failed: _ansFailed, resum: _resumSent,

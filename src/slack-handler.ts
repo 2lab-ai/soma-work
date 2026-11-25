@@ -9515,6 +9515,7 @@ export class SlackHandler {
         requestActive: this.requestCoordinator.isRequestActive(sessionKey),
       },
       rollbackWorkLogInstructionPoints(session, page.entries, onChain),
+      record?.turns ?? [],
     );
   }
 

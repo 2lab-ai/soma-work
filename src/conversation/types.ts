@@ -71,6 +71,11 @@ export interface ConversationTurn {
    * The panel replaces that copy by this ref, whatever text the server recorded.
    */
   clientRef?: string;
+  /**
+   * SSOT 2026-11-25 — a context rollback that ran dropped this turn from the model's context (when it ran). The
+   * dashboard chat leaves it out for good; the record keeps it (`markRewoundTurns`).
+   */
+  rewoundAt?: number;
 
   // Assistant turn fields (populated for role === 'assistant')
   summaryTitle?: string; // 1-line title from SUMMARY_MODEL

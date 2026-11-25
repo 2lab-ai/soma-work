@@ -19,7 +19,12 @@ import {
   textIndicatesUsageLimit,
 } from '@soma/common/rate-limit';
 import type { SafeguardFlagInfo } from '@soma/common/safeguard';
-import { consumePendingRewind, resetChainTracking, trackChainPoint } from '@soma/slack/context-anchor';
+import {
+  type ContextRewindRecord,
+  consumePendingRewind,
+  resetChainTracking,
+  trackChainPoint,
+} from '@soma/slack/context-anchor';
 import { adoptSdkSessionId } from '@soma/slack/session-usage-math';
 import * as fs from 'fs';
 import type { HostWriteReceipt } from 'somalib/model-commands/host-receipt';
@@ -50,6 +55,7 @@ import { classifyTurnResult, isTurnProgressFrame } from './agent-runtime/turn-re
 import { buildQueryEnv } from './auth/query-env-builder';
 import { userTenantKey } from './auth/user-tenant-key';
 import { getBgKeepaliveMaxMs, getIncidentEvidenceConfig } from './config';
+import { markRewoundTurns } from './conversation/recorder';
 import { sendCredentialAlert } from './credential-alert';
 import {
   ensureActiveSlotAuth,
@@ -93,6 +99,7 @@ import { withBundledPlugins } from './plugin/bundled';
 import type { SdkPluginPath } from './plugin/types';
 import { getAvailablePersonas, PromptBuilder } from './prompt-builder';
 import { haltSessionOnSafeguardFlag, type SafeguardHaltPorts } from './safeguard-external-halt';
+import { keepsFinalReply } from './session/context-rollback';
 import {
   type CrashRecoveredSession,
   type IncidentResultOwed,
@@ -925,6 +932,36 @@ export class ClaudeHandler implements TurnSteeringPort {
     return this.sessionRegistry.resetSessionContext(channelId, threadTs);
   }
 
+  /**
+   * SSOT 2026-11-25 — stamp on the conversation record what applied rollbacks took out of the dashboard chat
+   * (`markRewoundTurns`, once per turn), so it stays out after the session lets a span go (it keeps the latest 10).
+   * Called once the CLI opens a resumed turn, with every span the session knows: spans applied before stamps
+   * existed are stamped too, and a span whose write failed is tried again at the next rollback. A failed write is
+   * logged; the session's own spans still hide those turns meanwhile.
+   */
+  private stampRewoundSpans(
+    session: Pick<ConversationSession, 'conversationId'> | undefined,
+    spans: readonly ContextRewindRecord[],
+  ): void {
+    const conversationId = session?.conversationId;
+    if (!conversationId) return;
+    for (const r of spans) {
+      if (typeof r?.from !== 'number' || typeof r.to !== 'number' || !(r.from <= r.to)) continue;
+      const span = {
+        from: r.from,
+        to: r.to,
+        at: Number(r.at) || Date.now(),
+        keepsFinalReply: keepsFinalReply(r.label),
+      };
+      markRewoundTurns(conversationId, span).catch((error: unknown) =>
+        this.logger.warn('Stamping the turns a rollback dropped failed', {
+          conversationId,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
+  }
+
   // ===== Session Links =====
 
   setSessionLink(channelId: string, threadTs: string | undefined, link: SessionLink): void {
@@ -1459,6 +1496,11 @@ export class ClaudeHandler implements TurnSteeringPort {
     // Claude CLI streaming call, released in the outer finally below.
     let lease: SlotAuthLease | null = null;
     let heartbeatTimer: NodeJS.Timeout | null = null;
+    // A rollback this turn applies, until the CLI opens the turn (system/init): the spans to stamp then, and what
+    // to put back if it never does — a refused `resumeSessionAt` fails while the CLI loads the transcript, before
+    // it opens the turn, so the context did not move and nothing may be stamped later.
+    let rewindStamps: ContextRewindRecord[] | undefined;
+    let rewindUndo: { spans: ContextRewindRecord[] | undefined; anchor: string | undefined } | undefined;
     try {
       try {
         lease = await ensureActiveSlotAuth(getTokenManager(), 'claude-handler:streamQuery');
@@ -1535,12 +1577,18 @@ export class ClaudeHandler implements TurnSteeringPort {
       if (session && !incident && options.resume) {
         // A turn runs: a rollback waiting now is applied below and cannot be taken back (Redo ends).
         session.rewindRedo = undefined;
+        const spansBefore = session.contextRewinds;
+        const anchorBefore = session.contextAnchor;
         const rewind = consumePendingRewind(session);
         if (rewind) {
           options.resumeSessionAt = rewind.uuid;
           // The goal's first failure lies on the dropped branch now (#745): the
           // next failure starts a new one.
           if (session.goal?.firstFailure) session.goal.firstFailure = undefined;
+          // SSOT 2026-11-25: what it dropped leaves the dashboard chat for good — stamped once the CLI opens the
+          // turn: every span the session knows, the one just applied and any the cap of 10 just let go.
+          rewindStamps = [...new Set([...(spansBefore ?? []), ...(session.contextRewinds ?? [])])];
+          rewindUndo = { spans: spansBefore, anchor: anchorBefore };
           this.logger.info('Context rollback applied to this turn', {
             sessionId: session.sessionId,
             source: rewind.rewind.source,
@@ -1919,6 +1967,10 @@ export class ClaudeHandler implements TurnSteeringPort {
             }
             if (session && (raw.parent_tool_use_id === undefined || raw.parent_tool_use_id === null)) {
               resetChainTracking(session);
+              // The CLI opened the resumed turn: the rollback is in (see rewindStamps).
+              if (rewindStamps) this.stampRewoundSpans(session, rewindStamps);
+              rewindStamps = undefined;
+              rewindUndo = undefined;
             }
             if (session) {
               adoptSdkSessionId(session, message.session_id);
@@ -2203,6 +2255,11 @@ export class ClaudeHandler implements TurnSteeringPort {
     } finally {
       if (heartbeatTimer) clearInterval(heartbeatTimer);
       if (lease) await lease.release();
+      // The CLI never opened the turn: the rollback did not run — its span and the moved anchor go back.
+      if (session && rewindUndo) {
+        session.contextRewinds = rewindUndo.spans;
+        session.contextAnchor = rewindUndo.anchor;
+      }
     }
   }
 
