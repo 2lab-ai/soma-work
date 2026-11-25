@@ -150,7 +150,6 @@ describe('지시와 답변: what a rollback drops leaves the chat (SSOT 2026-11-
     splitInvokedSkills: (t: string) => ({ text: t, skills: [] }),
     decodeSlackEntities: (t: string) => t,
     toNum: (v: unknown) => Number(v) || 0,
-    REWOUND_MARK: '↩︎ 문맥에서 빠짐',
     convSummaryOf: () => ({}),
     ansCacheKey: () => 'k',
     artInTurn: (x: { at: number }, start: number, end: number) => x.at > start && x.at <= end,
@@ -212,6 +211,18 @@ describe('지시와 답변: what a rollback drops leaves the chat (SSOT 2026-11-
     const fin = m.convTurnsOf(list, ctx({ rewinds: [{ from: 90, to: 500, label: '최종 답까지: …', pending: true }] }));
     expect(fin.turns.map((t: { id: string }) => t.id)).toEqual(['t0', 'a0']);
   });
+  it('a phone call an instruction placed before it was stopped (no answer) does not move to the answer sent after it', () => {
+    const stopped = [
+      { id: 't0', role: 'user', timestamp: 50, rawContent: '먼저', userName: 'Z' },
+      { id: 'a0', role: 'assistant', timestamp: 90 },
+      { id: 't1', role: 'user', timestamp: 100, rawContent: '전화해', userName: 'Z' },
+      { id: 't3', role: 'user', timestamp: 600, rawContent: '고친 지시', userName: 'Z' },
+      { id: 'a3', role: 'assistant', timestamp: 700 },
+    ];
+    const built = m.convTurnsOf(stopped, ctx({ rewinds: [span], calls: [{ id: 'p1', createdAt: 598 }] }));
+    expect(built.turns.map((t: { id: string }) => t.id)).toEqual(['t0', 'a0', 't3', 'a3']);
+    expect(built.slots).toEqual([]);
+  });
   it('a turn the record stamped (the rollback ran) stays out with no span — past the 10 spans a session keeps, after new/renew', () => {
     const stamped = list.map((t) => (t.timestamp >= 100 ? { ...t, rewoundAt: 501 } : t));
     const built = m.convTurnsOf(stamped, ctx({ rewinds: null }));
@@ -254,7 +265,7 @@ describe('다음 행동: the steps of an answer a rollback took out of the chat 
   });
   it('the detail card’s bar passes the session’s spans; the API carries the stamp', () => {
     expect(clientFn('renderPanelNext')).toContain(
-      "nextActionsOfTurns(_panelTurnsList, typeof rewindSpansOf === 'function' ? rewindSpansOf(s) : null)",
+      "nextActionsOfTurns(_panelTurnsList, typeof rewindSpansOf === 'function' ? rewindSpansOf(s, _panelTurnsList) : null)",
     );
     expect(DASHBOARD_TS).toContain('rewoundAt: t.rewoundAt');
   });
@@ -491,6 +502,25 @@ describe('marks on what a rollback drops — waiting or applied (client)', () =>
     expect(fn(undefined, 15)).toBeNull();
     expect(fn(spans, Number.NaN)).toBeNull();
   });
+  it('a final-reply span from before 2026-11-25 keeps its answer: given the turns, it starts at the answer', () => {
+    const spansOf = new Function(`${clientFn('rewindSpansOf')}\nreturn rewindSpansOf;`)() as (
+      s: unknown,
+      list?: unknown,
+    ) => unknown;
+    const turns = [
+      { id: 't1', role: 'user', timestamp: 100 },
+      { id: 'a1', role: 'assistant', timestamp: 180 },
+      { id: 't2', role: 'user', timestamp: 200 },
+    ];
+    // The board marks a span kept up to a final reply (keepsFinalReply, from its label — server side).
+    const old = { from: 170, to: 400, label: '최종 답까지: 배포했어요', at: 401, keepsFinalReply: true };
+    expect(spansOf({ contextRewinds: [old] }, turns)).toEqual([{ ...old, from: 180 }]);
+    // A newer one already starts at the answer; other kinds, and no turns, are left alone.
+    const tool = { from: 140, to: 400, label: '툴 결과까지: Bash · ls', at: 401 };
+    expect(clientFn('rewindSpansOf')).not.toContain('최종 답');
+    expect(spansOf({ contextRewinds: [{ ...old, from: 180 }, tool] }, turns)).toEqual([{ ...old, from: 180 }, tool]);
+    expect(spansOf({ contextRewinds: [old] })).toEqual([old]);
+  });
   it('a waiting rollback marks what it will drop at once (kept point → when it was asked)', () => {
     const spansOf = new Function(`${clientFn('rewindSpansOf')}\nreturn rewindSpansOf;`)() as (s: unknown) => unknown;
     expect(spansOf(null)).toBeNull();
@@ -509,7 +539,7 @@ describe('marks on what a rollback drops — waiting or applied (client)', () =>
     expect(clientFn('wlSyncRewinds')).toContain('var spans = rewindSpansOf(s);');
     expect(clientFn('renderPanelHead')).toContain('wlSyncRewinds();');
     expect(clientFn('loadWorkLog')).toContain('wlSyncRewinds();');
-    expect(clientFn('convPaint')).toContain('rewinds: rewindSpansOf(s),');
+    expect(clientFn('convPaint')).toContain('rewinds: rewindSpansOf(s, shown),');
     expect(clientFn('convTurnsOf')).toContain('convRewound(t, c.rewinds)');
     expect(clientFn('convRewound')).toContain('rewoundBy(spans');
     expect(TEMPLATE).toContain("var REWOUND_MARK = '↩︎ 문맥에서 빠짐';");

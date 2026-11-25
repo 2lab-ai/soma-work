@@ -664,12 +664,16 @@ export async function getTurnRawContent(conversationId: string, turnId: string):
  */
 export async function markRewoundTurns(
   conversationId: string,
-  span: { from: number; to: number; at: number },
+  /** `keepsFinalReply`: kept up to a final reply — the answer recorded first after `from` stays (an older span). */
+  span: { from: number; to: number; at: number; keepsFinalReply?: boolean },
 ): Promise<number> {
   const record = await getOrLoadConversation(conversationId);
   if (!record) return 0;
+  let first: ConversationTurn | undefined;
+  for (const t of record.turns) if (t.timestamp > span.from && (!first || t.timestamp < first.timestamp)) first = t;
+  const kept = span.keepsFinalReply && first?.role === 'assistant' ? first : undefined;
   const stamped = record.turns.filter(
-    (t) => t.rewoundAt === undefined && t.timestamp > span.from && t.timestamp <= span.to,
+    (t) => t !== kept && t.rewoundAt === undefined && t.timestamp > span.from && t.timestamp <= span.to,
   );
   if (stamped.length === 0) return 0;
   for (const t of stamped) t.rewoundAt = span.at;

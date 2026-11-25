@@ -109,8 +109,8 @@ describe('ClaudeHandler — context rollback', () => {
     await drain(handler, session);
     expect(queryMock.mock.calls[0][0].options.resumeSessionAt).toBe(U(3));
     expect(markRewoundTurnsMock.mock.calls).toEqual([
-      ['conv-1', { from: 10, to: 20, at: 21 }],
-      ['conv-1', { from: 199, to: 500, at: expect.any(Number) }],
+      ['conv-1', { from: 10, to: 20, at: 21, keepsFinalReply: false }],
+      ['conv-1', { from: 199, to: 500, at: expect.any(Number), keepsFinalReply: false }],
     ]);
   });
 
@@ -138,6 +138,15 @@ describe('ClaudeHandler — context rollback', () => {
     await drain(handler, noConversation);
     expect(queryMock.mock.calls[1][0].options.resumeSessionAt).toBe(U(3));
     expect(markRewoundTurnsMock).not.toHaveBeenCalled();
+  });
+
+  it('a span kept up to a final reply says so (an older one kept up to the reply’s entry, before its answer)', async () => {
+    const final = { from: 30, to: 40, label: '최종 답까지: 배포했어요', at: 41 };
+    const session = rollingBack({ contextRewinds: [final] });
+    installTurn((opening) => opened(opening, 10));
+    const handler = new ClaudeHandler({ getPluginManager: () => null } as unknown as McpManager);
+    await drain(handler, session);
+    expect(markRewoundTurnsMock.mock.calls[0]).toEqual(['conv-1', { from: 30, to: 40, at: 41, keepsFinalReply: true }]);
   });
 
   it('the span the cap of 10 lets go is stamped with the rest', async () => {

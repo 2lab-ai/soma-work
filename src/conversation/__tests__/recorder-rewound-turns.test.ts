@@ -86,6 +86,16 @@ describe('markRewoundTurns — a rollback that ran stamps what it dropped', () =
     expect(onDisk(fin).turns.map((t) => t.rewoundAt ?? null)).toEqual([null, null, 450, 450]);
   });
 
+  it('a final-reply span from before 2026-11-25 (kept up to the reply’s work-log entry) still keeps its answer', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const cid = createConversation('C1', '1700000000.000920', 'U1', 'Zhuge');
+    await at(100, cid, () => recordUserTurn(cid, '배포해', 'Zhuge', 'U1', undefined, { origin: { by: 'user' } }));
+    await at(180, cid, () => recordAssistantTurn(cid, '배포했어요'));
+    await at(200, cid, () => recordUserTurn(cid, '다음', 'Zhuge', 'U1', undefined, { origin: { by: 'user' } }));
+    expect(await markRewoundTurns(cid, { from: 170, to: 400, at: 450, keepsFinalReply: true })).toBe(1);
+    expect(onDisk(cid).turns.map((t) => t.rewoundAt ?? null)).toEqual([null, null, 450]);
+  });
+
   it('a save that fails leaves nothing stamped, so the next try saves again', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const cid = createConversation('C1', '1700000000.000930', 'U1', 'Zhuge');

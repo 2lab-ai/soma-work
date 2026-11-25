@@ -521,6 +521,14 @@ export function toolCallLabel(call: string, max = 80): string {
 const WORK_LOG_KIND_LABEL: Record<string, string> = { narration: '응답', final: '최종 답', tool_result: '툴 결과' };
 
 /**
+ * A rollback kept up to a final reply (its label starts so). Before 2026-11-25 such a span kept up to the reply's
+ * work-log entry, before its answer was recorded: the answer recorded first after the span's start stays.
+ */
+export function keepsFinalReply(label: unknown): boolean {
+  return typeof label === 'string' && label.startsWith(`${WORK_LOG_KIND_LABEL.final}까지:`);
+}
+
+/**
  * The time a work-log point keeps up to. A final reply keeps its answer: the answer is recorded at teardown, after
  * the reply's work-log entry, so the point keeps up to the answer's recorded time — the first turn recorded at or
  * after the entry, when it is an answer (2026-11-25). Every other point keeps its own entry's time.

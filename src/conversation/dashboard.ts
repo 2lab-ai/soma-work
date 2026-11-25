@@ -101,7 +101,7 @@ import {
 } from '../session/agent-registry';
 import { resolveEffectiveAutoCompact } from '../session/autocompact-policy';
 import type { PhoneCallSummary as PhoneCallSummaryLike } from '../phone/call-store';
-import { CONTEXT_ROLLBACK_REFUSAL_TEXT } from '../session/context-rollback';
+import { CONTEXT_ROLLBACK_REFUSAL_TEXT, keepsFinalReply } from '../session/context-rollback';
 import { sanitizeCronJob } from '../session/cron-job';
 import { effortMenuOf } from '../session/effort-menu';
 import { EffortSwitchError, type EffortSwitchResult } from '../session/effort-switch';
@@ -3197,6 +3197,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
             source: String(s.pendingRewind.source || ''),
             // What it keeps: the entries after it read "문맥에서 빠짐" as soon as it is asked for.
             ...(typeof s.pendingRewind.keptUntil === 'number' ? { keptUntil: s.pendingRewind.keptUntil } : {}),
+            ...(keepsFinalReply(s.pendingRewind.label) ? { keepsFinalReply: true } : {}),
           },
           // How many rollbacks Redo can take back (until the next turn runs).
           ...(Array.isArray(s.rewindRedo) && s.rewindRedo.length ? { rewindRedo: s.rewindRedo.length } : {}),
@@ -3211,6 +3212,8 @@ function sessionToKanban(key: string, s: any): KanbanSession {
               to: Number(r.to) || 0,
               label: String(r.label ?? '').slice(0, 300),
               at: Number(r.at) || 0,
+              // Kept up to a final reply: an older span starts before its answer (rewindSpansOf, given the turns).
+              ...(keepsFinalReply(r.label) ? { keepsFinalReply: true } : {}),
             })),
         }
       : {}),
@@ -18776,7 +18779,7 @@ function renderPanelNext() {
   // gets none, so their steps count only when the turns were fetched at the session's latest activity — never an
   // answer a later turn already followed (trinity R2, astra P2).
   var fresh = !!s && (viewerOwns(s) || _viewerIsAdmin || _panelTurnsAct === String(s.lastActivity || ''));
-  var na = s && fresh && _panelTurnsCid && _panelTurnsCid === s.conversationId ? nextActionsOfTurns(_panelTurnsList, typeof rewindSpansOf === 'function' ? rewindSpansOf(s) : null) : null;
+  var na = s && fresh && _panelTurnsCid && _panelTurnsCid === s.conversationId ? nextActionsOfTurns(_panelTurnsList, typeof rewindSpansOf === 'function' ? rewindSpansOf(s, _panelTurnsList) : null) : null;
   var html = s ? nextActionsHtml(s, na, 'panel') : '';
   var key = s ? s.key : '';
   // The step just sent is still swallowing the others (naMergeInto): on that card the bar goes when that is over;
@@ -20283,12 +20286,28 @@ function rewoundBy(spans, ts) {
 }
 // Pure: the spans the marks read — the applied rollbacks, and the one waiting (asked, not yet run):
 // what it drops reads "문맥에서 빠짐" as soon as it is asked for, as an applied one does.
-function rewindSpansOf(s) {
+// Given the turns (list), a span kept up to a final reply (keepsFinalReply) starts at the answer recorded first after
+// it: before 2026-11-25 such a span kept up to the reply's work-log entry, before its answer was recorded, and that
+// answer stays (a newer span already starts there).
+function rewindSpansOf(s, list) {
   if (!s) return null;
   var spans = Array.isArray(s.contextRewinds) ? s.contextRewinds.slice() : [];
   var p = s.pendingRewind;
   if (p && typeof p.keptUntil === 'number' && Number(p.requestedAt) > p.keptUntil) {
     spans.push({ from: p.keptUntil, to: Number(p.requestedAt), label: String(p.label || ''), pending: true });
+    if (p.keepsFinalReply) spans[spans.length - 1].keepsFinalReply = true;
+  }
+  if (Array.isArray(list)) {
+    spans = spans.map(function(r) {
+      if (!r || !r.keepsFinalReply) return r;
+      var first = null;
+      for (var i = 0; i < list.length; i++) {
+        var t = list[i];
+        var ts = t ? Number(t.timestamp) || 0 : 0;
+        if (t && !t._optimistic && !t._queued && ts > r.from && (!first || ts < Number(first.timestamp))) first = t;
+      }
+      return first && first.role === 'assistant' ? Object.assign({}, r, { from: Number(first.timestamp) }) : r;
+    });
   }
   return spans.length ? spans : null;
 }
@@ -20541,7 +20560,7 @@ function rbOpenConfirm(pt) {
   var kept = rbKeptUntil(pt);
   // What leaves the chat now, by the chat's own rule (convRewound): in this rollback's span, and not already out by
   // an earlier one.
-  var spans = rewindSpansOf(panelSessionKey ? _sessionCache[panelSessionKey] : null);
+  var spans = rewindSpansOf(panelSessionKey ? _sessionCache[panelSessionKey] : null, _panelTurnsList);
   var proposed = [{ from: kept, to: Number.MAX_SAFE_INTEGER }];
   var dropped = (_panelTurnsList || []).filter(function(t) {
     return convRewound(t, proposed) && !convRewound(t, spans);
@@ -23971,6 +23990,15 @@ function convTurnsOf(list, c) {
     // them, marked. A dropped answer keeps its files and calls, out of the chat with it: none moves to another turn.
     if ((c.rewinds || t.rewoundAt) && convRewound(t, c.rewinds)) {
       if (t.role !== 'user') ownedBy(start, ts);
+      else {
+        // A dropped instruction's own calls (it may have no answer): up to the next turn, never a later answer's.
+        var nx = list[i + 1];
+        var until = nx ? toNum(nx.timestamp) : Infinity;
+        (c.calls || []).forEach(function(x) {
+          var t0 = x ? toNum(x.createdAt) : 0;
+          if (x && x.id && t0 >= ts && t0 < until) used['call:' + x.id] = true;
+        });
+      }
       start = ts;
       continue;
     }
@@ -24171,7 +24199,7 @@ function convPaint() {
   var shown = q.extra.length ? _panelTurnsList.concat(q.extra) : _panelTurnsList;
   var built = convTurnsOf(shown, {
     cid: cid, bot: botNameOf(s), now: Date.now(), working: working,
-    rewinds: rewindSpansOf(s),
+    rewinds: rewindSpansOf(s, shown),
     rb: rbIdx ? rbIdx.turns : null,
     chips: q.chips,
     answers: _rawLoadedCache, failed: _ansFailed, resum: _resumSent,

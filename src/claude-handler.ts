@@ -99,6 +99,7 @@ import { withBundledPlugins } from './plugin/bundled';
 import type { SdkPluginPath } from './plugin/types';
 import { getAvailablePersonas, PromptBuilder } from './prompt-builder';
 import { haltSessionOnSafeguardFlag, type SafeguardHaltPorts } from './safeguard-external-halt';
+import { keepsFinalReply } from './session/context-rollback';
 import {
   type CrashRecoveredSession,
   type IncidentResultOwed,
@@ -946,12 +947,17 @@ export class ClaudeHandler implements TurnSteeringPort {
     if (!conversationId) return;
     for (const r of spans) {
       if (typeof r?.from !== 'number' || typeof r.to !== 'number' || !(r.from <= r.to)) continue;
-      markRewoundTurns(conversationId, { from: r.from, to: r.to, at: Number(r.at) || Date.now() }).catch(
-        (error: unknown) =>
-          this.logger.warn('Stamping the turns a rollback dropped failed', {
-            conversationId,
-            error: error instanceof Error ? error.message : String(error),
-          }),
+      const span = {
+        from: r.from,
+        to: r.to,
+        at: Number(r.at) || Date.now(),
+        keepsFinalReply: keepsFinalReply(r.label),
+      };
+      markRewoundTurns(conversationId, span).catch((error: unknown) =>
+        this.logger.warn('Stamping the turns a rollback dropped failed', {
+          conversationId,
+          error: error instanceof Error ? error.message : String(error),
+        }),
       );
     }
   }
