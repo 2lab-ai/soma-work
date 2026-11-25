@@ -51,6 +51,10 @@ describe('작업 워커 tab — the page', () => {
     });
     const html = renderSettingsPage();
     expect(html).toContain(WORKERS_TAB_HTML);
+    // The page grid is a side column then the content: a tab with no side puts its content in the 220px side column
+    // (it did, on dev 2026-11-25: the worker card spilled out of its box).
+    expect(WORKERS_TAB_HTML.indexOf('<aside class="side"')).toBeGreaterThan(-1);
+    expect(WORKERS_TAB_HTML.indexOf('<aside class="side"')).toBeLessThan(WORKERS_TAB_HTML.indexOf('<main>'));
     expect(html).toContain("if (id === 'workers' && !_wkLoaded) loadWorkers();");
   });
 });
@@ -154,5 +158,28 @@ describe('작업 워커 tab — renaming', () => {
     await r.wkRename('studio-build-01', 'b01');
     expect(r.busy()).toEqual({});
     expect(status[0]).toEqual(['studio-build-01 닉네임을 저장하지 못했습니다 — 연결 오류 — 다시 시도하세요', true]);
+  });
+
+  it('the side column filters the cards by name or node id', () => {
+    const el = { innerHTML: '' };
+    const filter = { value: '' };
+    const r = load<any>(['renderWorkers', 'wkRow', 'wkBanner', 'wkPlatform', 'wkBytes', 'wkCpu', 'esc', 'escAttr'], {
+      document: { getElementById: (id: string) => (id === 'wk-body' ? el : id === 'wk-filter' ? filter : null) },
+      adminModeOn: () => true,
+    });
+    r.setWk({
+      maxNickname: 24,
+      workers: [worker({ nickname: 'b01', name: 'b01' }), worker({ nodeId: 'rack-02', name: 'rack-02' })],
+    });
+    filter.value = 'RACK';
+    r.renderWorkers();
+    expect(el.innerHTML).toContain('rack-02');
+    expect(el.innerHTML).not.toContain('>b01<');
+    filter.value = 'studio';
+    r.renderWorkers();
+    expect(el.innerHTML).toContain('>b01<');
+    filter.value = 'nothing';
+    r.renderWorkers();
+    expect(el.innerHTML).toContain('찾는 이름의 작업 워커가 없습니다.');
   });
 });
