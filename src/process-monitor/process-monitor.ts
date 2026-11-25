@@ -179,6 +179,8 @@ export class LocalProcessMonitor implements ProcessHost {
   private readonly unsubscribeAbort: () => void;
   private readonly unsubscribeShutdown: (() => void) | null;
   private readonly liveStartToken: (pid: number) => string | null | undefined;
+  /** Several live start times in one read: abort cleanup and its retries read every identity they need at once. */
+  private readonly liveStartTokens: (pids: readonly number[]) => Map<number, string | null> | undefined;
   /**
    * Pause checks in progress: each collects the turns (`turnId`s) of its session aborted while it samples. A pause
    * whose check spans its own turn's abort is refused — that abort's cleanup already ran.
@@ -191,10 +193,10 @@ export class LocalProcessMonitor implements ProcessHost {
   /** The most a shutdown pass spends on identity probes (each can take up to 2 s on a loaded host). */
   private static readonly SHUTDOWN_BUDGET_MS = 5_000;
   /**
-   * Turns (`turnId`s) whose abort already ran: a pause in one is refused, as nothing would continue it. Kept while a
-   * live Claude Code process or a remembered process still carries the turn.
+   * Turns (`turnId`s) whose abort already ran, with their session: a pause in one is refused, as nothing would continue
+   * it. Kept while a live Claude Code process or a remembered process still carries the turn.
    */
-  private readonly abortedTurnIds = new Set<number>();
+  private readonly abortedTurnIds = new Map<number, string>();
   /** Set when the host starts shutting down: no pause is accepted after the final resume pass. */
   private shuttingDown = false;
   private readonly listeners = new Set<Listener>();
@@ -215,18 +217,23 @@ export class LocalProcessMonitor implements ProcessHost {
   constructor(private readonly deps: ProcessMonitorDeps) {
     this.nodeId = deps.nodeId;
     this.now = deps.now ?? Date.now;
-    this.sampler = new TreeSampler(deps.runPs, this.now, deps.readCpuSeconds, deps.readCwds);
+    this.sampler = new TreeSampler(deps.runPs, this.now, deps.readCpuSeconds, deps.readCwds, deps.logger);
     this.platform = deps.platform ?? process.platform;
     this.kill = deps.kill ?? ((pid, signal) => process.kill(pid, signal));
     this.readCapacity =
       deps.readCapacity ??
       createNodeCapacityReader({ nodeId: deps.nodeId, platform: this.platform, run: deps.runCommand });
     this.liveStartToken = deps.liveStartToken ?? psLiveStartToken;
+    const single = deps.liveStartToken;
+    this.liveStartTokens =
+      deps.liveStartTokens ??
+      // A host that brings only the one-pid read (tests) gets it pid by pid; production reads them in one ps.
+      (single ? (pids) => liveStartTokensOneByOne(pids, single) : (pids) => psLiveStartTokens(pids));
     this.throttler = new CpuThrottler({
       kill: this.kill,
       read: deps.readThrottle ?? createThrottleReader(deps.runPs, deps.readCpuSeconds),
       readParents: createParentReader(deps.runPs),
-      liveStartTokens: deps.liveStartTokens ?? ((pids) => psLiveStartTokens(pids)),
+      liveStartTokens: this.liveStartTokens,
       now: this.now,
       userPaused: (sessionKey, pid, startToken) => this.paused.get(sessionKey)?.get(pid)?.startToken === startToken,
       setTimer: deps.setTimer,
@@ -265,9 +272,12 @@ export class LocalProcessMonitor implements ProcessHost {
     if (!capFor) this.throttler.update([], () => null);
   }
 
-  /** Stop the timer and detach from the registry — the monitor is going away (tests). */
+  /**
+   * Stop the timer and detach from the registry — the monitor is going away (tests). What it paused is continued first:
+   * once the abort and shutdown hooks are gone, nothing else would.
+   */
   dispose(): void {
-    this.throttler.releaseAll();
+    this.resumeAllPaused();
     this.stop();
     this.unsubscribeAbort();
     this.unsubscribeShutdown?.();
@@ -402,11 +412,22 @@ export class LocalProcessMonitor implements ProcessHost {
     // The host started shutting down, or this process's own turn was aborted (any turn, for a process between
     // turns), while this check sampled: that cleanup already ran, so a pause now would never be undone. An abort of
     // another turn of the session does not block it.
-    if (input.action === 'pause' && proc) {
+    if (input.action === 'pause' && proc && tree) {
       const since = check.abortedTurns;
       const turn = this.turnOf.get(`${proc.pid}:${proc.startToken}`);
       const turnAborted = turn !== undefined && this.abortedTurnIds.has(turn);
-      if (this.shuttingDown || turnAborted || (since.length > 0 && (turn === undefined || since.includes(turn)))) {
+      // A process whose chain breaks at a parent the sample carried without its row has no traceable turn: it may be
+      // in a turn of this session whose abort already ran, so it is refused while the session has one.
+      const untraced =
+        turn === undefined &&
+        brokenAtCarriedRow(tree, proc) &&
+        [...this.abortedTurnIds.values()].includes(input.sessionKey);
+      if (
+        this.shuttingDown ||
+        turnAborted ||
+        untraced ||
+        (since.length > 0 && (turn === undefined || since.includes(turn)))
+      ) {
         return { ok: false, reason: 'not-found' };
       }
     }
@@ -580,7 +601,7 @@ export class LocalProcessMonitor implements ProcessHost {
   /** The session's tree without the processes of a turn that was aborted (its CPU no longer counts toward a cap). */
   private withoutAbortedTurns(s: SessionProcessDetail, turnIdOf: ReadonlyMap<number, number>): SessionProcessDetail {
     if (this.abortedTurnIds.size === 0) return s;
-    const turns = turnsIn(s, this.turnOf, turnIdOf);
+    const turns = turnsIn(s, this.turnOf, turnIdOf, this.carriedParentTurn(s.sessionKey));
     const processes = s.processes.filter((p) => {
       const turn = turns.get(p.pid);
       return turn === undefined || !this.abortedTurnIds.has(turn);
@@ -595,7 +616,7 @@ export class LocalProcessMonitor implements ProcessHost {
     if (!root.sessionKey) return;
     // The stop must land: nothing of the session stays held by the CPU cap.
     this.throttler.release(root.sessionKey);
-    this.abortedTurnIds.add(root.turnId);
+    this.abortedTurnIds.set(root.turnId, root.sessionKey);
     for (const check of this.pendingPauses) {
       if (check.sessionKey === root.sessionKey) check.abortedTurns.push(root.turnId);
     }
@@ -604,10 +625,12 @@ export class LocalProcessMonitor implements ProcessHost {
     // Only what was paused under this turn (or between turns): a late abort of an earlier turn — the SDK can fire it
     // after the CLI exited — never continues a pause the owner made in the next one. An entry whose identity could not
     // be read, or that the OS refused to continue, stays tracked (the shutdown pass or the owner's 재개 can reach it).
+    // Every identity in one read: this runs inside the SDK's abort callback, and a ps can take 2 s on a loaded host.
+    const due = [...mine].filter(([, entry]) => entry.turn === undefined || entry.turn === root.turnId);
+    const settled = this.continueSettled(due);
     let left = 0;
-    for (const [pid, entry] of mine) {
-      if (entry.turn !== undefined && entry.turn !== root.turnId) continue;
-      if (this.continueIfSame(pid, entry.startToken)) mine.delete(pid);
+    for (const [pid, entry] of due) {
+      if (settled.has(pid)) mine.delete(pid);
       else {
         entry.resumeWanted = true;
         left++;
@@ -630,7 +653,7 @@ export class LocalProcessMonitor implements ProcessHost {
   private noteTurns(snapshot: NodeProcessSnapshot, turnIdOf: ReadonlyMap<number, number>): void {
     const live = new Set<string>();
     for (const s of snapshot.sessions) {
-      const turns = turnsIn(s, this.turnOf, turnIdOf);
+      const turns = turnsIn(s, this.turnOf, turnIdOf, this.carriedParentTurn(s.sessionKey));
       for (const p of s.processes) {
         const key = `${p.pid}:${p.startToken}`;
         live.add(key);
@@ -646,15 +669,54 @@ export class LocalProcessMonitor implements ProcessHost {
     }
     // An aborted turn is forgotten once nothing carries it: no live Claude Code process, no remembered process.
     const carried = new Set<number>([...turnIdOf.values(), ...this.turnOf.values()]);
-    for (const id of this.abortedTurnIds) if (!carried.has(id)) this.abortedTurnIds.delete(id);
+    for (const id of [...this.abortedTurnIds.keys()]) if (!carried.has(id)) this.abortedTurnIds.delete(id);
   }
 
-  /** An aborted turn's pause that could not be continued then is tried again on every sample. */
-  private retryWantedResumes(): void {
-    for (const [sessionKey, mine] of this.paused) {
-      for (const [pid, entry] of mine) {
-        if (entry.resumeWanted && this.continueIfSame(pid, entry.startToken)) mine.delete(pid);
+  /**
+   * The turn of a parent this session's sample carried without its row (ps skipped it): the sampler still remembers
+   * its start time, and the turn it was last seen under is kept for it.
+   */
+  private carriedParentTurn(sessionKey: string): (ppid: number) => number | undefined {
+    return (ppid) => {
+      const startToken = this.sampler.rememberedStart(sessionKey, ppid);
+      return startToken === undefined ? undefined : this.turnOf.get(`${ppid}:${startToken}`);
+    };
+  }
+
+  /**
+   * Continue these paused processes after one batched identity read. The pids it settles: continued, confirmed gone, or
+   * no longer that process. An unknown identity (the read failed) or a refused signal leaves an entry unsettled.
+   */
+  private continueSettled(entries: ReadonlyArray<readonly [number, PausedEntry]>): Set<number> {
+    const settled = new Set<number>();
+    if (entries.length === 0) return settled;
+    const live = this.liveStartTokens(entries.map(([pid]) => pid));
+    if (!live) return settled;
+    for (const [pid, entry] of entries) {
+      const now = live.get(pid);
+      if (now === undefined) continue;
+      if (now !== entry.startToken) {
+        settled.add(pid);
+        continue;
       }
+      try {
+        this.kill(pid, 'SIGCONT');
+        settled.add(pid);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException)?.code === 'ESRCH') settled.add(pid);
+      }
+    }
+    return settled;
+  }
+
+  /** An aborted turn's pause that could not be continued then is tried again on every sample, all in one read. */
+  private retryWantedResumes(): void {
+    const wanted: Array<[number, PausedEntry]> = [];
+    for (const mine of this.paused.values()) for (const e of mine) if (e[1].resumeWanted) wanted.push(e);
+    const settled = this.continueSettled(wanted);
+    if (settled.size === 0) return;
+    for (const [sessionKey, mine] of this.paused) {
+      for (const pid of [...mine.keys()]) if (settled.has(pid) && mine.get(pid)?.resumeWanted) mine.delete(pid);
       if (mine.size === 0) this.paused.delete(sessionKey);
     }
   }
@@ -687,6 +749,7 @@ function turnsIn(
   tree: SessionProcessDetail,
   remembered: ReadonlyMap<string, number>,
   turnIdOf: ReadonlyMap<number, number>,
+  carriedParentTurn: (ppid: number) => number | undefined = () => undefined,
 ): Map<number, number | undefined> {
   const byPid = new Map(tree.processes.map((p) => [p.pid, p]));
   const turns = new Map<number, number | undefined>();
@@ -712,9 +775,43 @@ function turnsIn(
         turn = known;
         break;
       }
-      cur = byPid.get(cur.ppid);
+      const up = byPid.get(cur.ppid);
+      // The parent is in the session's tree but this sample has no row for it: its turn comes from what was last
+      // remembered of it (a skipped middle row must not cut the chain).
+      if (!up && cur.role === 'child') {
+        turn = carriedParentTurn(cur.ppid);
+        break;
+      }
+      cur = up;
     }
     for (const pid of chain) turns.set(pid, turn);
   }
   return turns;
+}
+
+/** Whether a process's parent chain ends at a parent the session's tree has but this sample has no row for. */
+function brokenAtCarriedRow(tree: SessionProcessDetail, proc: ProcessSample): boolean {
+  const byPid = new Map(tree.processes.map((p) => [p.pid, p]));
+  const seen = new Set<number>();
+  for (let cur: ProcessSample | undefined = proc; cur && !seen.has(cur.pid); ) {
+    seen.add(cur.pid);
+    const up = byPid.get(cur.ppid);
+    if (!up) return cur.role === 'child';
+    cur = up;
+  }
+  return false;
+}
+
+/** Live start times one pid at a time, for a host that brings only the one-pid read: unknown for all if one fails. */
+function liveStartTokensOneByOne(
+  pids: readonly number[],
+  one: (pid: number) => string | null | undefined,
+): Map<number, string | null> | undefined {
+  const out = new Map<number, string | null>();
+  for (const pid of pids) {
+    const token = one(pid);
+    if (token === undefined) return undefined;
+    out.set(pid, token);
+  }
+  return out;
 }

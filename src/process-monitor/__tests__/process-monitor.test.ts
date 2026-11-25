@@ -27,6 +27,10 @@ function setup(
     logger?: { info(msg: string, meta?: unknown): void; warn(msg: string, meta?: unknown): void };
     inspectProcess?: import('../process-inspector').InspectProcess;
     readThrottle?: import('../cpu-throttler').ReadThrottle;
+    /** Called on every batched identity read (the default answers from the fake table through `live`). */
+    onBatchRead?: (pids: readonly number[]) => void;
+    /** Called on every one-pid identity read. */
+    onSingleRead?: (pid: number) => void;
   } = {},
 ) {
   const ps = new FakePs()
@@ -72,10 +76,12 @@ function setup(
     runPs: opts.runPs ? opts.runPs(ps) : ps.run,
     kill,
     liveStartToken: (pid) => {
+      opts.onSingleRead?.(pid);
       const fallback = ps.procs.get(pid)?.start ?? (ps.procs.has(pid) ? 'Mon Nov 23 10:00:00 2026' : null);
       return opts.live ? opts.live(pid, fallback) : fallback;
     },
     liveStartTokens: (pids) => {
+      opts.onBatchRead?.(pids);
       const out = new Map<number, string | null>();
       for (const pid of pids) {
         const fallback = ps.procs.get(pid)?.start ?? (ps.procs.has(pid) ? 'Mon Nov 23 10:00:00 2026' : null);
@@ -672,6 +678,22 @@ describe('LocalProcessMonitor', () => {
     ]);
   });
 
+  it('a process that exits between the identity check and the signal answers not-found (ESRCH), not denied', async () => {
+    const gone = setup({
+      kill: () => {
+        throw Object.assign(new Error('no such process'), { code: 'ESRCH' });
+      },
+    });
+    expect(await gone.monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' })).toEqual({
+      ok: false,
+      reason: 'not-found',
+    });
+    expect(await gone.monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'resume' })).toEqual({
+      ok: false,
+      reason: 'not-found',
+    });
+  });
+
   it('answers denied when the OS refuses the signal, unsupported on Windows', async () => {
     const denied = setup({
       kill: () => {
@@ -1169,6 +1191,148 @@ describe('LocalProcessMonitor', () => {
     const { monitor, ps } = setup();
     await Promise.all([monitor.sample(), monitor.sample()]);
     expect(ps.calls.filter((c) => c[0] === '-A')).toHaveLength(1);
+  });
+});
+
+describe('LocalProcessMonitor — hardening (#1407)', () => {
+  it('dispose continues what the monitor paused before it detaches (nothing is left stopped with nobody to resume it)', async () => {
+    const { monitor, signals, fireAbort } = setup();
+    await monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' });
+    monitor.dispose();
+    expect(signals).toEqual([
+      [300, 'SIGSTOP'],
+      [300, 'SIGCONT'],
+    ]);
+    // Detached: a later abort reaches nothing.
+    fireAbort({ pid: 200, sessionKey: 'A' });
+    expect(signals).toHaveLength(2);
+  });
+
+  it('abort cleanup reads every paused identity in one batched read, and so does the retry on the next sample', async () => {
+    let probing = false;
+    let singles = 0;
+    let batchFails = false;
+    const batches: number[][] = [];
+    const { monitor, ps, roots, signals, fireAbort, tick } = setup({
+      live: (_pid, fallback) => (probing && batchFails ? undefined : fallback),
+      onSingleRead: () => {
+        if (probing) singles++;
+      },
+      onBatchRead: (pids) => {
+        if (probing) batches.push([...pids].sort());
+      },
+    });
+    ps.set(310, { ppid: 200, args: '/bin/sleep 1' }).set(320, { ppid: 200, args: '/bin/sleep 2' });
+    roots.length = 1;
+    for (const pid of [300, 310, 320]) {
+      await monitor.control({ sessionKey: 'A', pid, startToken: start, action: 'pause' });
+      tick(1);
+    }
+    signals.length = 0;
+    probing = true;
+    // The read fails at the abort: one batched try (each ps can take 2 s on a loaded host — never one per process).
+    batchFails = true;
+    fireAbort({ pid: 200, sessionKey: 'A' });
+    expect(batches).toEqual([[300, 310, 320]]);
+    expect(signals).toEqual([]);
+    // The next sample retries them, again in one read.
+    batchFails = false;
+    tick(1);
+    await monitor.sample();
+    expect(batches).toEqual([
+      [300, 310, 320],
+      [300, 310, 320],
+    ]);
+    expect(signals.sort()).toEqual([
+      [300, 'SIGCONT'],
+      [310, 'SIGCONT'],
+      [320, 'SIGCONT'],
+    ]);
+    expect(singles).toBe(0);
+  });
+
+  it('a turn is traced through a carried parent whose row a sample skipped: its aborted turn refuses the pause', async () => {
+    let hidden = new Set<number>();
+    const { monitor, ps, signals, fireAbort, tick } = setup({
+      runPs: (fake) => async (a) => {
+        const out = await fake.run(a);
+        if (a[0] === '-A') return out;
+        return out
+          .split('\n')
+          .filter((line) => !hidden.has(Number(line.trim().split(/\s+/)[0])))
+          .join('\n');
+      },
+    });
+    await monitor.sample(); // 300 is seen under turn 200
+    fireAbort({ pid: 200, sessionKey: 'A' }); // turn 200 is stopping; its Claude Code has not exited yet
+    // 300 starts 330; the next samples skip 300's row (the parent map still has it).
+    ps.set(330, { ppid: 300, args: '/bin/sleep 9' });
+    hidden = new Set([300]);
+    tick(1);
+    await monitor.sample();
+    tick(1);
+    expect(await monitor.control({ sessionKey: 'A', pid: 330, startToken: start, action: 'pause' })).toEqual({
+      ok: false,
+      reason: 'not-found',
+    });
+    expect(signals).toEqual([]);
+  });
+
+  it('a pause whose turn cannot be traced (a never-read parent row) is refused while the session has an aborted turn', async () => {
+    const hidden = new Set<number>([340]);
+    const { monitor, ps, signals, fireAbort, tick } = setup({
+      runPs: (fake) => async (a) => {
+        const out = await fake.run(a);
+        if (a[0] === '-A') return out;
+        return out
+          .split('\n')
+          .filter((line) => !hidden.has(Number(line.trim().split(/\s+/)[0])))
+          .join('\n');
+      },
+    });
+    // 340's row is never read, so nothing knows its turn; 350 under it cannot be traced.
+    ps.set(340, { ppid: 200, args: '/bin/bash' }).set(350, { ppid: 340, args: '/bin/sleep 9' });
+    await monitor.sample();
+    // No aborted turn in session A: an untraced process may still be paused (any abort of A continues it).
+    expect(await monitor.control({ sessionKey: 'A', pid: 350, startToken: start, action: 'pause' })).toMatchObject({
+      ok: true,
+    });
+    await monitor.control({ sessionKey: 'A', pid: 350, startToken: start, action: 'resume' });
+    signals.length = 0;
+    fireAbort({ pid: 200, sessionKey: 'A' });
+    tick(1);
+    expect(await monitor.control({ sessionKey: 'A', pid: 350, startToken: start, action: 'pause' })).toEqual({
+      ok: false,
+      reason: 'not-found',
+    });
+    expect(signals).toEqual([]);
+  });
+
+  it('a sample with a failed detail batch still succeeds, and says so once in the log', async () => {
+    const warn = vi.fn();
+    const { monitor, ps } = setup({
+      logger: { info: () => {}, warn },
+      runPs: (fake) => async (a) => {
+        // The batch that holds pid 9000 fails; the others answer.
+        if (
+          a[0] !== '-A' &&
+          String(a[a.indexOf('-p') + 1] ?? '')
+            .split(',')
+            .includes('9000')
+        ) {
+          throw Object.assign(new Error('ps: argument list too long'), { status: 1 });
+        }
+        return fake.run(a);
+      },
+    });
+    // 300 starts enough workers that the detail read takes two batches (200 pids each).
+    for (let pid = 9000; pid < 9250; pid++) ps.set(pid, { ppid: 300, args: '/bin/true' });
+    const snap = await monitor.sample();
+    expect(snap.sessions.find((s) => s.sessionKey === 'A')?.processes.length).toBeGreaterThan(0);
+    expect(warn).toHaveBeenCalledWith(
+      'process sample: a detail batch failed; its processes are missing from this sample',
+      expect.objectContaining({ pids: expect.any(Number), error: expect.stringContaining('argument list too long') }),
+    );
   });
 });
 
