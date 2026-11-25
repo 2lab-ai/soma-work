@@ -116,6 +116,18 @@ describe('RollbackHandler', () => {
     expect(posted[0]).toContain('> 배포해줘');
   });
 
+  it('two inputs from one point (the first stopped before any reply) leave together: kept up to the earlier one (2026-11-25)', async () => {
+    // The stopped instruction sits at the tail; the next one started from the same point.
+    session.contextAnchor = A(12);
+    turns.push(
+      { id: 't3', role: 'user', timestamp: 7, rawContent: '잘못 보낸 지시', anchor: A(4), origin: { by: 'user' } },
+      { id: 't4', role: 'user', timestamp: 9, rawContent: '이거 무시', anchor: A(4), origin: { by: 'user' } },
+    );
+    await handler.execute(ctx('rollback 4'));
+    expect(session.pendingRewind).toMatchObject({ anchor: A(4), source: 'input' });
+    expect(session.pendingRewind?.keptUntil).toBe(6);
+  });
+
   it('rollback redo takes the last rollback back, one step at a time (2026-11-03)', async () => {
     await handler.execute(ctx('rollback redo'));
     expect(posted[0]).toContain('되돌리기를 취소할 것이 없습니다');

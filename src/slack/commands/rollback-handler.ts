@@ -136,11 +136,14 @@ export class RollbackHandler implements CommandHandler {
     }
     const sessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
     const label = `입력 직전: ${rollbackInputLabel(point.text)}`;
+    // Inputs that started from the same point (the first stopped before any reply) leave together: the rollback
+    // keeps up to just before the earliest of them (as the dashboard's points do).
+    const earliest = Math.min(...points.filter((p) => p.anchor === point.anchor).map((p) => p.timestamp));
     const target = {
       anchor: point.anchor,
       label,
       source: 'input' as const,
-      keptUntil: keptUntilOf('input', point.timestamp),
+      keptUntil: keptUntilOf('input', earliest),
     };
     const result = requestContextRollback(session, target, user, {
       requestActive: this.deps.requestCoordinator.isRequestActive(sessionKey),

@@ -50,6 +50,7 @@ import { classifyTurnResult, isTurnProgressFrame } from './agent-runtime/turn-re
 import { buildQueryEnv } from './auth/query-env-builder';
 import { userTenantKey } from './auth/user-tenant-key';
 import { getBgKeepaliveMaxMs, getIncidentEvidenceConfig } from './config';
+import { markRewoundTurns } from './conversation/recorder';
 import { sendCredentialAlert } from './credential-alert';
 import {
   ensureActiveSlotAuth,
@@ -1541,6 +1542,19 @@ export class ClaudeHandler implements TurnSteeringPort {
           // The goal's first failure lies on the dropped branch now (#745): the
           // next failure starts a new one.
           if (session.goal?.firstFailure) session.goal.firstFailure = undefined;
+          // SSOT 2026-11-25: what it dropped leaves the dashboard chat for good — stamped on the conversation
+          // record (the session keeps only its latest 10 dropped spans, and new/renew clears them).
+          const kept = rewind.rewind.keptUntil;
+          const conversationId = session.conversationId;
+          if (conversationId && typeof kept === 'number' && kept <= rewind.rewind.requestedAt) {
+            markRewoundTurns(conversationId, { from: kept, to: rewind.rewind.requestedAt, at: Date.now() }).catch(
+              (error: unknown) =>
+                this.logger.warn('Stamping the turns a rollback dropped failed', {
+                  conversationId,
+                  error: error instanceof Error ? error.message : String(error),
+                }),
+            );
+          }
           this.logger.info('Context rollback applied to this turn', {
             sessionId: session.sessionId,
             source: rewind.rewind.source,

@@ -133,9 +133,7 @@ describe('지시와 답변: a person’s instruction carries the button above it
       escAttr: (t: string) => t,
       _rb: { view: {} },
     });
-    expect(on.rbTurnButtonHtml({ kind: 'input' }, 't1')).toContain(
-      'data-rb-turn="t1">⏪ 이 지시 전으로 되돌리기</button>',
-    );
+    expect(on.rbTurnButtonHtml({ kind: 'input' }, 't1')).toContain('data-rb-turn="t1">⏪ 여기로 되돌리기</button>');
     const locked = load(['rbButtonLabel', 'rbTurnButtonHtml'], {
       esc: (t: string) => t,
       escAttr: (t: string) => t,
@@ -145,14 +143,166 @@ describe('지시와 답변: a person’s instruction carries the button above it
   });
 });
 
+describe('지시와 답변: what a rollback drops leaves the chat (SSOT 2026-11-25 "해당 프롬프트까지 히스토리에서 삭제")', () => {
+  const span = { from: 99, to: 500, label: '입력 직전: 배포해', pending: true };
+  const m = load(['convTurnsOf', 'rewoundBy', 'convRewound'], {
+    sysTurnInfo: () => null,
+    splitInvokedSkills: (t: string) => ({ text: t, skills: [] }),
+    decodeSlackEntities: (t: string) => t,
+    toNum: (v: unknown) => Number(v) || 0,
+    REWOUND_MARK: '↩︎ 문맥에서 빠짐',
+    convSummaryOf: () => ({}),
+    ansCacheKey: () => 'k',
+    artInTurn: (x: { at: number }, start: number, end: number) => x.at > start && x.at <= end,
+  });
+  const list = [
+    { id: 't0', role: 'user', timestamp: 50, rawContent: '먼저', userName: 'Z' },
+    { id: 'a0', role: 'assistant', timestamp: 90 },
+    { id: 't1', role: 'user', timestamp: 100, rawContent: '배포해', userName: 'Z' },
+    { id: 'a1', role: 'assistant', timestamp: 200 },
+    { id: 't2', role: 'user', timestamp: 300, rawContent: '테스트 다시', userName: 'Z' },
+  ];
+  const ctx = (over: Record<string, unknown> = {}) => ({
+    cid: '',
+    bot: 'Soma',
+    answers: {},
+    failed: {},
+    arts: [],
+    ...over,
+  });
+  it('the instruction rolled back before and every turn after it are gone; what came before stays, unmarked', () => {
+    const built = m.convTurnsOf(list, ctx({ rewinds: [span], rb: { t1: { kind: 'input', p: VIEW.inputs[0] } } }));
+    expect(built.turns.map((t: { id: string }) => t.id)).toEqual(['t0', 'a0']);
+    expect(built.turns[0].name).toBe('Z');
+    expect(built.turns[1].name).toBe('Soma');
+    // No slot for a turn that is not there (its button, its files).
+    expect(built.slots).toEqual([]);
+  });
+  // The instruction sent again after the rollback, and its answer.
+  const after = [
+    ...list,
+    { id: 't3', role: 'user', timestamp: 550, rawContent: '고친 지시', userName: 'Z' },
+    { id: 'a3', role: 'assistant', timestamp: 600 },
+  ];
+  it('a file a dropped answer produced does not move to a later answer', () => {
+    const built = m.convTurnsOf(
+      after,
+      ctx({
+        rewinds: [span],
+        arts: [
+          { id: 'f1', at: 150 },
+          { id: 'f2', at: 580 },
+        ],
+      }),
+    );
+    expect(built.turns.map((t: { id: string }) => t.id)).toEqual(['t0', 'a0', 't3', 'a3']);
+    expect(built.slots).toEqual([
+      { name: 'attachments-a3', kind: 'arts', list: [{ id: 'f2', at: 580 }], start: 550, end: 600 },
+    ]);
+  });
+  it('a phone call a dropped answer placed does not ride the last turn left in the chat', () => {
+    const built = m.convTurnsOf(list, ctx({ rewinds: [span], calls: [{ id: 'p1', createdAt: 150 }] }));
+    expect(built.turns.map((t: { id: string }) => t.id)).toEqual(['t0', 'a0']);
+    expect(built.slots).toEqual([]);
+  });
+  it('a rollback that keeps up to a point inside an answer’s turn keeps that answer (작업 로그 "여기까지 유지")', () => {
+    // The kept point is the answer's final work-log entry (60); the answer is recorded later (90), at teardown.
+    const keep = { from: 60, to: 500, label: '최종 답까지: …', pending: true };
+    const built = m.convTurnsOf(list, ctx({ rewinds: [keep] }));
+    expect(built.turns.map((t: { id: string }) => t.id)).toEqual(['t0', 'a0']);
+  });
+  it('a turn the record stamped (the rollback ran) stays out with no span — past the 10 spans a session keeps, after new/renew', () => {
+    const stamped = list.map((t) => (t.timestamp >= 100 ? { ...t, rewoundAt: 501 } : t));
+    const built = m.convTurnsOf(stamped, ctx({ rewinds: null }));
+    expect(built.turns.map((t: { id: string }) => t.id)).toEqual(['t0', 'a0']);
+  });
+  it('a message the queue holds (its own row) is never hidden', () => {
+    const queued = [...list, { id: 'queue-1', role: 'user', timestamp: 250, rawContent: '대기 중', _queued: true }];
+    const built = m.convTurnsOf(queued, ctx({ rewinds: [span] }));
+    expect(built.turns.map((t: { id: string }) => t.id)).toEqual(['t0', 'a0', 'queue-1']);
+  });
+  it('this browser’s own instruction sent after the rollback stays (its clock is not the server’s)', () => {
+    const own = [
+      ...list,
+      { id: 'optimistic-1', role: 'user', timestamp: 450, rawContent: '고친 지시', userName: 'Z', _optimistic: true },
+    ];
+    const built = m.convTurnsOf(own, ctx({ rewinds: [span] }));
+    expect(built.turns.map((t: { id: string }) => t.id)).toEqual(['t0', 'a0', 'optimistic-1']);
+  });
+  it('Redo (no span any more) brings them back', () => {
+    const built = m.convTurnsOf(list, ctx({ rewinds: null }));
+    expect(built.turns.map((t: { id: string }) => t.id)).toEqual(['t0', 'a0', 't1', 'a1', 't2']);
+  });
+});
+
+describe('다음 행동: the steps of an answer a rollback took out of the chat are not offered', () => {
+  const m = load(['nextActionsOfTurns', 'convRewound', 'rewoundBy'], { toNum: (v: unknown) => Number(v) || 0 });
+  const turns = [
+    { id: 't0', role: 'user', timestamp: 50 },
+    { id: 'a0', role: 'assistant', timestamp: 90, nextActions: [{ label: '배포', command: 'deploy' }] },
+    { id: 't1', role: 'user', timestamp: 100 },
+    { id: 'a1', role: 'assistant', timestamp: 200, nextActions: [{ label: '머지', command: 'merge' }] },
+  ];
+  it('the latest answer left in the chat is the one whose steps show (a waiting or applied span)', () => {
+    expect(m.nextActionsOfTurns(turns)?.turnId).toBe('a1');
+    expect(m.nextActionsOfTurns(turns, [{ from: 99, to: 300, label: 'x' }])?.turnId).toBe('a0');
+  });
+  it('a turn the record stamped is skipped with no span', () => {
+    const stamped = turns.map((t) => (t.timestamp >= 100 ? { ...t, rewoundAt: 301 } : t));
+    expect(m.nextActionsOfTurns(stamped)?.turnId).toBe('a0');
+  });
+  it('the detail card’s bar passes the session’s spans; the API carries the stamp', () => {
+    expect(clientFn('renderPanelNext')).toContain(
+      "nextActionsOfTurns(_panelTurnsList, typeof rewindSpansOf === 'function' ? rewindSpansOf(s) : null)",
+    );
+    expect(DASHBOARD_TS).toContain('rewoundAt: t.rewoundAt');
+  });
+});
+
+describe('the confirmation counts only what leaves the chat now', () => {
+  it('turns an earlier rollback already took out of the chat are not counted again', () => {
+    const html = vi.fn(() => '');
+    const nodes: Record<string, any> = {
+      'rollback-dialog': { show: vi.fn() },
+      'rollback-body': { innerHTML: '' },
+      'rollback-status': { textContent: '', setAttribute: vi.fn(), removeAttribute: vi.fn() },
+      'rollback-confirm': { disabled: true },
+    };
+    const m = load(
+      ['rbOpenConfirm', 'rbKeptUntil', 'rewoundBy', 'rewindSpansOf', 'convRewound', 'setRollbackStatus'],
+      {
+        document: { getElementById: (id: string) => nodes[id] ?? null },
+        toNum: (v: unknown) => Number(v) || 0,
+        rbConfirmHtml: html,
+        rbUnderOf: () => '',
+        _rb: { key: 'C1:t1' },
+        panelSessionKey: 'C1:t1',
+        // An applied rollback took t1 and its answer out (99 → 250); t2 started from the same point.
+        _sessionCache: { 'C1:t1': { contextRewinds: [{ from: 99, to: 250, label: 'x', at: 251 }] } },
+        _panelTurnsList: [
+          { id: 't0', timestamp: 50 },
+          { id: 't1', timestamp: 100 },
+          { id: 'a1', timestamp: 200 },
+          { id: 't2', timestamp: 300 },
+          { id: 'a2', timestamp: 400 },
+        ],
+      },
+      'var _rbPick = null;',
+    );
+    m.rbOpenConfirm({ kind: 'input', p: { anchor: 'sid~0~a', text: 't2', at: 100 } });
+    expect(html).toHaveBeenCalledWith(expect.anything(), { dropped: 2, under: '' });
+    expect(nodes['rollback-dialog'].show).toHaveBeenCalled();
+  });
+});
+
 describe('the confirmation: the instruction quoted, what leaves, how to take it back', () => {
   const m = load(['rbConfirmHtml'], { esc: (t: string) => t });
-  it('an input: "이 지시를 보내기 전으로", the whole instruction, and that it comes back into the composer', () => {
+  it('an input: "이 지시를 보내기 전으로", the whole instruction, that it leaves the chat and comes back into the 지시창', () => {
     const html = m.rbConfirmHtml({ kind: 'input', p: VIEW.inputs[0] }, { dropped: 3 });
-    expect(html).toContain('이 지시를 보내기 <b>전</b>으로');
+    expect(html).toContain('이 지시를 보내기 <b>전</b>으로 대화를 되돌립니다.');
     expect(html).toContain('<blockquote class="rb-quote">배포해\n자세히</blockquote>');
-    expect(html).toContain('그 뒤의 대화 3개가');
-    expect(html).toContain('입력창에 다시 넣어 드려요');
+    expect(html).toContain('이 지시와 그 뒤의 대화 3개가 채팅과 모델 문맥에서 빠지고');
+    expect(html).toContain('이 지시는 지시창에 다시 들어갑니다');
     expect(html).toContain('↪︎ Redo');
   });
   it('a work-log point: it stays, and the instruction it belongs to is shown', () => {
@@ -316,7 +466,7 @@ describe('marks on what a rollback drops — waiting or applied (client)', () =>
     // No kept point (an older request): nothing to mark.
     expect(spansOf({ pendingRewind: { label: 'p', requestedAt: 90 } })).toBeNull();
   });
-  it('the work log and the conversation both draw the mark from those spans', () => {
+  it('the work log marks what the spans drop; the conversation leaves it out', () => {
     const wl = clientFn('wlEntryOf');
     expect(wl).toContain('rewoundBy(st.rewinds');
     expect(wl).toContain('REWOUND_MARK');
@@ -324,7 +474,8 @@ describe('marks on what a rollback drops — waiting or applied (client)', () =>
     expect(clientFn('renderPanelHead')).toContain('wlSyncRewinds();');
     expect(clientFn('loadWorkLog')).toContain('wlSyncRewinds();');
     expect(clientFn('convPaint')).toContain('rewinds: rewindSpansOf(s),');
-    expect(clientFn('convTurnsOf')).toContain('rewoundBy(');
+    expect(clientFn('convTurnsOf')).toContain('convRewound(t, start, c.rewinds)');
+    expect(clientFn('convRewound')).toContain('rewoundBy(spans');
     expect(TEMPLATE).toContain("var REWOUND_MARK = '↩︎ 문맥에서 빠짐';");
   });
   it('작업 로그 rows get their buttons after every paint (the element’s own rows)', () => {

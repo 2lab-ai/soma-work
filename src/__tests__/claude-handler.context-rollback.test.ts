@@ -19,6 +19,8 @@ vi.mock('../credential-alert', () => ({ sendCredentialAlert: vi.fn(async () => {
 vi.mock('../token-manager', () => ({ getTokenManager: () => ({}) }));
 vi.mock('../auth/llmux-tenant-keys', () => ({ ensureTenantKey: vi.fn(async () => null) }));
 vi.mock('../auth/query-env-builder', () => ({ buildQueryEnv: () => ({ env: {} }) }));
+const { markRewoundTurnsMock } = vi.hoisted(() => ({ markRewoundTurnsMock: vi.fn(async () => 0) }));
+vi.mock('../conversation/recorder', () => ({ markRewoundTurns: markRewoundTurnsMock }));
 vi.mock('../agent-runtime/claude-code/build-stream-options', () => ({
   buildStreamOptions: vi.fn(async ({ session }: { session?: { sessionId?: string } }) => ({
     options: { model: 'claude-test', ...(session?.sessionId ? { resume: session.sessionId } : {}) },
@@ -67,7 +69,49 @@ async function drain(handler: ClaudeHandler, session: any): Promise<void> {
 }
 
 describe('ClaudeHandler — context rollback', () => {
-  afterEach(() => queryMock.mockReset());
+  afterEach(() => {
+    queryMock.mockReset();
+    markRewoundTurnsMock.mockClear();
+  });
+
+  it('the rollback that runs stamps what it dropped on the conversation record (SSOT 2026-11-25)', async () => {
+    const session: any = {
+      sessionId: SID,
+      compactionCount: 0,
+      ownerId: 'U1',
+      channelId: 'C1',
+      threadTs: '1.1',
+      conversationId: 'conv-1',
+      contextAnchor: encodeContextAnchor({ sid: SID, epoch: 0, uuid: U(9) }),
+      pendingRewind: {
+        anchor: encodeContextAnchor({ sid: SID, epoch: 0, uuid: U(3) }),
+        label: '입력 직전: 배포해',
+        requestedAt: 500,
+        requestedBy: 'U1',
+        source: 'input',
+        keptUntil: 199,
+      },
+    };
+    installTurn((opening) => [
+      { type: 'system', subtype: 'init', session_id: SID, model: 'claude-test', tools: [] },
+      { type: 'assistant', uuid: U(10), message: { content: [{ type: 'text', text: 'ok' }] } },
+      result(opening),
+    ]);
+    const handler = new ClaudeHandler({ getPluginManager: () => null } as unknown as McpManager);
+    await drain(handler, session);
+    expect(markRewoundTurnsMock).toHaveBeenCalledTimes(1);
+    expect(markRewoundTurnsMock).toHaveBeenCalledWith('conv-1', { from: 199, to: 500, at: expect.any(Number) });
+
+    // No kept point (an older request) or no conversation: nothing to stamp.
+    session.pendingRewind = { ...session.pendingRewind, keptUntil: undefined };
+    installTurn((opening) => [
+      { type: 'system', subtype: 'init', session_id: SID, model: 'claude-test', tools: [] },
+      { type: 'assistant', uuid: U(11), message: { content: [{ type: 'text', text: 'ok' }] } },
+      result(opening),
+    ]);
+    await drain(handler, session);
+    expect(markRewoundTurnsMock).toHaveBeenCalledTimes(1);
+  });
 
   it('a waiting rollback becomes resumeSessionAt once, and the anchor follows the new chain', async () => {
     const session: any = {
