@@ -115,7 +115,14 @@ same snapshot, and work will be placed by each node's free CPU and memory.
    stopped part the period's reads) it reads the tree's CPU time, sets the share of the period the tree may run
    (share × cap / rate, at least 0.2%), runs it that long and stops it (`SIGSTOP`) the rest. A new worker joins the
    tree only if the read that gives its identity names a parent in it; an aborted turn's processes are never metered
-   again. It never stops the Claude Code process itself, never continues what it did not stop (a person's pause
+   again. The parent map is read again at each stop: a worker the tree started since the period's scan (a shell that
+   forks after each continue) is held at that stop too, and the CPU it used so far counts toward the next period's
+   rate. A worker found right after a failed scan may be old, so its counter is baselined instead of charging its
+   whole lifetime to one window. At a continue, the holds the period's read verified are continued before any is
+   probed live, so a slow probe never ages their identities. A cap change keeps a held tree metered on the new cap
+   (its free rate is about old cap ÷ share; the sample reads it at its old cap, so re-metering from the sample would
+   let it run free until the next one) and lets it go only when the new cap is over that rate. A stop whose identity
+   read keeps failing, and a saved cap that does not parse, are said in the log. It never stops the Claude Code process itself, never continues what it did not stop (a person's pause
    becomes theirs), never signals a reused pid, and continues everything it holds on an abort, a cap change and
    shutdown (before the monitor's own resume pass). A held process reads as running with `throttled`, not as paused;
    a session says its `cpuCapPercent` and whether the cap is `throttling`. Research: [2026-11-24 task CPU
@@ -129,9 +136,10 @@ same snapshot, and work will be placed by each node's free CPU and memory.
   process tab answers 409 here (open that instance's dashboard).
 - Placing work on worker nodes is not built. This ADR fixes the shape the placement will read.
 - Windows has no job-control signals: control answers `unsupported`. Sampling there is not supported.
-- A capped task over its cap costs three `ps` runs a period (the parent map, the tree, the read before the stop)
-  while it is over (none otherwise), and its processes see brief stops — what a cap is. A process that starts and
-  exits within one period is never read by the cap and runs uncapped for that short life.
+- A capped task over its cap costs four `ps` runs a period (the parent map, the tree, the read before the stop, the
+  parent map again at the stop) while it is over (none otherwise), and its processes see brief stops — what a cap
+  is. A process that starts and exits within one run part is never read by the cap and runs uncapped for that short
+  life.
 - The working directory costs one `lsof` (macOS) or one `readlink` per pid (Linux) every 15 seconds per process, and
   nothing for the unattributed group. The detail read costs a handful of `ps`/`lsof` runs per click.
 

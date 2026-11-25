@@ -43,9 +43,15 @@ function parseFile(raw: unknown): CpuLimitsFile {
   if (version !== 1) throw new Error(`unknown version ${String(version)}`);
   if (!limits || typeof limits !== 'object' || Array.isArray(limits)) throw new Error('limits is not an object');
   const clean: Record<string, CpuCapSetting> = {};
+  const unreadable: string[] = [];
   for (const [user, value] of Object.entries(limits as Record<string, unknown>)) {
     const parsed = parseCpuCapSetting(value);
     if (parsed !== undefined) clean[user] = parsed;
+    else unreadable.push(user);
+  }
+  // A person whose saved cap does not parse gets the default; say who, so a hand-edited file is not silently ignored.
+  if (unreadable.length > 0) {
+    warn('User CPU limits: could not read these saved caps — the default applies to them', { userIds: unreadable });
   }
   return { version: 1, limits: clean };
 }
