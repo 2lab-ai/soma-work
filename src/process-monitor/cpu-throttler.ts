@@ -163,11 +163,14 @@ export class CpuThrottler {
   private saidNoParents = false;
   /** Said once while it lasts: the identity read before a stop fails, so nothing is held. */
   private saidStopReadFailed = false;
+  /** Said once while it lasts: the read of the workers found at a stop fails, so they run free. */
+  private saidNewWorkerReadFailed = false;
   /**
-   * Whether the last parent scan (a period's or a stop's) read the whole map. A worker found by the next scan started
-   * since that one only if it did; after a failed scan it may be old, so it is baselined, not charged its lifetime.
+   * Whether the last period's parent scan read the whole map. A worker the next period finds started since then only
+   * if it did; after a failed scan it may be old, so it is baselined, not charged its lifetime. Only period scans set
+   * it: a stop's extra scan failing says nothing about the bound the period's own scan gave.
    */
-  private lastScanOk = false;
+  private lastPeriodScanOk = false;
   /** The period whose own parent scan succeeded last: a stop of that period may charge the workers it finds. */
   private scanOkSeq = 0;
   /** When the next period starts, from the end of this one: its reads land the continue one period after this one's. */
@@ -365,14 +368,17 @@ export class CpuThrottler {
       return true;
     });
     if (picked.length === 0) return;
-    // The holds this period's read answered are continued first, on that read; only then is the rest read live. That
-    // probe can take seconds on a loaded host, and an identity read before it would be that much older at its signal.
-    const answered = picked.filter(([pid]) => read?.has(pid));
-    const unanswered = picked.filter(([pid]) => !read?.has(pid));
-    this.continueEach(answered, (pid) => read?.get(pid)?.startToken, drop, at);
-    if (unanswered.length === 0) return;
-    const live = this.deps.liveStartTokens(unanswered.map(([pid]) => pid));
-    this.continueEach(unanswered, (pid) => (live?.has(pid) ? live.get(pid) : undefined), drop, at);
+    // A live probe for the holds no read answered runs before any continue: it is synchronous, so while it runs no
+    // stop timer can fire — a tree continued before it would run uncapped for as long. (A period reads every hold
+    // again, asynchronously, before it gets here, so this probe is for a pid two reads in a row could not answer.)
+    const unanswered = picked.filter(([pid]) => !read?.has(pid)).map(([pid]) => pid);
+    const live = unanswered.length > 0 ? this.deps.liveStartTokens(unanswered) : new Map<number, string | null>();
+    this.continueEach(
+      picked,
+      (pid) => (read?.has(pid) ? read.get(pid)?.startToken : live?.has(pid) ? live.get(pid) : undefined),
+      drop,
+      at,
+    );
   }
 
   /** Continue each hold whose identity `tokenOf` gives (`undefined`: unknown, kept for the next try). */
@@ -489,15 +495,15 @@ export class CpuThrottler {
     const started = this.deps.now();
     let parents: Map<number, number> | null = null;
     // What this scan finds started since the last one only if that one read the whole map.
-    const prevScanOk = this.lastScanOk;
+    const prevScanOk = this.lastPeriodScanOk;
     if (this.deps.readParents && this.sessions.size > 0) {
       try {
         parents = await this.deps.readParents();
         this.saidNoParents = false;
-        this.lastScanOk = true;
+        this.lastPeriodScanOk = true;
         this.scanOkSeq = seq;
       } catch (err) {
-        this.lastScanOk = false;
+        this.lastPeriodScanOk = false;
         // New workers go unseen until a scan reads again; what is known is still held.
         if (!this.saidNoParents) {
           this.saidNoParents = true;
@@ -553,6 +559,18 @@ export class CpuThrottler {
         // Every hold now — those that landed while this read was out too — is answered by this read or read live.
         for (const pid of this.held.keys()) if (!more?.has(pid)) read.delete(pid);
         if (more) for (const [pid, r] of more) read.set(pid, r);
+      }
+      if (this.disposed) return;
+    }
+    // A hold the read did not answer would be probed live, synchronously, at its continue: the event loop stops for
+    // that probe, and an identity read before it ages by as long. Read every hold again first — one async read, which
+    // blocks nothing — and continue all of them on it; only a pid missing from this read too is probed live.
+    if ([...this.held.keys()].some((pid) => !read.has(pid))) {
+      const again = await this.timedRead([...this.held.keys()]).catch(() => null);
+      for (const pid of this.held.keys()) {
+        const r = again?.get(pid);
+        if (r) read.set(pid, r);
+        else read.delete(pid);
       }
       if (this.disposed) return;
     }
@@ -691,15 +709,16 @@ export class CpuThrottler {
    */
   private async holdNewWorkers(key: string, s: Capped, seq: number): Promise<void> {
     if (!this.deps.readParents) return;
+    // A newer period owns discovery and accounting once it has started: a stop of an older one that finishes late
+    // must not baseline a worker that period is about to find (it would never be charged).
+    const current = () => !this.disposed && this.sessions.get(key) === s && this.periodSeq === seq;
     let parents: Map<number, number>;
     try {
       parents = await this.deps.readParents();
-      this.lastScanOk = true;
     } catch {
-      this.lastScanOk = false;
       return;
     }
-    if (this.disposed || this.sessions.get(key) !== s || this.continuedSeq !== seq) return;
+    if (!current()) return;
     const childrenOf = new Map<number, number[]>();
     for (const [pid, ppid] of parents) {
       if (pid === ppid) continue;
@@ -710,12 +729,23 @@ export class CpuThrottler {
     const known = new Set<number>([...s.members.map((m) => m.pid), ...this.held.keys()]);
     const found = this.discover(s.members, known, childrenOf);
     if (found.length === 0) return;
-    // The members are read with them: a worker is adopted only under a parent whose identity this read confirms.
-    const parentPids = found.map((pid) => parents.get(pid)).filter((pid): pid is number => pid !== undefined);
-    const read = await this.timedRead([...new Set([...found, ...parentPids, ...s.members.map((m) => m.pid)])]).catch(
-      () => null,
-    );
-    if (!read || this.disposed || this.sessions.get(key) !== s || this.continuedSeq !== seq) return;
+    // The members are read with them: a worker is adopted only under a parent whose identity this read confirms (every
+    // found pid's parent is a member or another found pid).
+    const read = await this.timedRead([...new Set([...found, ...s.members.map((m) => m.pid)])]).catch((err) => {
+      if (!this.saidNewWorkerReadFailed) {
+        this.saidNewWorkerReadFailed = true;
+        this.deps.logger?.warn(
+          'cpu cap: the read of workers found at a stop failed; they run free until a read finds them',
+          {
+            sessionKey: key,
+            error: String(err),
+          },
+        );
+      }
+      return null;
+    });
+    if (read) this.saidNewWorkerReadFailed = false;
+    if (!read || !current()) return;
     const owners = new Set(s.members.filter((m) => read.get(m.pid)?.startToken === m.startToken).map((m) => m.pid));
     const added: Member[] = [];
     for (const pid of found) {

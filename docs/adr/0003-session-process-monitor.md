@@ -118,13 +118,16 @@ same snapshot, and work will be placed by each node's free CPU and memory.
    again. The parent map is read again at each stop: a worker the tree started since the period's scan (a shell that
    forks after each continue) is held at that stop too, and the CPU it used so far counts toward the next period's
    rate. A worker found right after a failed scan may be old, so its counter is baselined instead of charging its
-   whole lifetime to one window. At a continue, the holds the period's read verified are continued before any is
-   probed live, so a slow probe never ages their identities. A cap change keeps a held tree metered on the new cap
-   (its free rate is about old cap ÷ share; the sample reads it at its old cap, so re-metering from the sample would
-   let it run free until the next one) and lets it go only when the new cap is over that rate. A stop whose identity
-   read keeps failing, and a saved cap that does not parse, are said in the log. It never stops the Claude Code process itself, never continues what it did not stop (a person's pause
-   becomes theirs), never signals a reused pid, and continues everything it holds on an abort, a cap change and
-   shutdown (before the monitor's own resume pass). A held process reads as running with `throttled`, not as paused;
+   whole lifetime to one window (only a period's own scan sets that bound; a stop's extra scan failing does not
+   erase it, and a stop that finishes after the next period started leaves discovery to that period). When the
+   period's read misses a hold, every hold is read again, asynchronously, before any continue; only a pid two reads
+   missed is probed live, and that synchronous probe runs while the tree is still stopped (no stop timer can fire
+   during it). A cap change keeps a held tree metered on the new cap (its free rate is about old cap ÷ share; the
+   sample reads it at its old cap, so re-metering from the sample would let it run free until the next one) and lets
+   it go only when the new cap is over that rate. A stop whose identity read keeps failing, a read of workers found at
+   a stop that keeps failing, and a saved cap that does not parse are said in the log. It never stops the Claude Code
+   process itself, never continues what it did not stop (a person's pause becomes theirs), never signals a reused pid,
+   and continues everything it holds on an abort, a cap change and shutdown (before the monitor's own resume pass). A held process reads as running with `throttled`, not as paused;
    a session says its `cpuCapPercent` and whether the cap is `throttling`. Research: [2026-11-24 task CPU
    cap](../misc/research/2026-11-24-task-cpu-cap.md).
 

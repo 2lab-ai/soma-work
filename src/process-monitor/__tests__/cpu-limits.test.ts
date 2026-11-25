@@ -64,13 +64,16 @@ describe('UserCpuLimits — the CPU cap on one of a person’s tasks', () => {
   it('a save that fails keeps the cap that is enforced', () => {
     const caps = new UserCpuLimits(dir, isAdmin);
     caps.set('U1', 200);
-    // The data directory goes read-only: the write fails.
-    fs.chmodSync(dir, 0o500);
+    // The data directory is replaced by a plain file: every write under it fails (ENOTDIR), even for root.
+    const moved = `${dir}.moved`;
+    fs.renameSync(dir, moved);
+    fs.writeFileSync(dir, 'not a directory');
     try {
       expect(() => caps.set('U1', 400)).toThrow();
       expect(caps.capFor('U1')).toBe(200);
     } finally {
-      fs.chmodSync(dir, 0o700);
+      fs.unlinkSync(dir);
+      fs.renameSync(moved, dir);
     }
   });
 
