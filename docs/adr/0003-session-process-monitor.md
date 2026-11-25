@@ -98,10 +98,14 @@ same snapshot, and work will be placed by each node's free CPU and memory.
    end a span, and an exact argument that is a command of its own — `bash -c '…'` — is masked word by word). This is a deny-list, so a secret with no
    shape after a flag whose name says nothing still shows. That is why the detail is the owner's and admins' only and
    is read only on a click. The environment is never read.
-8. **The node on the card (2026-11-24).** A card with a live tree carries its node's load (`nodeCpuPercent`,
-   `nodeMemPercent`) next to its own usage. The face draws it as one badge in the head (`@2lab.ai/ui` 0.45.0
-   `card.node`): this card's CPU, the node's name, and the node's CPU and memory as two 10-step gauges. The head is the
-   part a one-line card keeps. A card is pushed again only when a gauge crosses a step.
+8. **The node on the card (2026-11-24; the task's own usage since 2026-11-25).** A card with a live tree is drawn
+   with one badge in the head (`@2lab.ai/ui` 0.46.0 `card.node`): the node's name and two 10-step gauges for **this
+   task's** CPU and memory. CPU is full at one core (100%, the default CPU cap; a stripe is 10% of a core). Memory is
+   full at one core's share of the node's memory (its size ÷ its cores — `nodeMemBytes` and `cpuCount` ride with the
+   usage). No number is drawn before the name: the pill's level says it (busy from 10% of a core; hot, a red ring, from
+   100%), and its title and accessible name give the numbers. The head is the part a one-line card keeps, so the foot's
+   CPU · 메모리 chip went (2026-11-25) — a layout saved with it drops it. A card is pushed again only when a gauge
+   crosses a step or the level changes; the node's own load is not on the card (the 프로세스 tab's node line has it).
 
 9. **A CPU cap per task (2026-11-24).** One task of a person may use at most their cap: 100% (one core) by default,
    none for an admin, an admin's choice per person in the settings page's 작업 큐 tab (`DATA_DIR/user-cpu-limits.json`,

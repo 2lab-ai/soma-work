@@ -122,7 +122,7 @@ function fakeSource(snap = snapshot([sessionA])) {
   };
 }
 
-describe('Dashboard — the 프로세스 tab and the CPU · 메모리 chip', () => {
+describe('Dashboard — the 프로세스 tab and the card’s node badge', () => {
   let web: any;
   let dashboard: any;
 
@@ -350,9 +350,8 @@ describe('Dashboard — the 프로세스 tab and the CPU · 메모리 chip', () 
     expect(card.procUsage).toEqual({
       nodeId: 'n1',
       cpuCount: 8,
-      // The node badge: the whole node's CPU (all cores) and memory in use (16 GB, 8 GB available).
-      nodeCpuPercent: 20,
-      nodeMemPercent: 50,
+      // The node's memory: the badge's memory gauge is full at one core's share of it (16 GB ÷ 8 cores).
+      nodeMemBytes: 16e9,
       rootAlive: true,
       processCount: 2,
       stoppedCount: 1,
@@ -399,9 +398,9 @@ describe('Dashboard — the 프로세스 tab and the CPU · 메모리 chip', () 
   it('a sample pushes only cards whose chip changed, and once more when the last process exits', () => {
     const pushed = new Map<string, string>();
     expect(dashboard.procCardsToPush(pushed, snapshot([sessionA]))).toEqual([KEY]);
-    // Same 5-point CPU bucket (over 10%), same 10 MB: no push.
+    // Same 5-point CPU bucket (over 10%), same 10 MB, same gauge stripes: no push.
     expect(
-      dashboard.procCardsToPush(pushed, snapshot([{ ...sessionA, cpuPercent: 43.9, rssBytes: 1.2e9 + 1e6 }])),
+      dashboard.procCardsToPush(pushed, snapshot([{ ...sessionA, cpuPercent: 43.9, rssBytes: 1.2e9 - 1e6 }])),
     ).toEqual([]);
     // Another bucket: a push. Memory alone moving 10 MB: a push. CPU alone under 10%, a whole point: a push.
     expect(dashboard.procCardsToPush(pushed, snapshot([{ ...sessionA, cpuPercent: 61 }]))).toEqual([KEY]);
@@ -414,20 +413,24 @@ describe('Dashboard — the 프로세스 tab and the CPU · 메모리 chip', () 
     expect(dashboard.procCardsToPush(pushed, snapshot([{ ...sessionA, cpuPercent: 4, rssBytes: 1.3e9 }]))).toEqual([
       KEY,
     ]);
-    // A process paused: the chip changes.
+    // A process paused: the badge's title changes.
     expect(dashboard.procCardsToPush(pushed, snapshot([{ ...sessionA, stoppedCount: 2 }]))).toEqual([KEY]);
-    // The node badge's gauges: a push when the node's CPU or memory crosses a 10-point step, none inside one.
-    const at = (cpuBusyPercent: number | null, availableMemBytes = 8e9) => ({
+    // The node's own load is not on the card any more: it moving pushes nothing.
+    const busyNode = (cpuBusyPercent: number | null, availableMemBytes: number) => ({
       ...snapshot([{ ...sessionA, stoppedCount: 2 }]),
       node: { ...node, cpuBusyPercent, availableMemBytes },
     });
-    expect(dashboard.procCardsToPush(pushed, at(20))).toEqual([]);
-    expect(dashboard.procCardsToPush(pushed, at(19.5))).toEqual([]);
-    expect(dashboard.procCardsToPush(pushed, at(21))).toEqual([KEY]);
-    expect(dashboard.procCardsToPush(pushed, at(21, 7e9))).toEqual([KEY]);
-    expect(dashboard.procCardsToPush(pushed, at(null, 7e9))).toEqual([KEY]);
-    // The first CPU reading after none — even an empty gauge — pushes (unknown is not 0).
-    expect(dashboard.procCardsToPush(pushed, at(0, 7e9))).toEqual([KEY]);
+    expect(dashboard.procCardsToPush(pushed, busyNode(90, 1e9))).toEqual([]);
+    expect(dashboard.procCardsToPush(pushed, busyNode(null, 15e9))).toEqual([]);
+    // The badge's gauges are the task's: a step of either pushes even inside one CPU bucket or one 10 MB grain.
+    // CPU 19.9 → 20.1 shares a 5-point bucket but fills a third stripe (1 stripe = 10% of a core).
+    const g = (cpuPercent: number, rssBytes = 1.2e9) =>
+      snapshot([{ ...sessionA, stoppedCount: 2, cpuPercent, rssBytes }]);
+    dashboard.procCardsToPush(pushed, g(19.9));
+    expect(dashboard.procCardsToPush(pushed, g(20.1))).toEqual([KEY]);
+    // Memory 1.199 GB → 1.2005 GB shares a 10 MB grain but crosses 60% of one core's share (2 GB): a 7th stripe.
+    dashboard.procCardsToPush(pushed, g(20.1, 1.199e9));
+    expect(dashboard.procCardsToPush(pushed, g(20.1, 1.2005e9))).toEqual([KEY]);
     // The badge's busy / hot edges push even inside one CPU bucket (9.6 and 10.2 share a bucket; 98 and 101 too).
     const lv = (cpuPercent: number) => snapshot([{ ...sessionA, stoppedCount: 2, cpuPercent }]);
     dashboard.procCardsToPush(pushed, lv(9.6));
@@ -439,16 +442,20 @@ describe('Dashboard — the 프로세스 tab and the CPU · 메모리 chip', () 
     expect(dashboard.procCardsToPush(pushed, snapshot([]))).toEqual([]);
   });
 
-  it('gaugeStep fills the badge’s 10 steps: 0 → 0, any load → at least 1, 100 → 10; nodeLoadOf clamps', () => {
+  it('gaugeStep fills the badge’s 10 steps: 0 → 0, any load → at least 1, 100 → 10', () => {
     expect([null, -1, 0, 0.1, 10, 10.1, 55, 99, 100, 140].map(dashboard.gaugeStep)).toEqual([
       0, 0, 0, 1, 1, 2, 6, 10, 10, 10,
     ]);
-    expect(dashboard.nodeLoadOf(node)).toEqual({ cpu: 20, mem: 50 });
-    expect(dashboard.nodeLoadOf({ ...node, cpuBusyPercent: null, totalMemBytes: 0 })).toEqual({ cpu: null, mem: null });
-    expect(dashboard.nodeLoadOf({ ...node, cpuBusyPercent: 100.4, availableMemBytes: -1 })).toEqual({
-      cpu: 100,
-      mem: 100,
-    });
+  });
+
+  it('taskGaugesOf: CPU full at one core, memory full at one core’s share of the node’s memory', () => {
+    // 8 cores, 16 GB: one core's share is 2 GB.
+    expect(dashboard.taskGaugesOf({ cpuPercent: 42.5, rssBytes: 1.2e9 }, 8, 16e9)).toEqual({ cpu: 42.5, mem: 60 });
+    expect(dashboard.taskGaugesOf({ cpuPercent: 247, rssBytes: 3.3e9 }, 8, 16e9)).toEqual({ cpu: 100, mem: 100 });
+    expect(dashboard.taskGaugesOf({ cpuPercent: -1, rssBytes: 0 }, 8, 16e9)).toEqual({ cpu: 0, mem: 0 });
+    // No core count or no memory size: no memory gauge.
+    expect(dashboard.taskGaugesOf({ cpuPercent: 5, rssBytes: 1e9 }, 0, 16e9)).toEqual({ cpu: 5, mem: null });
+    expect(dashboard.taskGaugesOf({ cpuPercent: 5, rssBytes: 1e9 }, 8, 0)).toEqual({ cpu: 5, mem: null });
   });
 
   it('a wired source’s samples push the changed cards; unwiring stops them', () => {
