@@ -275,20 +275,14 @@ export interface RollbackInputPoint {
 }
 
 /**
- * The anchor an input point is NOT offered at: the one a waiting rollback already resumes from (what came
- * after it leaves anyway). The current tail is offered: an input starts at the tail when its turn was stopped
- * before any reply, and its words are still in the context after the tail (found on dev, 2026-11-25 — the
- * person's latest instruction had no button).
- */
-function waitingAnchor(session: ConversationSession): string | undefined {
-  return session.pendingRewind?.anchor;
-}
-
-/**
  * The person's inputs in this context that can be rolled back to, oldest
  * first: recorded with an anchor that is still usable. System turns (goal
  * continuations, resumes, compaction) are left out — the owner picks among
- * what they said.
+ * what they said. Left out too: the anchor a waiting rollback already resumes
+ * from (what came after it leaves anyway). The current tail is offered: an
+ * input starts at the tail when its turn was stopped before any reply, and its
+ * words are still in the context after the tail (found on dev, 2026-11-25 —
+ * the person's latest instruction had no button).
  */
 export function rollbackInputPoints(
   session: ConversationSession,
@@ -299,7 +293,7 @@ export function rollbackInputPoints(
   derived?: ReadonlyMap<string, string>,
 ): RollbackInputPoint[] {
   if (!record) return [];
-  const waiting = waitingAnchor(session);
+  const waiting = session.pendingRewind?.anchor;
   const out: RollbackInputPoint[] = [];
   for (const t of record.turns as ConversationTurn[]) {
     if (t.role !== 'user' || t.origin?.by === 'system') continue;
@@ -467,7 +461,7 @@ export interface RollbackInstructionPoint {
 /**
  * The work log's instructions the owner can roll back before, oldest first: a person's (not a
  * system turn's) instruction recorded with a usable anchor — the point the turn started from — on
- * the active branch, and not where a waiting rollback already resumes (`waitingAnchor`).
+ * the active branch, and not where a waiting rollback already resumes (as `rollbackInputPoints`).
  */
 export function rollbackWorkLogInstructionPoints(
   session: ConversationSession,
@@ -475,7 +469,7 @@ export function rollbackWorkLogInstructionPoints(
   /** Keep only points on the active branch (`activeChainFilter`); absent = no filter. */
   onChain?: (uuid: string) => boolean,
 ): RollbackInstructionPoint[] {
-  const waiting = waitingAnchor(session);
+  const waiting = session.pendingRewind?.anchor;
   const out: RollbackInstructionPoint[] = [];
   for (const e of [...entries].sort((a, b) => a.seq - b.seq)) {
     if (e.kind !== 'instruction' || e.by === 'system' || typeof e.anchor !== 'string') continue;

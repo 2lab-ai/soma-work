@@ -6,10 +6,15 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+const dirs = vi.hoisted(() => ({ data: '' }));
 vi.mock('../../env-paths', async () => {
   const nodeFs = await import('node:fs');
-  return { IS_DEV: true, DATA_DIR: nodeFs.mkdtempSync('/tmp/recorder-rewound-data-') };
+  dirs.data = nodeFs.mkdtempSync('/tmp/recorder-rewound-data-');
+  return { IS_DEV: true, DATA_DIR: dirs.data };
 });
+
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 import {
   createConversation,
@@ -20,15 +25,16 @@ import {
   setOnTurnRecordedCallback,
 } from '../recorder';
 
-function nextTurn(): Promise<{ id: string; timestamp: number }> {
-  return new Promise((resolve) => setOnTurnRecordedCallback((_id, turn) => resolve(turn)));
+async function at(ms: number, record: () => void): Promise<void> {
+  vi.setSystemTime(ms);
+  const seen = new Promise<void>((resolve) => setOnTurnRecordedCallback(() => resolve()));
+  record();
+  await seen;
 }
 
-async function at<T>(ms: number, record: () => void): Promise<T> {
-  vi.setSystemTime(ms);
-  const seen = nextTurn();
-  record();
-  return (await seen) as T;
+/** The record as saved on disk (not the recorder's cached copy). */
+function onDisk(cid: string): { turns: Array<{ rewoundAt?: number }> } {
+  return JSON.parse(readFileSync(join(dirs.data, 'conversations', `${cid}.json`), 'utf8'));
 }
 
 afterEach(() => vi.useRealTimers());
@@ -45,6 +51,8 @@ describe('markRewoundTurns — a rollback that ran stamps what it dropped', () =
     expect(await markRewoundTurns(cid, { from: 199, to: 400, at: 450 })).toBe(2);
     const rec = await getConversation(cid);
     expect(rec?.turns.map((t) => t.rewoundAt ?? null)).toEqual([null, null, 450, 450]);
+    // Saved, not only cached: the stamp survives a restart.
+    expect(onDisk(cid).turns.map((t) => t.rewoundAt ?? null)).toEqual([null, null, 450, 450]);
     // Once per turn: a later rollback stamps only turns not stamped yet; a stamped turn keeps its first time.
     expect(await markRewoundTurns(cid, { from: 0, to: 400, at: 999 })).toBe(2);
     expect((await getConversation(cid))?.turns.map((t) => t.rewoundAt ?? null)).toEqual([999, 999, 450, 450]);

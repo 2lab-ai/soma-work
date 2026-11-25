@@ -20541,11 +20541,14 @@ function rbOpenConfirm(pt) {
   var body = document.getElementById('rollback-body');
   if (!key || !dlg || !body || typeof dlg.show !== 'function') return;
   var kept = rbKeptUntil(pt);
-  // What leaves the chat now: turns an earlier rollback already took out are not counted again.
+  // What leaves the chat now, by the chat's own rule (convRewound — an answer by when its turn started): in this
+  // rollback's span, and not already out by an earlier one.
   var spans = rewindSpansOf(panelSessionKey ? _sessionCache[panelSessionKey] : null);
+  var proposed = [{ from: kept, to: Number.MAX_SAFE_INTEGER }];
   var list = _panelTurnsList || [];
   var dropped = list.filter(function(t, i) {
-    return !!t && toNum(t.timestamp) > kept && !convRewound(t, i > 0 && list[i - 1] ? list[i - 1].timestamp : 0, spans);
+    var startTs = i > 0 && list[i - 1] ? list[i - 1].timestamp : 0;
+    return convRewound(t, startTs, proposed) && !convRewound(t, startTs, spans);
   }).length;
   _rbPick = { key: key, kind: pt.kind, p: pt.p };
   body.innerHTML = rbConfirmHtml(pt, { dropped: dropped, under: pt.kind === 'worklog' ? rbUnderOf(Number(pt.p.seq)) : '' });

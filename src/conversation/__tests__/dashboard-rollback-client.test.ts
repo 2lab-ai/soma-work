@@ -280,11 +280,11 @@ describe('the confirmation counts only what leaves the chat now', () => {
         // An applied rollback took t1 and its answer out (99 → 250); t2 started from the same point.
         _sessionCache: { 'C1:t1': { contextRewinds: [{ from: 99, to: 250, label: 'x', at: 251 }] } },
         _panelTurnsList: [
-          { id: 't0', timestamp: 50 },
-          { id: 't1', timestamp: 100 },
-          { id: 'a1', timestamp: 200 },
-          { id: 't2', timestamp: 300 },
-          { id: 'a2', timestamp: 400 },
+          { id: 't0', role: 'user', timestamp: 50 },
+          { id: 't1', role: 'user', timestamp: 100 },
+          { id: 'a1', role: 'assistant', timestamp: 200 },
+          { id: 't2', role: 'user', timestamp: 300 },
+          { id: 'a2', role: 'assistant', timestamp: 400 },
         ],
       },
       'var _rbPick = null;',
@@ -292,6 +292,38 @@ describe('the confirmation counts only what leaves the chat now', () => {
     m.rbOpenConfirm({ kind: 'input', p: { anchor: 'sid~0~a', text: 't2', at: 100 } });
     expect(html).toHaveBeenCalledWith(expect.anything(), { dropped: 2, under: '' });
     expect(nodes['rollback-dialog'].show).toHaveBeenCalled();
+  });
+  it('a work-log point inside an answer’s turn: that answer stays, so it is not counted (the chat’s own rule)', () => {
+    const html = vi.fn(() => '');
+    const nodes: Record<string, any> = {
+      'rollback-dialog': { show: vi.fn() },
+      'rollback-body': { innerHTML: '' },
+      'rollback-status': { textContent: '', setAttribute: vi.fn(), removeAttribute: vi.fn() },
+      'rollback-confirm': { disabled: true },
+    };
+    const m = load(
+      ['rbOpenConfirm', 'rbKeptUntil', 'rewoundBy', 'rewindSpansOf', 'convRewound', 'setRollbackStatus'],
+      {
+        document: { getElementById: (id: string) => nodes[id] ?? null },
+        toNum: (v: unknown) => Number(v) || 0,
+        rbConfirmHtml: html,
+        rbUnderOf: () => '',
+        _rb: { key: 'C1:t1' },
+        panelSessionKey: 'C1:t1',
+        _sessionCache: { 'C1:t1': {} },
+        _panelTurnsList: [
+          { id: 't0', role: 'user', timestamp: 50 },
+          { id: 'a0', role: 'assistant', timestamp: 90 },
+          { id: 't1', role: 'user', timestamp: 100 },
+          { id: 'a1', role: 'assistant', timestamp: 200 },
+          { id: 'queue-1', role: 'user', timestamp: 250, _queued: true },
+        ],
+      },
+      'var _rbPick = null;',
+    );
+    // Kept: a0's final work-log entry at 60 (a0 itself is recorded at 90, at teardown).
+    m.rbOpenConfirm({ kind: 'worklog', p: { anchor: 'sid~0~c', label: '최종 답까지: …', at: 60, seq: 3 } });
+    expect(html).toHaveBeenCalledWith(expect.anything(), { dropped: 2, under: '' });
   });
 });
 
