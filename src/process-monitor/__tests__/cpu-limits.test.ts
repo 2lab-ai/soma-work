@@ -1,7 +1,8 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Logger } from '../../logger';
 import { DEFAULT_CPU_CAP, parseCpuCapSetting, USER_CPU_LIMITS_FILE, UserCpuLimits } from '../cpu-limits';
 
 describe('UserCpuLimits — the CPU cap on one of a person’s tasks', () => {
@@ -40,6 +41,40 @@ describe('UserCpuLimits — the CPU cap on one of a person’s tasks', () => {
     const caps = new UserCpuLimits(dir, isAdmin);
     expect(caps.capFor('U1')).toBe(100);
     expect(caps.capFor('U2')).toBe(800);
+  });
+
+  it('says which people’s saved caps it could not read (a valid file with a bad entry is not silent)', () => {
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      fs.writeFileSync(
+        path.join(dir, USER_CPU_LIMITS_FILE),
+        JSON.stringify({ version: 1, limits: { U1: 'lots', U2: 800, U3: 7 } }),
+      );
+      const caps = new UserCpuLimits(dir, isAdmin);
+      expect(caps.capFor('U2')).toBe(800);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('could not read'),
+        expect.objectContaining({ userIds: ['U1', 'U3'] }),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a save that fails keeps the cap that is enforced', () => {
+    const caps = new UserCpuLimits(dir, isAdmin);
+    caps.set('U1', 200);
+    // The data directory is replaced by a plain file: every write under it fails (ENOTDIR), even for root.
+    const moved = `${dir}.moved`;
+    fs.renameSync(dir, moved);
+    fs.writeFileSync(dir, 'not a directory');
+    try {
+      expect(() => caps.set('U1', 400)).toThrow();
+      expect(caps.capFor('U1')).toBe(200);
+    } finally {
+      fs.unlinkSync(dir);
+      fs.renameSync(moved, dir);
+    }
   });
 
   it('an unreadable file is never taken for an empty one: defaults apply and nothing overwrites it', () => {

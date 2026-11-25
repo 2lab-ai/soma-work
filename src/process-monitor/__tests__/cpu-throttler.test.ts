@@ -369,7 +369,9 @@ describe('CpuThrottler — a task tree held to its cap by a duty cycle', () => {
     m.add(10, 0).add(11, 4);
     t.update([session(400, [proc(10, 'root'), proc(11, 'child')])], () => 100);
     await vi.advanceTimersByTimeAsync(3_000);
-    expect(warnings.filter((w) => /parent map/.test(w))).toHaveLength(1);
+    // Once for the periods' scans, once for the stops' (each said once while it lasts).
+    expect(warnings.filter((w) => /parent map could not be read;/.test(w))).toHaveLength(1);
+    expect(warnings.filter((w) => /could not be read at a stop/.test(w))).toHaveLength(1);
     // It still holds what it knows.
     expect(m.signals.some(([pid, sig]) => pid === 11 && sig === 'SIGSTOP')).toBe(true);
   });
@@ -790,6 +792,865 @@ describe('CpuThrottler — a task tree held to its cap by a duty cycle', () => {
     expect(m.signals.some(([pid, sig]) => pid === 12 && sig === 'SIGSTOP')).toBe(true);
     t.releaseAll();
     expect(m.procs.get(12)?.stopped).toBe(false);
+  });
+});
+
+describe('CpuThrottler — hardening (#1421)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-24T00:00:00Z'));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Advance in small steps until `done` (at most `ms`). */
+  async function until(done: () => boolean, ms = 5_000): Promise<boolean> {
+    for (let i = 0; i < ms / 5 && !done(); i++) await vi.advanceTimersByTimeAsync(5);
+    return done();
+  }
+
+  it('a worker forked after the period read is found at the stop and held too (not only at the next period)', async () => {
+    const { m, t } = setup();
+    m.add(10, 0).add(11, 2, START, 10);
+    t.update([session(200, [proc(10, 'root'), proc(11, 'child', { ppid: 10 })])], () => 100);
+    await vi.advanceTimersByTimeAsync(3_000);
+    // Right after a period's parent scan, 11 forks a 4-core worker that is gone before the next period reads.
+    let forked = false;
+    m.afterParents = () => {
+      if (forked) return;
+      forked = true;
+      m.add(30, 4, START, 11);
+      setTimeout(() => m.procs.delete(30), 200);
+    };
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(forked).toBe(true);
+    expect(m.signals.some(([pid, sig]) => pid === 30 && sig === 'SIGSTOP')).toBe(true);
+  });
+
+  /** A throttler over `m` whose reads can drop pid 12 and whose live probe is recorded (and can take time). */
+  function probed(m: Machine, onProbe: () => void = () => {}) {
+    const events: string[] = [];
+    const ctl: { dropTwelve: number; onDrop: (() => void) | null; beforeRead: (() => void) | null } = {
+      dropTwelve: 0,
+      onDrop: null,
+      beforeRead: null,
+    };
+    const t = new CpuThrottler({
+      kill: (pid, sig) => {
+        events.push(`${pid}:${sig}`);
+        m.kill(pid, sig);
+      },
+      read: async (pids) => {
+        const before = ctl.beforeRead;
+        ctl.beforeRead = null;
+        before?.();
+        const out = await m.read(pids);
+        if (ctl.dropTwelve > 0 && pids.includes(12)) {
+          ctl.dropTwelve--;
+          out.delete(12);
+          ctl.onDrop?.();
+        }
+        return out;
+      },
+      readParents: m.readParents,
+      liveStartTokens: (pids) => {
+        events.push('probe');
+        onProbe();
+        return m.liveStartTokens(pids);
+      },
+      now: () => Date.now(),
+      userPaused: () => false,
+    });
+    return { t, events, ctl };
+  }
+
+  it('a hold the period read missed is read again, asynchronously, with every hold before any continue — no live probe', async () => {
+    const m = new Machine();
+    const { t, events, ctl } = probed(m);
+    m.add(10, 0).add(11, 2).add(12, 2);
+    t.update([session(400, [proc(10, 'root'), proc(11, 'child'), proc(12, 'child')])], () => 100);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(await until(() => !!m.procs.get(11)?.stopped && !!m.procs.get(12)?.stopped)).toBe(true);
+    events.length = 0;
+    ctl.dropTwelve = 1; // the next read misses 12; the re-read answers it
+    expect(await until(() => events.includes('11:SIGCONT') && events.includes('12:SIGCONT'))).toBe(true);
+    expect(events).not.toContain('probe');
+  });
+
+  it('a held pid reused while the hold re-read is out is not continued: the continue goes by the re-read', async () => {
+    const m = new Machine();
+    const { t, events, ctl } = probed(m);
+    m.add(10, 0).add(11, 2).add(12, 2);
+    t.update([session(400, [proc(10, 'root'), proc(11, 'child'), proc(12, 'child')])], () => 100);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(await until(() => !!m.procs.get(11)?.stopped && !!m.procs.get(12)?.stopped)).toBe(true);
+    events.length = 0;
+    // The period read misses 12; 11 changes hands while the re-read of every hold is out (the period read had it).
+    let reused = false;
+    ctl.dropTwelve = 1;
+    ctl.onDrop = () => {
+      ctl.onDrop = null;
+      ctl.beforeRead = () => {
+        reused = true;
+        m.reuse(11, true);
+      };
+    };
+    expect(await until(() => events.includes('12:SIGCONT'))).toBe(true);
+    expect(reused).toBe(true);
+    expect(events).not.toContain('11:SIGCONT');
+    expect(events).not.toContain('probe');
+  });
+
+  it('several trees: a live probe for one runs before any tree is continued', async () => {
+    const m = new Machine();
+    const { t, events, ctl } = probed(m);
+    m.add(10, 0).add(11, 2).add(20, 0).add(12, 2);
+    t.update(
+      [
+        session(200, [proc(10, 'root'), proc(11, 'child')], 'A'),
+        session(200, [proc(20, 'root'), proc(12, 'child')], 'B'),
+      ],
+      () => 100,
+    );
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(await until(() => !!m.procs.get(11)?.stopped && !!m.procs.get(12)?.stopped)).toBe(true);
+    events.length = 0;
+    ctl.dropTwelve = 2; // tree B's 12: the period read and its re-read both miss it — probed live
+    expect(await until(() => events.includes('probe') && events.includes('11:SIGCONT'))).toBe(true);
+    expect(events.indexOf('probe')).toBeLessThan(events.indexOf('11:SIGCONT'));
+  });
+
+  it('a pid reused during another tree’s slow live probe is not continued: the probe answers for every hold', async () => {
+    const m = new Machine();
+    let reusedInProbe = false;
+    const { t, events, ctl } = probed(m, () => {
+      // The probe blocks for 1.5 s; meanwhile tree A's 11 (read fine before it) exits and its pid is reused.
+      vi.setSystemTime(Date.now() + 1_500);
+      if (!reusedInProbe) {
+        reusedInProbe = true;
+        m.reuse(11, true);
+      }
+    });
+    m.add(10, 0).add(11, 2).add(20, 0).add(12, 2);
+    t.update(
+      [
+        session(200, [proc(10, 'root'), proc(11, 'child')], 'A'),
+        session(200, [proc(20, 'root'), proc(12, 'child')], 'B'),
+      ],
+      () => 100,
+    );
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(await until(() => !!m.procs.get(11)?.stopped && !!m.procs.get(12)?.stopped)).toBe(true);
+    events.length = 0;
+    ctl.dropTwelve = 2; // tree B's 12: the period read and its re-read both miss it — probed live
+    expect(await until(() => events.includes('12:SIGCONT'))).toBe(true);
+    expect(reusedInProbe).toBe(true);
+    expect(events).not.toContain('11:SIGCONT');
+  });
+
+  it('a live probe that fails continues nothing on identities read before it: they wait for the next period', async () => {
+    const m = new Machine();
+    let reusedInProbe = false;
+    const { t, events, ctl } = probed(m, () => {
+      // The probe blocks for 1.5 s and then fails; meanwhile tree A's 11 (read fine before it) is reused.
+      vi.setSystemTime(Date.now() + 1_500);
+      if (!reusedInProbe) {
+        reusedInProbe = true;
+        m.reuse(11, true);
+        m.unknownProbes = 1;
+      }
+    });
+    m.add(10, 0).add(11, 2).add(20, 0).add(12, 2);
+    t.update(
+      [
+        session(200, [proc(10, 'root'), proc(11, 'child')], 'A'),
+        session(200, [proc(20, 'root'), proc(12, 'child')], 'B'),
+      ],
+      () => 100,
+    );
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(await until(() => !!m.procs.get(11)?.stopped && !!m.procs.get(12)?.stopped)).toBe(true);
+    events.length = 0;
+    ctl.dropTwelve = 2;
+    // 12 is continued next period, on that period's read; 11 never (it is another process now).
+    expect(await until(() => events.includes('12:SIGCONT'))).toBe(true);
+    expect(reusedInProbe).toBe(true);
+    expect(events).not.toContain('11:SIGCONT');
+  });
+
+  it('a live probe (a pid two reads missed) runs while the tree is still stopped: a slow probe lets nothing run free', async () => {
+    const m = new Machine();
+    let ranDuringProbe = -1;
+    const { t, events, ctl } = probed(m, () => {
+      // The probe blocks for 1.5 s; whatever the cap had continued before it runs that long.
+      const before = m.cpuOf(11);
+      vi.setSystemTime(Date.now() + 1_500);
+      ranDuringProbe = m.cpuOf(11) - before;
+    });
+    m.add(10, 0).add(11, 2).add(12, 2);
+    t.update([session(400, [proc(10, 'root'), proc(11, 'child'), proc(12, 'child')])], () => 100);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(await until(() => !!m.procs.get(11)?.stopped && !!m.procs.get(12)?.stopped)).toBe(true);
+    events.length = 0;
+    ctl.dropTwelve = 2; // the period read and its re-read both miss 12: it is probed live
+    expect(await until(() => events.includes('probe'))).toBe(true);
+    expect(ranDuringProbe).toBe(0);
+    expect(events.indexOf('probe')).toBeLessThan(events.indexOf('11:SIGCONT'));
+    // The probe answered for 12: it is continued too, not left stopped.
+    expect(await until(() => events.includes('12:SIGCONT'))).toBe(true);
+  });
+
+  it('a shell that forks a worker after each continue, gone within the period: the whole tree stays near its cap', async () => {
+    const m = new Machine();
+    let next = 1000;
+    let gone = 0;
+    const t = new CpuThrottler({
+      kill: (pid, sig) => {
+        m.kill(pid, sig);
+        // 11 is a shell: right after each continue it forks a 4-core worker that exits 200 ms later (its CPU is kept
+        // when it exits).
+        if (pid === 11 && sig === 'SIGCONT') {
+          setTimeout(() => {
+            if (m.procs.get(11)?.stopped) return;
+            const worker = next++;
+            m.add(worker, 4, START, 11);
+            setTimeout(() => {
+              gone += m.cpuOf(worker);
+              m.procs.delete(worker);
+            }, 200);
+          }, 10);
+        }
+      },
+      read: m.read,
+      readParents: m.readParents,
+      liveStartTokens: m.liveStartTokens,
+      now: () => Date.now(),
+      userPaused: () => false,
+    });
+    m.add(10, 0).add(11, 2, START, 10);
+    t.update([session(200, [proc(10, 'root'), proc(11, 'child', { ppid: 10 })])], () => 100);
+    await vi.advanceTimersByTimeAsync(8_000);
+    const workers = () => [...m.procs.keys()].filter((p) => p >= 1000).reduce((n, p) => n + m.cpuOf(p), 0);
+    const before = m.cpuOf(11) + workers() + gone;
+    await vi.advanceTimersByTimeAsync(10_000);
+    const rate = ((m.cpuOf(11) + workers() + gone - before) / 10) * 100;
+    // Held near its cap — and not starved by the CPU it is charged for its workers.
+    expect(rate).toBeGreaterThan(50);
+    expect(rate).toBeLessThan(150);
+    t.releaseAll();
+  });
+
+  it('a stop’s extra scan that fails does not erase the period scan’s bound: a worker the next period finds is charged', async () => {
+    const m = new Machine();
+    // The read before a stop carries no Claude Code process (10); the scan right after it is the stop's — it fails.
+    let stopScanNext = false;
+    let discovered = false;
+    m.readHook = async (pids) => {
+      if (!pids.includes(10)) stopScanNext = true;
+      // The period's read of the newly found worker: it exits right after, so this period's charge is all it costs.
+      if (pids.includes(30) && !discovered) {
+        discovered = true;
+        setTimeout(() => m.procs.delete(30), 1);
+      }
+    };
+    const t = new CpuThrottler({
+      kill: m.kill,
+      read: m.read,
+      readParents: async () => {
+        if (stopScanNext) {
+          stopScanNext = false;
+          throw new Error('ps -A timed out');
+        }
+        return m.readParents();
+      },
+      liveStartTokens: m.liveStartTokens,
+      now: () => Date.now(),
+      userPaused: () => false,
+    });
+    m.add(10, 0).add(11, 2, START, 10);
+    t.update([session(200, [proc(10, 'root'), proc(11, 'child', { ppid: 10 })])], () => 100);
+    await vi.advanceTimersByTimeAsync(5_000);
+    const steady = t.meteredShare('A') ?? 0;
+    expect(steady).toBeGreaterThan(0.3);
+    // A 4-core worker runs under 11 until a period's scan finds it; it exits right after that period's read.
+    m.add(30, 4, START, 11);
+    expect(await until(() => discovered)).toBe(true);
+    let lowest = 1;
+    for (let i = 0; i < 20; i++) {
+      await vi.advanceTimersByTimeAsync(5);
+      lowest = Math.min(lowest, t.meteredShare('A') ?? 1);
+    }
+    // Its CPU since the last good period scan is charged: the share drops for it.
+    expect(lowest).toBeLessThan(steady / 2);
+    t.releaseAll();
+  });
+
+  it('a read of the workers found at a stop that keeps failing is said once', async () => {
+    const { m, t, warnings } = setup();
+    m.add(10, 0).add(11, 2, START, 10);
+    // Every scan leaves a new worker under 11 for the next one to find. A stop is: its read (no 10), its scan, then
+    // the read of what that scan found (members, 10 included) — that last read fails.
+    let next = 2000;
+    let stopRead = false;
+    let stopScanned = false;
+    m.afterParents = () => {
+      m.add(next++, 1, START, 11);
+      if (stopRead) {
+        stopRead = false;
+        stopScanned = true;
+      }
+    };
+    m.readHook = async (pids) => {
+      if (!pids.includes(10)) {
+        stopRead = true;
+        return;
+      }
+      if (stopScanned) {
+        stopScanned = false;
+        throw new Error('ps timed out');
+      }
+    };
+    t.update([session(200, [proc(10, 'root'), proc(11, 'child', { ppid: 10 })])], () => 100);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(warnings.filter((w) => w.includes('workers found at a stop failed'))).toHaveLength(1);
+    t.releaseAll();
+  });
+
+  it('a nested tree’s process is never taken for a worker at another tree’s stop', async () => {
+    const { m, t } = setup();
+    // Tree A: 10 → 11 (2 cores). Tree B's Claude Code process 20 runs under A's 11, with its own worker 21.
+    m.add(10, 0).add(11, 2, START, 10).add(20, 0, START, 11).add(21, 2, START, 20);
+    t.update(
+      [
+        session(200, [proc(10, 'root'), proc(11, 'child', { ppid: 10 })], 'A'),
+        session(200, [proc(20, 'root', { ppid: 11 }), proc(21, 'child', { ppid: 20 })], 'B'),
+      ],
+      () => 100,
+    );
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(m.signals.some(([pid, sig]) => pid === 20 && sig === 'SIGSTOP')).toBe(false);
+    t.releaseAll();
+  });
+
+  it('a stop read that keeps failing in one tree is said once, whatever another tree’s reads do', async () => {
+    const { m, t, warnings } = setup();
+    m.add(10, 0).add(11, 2).add(20, 0).add(21, 2);
+    // A's read before a stop (its worker, no Claude Code process) fails; B's answers.
+    m.readHook = async (pids) => {
+      if (pids.includes(11) && !pids.includes(10)) throw new Error('ps timed out');
+    };
+    t.update(
+      [
+        session(200, [proc(10, 'root'), proc(11, 'child')], 'A'),
+        session(200, [proc(20, 'root'), proc(21, 'child')], 'B'),
+      ],
+      () => 100,
+    );
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(warnings.filter((w) => w.includes('identity read before a stop failed'))).toHaveLength(1);
+    t.releaseAll();
+  });
+
+  it('a stop scan that keeps failing is said once', async () => {
+    const m = new Machine();
+    let stopRead = false;
+    m.readHook = async (pids) => {
+      if (!pids.includes(10)) stopRead = true;
+    };
+    const warnings: string[] = [];
+    const t = new CpuThrottler({
+      kill: m.kill,
+      read: m.read,
+      readParents: async () => {
+        if (stopRead) {
+          stopRead = false;
+          throw new Error('ps -A timed out');
+        }
+        return m.readParents();
+      },
+      liveStartTokens: m.liveStartTokens,
+      now: () => Date.now(),
+      userPaused: () => false,
+      logger: { warn: (msg: string) => warnings.push(msg) },
+    });
+    m.add(10, 0).add(11, 2, START, 10);
+    t.update([session(200, [proc(10, 'root'), proc(11, 'child', { ppid: 10 })])], () => 100);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(warnings.filter((w) => w.includes('could not be read at a stop'))).toHaveLength(1);
+    t.releaseAll();
+  });
+
+  it('a failed re-read of the holds never takes a valid sample from the rate: the worker stays held, nothing collapses', async () => {
+    const m = new Machine();
+    const ctl = { dropTwelve: 0, failNext: 0 };
+    const warnings: string[] = [];
+    const t = new CpuThrottler({
+      logger: { warn: (msg: string) => warnings.push(msg) },
+      kill: m.kill,
+      read: async (pids) => {
+        if (ctl.failNext > 0 && !pids.includes(10)) {
+          ctl.failNext--;
+          throw new Error('ps timed out');
+        }
+        const out = await m.read(pids);
+        if (ctl.dropTwelve > 0 && pids.includes(12) && pids.includes(10)) {
+          ctl.dropTwelve--;
+          out.delete(12);
+        }
+        return out;
+      },
+      readParents: m.readParents,
+      liveStartTokens: m.liveStartTokens,
+      now: () => Date.now(),
+      userPaused: () => false,
+    });
+    m.add(10, 0).add(11, 2, START, 10).add(12, 2, START, 10);
+    t.update(
+      [session(400, [proc(10, 'root'), proc(11, 'child', { ppid: 10 }), proc(12, 'child', { ppid: 10 })])],
+      () => 100,
+    );
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(await until(() => !!m.procs.get(11)?.stopped && !!m.procs.get(12)?.stopped)).toBe(true);
+    const steady = t.meteredShare('A') ?? 0;
+    // The next period read misses 12, and the re-read of the holds that follows fails.
+    ctl.dropTwelve = 1;
+    ctl.failNext = 1;
+    const cpu = () => m.cpuOf(11) + m.cpuOf(12);
+    const before = cpu();
+    let lowest = 1;
+    for (let i = 0; i < 80; i++) {
+      await vi.advanceTimersByTimeAsync(25);
+      lowest = Math.min(lowest, t.meteredShare('A') ?? 1);
+    }
+    // (It dipped to 0.4 × steady when the failed re-read dropped the workers from the rate and they came back as new.)
+    expect(lowest).toBeGreaterThan(steady * 0.7);
+    // The cap still holds through it, and the failed re-read is said.
+    expect(((cpu() - before) / 2) * 100).toBeLessThan(150);
+    expect(warnings.filter((w) => w.includes('re-read of held processes failed'))).toHaveLength(1);
+    t.releaseAll();
+  });
+
+  it('raising the cap of a held tree keeps it metered on the new cap (no free seconds until the next sample)', async () => {
+    const { m, t } = setup();
+    m.add(10, 0).add(11, 4);
+    t.update([session(400, [proc(10, 'root'), proc(11, 'child')])], () => 100);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(await until(() => !!m.procs.get(11)?.stopped)).toBe(true);
+    // The next sample reads the tree at about its old cap; the admin raises the cap to 200% while it is held.
+    t.update([session(100, [proc(10, 'root'), proc(11, 'child')])], () => 200);
+    expect(t.meteredCap('A')).toBe(200);
+    // From the update on: no free run (4 cores) while the new plan settles.
+    const atUpdate = m.cpuOf(11);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(((m.cpuOf(11) - atUpdate) / 3) * 100).toBeLessThan(260);
+    const before = m.cpuOf(11);
+    await vi.advanceTimersByTimeAsync(5_000);
+    const rate = ((m.cpuOf(11) - before) / 5) * 100;
+    expect(rate).toBeGreaterThan(140);
+    expect(rate).toBeLessThan(260);
+  });
+
+  it('a cap raised while a period reads: the rate that period measured under the old share does not raise the new one again', async () => {
+    const { m, t } = setup();
+    m.add(10, 0).add(11, 4);
+    t.update([session(400, [proc(10, 'root'), proc(11, 'child')])], () => 100);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(await until(() => !!m.procs.get(11)?.stopped)).toBe(true);
+    // The next period's read (it carries the Claude Code process) is out when the admin raises the cap to 200%: the
+    // share becomes about 0.25 × 2. The window that read closes was spent under 0.25 (about 100%); applied to 0.5 it
+    // would raise the share to 1 — a free period.
+    let raised = false;
+    m.onRead = (pids) => {
+      if (raised || !pids.includes(10)) return;
+      raised = true;
+      t.update([session(100, [proc(10, 'root'), proc(11, 'child')])], () => 200);
+    };
+    let top = 0;
+    for (let i = 0; i < 400; i++) {
+      await vi.advanceTimersByTimeAsync(5);
+      if (raised) top = Math.max(top, t.meteredShare('A') ?? 1);
+    }
+    expect(raised).toBe(true);
+    expect(top).toBeLessThan(0.8);
+  });
+
+  /** A tree A whose child 11 starts 40 — another session's Claude Code process — at `when`; the monitor names it B's root while the read that would adopt it is out. */
+  async function rootRace(when: 'after-period-scan' | 'after-stop-scan') {
+    const { m, t } = setup();
+    m.add(10, 0).add(11, 2, START, 10);
+    const a = () => session(200, [proc(10, 'root'), proc(11, 'child', { ppid: 10 })], 'A');
+    t.update([a()], () => 100);
+    await vi.advanceTimersByTimeAsync(3_000);
+    let armed = false;
+    let forked = false;
+    const fork = () => {
+      forked = true;
+      m.add(40, 1, START, 11);
+    };
+    m.onRead = (pids) => {
+      // A period's read carries the Claude Code process (it follows that period's scan); a stop's own read does not.
+      if (!forked && when === 'after-period-scan' && pids.includes(10)) fork();
+      if (!forked && when === 'after-stop-scan' && !pids.includes(10)) armed = true;
+    };
+    m.afterParents = () => {
+      if (armed && !forked) fork();
+    };
+    let named: 'none' | 'stop' | 'period' = 'none';
+    m.readHook = async (pids) => {
+      if (named !== 'none' || !pids.includes(40)) return;
+      // A stop's read of what it found carries the Claude Code process; a period's read of new workers does not.
+      named = pids.includes(10) ? 'stop' : 'period';
+      t.update([a(), session(50, [proc(40, 'root', { ppid: 11 })], 'B')], () => 100);
+    };
+    await vi.advanceTimersByTimeAsync(5_000);
+    return { named, stopped: m.signals.some(([pid, sig]) => pid === 40 && sig === 'SIGSTOP') };
+  }
+
+  it('a pid the monitor names a Claude Code process while a stop reads it is never stopped as a worker', async () => {
+    const r = await rootRace('after-period-scan');
+    expect(r.named).toBe('stop');
+    expect(r.stopped).toBe(false);
+  });
+
+  it('a pid the monitor names a Claude Code process while a period reads it is never stopped as a worker', async () => {
+    const r = await rootRace('after-stop-scan');
+    expect(r.named).toBe('period');
+    expect(r.stopped).toBe(false);
+  });
+
+  it.each([
+    'a cap change',
+    'the same cap',
+  ])('a worker the sample now names another session’s root (with %s) is not kept: it is never stopped again', async (how) => {
+    const { m, t } = setup();
+    m.add(10, 0).add(11, 2, START, 10).add(40, 2, START, 11);
+    const a = () => session(400, [proc(10, 'root'), proc(11, 'child', { ppid: 10 })], 'A');
+    t.update([a()], () => 100);
+    await vi.advanceTimersByTimeAsync(3_000);
+    // 40 is not in A's sample: A found it as a worker and holds it each period.
+    expect(m.signals.some(([pid, sig]) => pid === 40 && sig === 'SIGSTOP')).toBe(true);
+    // One update changes (or keeps) A's cap and names 40 session B's Claude Code process.
+    t.update([a(), session(50, [proc(40, 'root', { ppid: 11 })], 'B')], (k) =>
+      k === 'A' && how === 'a cap change' ? 150 : 100,
+    );
+    const from = m.signals.length;
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(m.signals.slice(from).some(([pid, sig]) => pid === 40 && sig === 'SIGSTOP')).toBe(false);
+    expect(m.procs.get(40)?.stopped).toBe(false);
+  });
+
+  it('a stop already planned for a worker the sample then names a Claude Code process does not stop it', async () => {
+    const { m, t } = setup();
+    m.add(10, 0).add(11, 2, START, 10).add(40, 2, START, 11);
+    const a = () => session(400, [proc(10, 'root'), proc(11, 'child', { ppid: 10 })], 'A');
+    t.update([a()], () => 100);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(m.signals.some(([pid, sig]) => pid === 40 && sig === 'SIGSTOP')).toBe(true);
+    // The update lands while a stop that lists 40 reads who to stop (that read does not carry the Claude Code process).
+    let named = false;
+    let from = -1;
+    m.onRead = (pids) => {
+      if (named || pids.includes(10) || !pids.includes(40)) return;
+      named = true;
+      from = m.signals.length;
+      t.update([a(), session(50, [proc(40, 'root', { ppid: 11 })], 'B')], () => 100);
+    };
+    expect(await until(() => named)).toBe(true);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(m.signals.slice(from).some(([pid, sig]) => pid === 40 && sig === 'SIGSTOP')).toBe(false);
+  });
+
+  it('a worker the last scan already listed, whose read missed it, is baselined when found later — not charged its lifetime', async () => {
+    const m = new Machine();
+    // The first read that asks for 30 misses it (a partial ps).
+    let missed = false;
+    const t = new CpuThrottler({
+      kill: m.kill,
+      read: async (pids) => {
+        const out = await m.read(pids);
+        if (!missed && pids.includes(30)) {
+          missed = true;
+          out.delete(30);
+        }
+        return out;
+      },
+      readParents: m.readParents,
+      liveStartTokens: m.liveStartTokens,
+      now: () => Date.now(),
+      userPaused: () => false,
+    });
+    m.add(10, 0).add(11, 2, START, 10);
+    t.update([session(200, [proc(10, 'root'), proc(11, 'child', { ppid: 10 })])], () => 100);
+    await vi.advanceTimersByTimeAsync(5_000);
+    const steady = t.meteredShare('A') ?? 0;
+    // Right after a stop's scan, 30 appears: it has run for a long time (1000 CPU-seconds) and is new to the tree.
+    // The period scan lists it, the period's read of it misses it, and the next stop finds and reads it.
+    let armed = false;
+    let added = false;
+    m.onRead = (pids) => {
+      if (!added && !pids.includes(10)) armed = true; // the identity read before a stop
+    };
+    m.afterParents = () => {
+      if (!armed || added) return;
+      added = true;
+      m.add(30, 1, START, 11);
+      const p30 = m.procs.get(30);
+      if (p30) p30.cpu = 1000;
+    };
+    let low = steady;
+    for (let i = 0; i < 600; i++) {
+      await vi.advanceTimersByTimeAsync(5);
+      low = Math.min(low, t.meteredShare('A') ?? low);
+    }
+    expect(missed).toBe(true);
+    expect(m.signals.some(([pid, sig]) => pid === 30 && sig === 'SIGSTOP')).toBe(true);
+    expect(low).toBeGreaterThan(steady * 0.3);
+  });
+
+  it('a stop whose read of a new worker ends after the next period began leaves it to that period, which charges it', async () => {
+    const { m, t } = setup();
+    m.add(10, 0).add(11, 2, START, 10);
+    t.update([session(200, [proc(10, 'root'), proc(11, 'child', { ppid: 10 })])], () => 100);
+    await vi.advanceTimersByTimeAsync(5_000);
+    const steady = t.meteredShare('A') ?? 0;
+    // While a period reads (after its scan), 11 forks 30 (4 cores). The stop finds it; its read of 30 is held until
+    // the next period, which scanned already, starts its own read of 30 — then the stop's read ends first.
+    let forked = false;
+    m.onRead = (pids) => {
+      if (forked || !pids.includes(10)) return;
+      forked = true;
+      m.add(30, 4, START, 11);
+    };
+    let reads30 = 0;
+    let release: () => void = () => {};
+    const stopRead = new Promise<void>((r) => {
+      release = r;
+    });
+    m.readHook = async (pids) => {
+      if (!pids.includes(30)) return;
+      reads30++;
+      if (reads30 === 1) await stopRead;
+      else if (reads30 === 2) {
+        release();
+        await new Promise((r) => setTimeout(r, 1));
+        // 30 exits right after this read: what it used before it is all the cap can charge.
+        setTimeout(() => m.procs.delete(30), 2);
+      }
+    };
+    let low = steady;
+    for (let i = 0; i < 400; i++) {
+      await vi.advanceTimersByTimeAsync(5);
+      low = Math.min(low, t.meteredShare('A') ?? low);
+    }
+    expect(reads30).toBeGreaterThanOrEqual(2);
+    // 30 ran free from its fork to the period's read and then exited: that CPU is charged, so the share dips.
+    expect(low).toBeLessThan(steady * 0.6);
+  });
+
+  it('a stop scan that failed once does not stay failed: the next stop scans again and holds a new worker', async () => {
+    const m = new Machine();
+    let lastReadWasStop = false;
+    let failStopScan = true;
+    let failed = false;
+    const t = new CpuThrottler({
+      kill: m.kill,
+      read: m.read,
+      readParents: async () => {
+        if (failStopScan && lastReadWasStop) {
+          failStopScan = false;
+          failed = true;
+          throw new Error('ps -A timed out');
+        }
+        return m.readParents();
+      },
+      liveStartTokens: m.liveStartTokens,
+      now: () => Date.now(),
+      userPaused: () => false,
+    });
+    m.add(10, 0).add(11, 2, START, 10);
+    t.update([session(200, [proc(10, 'root'), proc(11, 'child', { ppid: 10 })])], () => 100);
+    // After that failure, while a period reads, 11 forks 30 (4 cores), which exits before the next period: only a
+    // stop scan can find it.
+    let forked = false;
+    m.onRead = (pids) => {
+      lastReadWasStop = !pids.includes(10);
+      if (!failed || forked || !pids.includes(10)) return;
+      forked = true;
+      m.add(30, 4, START, 11);
+      setTimeout(() => m.procs.delete(30), 200);
+    };
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(failed).toBe(true);
+    expect(forked).toBe(true);
+    expect(m.signals.some(([pid, sig]) => pid === 30 && sig === 'SIGSTOP')).toBe(true);
+  });
+
+  it('a member back through the sample, then a cap change and a missed read: no stale counter charges it again', async () => {
+    const m = new Machine();
+    let dropNext = 0;
+    let dropped = 0;
+    const t = new CpuThrottler({
+      kill: m.kill,
+      read: async (pids) => {
+        const out = await m.read(pids);
+        // A period's read (it carries the Claude Code process) misses 12.
+        if (dropNext > 0 && pids.includes(10) && pids.includes(12)) {
+          dropNext--;
+          dropped++;
+          out.delete(12);
+        }
+        return out;
+      },
+      readParents: m.readParents,
+      liveStartTokens: m.liveStartTokens,
+      now: () => Date.now(),
+      userPaused: () => false,
+    });
+    m.add(10, 0).add(11, 2, START, 10).add(12, 2, START, 10);
+    const tree = () => [
+      session(400, [proc(10, 'root'), proc(11, 'child', { ppid: 10 }), proc(12, 'child', { ppid: 10 })]),
+    ];
+    t.update(tree(), () => 100);
+    await vi.advanceTimersByTimeAsync(5_000);
+    // A read misses 12 (it is remembered with its counter); the next sample has it, so it is a member again at once.
+    dropNext = 1;
+    expect(await until(() => dropped === 1)).toBe(true);
+    await vi.advanceTimersByTimeAsync(20);
+    t.update(tree(), () => 100);
+    // It runs, read normally, for a while: its counter moves far past the remembered one.
+    await vi.advanceTimersByTimeAsync(5_000);
+    // A cap change starts a fresh window; the read right after misses 12, and the next period finds it again.
+    t.update(tree(), () => 150);
+    const atReplan = t.meteredShare('A') ?? 0;
+    dropNext = 1;
+    let low = atReplan;
+    for (let i = 0; i < 300; i++) {
+      await vi.advanceTimersByTimeAsync(5);
+      low = Math.min(low, t.meteredShare('A') ?? low);
+    }
+    expect(dropped).toBe(2);
+    expect(low).toBeGreaterThan(atReplan * 0.3);
+  });
+
+  it('a stop whose identity read keeps failing is said once (a cap that stopped biting is not silent)', async () => {
+    const { m, t, warnings } = setup();
+    m.add(10, 0).add(11, 2).add(12, 2);
+    // The period read (it carries the Claude Code process) answers; the read before each stop fails.
+    m.readHook = async (pids) => {
+      if (!pids.includes(10)) throw new Error('ps timed out');
+    };
+    t.update([session(400, [proc(10, 'root'), proc(11, 'child'), proc(12, 'child')])], () => 100);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(warnings.filter((w) => w.includes('identity read before a stop failed'))).toHaveLength(1);
+  });
+
+  it('a worker found after a parent-scan outage is baselined, not charged its whole lifetime in one window', async () => {
+    const { m, t } = setup();
+    m.add(10, 0).add(11, 2, START, 10);
+    t.update([session(200, [proc(10, 'root'), proc(11, 'child', { ppid: 10 })])], () => 100);
+    await vi.advanceTimersByTimeAsync(5_000);
+    const steady = t.meteredShare('A') ?? 0;
+    expect(steady).toBeGreaterThan(0.3);
+    // The scan fails for 30 s while a worker under 11 runs unseen (it gathers ~30 s of CPU).
+    m.parentsFail = true;
+    m.add(30, 1, START, 11);
+    await vi.advanceTimersByTimeAsync(30_000);
+    m.parentsFail = false;
+    // The scan reads again and finds it: the share follows the tree's rate, not 30 s of CPU in one period.
+    expect(await until(() => t.meteredShare('A') !== steady && m.signals.some(([pid]) => pid === 30))).toBe(true);
+    let lowest = 1;
+    for (let i = 0; i < 40; i++) {
+      await vi.advanceTimersByTimeAsync(25);
+      lowest = Math.min(lowest, t.meteredShare('A') ?? 1);
+    }
+    expect(lowest).toBeGreaterThan(0.1);
+  });
+
+  it('two trees with unequal caps are each held to their own', async () => {
+    const { m, t } = setup();
+    m.add(10, 0).add(20, 0);
+    const a = [11, 12, 13, 14];
+    const b = [21, 22];
+    for (const pid of a) m.add(pid, 1);
+    for (const pid of b) m.add(pid, 1);
+    t.update(
+      [
+        session(400, [proc(10, 'root'), ...a.map((pid) => proc(pid, 'child'))], 'A'),
+        session(200, [proc(20, 'root'), ...b.map((pid) => proc(pid, 'child'))], 'B'),
+      ],
+      (key) => (key === 'A' ? 100 : 50),
+    );
+    await vi.advanceTimersByTimeAsync(10_000);
+    const sum = (pids: number[]) => pids.reduce((n, p) => n + m.cpuOf(p), 0);
+    const [beforeA, beforeB] = [sum(a), sum(b)];
+    await vi.advanceTimersByTimeAsync(10_000);
+    const rateA = ((sum(a) - beforeA) / 10) * 100;
+    const rateB = ((sum(b) - beforeB) / 10) * 100;
+    expect(rateA).toBeGreaterThan(70);
+    expect(rateA).toBeLessThan(135);
+    expect(rateB).toBeGreaterThan(35);
+    expect(rateB).toBeLessThan(68);
+  });
+
+  it('through the production reader: a held pid reused while the fine counters are read is never continued', async () => {
+    // The fine counter (Linux /proc) is read first and the identity (ps) last: a pid that changes hands in between
+    // reads with the new process's start time, so the hold on the old one is dropped, not continued.
+    const table = new Map<number, { ppid: number; stat: string; start: string; cpu: number }>([
+      [10, { ppid: 1, stat: 'S', start: START, cpu: 0 }],
+      [11, { ppid: 10, stat: 'R', start: START, cpu: 0 }],
+    ]);
+    const signals: Array<[number, NodeJS.Signals]> = [];
+    let gate: Promise<void> | null = null;
+    let open: () => void = () => {};
+    const runPs = async (args: readonly string[]) => {
+      const pids = String(args[args.indexOf('-p') + 1] ?? '')
+        .split(',')
+        .map(Number);
+      return pids
+        .filter((pid) => table.has(pid))
+        .map((pid) => {
+          const r = table.get(pid) as { ppid: number; stat: string; start: string; cpu: number };
+          return `${pid} ${r.ppid} ${r.stat} ${r.start} 0:${r.cpu.toFixed(2).padStart(5, '0')}`;
+        })
+        .join('\n');
+    };
+    const readCpuSeconds = async (pids: readonly number[]) => {
+      if (gate) await gate;
+      return new Map(pids.filter((pid) => table.has(pid)).map((pid) => [pid, table.get(pid)?.cpu ?? 0] as const));
+    };
+    const t = new CpuThrottler({
+      kill: (pid, sig) => {
+        signals.push([pid, sig]);
+        const r = table.get(pid);
+        if (!r) throw Object.assign(new Error('gone'), { code: 'ESRCH' });
+        r.stat = sig === 'SIGSTOP' ? 'T' : 'R';
+      },
+      read: createThrottleReader(runPs, readCpuSeconds),
+      liveStartTokens: (pids) => new Map(pids.map((pid) => [pid, table.get(pid)?.start ?? null])),
+      now: () => Date.now(),
+      userPaused: () => false,
+    });
+    // 11 burns 2 cores: its counter moves with the clock.
+    const burn = setInterval(() => {
+      const r = table.get(11);
+      if (r && r.stat !== 'T' && r.start === START) r.cpu += 0.01;
+    }, 5);
+    t.update([session(200, [proc(10, 'root'), proc(11, 'child', { ppid: 10 })])], () => 100);
+    expect(await until(() => table.get(11)?.stat === 'T')).toBe(true);
+    // The next fine read waits; meanwhile 11 exits and its pid goes to another program.
+    gate = new Promise((r) => {
+      open = r;
+    });
+    await vi.advanceTimersByTimeAsync(400);
+    table.set(11, { ppid: 1, stat: 'S', start: 'Wed Nov 25 08:00:00 2026', cpu: 0 });
+    signals.length = 0;
+    gate = null;
+    open();
+    await vi.advanceTimersByTimeAsync(1_000);
+    clearInterval(burn);
+    expect(signals.filter(([pid]) => pid === 11)).toEqual([]);
+    t.releaseAll();
   });
 });
 

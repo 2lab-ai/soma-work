@@ -200,9 +200,8 @@ async function tqCpuChange(sel) {
   // write falls back to it, not to what the page loaded with.
   // Only the CPU fields: a concurrent knob save owns the rest of the row.
   var row = r.ok && r.data && r.data.user;
-  if (row && row.cpu && _tq && _tq.users) {
-    for (var i = 0; i < _tq.users.length; i++) if (_tq.users[i].id === id) _tq.users[i].cpu = row.cpu;
-  }
+  var held = row && row.cpu ? tqUser(id) : null;
+  if (held) held.cpu = row.cpu;
   if (_tqCpuSeq[id] !== seq) return;
   if (!r.ok) {
     tqStatus(who + ' CPU 한도를 저장하지 못했습니다 — ' + r.error, true);
