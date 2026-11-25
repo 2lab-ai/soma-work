@@ -26,6 +26,10 @@ export const PRESET_IDS: readonly PresetId[] = ['1', '2', '3'];
 export const VIEW_MODES: readonly ViewMode[] = ['minimal', 'advanced'];
 
 export const CARD_ROWS = ['summary', 'task', 'links', 'agents', 'usage', 'arts'] as const;
+/**
+ * The face's foot chips. The CPU · 메모리 chip (`proc`, 2026-11-23) left on 2026-11-25: the node badge in the head
+ * carries the task's CPU and memory. A layout saved with it drops it like any unknown id.
+ */
 export const CARD_CHIPS = [
   'repo',
   'channel',
@@ -37,7 +41,6 @@ export const CARD_CHIPS = [
   'cost',
   'tokens',
   'model',
-  'proc',
 ] as const;
 export const OPEN_PARTS = ['tasks', 'agents', 'io', 'arts', 'goal', 'refs', 'model'] as const;
 /** The detail card's title bar: what follows the status and the time, in order (SSOT 2026-11-03). */
@@ -245,7 +248,6 @@ export const BUILTIN_PRESETS: Record<PresetId, PresetLayouts> = {
           it('pr', false),
           it('cost', true),
           it('model', true),
-          it('proc', true),
           it('steps', false),
           it('ctx', false),
           it('media', false),
@@ -281,7 +283,6 @@ export const BUILTIN_PRESETS: Record<PresetId, PresetLayouts> = {
           it('media', true),
           it('pr', false),
           it('model', true),
-          it('proc', true),
           it('arts', false),
           it('cost', false),
           it('tokens', false),
@@ -313,7 +314,6 @@ export const BUILTIN_PRESETS: Record<PresetId, PresetLayouts> = {
           it('arts', true),
           it('cost', true),
           it('model', true),
-          it('proc', true),
           it('ctx', false),
           it('media', false),
           it('pr', false),
@@ -347,7 +347,6 @@ export const BUILTIN_PRESETS: Record<PresetId, PresetLayouts> = {
           it('steps', true),
           it('ctx', true),
           it('media', true),
-          it('proc', true),
           it('pr', false),
           it('arts', false),
           it('cost', false),
@@ -379,7 +378,6 @@ export const BUILTIN_PRESETS: Record<PresetId, PresetLayouts> = {
           it('channel', true),
           it('cost', true),
           it('model', true),
-          it('proc', true),
           it('steps', false),
           it('ctx', false),
           it('media', false),
@@ -424,7 +422,6 @@ export const BUILTIN_PRESETS: Record<PresetId, PresetLayouts> = {
           it('pr', false),
           it('cost', true),
           it('model', true),
-          it('proc', true),
           it('media', false),
           it('tokens', false),
         ],
@@ -508,7 +505,6 @@ export const LAYOUT_CATALOG = {
       { id: 'cost', label: '비용', hint: 'API 환산 비용' },
       { id: 'tokens', label: '토큰', hint: '총 토큰' },
       { id: 'model', label: '모델', hint: '회사 아이콘과 이름' },
-      { id: 'proc', label: 'CPU · 메모리', hint: 'Claude Code와 자식 프로세스 — 돌고 있을 때만', slack: false },
     ],
   },
   open: {

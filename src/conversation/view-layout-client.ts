@@ -137,8 +137,8 @@ function faceOf(card, model, face, asks, effort, asked) {
   if (f.kind && !out.lead) out.lead = { glyph: 'task', title: '일반 작업' };
   var foot = faceFootMetrics(card, model, f.foot || [], effort, asked);
   if (foot.length) out.metrics = foot;
-  // Where the work runs (@2lab.ai/ui 0.45.0 card.node): one badge in the head, next to the owner — the node's name,
-  // its CPU and memory as two 10-step gauges, and this card's own CPU. In the head, so a one-line card keeps it.
+  // Where the work runs and how hard (@2lab.ai/ui 0.46.0 card.node): one badge in the head, next to the owner — the
+  // node's name, then this task's CPU and memory as two 10-step gauges. In the head, so a one-line card keeps it.
   var node = card && nodeBadgeOf(card.procUsage);
   if (node) out.node = node;
   return out;
@@ -148,20 +148,31 @@ function nodeShortName(id) {
   var s = String(id || '').split('.')[0] || String(id || '');
   return s.length > 12 ? s.slice(0, 11) + '…' : s;
 }
-// The card's node badge (card.node) from its process usage: none while nothing of the task is alive.
+// The badge's two gauges, 0–100, the task's own use (dashboard.ts taskGaugesOf, the same rule): CPU full at one core
+// (100% = one core, the default CPU cap; a stripe is 10% of a core), memory full at one core's share of the node's
+// memory (its size ÷ its cores). No memory gauge without both.
+function taskGaugesOf(u) {
+  var cpu = Math.max(0, Math.min(100, Number(u && u.cpuPercent) || 0));
+  var cores = Number(u && u.cpuCount) || 0;
+  var total = Number(u && u.nodeMemBytes) || 0;
+  var share = cores > 0 && total > 0 ? total / cores : 0;
+  var mem = share > 0 ? Math.max(0, Math.min(100, ((Number(u.rssBytes) || 0) / share) * 100)) : null;
+  return { cpu: cpu, mem: mem, share: share };
+}
+// The card's node badge (card.node) from its process usage: none while nothing of the task is alive. No number is
+// drawn before the name: the level (busy from 10% of a core, hot — a red ring — from 100%) says it.
 function nodeBadgeOf(u) {
   if (!u || !(Number(u.processCount) > 0) || !u.nodeId) return null;
-  var pct = function(v) { return v === null || v === undefined || !isFinite(Number(v)) ? undefined : Math.max(0, Math.min(100, Number(v))); };
-  var b = { text: nodeShortName(u.nodeId) };
-  var cpu = pct(u.nodeCpuPercent);
-  var mem = pct(u.nodeMemPercent);
-  if (cpu !== undefined) b.cpu = cpu;
-  if (mem !== undefined) b.mem = mem;
-  b.load = Math.max(0, Number(u.cpuPercent) || 0);
+  var g = taskGaugesOf(u);
+  var cpuNow = Math.max(0, Number(u.cpuPercent) || 0);
+  var b = { text: nodeShortName(u.nodeId), cpu: g.cpu, level: cpuNow >= 100 ? 'hot' : cpuNow >= 10 ? 'busy' : '' };
+  if (g.mem !== null) b.mem = g.mem;
   var cores = Number(u.cpuCount) > 0 ? ' · 코어 ' + Number(u.cpuCount) + '개' : '';
-  b.title = '노드 ' + String(u.nodeId) + cores
-    + '\n노드 CPU ' + (cpu === undefined ? '—' : Math.round(cpu) + '%') + ' · 노드 메모리 ' + (mem === undefined ? '—' : Math.round(mem) + '%')
-    + '\n이 작업 CPU ' + procCpuText(u.cpuPercent) + ' (100% = 코어 1개) · 메모리 ' + procBytesText(u.rssBytes)
+  var size = Number(u.nodeMemBytes) > 0 ? ' · 메모리 ' + procBytesText(u.nodeMemBytes) : '';
+  b.label = '노드 ' + String(u.nodeId) + ', 이 작업 CPU ' + procCpuText(cpuNow) + ', 메모리 ' + procBytesText(u.rssBytes);
+  b.title = '노드 ' + String(u.nodeId) + cores + size
+    + '\n이 작업 CPU ' + procCpuText(cpuNow) + ' — 계급장 가득 = 100% (코어 1개)'
+    + '\n메모리 ' + procBytesText(u.rssBytes) + (g.share > 0 ? ' — 계급장 가득 = ' + procBytesText(g.share) + ' (노드 메모리 ÷ 코어 수)' : '')
     + (Number(u.stoppedCount) > 0 ? '\n일시중지 ' + Number(u.stoppedCount) + '개' : '') + procCapLine(u);
   return b;
 }
@@ -227,7 +238,7 @@ function faceFootMetrics(card, model, foot, effort, asked) {
       // 'unknown' is the server's placeholder for a model it does not know — no name to show.
       var md = model && model !== 'unknown' ? String(model) : '';
       if (md) m = modelChipOf(md, effort, asked);
-    } else if (chip.id === 'proc') m = procChipOf(c.procUsage);
+    }
     if (m) out.push(m);
   }
   return out;
@@ -243,22 +254,6 @@ function procBytesText(n) {
 function procCpuText(p) {
   p = Math.max(0, Number(p) || 0);
   return (p < 10 && p > 0 ? p.toFixed(1) : String(Math.round(p))) + '%';
-}
-// The card's CPU · 메모리 chip (detail.foot 'proc'): what the session's Claude Code process and every process under it
-// use now — none while nothing of it is alive. Paused processes lead the chip in the wait tone.
-function procChipOf(u) {
-  if (!u || !(Number(u.processCount) > 0)) return null;
-  var n = Number(u.processCount);
-  var stopped = Number(u.stoppedCount) || 0;
-  var text = 'CPU ' + procCpuText(u.cpuPercent) + ' · ' + procBytesText(u.rssBytes);
-  if (stopped) text = '일시중지 ' + stopped + ' · ' + text;
-  var who = u.rootAlive ? 'Claude Code와 그 아래 프로세스 ' + n + '개' : 'Claude Code는 끝났고 남은 프로세스 ' + n + '개';
-  var cores = Number(u.cpuCount) > 0 ? ', 이 노드 코어 ' + Number(u.cpuCount) + '개' : '';
-  var title = who + '\nCPU ' + procCpuText(u.cpuPercent) + ' (100% = 코어 1개' + cores + ') · 메모리 ' + procBytesText(u.rssBytes)
-    + (stopped ? '\n일시중지 ' + stopped + '개' : '') + procCapLine(u);
-  var m = { text: text, title: title, label: text };
-  if (stopped) m.tone = 'wait';
-  return m;
 }
 // The effort levels the face's gauge draws (@2lab.ai/ui 0.22.0), in Korean for the chip's title and name.
 var MODEL_EFFORT_KO = { low: '낮음', medium: '보통', high: '높음', xhigh: '매우 높음', max: '최대', ultra: '울트라' };

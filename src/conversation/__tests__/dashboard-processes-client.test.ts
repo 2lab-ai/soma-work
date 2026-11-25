@@ -2,18 +2,18 @@
  * The 프로세스 tab and the card's CPU · 메모리 chip — executed from the shipped client code (cut out of
  * renderDashboardPage()'s template literal, as dashboard-detail-zones-client.test.ts does).
  *
- *   P1  the card's foot: 'proc' draws CPU · memory of the session's tree; nothing while no process lives
+ *   P1  the card's foot: no CPU · 메모리 chip any more — the node badge in the head is the one place (2026-11-25)
  *   P2  the tab bar: 프로세스 right of 세부 with the process count; disabled while none lives
  *   P3  the tab: node line, totals, one row per process in tree order; pause · resume only for a manager
  *   P4  the page: the tab's panel exists and its content shows only while the tab is open
  *   P6  the tree: htop guides, folds with subtree totals, CPU levels (≥10% busy, ≥100% hot), where · what per row
  *   P7  the detail: a row opens one process's snapshot (read once, never polled) in a dialog
- *   P8  the card's node badge (@2lab.ai/ui 0.45.0 card.node): node name, its CPU · memory gauges, this card's CPU
+ *   P8  the card's node badge (@2lab.ai/ui 0.46.0 card.node): the node's name, this task's CPU · memory gauges, no number
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { BUILTIN_PRESETS, DETAIL_TABS, resolveLayouts } from '../../view-layout';
+import { BUILTIN_PRESETS, CARD_CHIPS, DETAIL_TABS, normalizeFace, resolveLayouts } from '../../view-layout';
 import { viewerScope } from '../__fixtures__/viewer-scope';
 import { VIEW_LAYOUT_CLIENT_JS } from '../view-layout-client';
 
@@ -42,7 +42,7 @@ function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> 
   const names = Object.keys(all);
   const setter = '__set: function(n, v) { eval(n + " = v"); }';
   const getter = '__get: function(n) { return eval(n); }';
-  const body = `${VIEW_LAYOUT_CLIENT_JS}\n${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')}, procChipOf: procChipOf, faceFootMetrics: faceFootMetrics, ${setter}, ${getter} };`;
+  const body = `${VIEW_LAYOUT_CLIENT_JS}\n${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')}, faceFootMetrics: faceFootMetrics, ${setter}, ${getter} };`;
   return new Function(...names, body)(...names.map((n) => all[n])) as T;
 }
 /** The tab's renderer and the pure helpers it calls. */
@@ -75,43 +75,41 @@ const usage = (over: Record<string, unknown> = {}) => ({
 
 type Chip = { text: string; title: string; label?: string; tone?: string } | null;
 
-describe('P1 — the card’s CPU · 메모리 chip', () => {
-  const env = () => load<{ procChipOf: (u: unknown) => Chip; faceFootMetrics: (...a: unknown[]) => Chip[] }>([], []);
+describe('P1 — the card’s foot has no CPU · 메모리 chip', () => {
+  const env = () => load<{ faceFootMetrics: (...a: unknown[]) => Chip[] }>([], []);
 
-  it('reads CPU (100% = one core) and memory of the whole tree; its title says what it counts', () => {
-    const chip = env().procChipOf(usage()) as NonNullable<Chip>;
-    expect(chip.text).toBe('CPU 42% · 1.2GB');
-    expect(chip.title).toContain('Claude Code와 그 아래 프로세스 6개');
-    expect(chip.title).toContain('100% = 코어 1개, 이 노드 코어 12개');
-    expect(chip.tone).toBeUndefined();
-  });
-
-  it('leads with the paused count in the wait tone; says when only leftovers remain', () => {
-    const chip = env().procChipOf(
-      usage({ stoppedCount: 2, rootAlive: false, cpuPercent: 0.25, rssBytes: 340e6 }),
-    ) as NonNullable<Chip>;
-    expect(chip.text).toBe('일시중지 2 · CPU 0.3% · 340MB');
-    expect(chip.tone).toBe('wait');
-    expect(chip.title).toContain('Claude Code는 끝났고 남은 프로세스 6개');
-  });
-
-  it('draws nothing while no process of the session lives', () => {
-    expect(env().procChipOf(undefined)).toBeNull();
-    expect(env().procChipOf(usage({ processCount: 0 }))).toBeNull();
-  });
-
-  it('every built-in face shows it at the foot, and the foot draws it from the card', () => {
+  it('the catalog, every built-in face and a saved layout leave it out; a device copy that still has it draws nothing', () => {
+    expect(CARD_CHIPS as readonly string[]).not.toContain('proc');
     for (const id of ['1', '2', '3'] as const) {
       for (const mode of ['minimal', 'advanced'] as const) {
         const foot = resolveLayouts(undefined, mode, id).card.foot;
-        expect(foot.find((c) => c.id === 'proc')?.on, `${id}/${mode}`).toBe(true);
+        expect(
+          foot.map((c) => c.id),
+          `${id}/${mode}`,
+        ).not.toContain('proc');
       }
     }
-    const out = env().faceFootMetrics({ procUsage: usage() }, '', [{ id: 'proc', on: true }], '', false);
-    expect(out.map((m) => m?.text)).toEqual(['CPU 42% · 1.2GB']);
+    // A layout saved while the chip existed: the chip goes, the rest keeps its order and state.
+    const fb = resolveLayouts(undefined, 'minimal', '1').card;
+    const saved = normalizeFace(
+      {
+        foot: [
+          { id: 'cost', on: true },
+          { id: 'proc', on: true },
+          { id: 'model', on: false },
+        ],
+      },
+      fb,
+    ).foot;
+    expect(saved.map((c) => c.id)).not.toContain('proc');
+    expect(saved.filter((c) => c.id === 'cost' || c.id === 'model')).toEqual([
+      { id: 'cost', on: true },
+      { id: 'model', on: false },
+    ]);
+    expect(env().faceFootMetrics({ procUsage: usage() }, '', [{ id: 'proc', on: true }], '', false)).toEqual([]);
   });
 
-  it('cardOf hands the session’s usage to the face', () => {
+  it('cardOf still hands the session’s usage to the face (the node badge reads it)', () => {
     const src = clientFn('cardOf');
     expect(src).toContain('if (s.procUsage) card.procUsage = s.procUsage;');
   });
@@ -1053,34 +1051,61 @@ describe('P7 — the detail: one process’s snapshot, read once', () => {
 });
 
 describe('P8 — the card’s node badge (card.node)', () => {
-  type Node = { text: string; title: string; cpu?: number; mem?: number; load?: number } | null;
+  type Node = {
+    text: string;
+    title: string;
+    cpu?: number;
+    mem?: number;
+    load?: number;
+    level?: string;
+    label?: string;
+  } | null;
+  // 18 cores, 137 GB: one core's share of the memory is 7.6 GB.
   const u = (over: Record<string, unknown> = {}) =>
-    usage({ nodeId: 'build-box.local', nodeCpuPercent: 72, nodeMemPercent: 41, cpuPercent: 113, ...over });
+    usage({ nodeId: 'build-box.local', cpuCount: 18, nodeMemBytes: 137e9, cpuPercent: 113, rssBytes: 3.3e9, ...over });
+  const fns = () =>
+    new Function('VIEW_BUILTINS', `${VIEW_LAYOUT_CLIENT_JS}\nreturn { nodeBadgeOf: nodeBadgeOf, faceOf: faceOf };`)(
+      BUILTIN_PRESETS,
+    ) as { nodeBadgeOf: (u: unknown) => Node; faceOf: (...a: unknown[]) => Record<string, unknown> };
 
-  it('names the node and carries its CPU and memory (the 10-step gauges) and this card’s own CPU', () => {
-    // The shared layout script alone (the face is built from it on the board and in the settings preview).
-    const src = `${VIEW_LAYOUT_CLIENT_JS}\nreturn { nodeBadgeOf: nodeBadgeOf, faceOf: faceOf };`;
-    const fns = new Function('VIEW_BUILTINS', src)(BUILTIN_PRESETS) as {
-      nodeBadgeOf: (u: unknown) => Node;
-      faceOf: (...a: unknown[]) => Record<string, unknown>;
-    };
-    const b = fns.nodeBadgeOf(u()) as NonNullable<Node>;
-    expect(b).toMatchObject({ text: 'build-box', cpu: 72, mem: 41, load: 113 });
-    expect(b.title).toContain('노드 build-box.local · 코어 12개');
-    expect(b.title).toContain('노드 CPU 72% · 노드 메모리 41%');
-    expect(b.title).toContain('이 작업 CPU 113% (100% = 코어 1개)');
-    // Before the node's second sample there is no CPU reading: no gauge value, the title says so.
-    const early = fns.nodeBadgeOf(u({ nodeCpuPercent: null })) as NonNullable<Node>;
-    expect(early.cpu).toBeUndefined();
-    expect(early.title).toContain('노드 CPU —');
-    expect(fns.nodeBadgeOf(u({ nodeId: 'a-very-long-node-name' }))?.text).toBe('a-very-long…');
-    expect(fns.nodeBadgeOf(undefined)).toBeNull();
-    expect(fns.nodeBadgeOf(u({ processCount: 0 }))).toBeNull();
+  it('names the node; its two gauges are this task’s CPU (full at one core) and memory (full at one core’s share)', () => {
+    const b = fns().nodeBadgeOf(u()) as NonNullable<Node>;
+    expect(b.text).toBe('build-box');
+    expect(b.cpu).toBe(100);
+    expect(b.mem).toBeCloseTo((3.3e9 / (137e9 / 18)) * 100, 6);
+    // No number before the name: the level alone — over one core is hot (a red ring), from 10% busy.
+    expect(b).not.toHaveProperty('load');
+    expect(b.level).toBe('hot');
+    expect(fns().nodeBadgeOf(u({ cpuPercent: 42.4 }))).toMatchObject({ cpu: 42.4, level: 'busy' });
+    expect(fns().nodeBadgeOf(u({ cpuPercent: 0.7 }))).toMatchObject({ cpu: 0.7, level: '' });
+    // Said in words, never as the node's load.
+    expect(b.label).toBe('노드 build-box.local, 이 작업 CPU 113%, 메모리 3.3GB');
+    expect(b.title).toContain('노드 build-box.local · 코어 18개 · 메모리 137GB');
+    expect(b.title).toContain('이 작업 CPU 113% — 계급장 가득 = 100% (코어 1개)');
+    expect(b.title).toContain('메모리 3.3GB — 계급장 가득 = 7.6GB (노드 메모리 ÷ 코어 수)');
+    expect(b.title).not.toContain('노드 CPU');
+  });
+
+  it('no memory gauge without the node’s size; none at all while nothing of the task lives', () => {
+    const f = fns();
+    const old = f.nodeBadgeOf(u({ nodeMemBytes: undefined })) as NonNullable<Node>;
+    expect(old.mem).toBeUndefined();
+    expect(old.title).toContain('메모리 3.3GB');
+    expect(f.nodeBadgeOf(u({ nodeId: 'a-very-long-node-name' }))?.text).toBe('a-very-long…');
+    expect(f.nodeBadgeOf(undefined)).toBeNull();
+    expect(f.nodeBadgeOf(u({ processCount: 0 }))).toBeNull();
     // On every face (one-line cards too: the element draws it in the head); none without a live process.
-    expect(fns.faceOf({ title: 'x', procUsage: u() }, '', { rows: [], foot: [] }).node).toMatchObject({
+    expect(f.faceOf({ title: 'x', procUsage: u() }, '', { rows: [], foot: [] }).node).toMatchObject({
       text: 'build-box',
     });
-    expect(fns.faceOf({ title: 'x' }, '', { rows: [], foot: [] }).node).toBeUndefined();
+    expect(f.faceOf({ title: 'x' }, '', { rows: [], foot: [] }).node).toBeUndefined();
+  });
+
+  it('a paused process and the CPU cap are in its title', () => {
+    const b = fns().nodeBadgeOf(u({ stoppedCount: 2, cpuCapPercent: 100, throttling: true })) as NonNullable<Node>;
+    expect(b.title).toContain('일시중지 2개');
+    expect(b.title).toContain('CPU 한도 100% — 넘어서 맞추는 중');
+    expect((fns().nodeBadgeOf(u()) as NonNullable<Node>).title).not.toContain('CPU 한도');
   });
 });
 
@@ -1118,17 +1143,5 @@ describe('P9 — the CPU cap on the task', () => {
     const off = e.panelProcsHtml({ status: 200, body: body(false), busy: {} }, true);
     expect(off).toContain('CPU 한도 100%</span>');
     expect(off).not.toContain('>한도</span>');
-  });
-
-  it('the card’s chip and node badge say the cap in their titles', () => {
-    const src = `${VIEW_LAYOUT_CLIENT_JS}\nreturn { procChipOf: procChipOf, nodeBadgeOf: nodeBadgeOf };`;
-    const f = new Function('VIEW_BUILTINS', src)(BUILTIN_PRESETS) as {
-      procChipOf: (u: unknown) => { title: string } | null;
-      nodeBadgeOf: (u: unknown) => { title: string } | null;
-    };
-    const u = usage({ cpuCapPercent: 100, throttling: true });
-    expect(f.procChipOf(u)?.title).toContain('CPU 한도 100% — 넘어서 맞추는 중');
-    expect(f.nodeBadgeOf(u)?.title).toContain('CPU 한도 100% — 넘어서 맞추는 중');
-    expect(f.procChipOf(usage())?.title).not.toContain('CPU 한도');
   });
 });

@@ -448,8 +448,12 @@ describe('E5 — the preview is the dashboard’s face', () => {
     ]);
     // #805: the model as icons — the mark in its colour and the sample's effort; the name is the title.
     // SSOT 2026-11-05: the sample's repo and channel lead the foot (레포 · 채널).
-    // 2026-11-23: the sample's CPU · 메모리 chip ends the foot.
-    expect(card.metrics.map((m: { text: string }) => m.text)).toEqual(['app', '#pay', '$6.20', '', 'CPU 38% · 1.2GB']);
+    // 2026-11-25: no CPU · 메모리 chip at the foot — the sample's usage is on its node badge in the head instead
+    // (this task's CPU 38% and 1.2 GB of a 12-core, 64 GB node's one-core share, 5.3 GB).
+    expect(card.metrics.map((m: { text: string }) => m.text)).toEqual(['app', '#pay', '$6.20', '']);
+    expect(card.node).toMatchObject({ text: 'node', cpu: 38, level: 'busy' });
+    expect(card.node.mem).toBeCloseTo((1.2e9 / (64e9 / 12)) * 100, 6);
+    expect(card.node).not.toHaveProperty('load');
     expect(card.metrics[0]).toMatchObject({ title: '레포 example/app' });
     expect(card.metrics[3]).toMatchObject({
       glyph: 'claude',

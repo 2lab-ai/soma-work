@@ -246,13 +246,12 @@ export function usageForViewer<T extends { byUser: unknown; tokenRankings: unkno
 
 /**
  * A session's process tree in one line: `SessionProcessUsage` without the session key and the time, plus the node it
- * runs on — its logical cores (`cpuCount` — 100% CPU is one of them) and how loaded the whole node is, for the card's
- * node badge: `nodeCpuPercent` (all cores, 0–100; `null` before a second sample) and `nodeMemPercent` (memory in use).
+ * runs on — its logical cores (`cpuCount` — 100% CPU is one of them) and its memory (`nodeMemBytes`). The card's node
+ * badge draws the task's own CPU and memory against them ({@link taskGaugesOf}).
  */
 export type KanbanProcUsage = Omit<SessionProcessUsage, 'sessionKey' | 'sampledAt'> & {
   cpuCount: number;
-  nodeCpuPercent: number | null;
-  nodeMemPercent: number | null;
+  nodeMemBytes: number;
 };
 
 export interface KanbanSession {
@@ -1296,18 +1295,18 @@ export interface DashboardProcessSource {
 }
 let _processSource: DashboardProcessSource | null = null;
 let _processUnsubscribe: (() => void) | null = null;
-/** sessionKey → the card's last pushed usage, so only a card whose chip changes is pushed again. */
+/** sessionKey → the card's last pushed usage, so only a card whose node badge changes is pushed again. */
 const _procPushed = new Map<string, string>();
 
 /** What the card shows changes only at this grain: whole CPU percents, 10 MB of memory, the counts. */
 function procSignature(u: SessionProcessUsage, node?: NodeCapacity): string {
   // CPU in 5-point buckets (whole points under 10%): a busy tree's CPU moves every sample, and a push per sample per
-  // card to every viewer costs more than the chip's last few points are worth. The node's load as the badge draws it:
-  // its 10-step gauges.
+  // card to every viewer costs more than the badge's last few points are worth.
   const cpu = u.cpuPercent < 10 ? Math.round(u.cpuPercent) : 10 + Math.round((u.cpuPercent - 10) / 5);
-  const load = node ? nodeLoadOf(node) : null;
-  // The badge's level (busy from 10%, hot from 100%) moves at its own edges, which a bucket can straddle.
+  // The badge's level (busy from 10%, hot from 100%) and its two gauges move at their own edges, which a bucket or
+  // the 10 MB grain can straddle.
   const level = u.cpuPercent >= 100 ? 2 : u.cpuPercent >= 10 ? 1 : 0;
+  const gauges = taskGaugesOf(u, node?.cpuCount ?? 0, node?.totalMemBytes ?? 0);
   return [
     cpu,
     level,
@@ -1315,9 +1314,8 @@ function procSignature(u: SessionProcessUsage, node?: NodeCapacity): string {
     u.processCount,
     u.stoppedCount,
     u.rootAlive,
-    // Unknown (no second sample yet) is not the empty gauge: -1, so the first reading pushes.
-    load?.cpu == null ? -1 : gaugeStep(load.cpu),
-    load?.mem == null ? -1 : gaugeStep(load.mem),
+    gaugeStep(gauges.cpu),
+    gauges.mem === null ? -1 : gaugeStep(gauges.mem),
     u.cpuCapPercent ?? '',
     u.throttling ? 1 : 0,
   ].join('|');
@@ -1329,20 +1327,26 @@ export function gaugeStep(v: number | null): number {
   return Math.min(10, Math.max(1, Math.ceil(v / 10)));
 }
 
-/** The node's CPU (all cores) and memory in use, 0–100. */
-export function nodeLoadOf(node: NodeCapacity): { cpu: number | null; mem: number | null } {
-  const cpu = node.cpuBusyPercent === null ? null : Math.max(0, Math.min(100, Math.round(node.cpuBusyPercent)));
-  const mem =
-    node.totalMemBytes > 0
-      ? Math.max(0, Math.min(100, Math.round(((node.totalMemBytes - node.availableMemBytes) / node.totalMemBytes) * 100)))
-      : null;
+/**
+ * The card's node badge gauges, 0–100 — the task's own use (the page's `taskGaugesOf` in view-layout-client.ts reads
+ * the same): CPU full at one core (100% = one core, the default CPU cap; a stripe is 10% of a core), memory full at one
+ * core's share of the node's memory (its size ÷ its cores). `mem` is null without both.
+ */
+export function taskGaugesOf(
+  u: Pick<SessionProcessUsage, 'cpuPercent' | 'rssBytes'>,
+  cpuCount: number,
+  totalMemBytes: number,
+): { cpu: number; mem: number | null } {
+  const cpu = Math.max(0, Math.min(100, u.cpuPercent || 0));
+  const share = cpuCount > 0 && totalMemBytes > 0 ? totalMemBytes / cpuCount : 0;
+  const mem = share > 0 ? Math.max(0, Math.min(100, ((u.rssBytes || 0) / share) * 100)) : null;
   return { cpu, mem };
 }
 
 /**
- * Wire the process monitor. Every sample pushes the cards whose CPU · 메모리 chip changed — and once more the cards
- * whose last process exited, so the chip goes away — through the per-viewer single-card push (private tasks stay
- * with their viewers).
+ * Wire the process monitor. Every sample pushes the cards whose node badge changed — and once more the cards whose
+ * last process exited, so the badge goes away — through the per-viewer single-card push (private tasks stay with
+ * their viewers).
  */
 export function setDashboardProcessSource(
   source: DashboardProcessSource | null,
@@ -1360,7 +1364,7 @@ export function setDashboardProcessSource(
 }
 
 /**
- * The cards a sample changes: a session whose chip reads differently now, and a session that had a chip and has no
+ * The cards a sample changes: a session whose badge reads differently now, and a session that had a badge and has no
  * process left. Updates `pushed` (sessionKey → the signature last pushed) in place.
  */
 export function procCardsToPush(
@@ -1388,13 +1392,11 @@ function procUsageField(key: string): { procUsage?: KanbanProcUsage } {
   const snapshot = _processSource?.latest();
   const u = snapshot?.sessions.find((x) => x.sessionKey === key);
   if (!snapshot || !u) return {};
-  const load = nodeLoadOf(snapshot.node);
   return {
     procUsage: {
       nodeId: u.nodeId,
       cpuCount: snapshot.node.cpuCount,
-      nodeCpuPercent: load.cpu,
-      nodeMemPercent: load.mem,
+      nodeMemBytes: snapshot.node.totalMemBytes,
       rootAlive: u.rootAlive,
       processCount: u.processCount,
       stoppedCount: u.stoppedCount,
@@ -14180,7 +14182,7 @@ function cardOf(s, col) {
   var uaWait = userActionsWaiting(s);
   if (uaWait > 0) metrics.push({ text: String(uaWait), glyph: 'alert', title: '사용자 할 일 ' + uaWait + '개', label: '사용자 할 일 ' + uaWait + '개' });
   if (metrics.length) card.metrics = metrics;
-  // The CPU · 메모리 chip (the layout's foot 'proc', faceFootMetrics): the session's process tree on its node, live.
+  // The node badge in the head (view-layout-client.ts nodeBadgeOf): the session's process tree on its node, live.
   if (s.procUsage) card.procUsage = s.procUsage;
   // 작업 카드의 연결 (SSOT 2026-11-02): every linked issue, PR and wiki with its state — the face's links row.
   var links = cardLinksFace(s);
