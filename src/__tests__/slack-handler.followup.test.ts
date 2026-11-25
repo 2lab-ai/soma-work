@@ -4047,6 +4047,12 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(steerTurn).not.toHaveBeenCalled();
       expect(items()[0].state).toBe('queued');
 
+      // The /compact turn itself reaches the model: the row is offered, refused again, and keeps waiting.
+      const compactEpoch = handlerAny.followupDispatcher.liveTurnEpoch(SESSION_KEY);
+      handlerAny.streamExecutor?.deps?.onTurnReachedModel?.({ sessionKey: SESSION_KEY, turnEpoch: compactEpoch });
+      await tick();
+      expect(steerTurn).not.toHaveBeenCalled();
+
       // The /compact turn's teardown ends the compaction and replays the intercepted message: the busy fence runs it
       // inside the same run, with no generation of its own, and its first SDK event reaches the model.
       registrySession.compactTurnActive = false;

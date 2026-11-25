@@ -666,8 +666,12 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
         yield* openingTurnHead([{ task_id: 'bash-1', task_type: 'local_bash', description: 'lock wait' }, flow]);
         yield openingResult(cli.opening?.uuid);
         const probe = watchInputEnd(inputs, cli);
-        // The shell finishes first; the workflow still runs.
+        // The shell finishes first and its notification turn runs; the workflow still runs.
         yield level([flow]);
+        yield taskNotification('bash-1', 'completed');
+        yield INIT;
+        yield NOTIFIED;
+        yield notifiedResult();
         firstSettled.resolve();
         await lastGate.promise;
         yield level([]);
@@ -684,7 +688,7 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
       await vi.advanceTimersByTimeAsync(BG_FOLLOWUP_GRACE_MS + 1);
       const frames = await framesPromise;
       expect(cli.inputEnded).toBe(true);
-      expect(resultsOf(frames)[0]).toMatchObject({ result: 'WAITING', user_message_uuid: cli.opening?.uuid });
+      expect(resultsOf(frames)[0]).toMatchObject({ result: 'NOTIFIED' });
     } finally {
       info.mockRestore();
     }
@@ -882,6 +886,45 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
     } finally {
       warn.mockRestore();
       info.mockRestore();
+    }
+  });
+
+  // RoL review (PR #1428): an ambient watcher's churn or a repeated snapshot is not the held tasks' activity.
+  it('a level frame that leaves the held task set unchanged does not re-arm the idle cap (#1425)', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const shell = { task_id: 'bash-1', task_type: 'local_bash', description: 'dev server' };
+      const watcher = { task_id: 'mon-1', task_type: 'monitor', description: 'log tail', ambient: true };
+      const pulledPastOpening = deferred();
+      const churn = deferred();
+      installScriptedQuery(cli, async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield* openingTurnHead([shell]);
+        yield openingResult(cli.opening?.uuid);
+        pulledPastOpening.resolve();
+        await churn.promise;
+        yield level([shell, watcher]);
+        yield level([shell]);
+        for (;;) {
+          const next = await inputs.next();
+          if (next.done) break;
+          cli.received.push(next.value);
+        }
+        cli.inputEnded = true;
+      });
+
+      const framesPromise = collect(startTurn(newHandler()));
+      await pulledPastOpening.promise;
+      await vi.advanceTimersByTimeAsync(CAP_MS - 60_000);
+      churn.resolve();
+      await vi.advanceTimersByTimeAsync(60_000 + 1);
+      await framesPromise;
+      expect(cli.stopTask).toHaveBeenCalledWith('bash-1');
+    } finally {
+      warn.mockRestore();
     }
   });
 
