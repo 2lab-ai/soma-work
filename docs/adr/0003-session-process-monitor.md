@@ -132,8 +132,10 @@ same snapshot, and work will be placed by each node's free CPU and memory.
    sample reads it at its old cap, so re-metering from the sample would let it run free until the next one) and lets
    it go only when the new cap is over that rate. A member a read merely missed is remembered with its last counter, so
    finding it again charges only what it used meanwhile; a re-read for the continues never takes a valid sample from
-   the rate. A stop's discovery skips every metered tree's members, so a nested tree's process is never taken for a
-   worker. A stop whose identity read, parent scan or new-worker read keeps failing is said once per tree, and a
+   the rate. Discovery — a period's and a stop's — skips every metered tree's members and every Claude Code process the
+   last update named, and checks again after its read (an update may name a found pid a session's root meanwhile), so
+   a nested tree's process is never taken for a worker. A worker the last good scan already listed (its read missed it)
+   is baselined when found later, not charged its lifetime. A stop whose identity read, parent scan or new-worker read keeps failing is said once per tree, and a
    saved cap that does not parse is said in the log. It never stops the Claude Code
    process itself, never continues what it did not stop (a person's pause becomes theirs), never signals a reused pid,
    and continues everything it holds on an abort, a cap change and shutdown (before the monitor's own resume pass). A held process reads as running with `throttled`, not as paused;

@@ -192,6 +192,10 @@ export class CpuThrottler {
   private scanOkSeq = 0;
   /** A stop's parent scan in flight: stops of several trees close together share it instead of each scanning the host. */
   private stopScan: Promise<Map<number, number>> | null = null;
+  /** Every pid the last period scan that succeeded read: a worker a stop finds among them started before that scan. */
+  private scanned = new Set<number>();
+  /** Every Claude Code process the last update named, metered or not: never taken for a tree's worker. */
+  private roots = new Set<number>();
   /** When the next period starts, from the end of this one: its reads land the continue one period after this one's. */
   private nextDelay = THROTTLE_PERIOD_MS;
   private disposed = false;
@@ -215,6 +219,7 @@ export class CpuThrottler {
    */
   update(sessions: readonly SessionProcessDetail[], capFor: (sessionKey: string) => number | null): void {
     if (this.disposed) return;
+    this.roots = new Set(sessions.flatMap((s) => s.processes.filter((p) => p.role === 'root').map((p) => p.pid)));
     const seen = new Set<string>();
     let replanned = false;
     for (const s of sessions) {
@@ -505,13 +510,15 @@ export class CpuThrottler {
     const seq = ++this.periodSeq;
     const started = this.deps.now();
     let parents: Map<number, number> | null = null;
-    // What this scan finds started since the last one only if that one read the whole map.
+    // What this scan finds started since the last one only if that one read the whole map — and did not list it.
     const prevScanOk = this.scanOkSeq === seq - 1;
+    const prevScanned = this.scanned;
     if (this.deps.readParents && this.sessions.size > 0) {
       try {
         parents = await this.deps.readParents();
         this.saidNoParents = false;
         this.scanOkSeq = seq;
+        this.scanned = new Set(parents.keys());
       } catch (err) {
         // New workers go unseen until a scan reads again; what is known is still held.
         if (!this.saidNoParents) {
@@ -553,7 +560,8 @@ export class CpuThrottler {
         if (list) list.push(pid);
         else childrenOf.set(ppid, [pid]);
       }
-      const all = new Set<number>(pids);
+      // Members, holds and every Claude Code process (a nested session's root and what runs under it are its own).
+      const all = new Set<number>([...pids, ...this.roots]);
       for (const [key, s] of this.sessions) {
         const verified = s.members.filter((m) => read.get(m.pid)?.startToken === m.startToken);
         const found = this.discover(verified, all, childrenOf);
@@ -615,6 +623,11 @@ export class CpuThrottler {
     } else if (needed <= MAX_PERIOD_MS) this.saidTooSlow = false;
     const period = Math.min(MAX_PERIOD_MS, needed);
     this.nextDelay = Math.max(0, period - phase);
+    // An update while the reads were out may have named a found pid a Claude Code process or another tree's member.
+    const ownerOf = new Map<number, string>();
+    for (const [key, s] of this.sessions) for (const m of s.members) ownerOf.set(m.pid, key);
+    const takenElsewhere = (pid: number, key: string): boolean =>
+      this.roots.has(pid) || (ownerOf.has(pid) && ownerOf.get(pid) !== key);
     for (const [key, s] of [...this.sessions]) {
       const fresh = new Set<number>();
       const added: Member[] = [];
@@ -623,7 +636,7 @@ export class CpuThrottler {
       const owners = new Set(s.members.filter((m) => read.get(m.pid)?.startToken === m.startToken).map((m) => m.pid));
       for (const pid of discovered.get(key) ?? []) {
         const r = read.get(pid);
-        if (!r || !owners.has(r.ppid)) continue;
+        if (!r || !owners.has(r.ppid) || takenElsewhere(pid, key)) continue;
         owners.add(pid);
         added.push({ pid, startToken: r.startToken, root: false });
         fresh.add(pid);
@@ -632,7 +645,8 @@ export class CpuThrottler {
       s.members = withMembers(s.members, added);
       // The tree's rate since the last read: members whose start time still matches. A worker found this period
       // started since the last one (the previous parent map did not have it): all its CPU time is this window's.
-      // After a failed scan a worker found now may be old: its counter is baselined, not charged in this window.
+      // After a failed scan, or when that scan listed it (its read missed it), a worker found now may be old: its
+      // counter is baselined, not charged in this window.
       let used = s.charge;
       s.charge = 0;
       const next = new Map<number, number>();
@@ -645,7 +659,7 @@ export class CpuThrottler {
         const lastSeen = fresh.has(m.pid) ? s.left.get(id) : undefined;
         if (before !== undefined) used += Math.max(0, r.cpuSeconds - before);
         else if (lastSeen !== undefined) used += Math.max(0, r.cpuSeconds - lastSeen);
-        else if (fresh.has(m.pid) && s.prevAt > 0 && prevScanOk) used += r.cpuSeconds;
+        else if (fresh.has(m.pid) && s.prevAt > 0 && prevScanOk && !prevScanned.has(m.pid)) used += r.cpuSeconds;
         if (lastSeen !== undefined) s.left.delete(id);
       }
       // Members that are gone, or whose pid now names another process, leave the tree. One a read merely missed is
@@ -753,14 +767,11 @@ export class CpuThrottler {
       if (!this.stopScan) {
         const scan = this.deps.readParents();
         this.stopScan = scan;
-        void scan.then(
-          () => {
-            if (this.stopScan === scan) this.stopScan = null;
-          },
-          () => {
-            if (this.stopScan === scan) this.stopScan = null;
-          },
-        );
+        // Settled either way, the next stop scans afresh. (Not `finally`: that re-rejects, unhandled.)
+        const done = (): void => {
+          if (this.stopScan === scan) this.stopScan = null;
+        };
+        void scan.then(done, done);
       }
       parents = await this.stopScan;
       s.saidStopScanFailed = false;
@@ -782,9 +793,9 @@ export class CpuThrottler {
       if (list) list.push(pid);
       else childrenOf.set(ppid, [pid]);
     }
-    // Every metered tree's members are known (as in a period's discovery): a nested tree's process is never taken
-    // for this one's worker.
-    const known = new Set<number>(this.held.keys());
+    // Every metered tree's members and every Claude Code process are known (as in a period's discovery): a nested
+    // tree's process is never taken for this one's worker.
+    const known = new Set<number>([...this.held.keys(), ...this.roots]);
     for (const t of this.sessions.values()) for (const m of t.members) known.add(m.pid);
     const found = this.discover(s.members, known, childrenOf);
     if (found.length === 0) return;
@@ -805,21 +816,27 @@ export class CpuThrottler {
     });
     if (read) s.saidNewWorkerReadFailed = false;
     if (!read || !current()) return;
+    // The read awaited: an update meanwhile may have named a found pid another tree's (a nested session's new root),
+    // or another tree's stop may hold it. Those are not this tree's.
+    const taken = new Set<number>(this.roots);
+    for (const [k, t] of this.sessions) if (k !== key) for (const m of t.members) taken.add(m.pid);
+    for (const [pid, h] of this.held) if (h.sessionKey !== key) taken.add(pid);
     const owners = new Set(s.members.filter((m) => read.get(m.pid)?.startToken === m.startToken).map((m) => m.pid));
     const added: Member[] = [];
     for (const pid of found) {
       const r = read.get(pid);
-      if (!r || !owners.has(r.ppid)) continue;
+      if (!r || !owners.has(r.ppid) || taken.has(pid)) continue;
       owners.add(pid);
       added.push({ pid, startToken: r.startToken, root: false });
       // A member a read missed, found again: only what it used since its last counter. A new worker: all of it, when
-      // the period's own scan bounds its start.
+      // the period's own scan bounds its start — one that scan already listed (the period's read of it missed) is
+      // older than the window, so it is baselined. (A pid reused since that scan is baselined too: one worker's life.)
       const id = `${pid}:${r.startToken}`;
       const lastSeen = s.left.get(id);
       if (lastSeen !== undefined) {
         s.charge += Math.max(0, r.cpuSeconds - lastSeen);
         s.left.delete(id);
-      } else if (this.scanOkSeq === seq) s.charge += r.cpuSeconds;
+      } else if (this.scanOkSeq === seq && !this.scanned.has(pid)) s.charge += r.cpuSeconds;
       s.prev.set(pid, r.cpuSeconds);
     }
     if (added.length === 0) return;
