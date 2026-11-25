@@ -1815,6 +1815,13 @@ export class ClaudeHandler implements TurnSteeringPort {
       };
       // Only while the idle cap is armed: never after it fired, never before the hold.
       const rearmKeepaliveIdle = () => {
+        // #1425 review — an idle cap held for a running turn's result: new activity of the tasks means they are not
+        // idle after all. The deadline starts again instead of the cap firing at that result.
+        if (idleCapAtTurnEnd) {
+          idleCapAtTurnEnd = false;
+          keepaliveCapTimer = setTimeout(() => fireKeepaliveCap('idle'), keepaliveMaxMs);
+          return;
+        }
         if (!keepaliveCapTimer) return;
         clearTimeout(keepaliveCapTimer);
         keepaliveCapTimer = setTimeout(() => fireKeepaliveCap('idle'), keepaliveMaxMs);

@@ -775,6 +775,116 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
     }
   });
 
+  // RoL review (PR #1428): the idle cap coming due mid-turn waits for that turn's result — the turn keeps its tools.
+  it('an idle cap due while a turn runs in a shell-only hold fires at that turn result, not before (#1425)', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const pulledPastOpening = deferred();
+      const turnStarted = deferred();
+      const finishTurn = deferred();
+      const handler = newHandler();
+      installScriptedQuery(cli, async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield* openingTurnHead([{ task_id: 'bash-1', task_type: 'local_bash', description: 'dev server' }]);
+        yield openingResult(cli.opening?.uuid);
+        pulledPastOpening.resolve();
+        cli.received.push((await inputs.next()).value);
+        yield INIT;
+        yield assistantText('working on it');
+        turnStarted.resolve();
+        await finishTurn.promise;
+        yield successResult({ result: 'DONE', num_turns: 1, uuid: 'steer-result-uuid', user_message_uuid: 'u-steer' });
+        for (;;) {
+          const next = await inputs.next();
+          if (next.done) break;
+          cli.received.push(next.value);
+        }
+        cli.inputEnded = true;
+      });
+
+      const framesPromise = collect(startTurn(handler));
+      await pulledPastOpening.promise;
+      await vi.advanceTimersByTimeAsync(CAP_MS - 60_000);
+      expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-steer', text: 'status?' })).toBe(true);
+      await turnStarted.promise;
+
+      // Past the idle deadline while the turn still runs: nothing is stopped, the input stays open.
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(cli.stopTask).not.toHaveBeenCalled();
+      expect(cli.inputEnded).toBe(false);
+
+      // The turn's result: now the cap fires.
+      finishTurn.resolve();
+      await vi.advanceTimersByTimeAsync(1);
+      await framesPromise;
+      expect(cli.stopTask).toHaveBeenCalledWith('bash-1');
+      expect(cli.inputEnded).toBe(true);
+    } finally {
+      warn.mockRestore();
+      info.mockRestore();
+    }
+  });
+
+  it('task activity after an idle cap was held for a running turn starts the deadline again (#1425)', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const pulledPastOpening = deferred();
+      const turnStarted = deferred();
+      const finishTurn = deferred();
+      const handler = newHandler();
+      const devServer = { task_id: 'bash-1', task_type: 'local_bash', description: 'dev server' };
+      const watcher = { task_id: 'bash-2', task_type: 'local_bash', description: 'ci watch' };
+      installScriptedQuery(cli, async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield* openingTurnHead([devServer]);
+        yield openingResult(cli.opening?.uuid);
+        pulledPastOpening.resolve();
+        cli.received.push((await inputs.next()).value);
+        yield INIT;
+        yield assistantText('starting a watcher');
+        turnStarted.resolve();
+        await finishTurn.promise;
+        // The turn starts another background task before it ends: the tasks are active.
+        yield level([devServer, watcher]);
+        yield successResult({ result: 'DONE', num_turns: 1, uuid: 'steer-result-uuid', user_message_uuid: 'u-steer' });
+        for (;;) {
+          const next = await inputs.next();
+          if (next.done) break;
+          cli.received.push(next.value);
+        }
+        cli.inputEnded = true;
+      });
+
+      const framesPromise = collect(startTurn(handler));
+      await pulledPastOpening.promise;
+      await vi.advanceTimersByTimeAsync(CAP_MS - 60_000);
+      expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-steer', text: 'watch CI too' })).toBe(true);
+      await turnStarted.promise;
+      await vi.advanceTimersByTimeAsync(120_000);
+      finishTurn.resolve();
+      await vi.advanceTimersByTimeAsync(1);
+      // Not at that result: the new task's start restarted the idle deadline.
+      expect(cli.stopTask).not.toHaveBeenCalled();
+      expect(cli.inputEnded).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(CAP_MS);
+      await framesPromise;
+      expect(cli.stopTask).toHaveBeenCalledWith('bash-1');
+      expect(cli.stopTask).toHaveBeenCalledWith('bash-2');
+    } finally {
+      warn.mockRestore();
+      info.mockRestore();
+    }
+  });
+
   it('the keepalive cap stops a shell that holds the turn and tells the model the host stopped it (#1425)', async () => {
     vi.useFakeTimers();
     vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));

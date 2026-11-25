@@ -4082,11 +4082,35 @@ describe('SlackHandler — follow-up queue host', () => {
       await handler.handleMessage(message({ ts: '333.444', text: 'dev2 qa 진행해' }), say());
       registrySession.compactTurnActive = false;
 
-      // No replay is running in the run's slot: a stray undefined-epoch event pushes nothing.
+      // The replay starts inside the run and is still setting up when a Send now replaces the run.
+      const replayGate = deferred<any>();
+      createAgentSession.mockImplementationOnce(() => ({
+        startWithContinuation: vi.fn(() => replayGate.promise),
+        getLastTurnSucceeded: () => true,
+        getRetryAfterMs: () => undefined,
+      }));
+      const replay = handler.handleMessage(
+        message({ ts: '222.333', text: '[auto-compact] continue', routeContext: { compactRedispatch: true } } as any),
+        say(),
+      );
+      await tick();
+      const holder = handlerAny.followupDispatcher.liveTurnEpoch(SESSION_KEY);
+      vi.spyOn(handlerAny.followupDispatcher, 'liveTurnEpoch').mockReturnValue(holder + 1);
+      // The new run has not opened its input yet: a message sent now is refused and waits for THAT run's open.
+      steerTurn.mockReturnValueOnce(false);
+      await handler.handleMessage(message({ ts: '444.555', text: '새 run에 보낼 것' }), say());
+      expect(steerTurn).toHaveBeenCalledTimes(1);
+
+      // The old replay's first event lands late: the run it ran in no longer holds the slot, so the rows waiting
+      // for the new run stay for the new run.
       handlerAny.streamExecutor?.deps?.onTurnReachedModel?.({ sessionKey: SESSION_KEY, turnEpoch: undefined });
       await tick();
-      expect(steerTurn).not.toHaveBeenCalled();
-      expect(items()[0].state).toBe('queued');
+      expect(steerTurn).toHaveBeenCalledTimes(1);
+      expect(items().every((item: any) => item.state === 'queued')).toBe(true);
+
+      vi.mocked(handlerAny.followupDispatcher.liveTurnEpoch).mockRestore();
+      replayGate.resolve({ hasPendingChoice: false });
+      await replay;
       await settle();
     });
 

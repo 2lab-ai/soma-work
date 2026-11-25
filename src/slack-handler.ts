@@ -2120,12 +2120,9 @@ export class SlackHandler {
       // The run that holds the slot now — its boundary owns a stop inside it.
       const holderEpoch = dispatcher.snapshot(slotOwner).turnEpoch;
       if (holderEpoch !== undefined) this.inlineReplayEpochs.set(slotOwner, holderEpoch);
-      let outcome: Awaited<ReturnType<SlackHandler['processMessage']>>;
-      try {
-        outcome = await this.processMessage(event, say);
-      } finally {
+      const outcome = await this.processMessage(event, say).finally(() => {
         if (this.inlineReplayEpochs.get(slotOwner) === holderEpoch) this.inlineReplayEpochs.delete(slotOwner);
-      }
+      });
       if (isAutoCompactStop(outcome)) {
         // Under the key the holding run's boundary reads (its canonical key).
         this.nestedAutoCompactStops.set(this.canonicalFollowupKey(slotOwner), holderEpoch);
