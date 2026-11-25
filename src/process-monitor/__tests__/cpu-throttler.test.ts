@@ -369,7 +369,9 @@ describe('CpuThrottler — a task tree held to its cap by a duty cycle', () => {
     m.add(10, 0).add(11, 4);
     t.update([session(400, [proc(10, 'root'), proc(11, 'child')])], () => 100);
     await vi.advanceTimersByTimeAsync(3_000);
-    expect(warnings.filter((w) => /parent map/.test(w))).toHaveLength(1);
+    // Once for the periods' scans, once for the stops' (each said once while it lasts).
+    expect(warnings.filter((w) => /parent map could not be read;/.test(w))).toHaveLength(1);
+    expect(warnings.filter((w) => /could not be read at a stop/.test(w))).toHaveLength(1);
     // It still holds what it knows.
     expect(m.signals.some(([pid, sig]) => pid === 11 && sig === 'SIGSTOP')).toBe(true);
   });
@@ -999,6 +1001,113 @@ describe('CpuThrottler — hardening (#1421)', () => {
     t.update([session(200, [proc(10, 'root'), proc(11, 'child', { ppid: 10 })])], () => 100);
     await vi.advanceTimersByTimeAsync(5_000);
     expect(warnings.filter((w) => w.includes('workers found at a stop failed'))).toHaveLength(1);
+    t.releaseAll();
+  });
+
+  it('a nested tree’s process is never taken for a worker at another tree’s stop', async () => {
+    const { m, t } = setup();
+    // Tree A: 10 → 11 (2 cores). Tree B's Claude Code process 20 runs under A's 11, with its own worker 21.
+    m.add(10, 0).add(11, 2, START, 10).add(20, 0, START, 11).add(21, 2, START, 20);
+    t.update(
+      [
+        session(200, [proc(10, 'root'), proc(11, 'child', { ppid: 10 })], 'A'),
+        session(200, [proc(20, 'root', { ppid: 11 }), proc(21, 'child', { ppid: 20 })], 'B'),
+      ],
+      () => 100,
+    );
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(m.signals.some(([pid, sig]) => pid === 20 && sig === 'SIGSTOP')).toBe(false);
+    t.releaseAll();
+  });
+
+  it('a stop read that keeps failing in one tree is said once, whatever another tree’s reads do', async () => {
+    const { m, t, warnings } = setup();
+    m.add(10, 0).add(11, 2).add(20, 0).add(21, 2);
+    // A's read before a stop (its worker, no Claude Code process) fails; B's answers.
+    m.readHook = async (pids) => {
+      if (pids.includes(11) && !pids.includes(10)) throw new Error('ps timed out');
+    };
+    t.update(
+      [
+        session(200, [proc(10, 'root'), proc(11, 'child')], 'A'),
+        session(200, [proc(20, 'root'), proc(21, 'child')], 'B'),
+      ],
+      () => 100,
+    );
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(warnings.filter((w) => w.includes('identity read before a stop failed'))).toHaveLength(1);
+    t.releaseAll();
+  });
+
+  it('a stop scan that keeps failing is said once', async () => {
+    const m = new Machine();
+    let stopRead = false;
+    m.readHook = async (pids) => {
+      if (!pids.includes(10)) stopRead = true;
+    };
+    const warnings: string[] = [];
+    const t = new CpuThrottler({
+      kill: m.kill,
+      read: m.read,
+      readParents: async () => {
+        if (stopRead) {
+          stopRead = false;
+          throw new Error('ps -A timed out');
+        }
+        return m.readParents();
+      },
+      liveStartTokens: m.liveStartTokens,
+      now: () => Date.now(),
+      userPaused: () => false,
+      logger: { warn: (msg: string) => warnings.push(msg) },
+    });
+    m.add(10, 0).add(11, 2, START, 10);
+    t.update([session(200, [proc(10, 'root'), proc(11, 'child', { ppid: 10 })])], () => 100);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(warnings.filter((w) => w.includes('could not be read at a stop'))).toHaveLength(1);
+    t.releaseAll();
+  });
+
+  it('a failed re-read of the holds never takes a valid sample from the rate: the worker stays held, nothing collapses', async () => {
+    const m = new Machine();
+    const ctl = { dropTwelve: 0, failNext: 0 };
+    const t = new CpuThrottler({
+      kill: m.kill,
+      read: async (pids) => {
+        if (ctl.failNext > 0 && !pids.includes(10)) {
+          ctl.failNext--;
+          throw new Error('ps timed out');
+        }
+        const out = await m.read(pids);
+        if (ctl.dropTwelve > 0 && pids.includes(12) && pids.includes(10)) {
+          ctl.dropTwelve--;
+          out.delete(12);
+        }
+        return out;
+      },
+      readParents: m.readParents,
+      liveStartTokens: m.liveStartTokens,
+      now: () => Date.now(),
+      userPaused: () => false,
+    });
+    m.add(10, 0).add(11, 2, START, 10).add(12, 2, START, 10);
+    t.update(
+      [session(400, [proc(10, 'root'), proc(11, 'child', { ppid: 10 }), proc(12, 'child', { ppid: 10 })])],
+      () => 100,
+    );
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(await until(() => !!m.procs.get(11)?.stopped && !!m.procs.get(12)?.stopped)).toBe(true);
+    const steady = t.meteredShare('A') ?? 0;
+    // The next period read misses 12, and the re-read of the holds that follows fails.
+    ctl.dropTwelve = 1;
+    ctl.failNext = 1;
+    let lowest = 1;
+    for (let i = 0; i < 80; i++) {
+      await vi.advanceTimersByTimeAsync(25);
+      lowest = Math.min(lowest, t.meteredShare('A') ?? 1);
+    }
+    // (It dipped to 0.4 × steady when the failed re-read dropped the workers from the rate and they came back as new.)
+    expect(lowest).toBeGreaterThan(steady * 0.7);
     t.releaseAll();
   });
 

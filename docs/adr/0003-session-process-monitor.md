@@ -124,8 +124,11 @@ same snapshot, and work will be placed by each node's free CPU and memory.
    missed is probed live, and that synchronous probe runs while the tree is still stopped (no stop timer can fire
    during it). A cap change keeps a held tree metered on the new cap (its free rate is about old cap ÷ share; the
    sample reads it at its old cap, so re-metering from the sample would let it run free until the next one) and lets
-   it go only when the new cap is over that rate. A stop whose identity read keeps failing, a read of workers found at
-   a stop that keeps failing, and a saved cap that does not parse are said in the log. It never stops the Claude Code
+   it go only when the new cap is over that rate. A member a read merely missed is remembered with its last counter, so
+   finding it again charges only what it used meanwhile; a re-read for the continues never takes a valid sample from
+   the rate. A stop's discovery skips every metered tree's members, so a nested tree's process is never taken for a
+   worker. A stop whose identity read, parent scan or new-worker read keeps failing is said once per tree, and a
+   saved cap that does not parse is said in the log. It never stops the Claude Code
    process itself, never continues what it did not stop (a person's pause becomes theirs), never signals a reused pid,
    and continues everything it holds on an abort, a cap change and shutdown (before the monitor's own resume pass). A held process reads as running with `throttled`, not as paused;
    a session says its `cpuCapPercent` and whether the cap is `throttling`. Research: [2026-11-24 task CPU
