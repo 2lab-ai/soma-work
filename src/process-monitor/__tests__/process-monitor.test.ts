@@ -1205,6 +1205,16 @@ describe('LocalProcessMonitor', () => {
 });
 
 describe('LocalProcessMonitor — hardening (#1407)', () => {
+  /** A runPs that drops the detail rows of the pids in `hidden` (the parent map keeps them). */
+  const skipping = (hidden: () => Set<number>) => (fake: FakePs) => async (a: readonly string[]) => {
+    const out = await fake.run(a);
+    if (a[0] === '-A') return out;
+    return out
+      .split('\n')
+      .filter((line) => !hidden().has(Number(line.trim().split(/\s+/)[0])))
+      .join('\n');
+  };
+
   it('dispose continues what the monitor paused before it detaches (nothing is left stopped with nobody to resume it)', async () => {
     const { monitor, signals, fireAbort } = setup();
     await monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' });
@@ -1263,16 +1273,7 @@ describe('LocalProcessMonitor — hardening (#1407)', () => {
 
   it('a turn is traced through a carried parent whose row a sample skipped: its aborted turn refuses the pause', async () => {
     let hidden = new Set<number>();
-    const { monitor, ps, signals, fireAbort, tick } = setup({
-      runPs: (fake) => async (a) => {
-        const out = await fake.run(a);
-        if (a[0] === '-A') return out;
-        return out
-          .split('\n')
-          .filter((line) => !hidden.has(Number(line.trim().split(/\s+/)[0])))
-          .join('\n');
-      },
-    });
+    const { monitor, ps, signals, fireAbort, tick } = setup({ runPs: skipping(() => hidden) });
     await monitor.sample(); // 300 is seen under turn 200
     fireAbort({ pid: 200, sessionKey: 'A' }); // turn 200 is stopping; its Claude Code has not exited yet
     // 300 starts 330; the next samples skip 300's row (the parent map still has it).
@@ -1290,16 +1291,7 @@ describe('LocalProcessMonitor — hardening (#1407)', () => {
 
   it('a pause whose turn cannot be traced (a never-read parent row) is refused while the session has an aborted turn', async () => {
     const hidden = new Set<number>([340]);
-    const { monitor, ps, signals, fireAbort, tick } = setup({
-      runPs: (fake) => async (a) => {
-        const out = await fake.run(a);
-        if (a[0] === '-A') return out;
-        return out
-          .split('\n')
-          .filter((line) => !hidden.has(Number(line.trim().split(/\s+/)[0])))
-          .join('\n');
-      },
-    });
+    const { monitor, ps, signals, fireAbort, tick } = setup({ runPs: skipping(() => hidden) });
     // 340's row is never read, so nothing knows its turn; 350 under it cannot be traced.
     ps.set(340, { ppid: 200, args: '/bin/bash' }).set(350, { ppid: 340, args: '/bin/sleep 9' });
     await monitor.sample();
@@ -1317,16 +1309,6 @@ describe('LocalProcessMonitor — hardening (#1407)', () => {
     });
     expect(signals).toEqual([]);
   });
-
-  /** A runPs that drops the detail rows of the pids in `hidden` (the parent map keeps them). */
-  const skipping = (hidden: () => Set<number>) => (fake: FakePs) => async (a: readonly string[]) => {
-    const out = await fake.run(a);
-    if (a[0] === '-A') return out;
-    return out
-      .split('\n')
-      .filter((line) => !hidden().has(Number(line.trim().split(/\s+/)[0])))
-      .join('\n');
-  };
 
   it('tracing a carried parent is what passes the pause: its live turn wins over another turn’s abort', async () => {
     let hidden = new Set<number>();
@@ -1374,6 +1356,12 @@ describe('LocalProcessMonitor — hardening (#1407)', () => {
     hidden = new Set([300]);
     tick(1);
     await monitor.sample();
+    // While the shell's row is missing, 345 cannot be traced (the pid's parent changed: the old turn is not lent),
+    // and the session has an aborted turn: refused.
+    expect(await monitor.control({ sessionKey: 'A', pid: 345, startToken: start, action: 'pause' })).toEqual({
+      ok: false,
+      reason: 'not-found',
+    });
     // Once the shell's row is read, 345 traces to 210 — not to the aborted turn 200 a stale trace would have kept.
     hidden = new Set();
     tick(1);
@@ -1381,6 +1369,28 @@ describe('LocalProcessMonitor — hardening (#1407)', () => {
     tick(1);
     expect(await monitor.control({ sessionKey: 'A', pid: 345, startToken: start, action: 'pause' })).toMatchObject({
       ok: true,
+    });
+  });
+
+  it('a reused carried parent never lends a live turn to a child of an aborted one', async () => {
+    let hidden = new Set<number>();
+    const { monitor, ps, roots, fireAbort, tick } = setup({ runPs: skipping(() => hidden) });
+    // 330 runs under the live turn 210 and is seen there.
+    ps.set(210, { ppid: 100, args: '/usr/local/bin/claude' }).set(330, { ppid: 210, args: '/bin/bash' });
+    roots.push({ pid: 210, sessionKey: 'A' });
+    await monitor.sample();
+    fireAbort({ pid: 200, sessionKey: 'A' }); // turn 200 is stopping
+    // 330 exits; its pid goes to a shell under the aborted turn 200 (its rows stay skipped), which starts 346.
+    ps.set(330, { ppid: 200, args: '/bin/bash', start: 'Tue Nov 24 11:00:00 2026' });
+    ps.set(346, { ppid: 330, args: '/bin/sleep 9' });
+    hidden = new Set([330]);
+    tick(1);
+    await monitor.sample();
+    tick(1);
+    // 346 must not borrow 210 from the old 330: it cannot be traced, and the session has an aborted turn.
+    expect(await monitor.control({ sessionKey: 'A', pid: 346, startToken: start, action: 'pause' })).toEqual({
+      ok: false,
+      reason: 'not-found',
     });
   });
 
@@ -1451,6 +1461,12 @@ describe('LocalProcessMonitor — hardening (#1407)', () => {
       [300, 'SIGCONT'],
       [320, 'SIGCONT'],
     ]);
+    // 310 waits for a retry: once its identity reads again, only it is continued.
+    probing = false;
+    signals.length = 0;
+    tick(1);
+    await monitor.sample();
+    expect(signals).toEqual([[310, 'SIGCONT']]);
   });
 
   it('a sample with a failed detail batch still succeeds, and says so once in the log', async () => {

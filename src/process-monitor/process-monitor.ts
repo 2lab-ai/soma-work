@@ -789,7 +789,8 @@ function turnsIn(
       }
       const up = byPid.get(cur.ppid);
       // The parent is in the session's tree but this sample has no row for it: its turn comes from what was last
-      // remembered of it (a skipped middle row must not cut the chain).
+      // remembered of it (a skipped middle row must not cut the chain). (A Claude Code process without a row is not
+      // in the tree at all — the sampler seeds a root only from its row — so this parent is never a root.)
       if (!up && cur.role === 'child') {
         turn = carriedParentTurn(cur.ppid);
         viaCarried = turn !== undefined;
