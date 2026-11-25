@@ -412,9 +412,14 @@ export class LocalProcessMonitor implements ProcessHost {
     // The host started shutting down, or this process's own turn was aborted (any turn, for a process between
     // turns), while this check sampled: that cleanup already ran, so a pause now would never be undone. An abort of
     // another turn of the session does not block it.
+    // The process's turn as this sample traces it (one traced through a carried parent is never stored, see noteTurns).
+    const turnIdOf = new Map(this.deps.roots.roots().map((r) => [r.pid, r.turnId]));
+    const turn =
+      proc && tree
+        ? turnsIn(tree, this.turnOf, turnIdOf, this.carriedParentTurn(tree.sessionKey)).get(proc.pid)
+        : undefined;
     if (input.action === 'pause' && proc && tree) {
       const since = check.abortedTurns;
-      const turn = this.turnOf.get(`${proc.pid}:${proc.startToken}`);
       const turnAborted = turn !== undefined && this.abortedTurnIds.has(turn);
       // A process whose chain breaks at a parent the sample carried without its row has no traceable turn: it may be
       // in a turn of this session whose abort already ran, so it is refused while the session has one.
@@ -450,7 +455,7 @@ export class LocalProcessMonitor implements ProcessHost {
     // A person's pause of a process the CPU cap holds: it is theirs now, never continued by the cap.
     if (input.action === 'pause') this.throttler.forget(input.sessionKey, input.pid);
     if (input.action === 'pause') {
-      mine.set(input.pid, { startToken: input.startToken, turn: this.turnOf.get(`${input.pid}:${input.startToken}`) });
+      mine.set(input.pid, { startToken: input.startToken, turn });
     } else mine.delete(input.pid);
     if (mine.size > 0) this.paused.set(input.sessionKey, mine);
     else this.paused.delete(input.sessionKey);
@@ -630,7 +635,7 @@ export class LocalProcessMonitor implements ProcessHost {
     const settled = this.continueSettled(due);
     let left = 0;
     for (const [pid, entry] of due) {
-      if (settled.has(pid)) mine.delete(pid);
+      if (settled.has(`${pid}:${entry.startToken}`)) mine.delete(pid);
       else {
         entry.resumeWanted = true;
         left++;
@@ -653,12 +658,15 @@ export class LocalProcessMonitor implements ProcessHost {
   private noteTurns(snapshot: NodeProcessSnapshot, turnIdOf: ReadonlyMap<number, number>): void {
     const live = new Set<string>();
     for (const s of snapshot.sessions) {
-      const turns = turnsIn(s, this.turnOf, turnIdOf, this.carriedParentTurn(s.sessionKey));
+      // A turn traced through a carried parent is provisional: the parent's row is missing, so it is not stored (it
+      // would outlive the parent's reappearance and win every later lookup). Each sample traces it again.
+      const provisional = new Set<number>();
+      const turns = turnsIn(s, this.turnOf, turnIdOf, this.carriedParentTurn(s.sessionKey), provisional);
       for (const p of s.processes) {
         const key = `${p.pid}:${p.startToken}`;
         live.add(key);
         const turn = turns.get(p.pid);
-        if (turn !== undefined) this.turnOf.set(key, turn);
+        if (turn !== undefined && !provisional.has(p.pid)) this.turnOf.set(key, turn);
       }
     }
     // A process missing from this sample but still remembered by the sampler (its row was skipped) keeps its turn.
@@ -678,7 +686,7 @@ export class LocalProcessMonitor implements ProcessHost {
    */
   private carriedParentTurn(sessionKey: string): (ppid: number) => number | undefined {
     return (ppid) => {
-      const startToken = this.sampler.rememberedStart(sessionKey, ppid);
+      const startToken = this.sampler.carriedStart(sessionKey, ppid);
       return startToken === undefined ? undefined : this.turnOf.get(`${ppid}:${startToken}`);
     };
   }
@@ -687,23 +695,21 @@ export class LocalProcessMonitor implements ProcessHost {
    * Continue these paused processes after one batched identity read. The pids it settles: continued, confirmed gone, or
    * no longer that process. An unknown identity (the read failed) or a refused signal leaves an entry unsettled.
    */
-  private continueSettled(entries: ReadonlyArray<readonly [number, PausedEntry]>): Set<number> {
-    const settled = new Set<number>();
+  private continueSettled(entries: ReadonlyArray<readonly [number, PausedEntry]>): Set<string> {
+    const settled = new Set<string>();
     if (entries.length === 0) return settled;
-    const live = this.liveStartTokens(entries.map(([pid]) => pid));
+    const live = this.liveStartTokens([...new Set(entries.map(([pid]) => pid))]);
     if (!live) return settled;
     for (const [pid, entry] of entries) {
       const now = live.get(pid);
       if (now === undefined) continue;
-      if (now !== entry.startToken) {
-        settled.add(pid);
-        continue;
-      }
+      // Settled per identity (pid and start time): a stale entry for a reused pid never settles the live one.
+      const key = `${pid}:${entry.startToken}`;
       try {
-        this.kill(pid, 'SIGCONT');
-        settled.add(pid);
+        if (now === entry.startToken) this.kill(pid, 'SIGCONT');
+        settled.add(key);
       } catch (err) {
-        if ((err as NodeJS.ErrnoException)?.code === 'ESRCH') settled.add(pid);
+        if ((err as NodeJS.ErrnoException)?.code === 'ESRCH') settled.add(key);
       }
     }
     return settled;
@@ -716,7 +722,9 @@ export class LocalProcessMonitor implements ProcessHost {
     const settled = this.continueSettled(wanted);
     if (settled.size === 0) return;
     for (const [sessionKey, mine] of this.paused) {
-      for (const pid of [...mine.keys()]) if (settled.has(pid) && mine.get(pid)?.resumeWanted) mine.delete(pid);
+      for (const [pid, entry] of [...mine]) {
+        if (entry.resumeWanted && settled.has(`${pid}:${entry.startToken}`)) mine.delete(pid);
+      }
       if (mine.size === 0) this.paused.delete(sessionKey);
     }
   }
@@ -750,6 +758,8 @@ function turnsIn(
   remembered: ReadonlyMap<string, number>,
   turnIdOf: ReadonlyMap<number, number>,
   carriedParentTurn: (ppid: number) => number | undefined = () => undefined,
+  /** Filled with the pids whose turn came through a carried parent (provisional). */
+  provisional?: Set<number>,
 ): Map<number, number | undefined> {
   const byPid = new Map(tree.processes.map((p) => [p.pid, p]));
   const turns = new Map<number, number | undefined>();
@@ -757,10 +767,12 @@ function turnsIn(
     const chain: number[] = [];
     const onChain = new Set<number>();
     let turn: number | undefined;
+    let viaCarried = false;
     let cur: ProcessSample | undefined = start;
     while (cur && !onChain.has(cur.pid)) {
       if (turns.has(cur.pid)) {
         turn = turns.get(cur.pid);
+        viaCarried = provisional?.has(cur.pid) ?? false;
         break;
       }
       chain.push(cur.pid);
@@ -780,11 +792,15 @@ function turnsIn(
       // remembered of it (a skipped middle row must not cut the chain).
       if (!up && cur.role === 'child') {
         turn = carriedParentTurn(cur.ppid);
+        viaCarried = turn !== undefined;
         break;
       }
       cur = up;
     }
-    for (const pid of chain) turns.set(pid, turn);
+    for (const pid of chain) {
+      turns.set(pid, turn);
+      if (viaCarried) provisional?.add(pid);
+    }
   }
   return turns;
 }
@@ -802,16 +818,18 @@ function brokenAtCarriedRow(tree: SessionProcessDetail, proc: ProcessSample): bo
   return false;
 }
 
-/** Live start times one pid at a time, for a host that brings only the one-pid read: unknown for all if one fails. */
+/**
+ * Live start times one pid at a time, for a host that brings only the one-pid read. A pid whose read fails is left out
+ * (unknown); the others keep what they read.
+ */
 function liveStartTokensOneByOne(
   pids: readonly number[],
   one: (pid: number) => string | null | undefined,
-): Map<number, string | null> | undefined {
+): Map<number, string | null> {
   const out = new Map<number, string | null>();
   for (const pid of pids) {
     const token = one(pid);
-    if (token === undefined) return undefined;
-    out.set(pid, token);
+    if (token !== undefined) out.set(pid, token);
   }
   return out;
 }

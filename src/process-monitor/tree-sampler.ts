@@ -29,6 +29,8 @@ export interface TreeSample {
 interface Remembered {
   readonly startToken: string;
   readonly depth: number;
+  /** Its parent when its row was last read: a carried row whose pid now has another parent was reused. */
+  readonly ppid: number;
 }
 
 /** Owner key of the unattributed group: SDK children with no session. */
@@ -53,6 +55,8 @@ export class TreeSampler {
   private readonly prevCpu = new Map<string, { cpuSeconds: number; at: number }>();
   /** `pid:start` → its working directory and when it was read. */
   private readonly cwds = new Map<string, { cwd: string; at: number }>();
+  /** The last sample's parent map. */
+  private lastParentOf = new Map<number, number>();
 
   constructor(
     private readonly runPs: RunPs,
@@ -72,6 +76,7 @@ export class TreeSampler {
     if (!this.hasWork(roots)) return { sessions: [], unattributed: { processCount: 0, cpuPercent: 0, rssBytes: 0 } };
 
     const parentOf = parseParentMap(await this.runPs(['-A', '-o', 'pid=,ppid=']));
+    this.lastParentOf = parentOf;
     const childrenOf = new Map<number, number[]>();
     for (const [pid, ppid] of parentOf) {
       if (pid === ppid) continue;
@@ -201,7 +206,7 @@ export class TreeSampler {
           command: commandPreview(argv),
           cwd: this.cwds.get(cpuKey)?.cwd ?? '',
         });
-        memory.set(pid, { startToken: row.startToken, depth });
+        memory.set(pid, { startToken: row.startToken, depth, ppid: row.ppid });
       }
       if (memory.size > 0) this.remembered.set(owner, memory);
       if (processes.length === 0) continue;
@@ -253,6 +258,17 @@ export class TreeSampler {
   /** The owner's remembered process with this pid, if it was in the last sample. */
   rememberedStart(sessionKey: string, pid: number): string | undefined {
     return this.remembered.get(sessionKey)?.get(pid)?.startToken;
+  }
+
+  /**
+   * The start time of the owner's remembered process with this pid — one the last sample carried without its row — as
+   * long as the parent map still gives the pid the parent it had when its row was last read. A different parent means
+   * the pid was most likely reused, so nothing is vouched for (undefined).
+   */
+  carriedStart(sessionKey: string, pid: number): string | undefined {
+    const seen = this.remembered.get(sessionKey)?.get(pid);
+    if (!seen || this.lastParentOf.get(pid) !== seen.ppid) return undefined;
+    return seen.startToken;
   }
 
   private cpuPercent(key: string, row: PsRow, at: number): number {
