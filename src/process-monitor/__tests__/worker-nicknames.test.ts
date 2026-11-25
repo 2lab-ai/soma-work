@@ -66,7 +66,22 @@ describe('WorkerNicknames — the name a work worker is read by', () => {
     expect(parseWorkerNickname('x'.repeat(MAX_WORKER_NICKNAME))).toBe('x'.repeat(MAX_WORKER_NICKNAME));
     // Characters, not UTF-16 units: 24 emoji fit.
     expect(parseWorkerNickname('🖥'.repeat(MAX_WORKER_NICKNAME))).toBe('🖥'.repeat(MAX_WORKER_NICKNAME));
-    for (const bad of ['', '   ', 'x'.repeat(MAX_WORKER_NICKNAME + 1), 'a\nb', 'a\u0007b', 'a b', null, 7, {}]) {
+    // Invisible characters too: a zero-width name draws a blank badge, a direction override turns its text around.
+    const invisible = ['\u200b', 'a\u200db', 'a\u202eb', 'a\u2066b', 'a\ufeffb', 'a\u2060b'];
+    // (A leading or trailing byte-order mark is whitespace to trim(): '\ufeffa' is just 'a'.)
+    expect(parseWorkerNickname('\ufeffa')).toBe('a');
+    for (const bad of [
+      '',
+      '   ',
+      'x'.repeat(MAX_WORKER_NICKNAME + 1),
+      'a\nb',
+      'a\u0007b',
+      'a\u2028b',
+      ...invisible,
+      null,
+      7,
+      {},
+    ]) {
       expect(parseWorkerNickname(bad)).toBeUndefined();
     }
   });

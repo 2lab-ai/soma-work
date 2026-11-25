@@ -147,7 +147,9 @@ function faceOf(card, model, face, asks, effort, asked) {
 // (no domain, no .local suffix) — at most 12 characters.
 function nodeShortName(id, nickname) {
   var s = nickname ? String(nickname) : String(id || '').split('.')[0] || String(id || '');
-  return s.length > 12 ? s.slice(0, 11) + '…' : s;
+  // By characters, not UTF-16 units: an emoji nickname is never cut in half.
+  var chars = Array.from(s);
+  return chars.length > 12 ? chars.slice(0, 11).join('') + '…' : s;
 }
 // The badge's two gauges, 0–100, the task's own use (dashboard.ts taskGaugesOf, the same rule): CPU full at one core
 // (100% = one core, the default CPU cap; a stripe is 10% of a core), memory full at one core's share of the node's

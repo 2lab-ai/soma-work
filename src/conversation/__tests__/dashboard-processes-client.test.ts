@@ -212,6 +212,21 @@ describe('P3 — the tab’s content', () => {
     expect(html).toContain('<span class="pp-guide" aria-hidden="true">└─</span>');
   });
 
+  it('a worker with a nickname: the node line reads it, the node id in its title, markup kept as text', () => {
+    const named = { ...body, node: { ...body.node, name: '<m5 "a">' } };
+    const html = env().panelProcsHtml({ status: 200, body: named, busy: {} }, true);
+    expect(html).toContain('노드 <b title="n1">&lt;m5 &quot;a&quot;&gt;</b>');
+    // '노드 ' stays its own literal, the one the page catalog translates (review of #1431: '노드 <b' had no entry).
+    const catalog = JSON.parse(
+      readFileSync(
+        join(__dirname, '..', '..', '..', 'packages', 'common', 'src', 'i18n-catalog', 'en-page.json'),
+        'utf8',
+      ),
+    );
+    expect(catalog['노드 ']).toBe('Node ');
+    expect(TEMPLATE).toContain("nodeBits.push('노드 ' + (node.name ?");
+  });
+
   it('a reader sees the same table with no buttons', () => {
     const html = env().panelProcsHtml({ status: 200, body, busy: {} }, false);
     expect(html).toContain('>bash<');
@@ -1094,6 +1109,9 @@ describe('P8 — the card’s node badge (card.node)', () => {
     // A nickname is shown as set (no host-part cut at a dot), at most 12 characters like any name.
     expect(fns().nodeBadgeOf(u({ nodeName: 'rack.2' }))?.text).toBe('rack.2');
     expect(fns().nodeBadgeOf(u({ nodeName: 'a-very-long-nickname' }))?.text).toBe('a-very-long…');
+    // Cut by characters: twelve emoji never leave half a surrogate pair before the ellipsis.
+    const emoji = fns().nodeBadgeOf(u({ nodeName: '🖥'.repeat(13) }))?.text ?? '';
+    expect(emoji).toBe(`${'🖥'.repeat(11)}…`);
   });
 
   it('no memory gauge without the node’s size; none at all while nothing of the task lives', () => {

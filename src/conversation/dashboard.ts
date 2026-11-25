@@ -17037,7 +17037,8 @@ function panelProcsHtml(state, canControl) {
   if (!st.body) return '<p class="pp-note">프로세스 목록을 읽는 중…</p>';
   var node = st.body.node || {};
   var nodeBits = [];
-  if (node.nodeId) nodeBits.push('노드 <b' + (node.name ? ' title="' + escAttr(node.nodeId) + '"' : '') + '>' + esc(node.name || node.nodeId) + '</b>');
+  // '노드 ' alone, then the markup: the page catalog translates that literal (a nickname adds the node id as a title).
+  if (node.nodeId) nodeBits.push('노드 ' + (node.name ? '<b title="' + escAttr(node.nodeId) + '">' : '<b>') + esc(node.name || node.nodeId) + '</b>');
   if (toNum(node.cpuCount)) nodeBits.push('코어 ' + toNum(node.cpuCount) + '개');
   if (node.cpuBusyPercent !== null && node.cpuBusyPercent !== undefined) nodeBits.push('노드 CPU ' + procCpuText(node.cpuBusyPercent));
   if (toNum(node.totalMemBytes)) nodeBits.push('여유 메모리 ' + procBytesText(node.availableMemBytes) + ' / ' + procBytesText(node.totalMemBytes));

@@ -64,7 +64,7 @@ function wkRow(w, editable) {
     + (w.self ? '<span class="ui-chip is-sm">이 soma-work</span>' : '') + '</div>';
   var facts = '<dl class="wk-facts">'
     + '<dt>플랫폼</dt><dd>' + esc(wkPlatform(w.platform)) + '</dd>'
-    + '<dt>코어</dt><dd>' + (Number(w.cpuCount) || 0) + '개 · 사용 중 ' + esc(wkCpu(w.cpuBusyPercent)) + '</dd>'
+    + '<dt>코어</dt><dd>' + (Number(w.cpuCount) || 0) + '개' + (w.cpuBusyPercent === null || w.cpuBusyPercent === undefined ? '' : ' · 사용 중 ' + esc(wkCpu(w.cpuBusyPercent))) + '</dd>'
     + '<dt>메모리</dt><dd>' + esc(wkBytes(used)) + ' / ' + esc(wkBytes(w.totalMemBytes)) + ' 사용</dd>'
     + '<dt>지금</dt><dd>작업 ' + (Number(w.tasks) || 0) + '개 · 프로세스 ' + (Number(w.processes) || 0) + '개</dd>'
     + '</dl>';
@@ -127,8 +127,15 @@ async function wkRename(nodeId, nickname) {
   if (!nodeId || _wkBusy[nodeId]) return;
   _wkBusy[nodeId] = true;
   renderWorkers();
-  var r = await apiWrite('PUT', '/api/settings/workers/' + encodeURIComponent(nodeId) + '/nickname', { nickname: nickname });
-  delete _wkBusy[nodeId];
+  var r;
+  try {
+    r = await apiWrite('PUT', '/api/settings/workers/' + encodeURIComponent(nodeId) + '/nickname', { nickname: nickname });
+  } catch (_e) {
+    // The request itself failed (network, a restarting server): the field comes back and says so.
+    r = { ok: false, error: '연결 오류 — 다시 시도하세요' };
+  } finally {
+    delete _wkBusy[nodeId];
+  }
   if (r.ok && r.data && r.data.worker && _wk && _wk.workers) {
     for (var i = 0; i < _wk.workers.length; i++) if (_wk.workers[i].nodeId === nodeId) _wk.workers[i] = r.data.worker;
   }

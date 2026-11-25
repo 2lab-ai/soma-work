@@ -15,8 +15,12 @@ import { Logger } from '../logger';
 export const WORKER_NICKNAMES_FILE = 'worker-nicknames.json';
 /** The longest nickname, in characters: the card badge shows about 12. */
 export const MAX_WORKER_NICKNAME = 24;
-/** C0 and C1 control characters and the two Unicode line separators: none belongs in a name on a badge. */
-const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
+/**
+ * What never belongs in a name on a badge: C0 and C1 control characters, the two line separators, and the invisible
+ * ones — zero-width characters, direction marks and overrides, word joiners, the byte-order mark — which would draw
+ * a blank badge or turn its text around.
+ */
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/;
 
 const logger = new Logger('WorkerNicknames');
 const warn = (message: string, detail?: unknown) => logger.warn(message, detail);
@@ -73,7 +77,9 @@ export class WorkerNicknames {
 
   /** The worker's nickname, or `undefined` when it has none (its node id shows). */
   nicknameOf(nodeId: string): string | undefined {
-    return Object.hasOwn(this.data.nicknames, nodeId) ? this.data.nicknames[nodeId] : undefined;
+    // A plain object: `constructor`, `__proto__` … read as Object.prototype's members, never as a string.
+    const nickname = this.data.nicknames[nodeId];
+    return typeof nickname === 'string' ? nickname : undefined;
   }
 
   /** Set (or with `undefined`, clear back to the node id) one worker's nickname. */

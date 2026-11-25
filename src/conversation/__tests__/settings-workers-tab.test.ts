@@ -66,6 +66,8 @@ describe('작업 워커 tab — a worker card', () => {
     expect(html).toContain('이 soma-work');
     expect(html).toContain('<dt>플랫폼</dt><dd>macOS</dd>');
     expect(html).toContain('<dt>코어</dt><dd>16개 · 사용 중 42%</dd>');
+    // Before the second sample there is no CPU figure to give: the cores alone.
+    expect(r.wkRow(worker({ cpuBusyPercent: null }), true)).toContain('<dt>코어</dt><dd>16개</dd>');
     expect(html).toContain('<dt>메모리</dt><dd>40GB / 64GB 사용</dd>');
     expect(html).toContain('<dt>지금</dt><dd>작업 3개 · 프로세스 41개</dd>');
     // The field: empty, the node id as its hint, at most the server's length; no reset without a nickname.
@@ -137,5 +139,20 @@ describe('작업 워커 tab — renaming', () => {
       true,
     ]);
     expect(r.busy()).toEqual({});
+  });
+
+  it('a request that fails outright frees the field and says so', async () => {
+    const status: Array<[string, boolean | undefined]> = [];
+    const r = load<any>(['wkRename'], {
+      apiWrite: async () => {
+        throw new TypeError('Failed to fetch');
+      },
+      renderWorkers: () => undefined,
+      wkStatus: (t: string, e?: boolean) => status.push([t, e]),
+    });
+    r.setWk({ workers: [worker()] });
+    await r.wkRename('studio-build-01', 'b01');
+    expect(r.busy()).toEqual({});
+    expect(status[0]).toEqual(['studio-build-01 닉네임을 저장하지 못했습니다 — 연결 오류 — 다시 시도하세요', true]);
   });
 });
