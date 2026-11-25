@@ -307,6 +307,35 @@ describe('input points come from the transcript too — inputs recorded before a
     expect(points.map((p) => p.anchor)).toEqual([A(1), A(4)]);
   });
 
+  it('the first input of a session (nothing before its prompt) gets no anchor — not the next prompt’s (found on dev, 2026-11-25)', () => {
+    // A new session: the first prompt has no safe point above it; the second instruction came 30 s later.
+    const fresh = [
+      e({ type: 'user', uuid: U(21), parentUuid: null, timestamp: at(10), message: { content: 'first' } }),
+      e({ type: 'assistant', uuid: U(6), parentUuid: U(21), message: { content: [{ type: 'text', text: 'ok' }] } }),
+      e({ type: 'user', uuid: U(22), parentUuid: U(6), timestamp: at(40), message: { content: 'second' } }),
+      e({ type: 'assistant', uuid: U(7), parentUuid: U(22), message: { content: [{ type: 'text', text: 'ok' }] } }),
+    ].join('\n');
+    const rec = {
+      turns: [
+        { id: 'f1', role: 'user', timestamp: ms(9), rawContent: 'first', origin: { by: 'user' } },
+        { id: 'f2', role: 'user', timestamp: ms(39), rawContent: 'second', origin: { by: 'user' }, anchor: A(6) },
+      ],
+    } as never;
+    const s = session({ contextAnchor: A(7), compactionCount: 0 });
+    const derived = inputAnchorsFromTranscript(s, rec, fresh);
+    expect(derived.has('f1')).toBe(false);
+    // So the first input is not a point, and the second keeps its own time (nothing shares its anchor).
+    const points = rollbackInputPoints(
+      s,
+      rec,
+      activeChainFilter(s, () => fresh),
+      derived,
+    );
+    expect(points.map((p) => p.turnId)).toEqual(['f2']);
+    const v = buildRollbackPointsView(s, points, [], { actor: 'U1', requestActive: false });
+    expect(v.inputs[0].at).toBe(ms(39));
+  });
+
   it('no transcript, no tail, or a prompt before the compaction boundary → nothing derived', () => {
     expect(inputAnchorsFromTranscript(session({ contextAnchor: A(5) }), record, undefined).size).toBe(0);
     expect(inputAnchorsFromTranscript(session({ contextAnchor: undefined }), record, text).size).toBe(0);

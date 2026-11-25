@@ -370,15 +370,25 @@ export function inputAnchorsFromTranscript(
     if (chain.length > 200_000) break;
   }
   chain.reverse();
-  const prompts: Array<{ ts: number; anchor: string }> = [];
+  // Every prompt keeps its place, with no anchor when nothing safe comes before it (a session's first input):
+  // dropping it shifted the match, and the first input took the next prompt's anchor (found on dev, 2026-11-25).
+  const prompts: Array<{ ts: number; anchor?: string }> = [];
   let lastSafe: string | undefined;
   for (const e of chain) {
     if (isPrompt(e)) {
       const ts = Date.parse(e.timestamp ?? '');
-      if (lastSafe && Number.isFinite(ts)) {
+      if (Number.isFinite(ts)) {
         prompts.push({
           ts,
-          anchor: encodeContextAnchor({ sid: session.sessionId, epoch: session.compactionCount ?? 0, uuid: lastSafe }),
+          ...(lastSafe
+            ? {
+                anchor: encodeContextAnchor({
+                  sid: session.sessionId,
+                  epoch: session.compactionCount ?? 0,
+                  uuid: lastSafe,
+                }),
+              }
+            : {}),
         });
       }
     } else if (isSafePoint(e)) {
@@ -392,7 +402,8 @@ export function inputAnchorsFromTranscript(
   for (const t of turns) {
     while (i < prompts.length && prompts[i].ts < t.timestamp - 2_000) i++;
     if (i < prompts.length && prompts[i].ts <= t.timestamp + 120_000) {
-      if (typeof t.anchor !== 'string') out.set(t.id, prompts[i].anchor);
+      const anchor = prompts[i].anchor;
+      if (typeof t.anchor !== 'string' && anchor) out.set(t.id, anchor);
       i++;
     }
   }
