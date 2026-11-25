@@ -4032,6 +4032,126 @@ describe('SlackHandler — follow-up queue host', () => {
     });
 
     /**
+     * #1424 (shared-host dev 2026-11-25, `C0C8P2S9AKG:1795515138.334529`): a message sent during the `/compact` turn
+     * an auto-compact stop led to (02:05:14Z, `Follow-up not steered — a /compact turn is running`) waited for the
+     * whole run — the replay after the compaction and the background wait it ended on — and reached the model at
+     * 02:20:30Z. The replay is the run's next turn: the busy fence runs it inside the run's slot with no generation
+     * of its own, and the message the compaction refused is pushed into it once it reaches the model.
+     */
+    it('pushes a follow-up the /compact turn refused into the replay turn that follows it', async () => {
+      const steerTurn = withLiveTurn();
+      const { settle } = await startBusyTurn();
+      registrySession.compactTurnActive = true;
+
+      await handler.handleMessage(message({ ts: '333.444', text: 'dev2 qa 진행해' }), say());
+      expect(steerTurn).not.toHaveBeenCalled();
+      expect(items()[0].state).toBe('queued');
+
+      // The /compact turn itself reaches the model: the row is offered, refused again, and keeps waiting.
+      const compactEpoch = handlerAny.followupDispatcher.liveTurnEpoch(SESSION_KEY);
+      handlerAny.streamExecutor?.deps?.onTurnReachedModel?.({ sessionKey: SESSION_KEY, turnEpoch: compactEpoch });
+      await tick();
+      expect(steerTurn).not.toHaveBeenCalled();
+
+      // The /compact turn's teardown ends the compaction and replays the intercepted message: the busy fence runs it
+      // inside the same run, with no generation of its own, and its first SDK event reaches the model.
+      registrySession.compactTurnActive = false;
+      let replayOpts: any;
+      createAgentSession.mockImplementationOnce((_result: any, _say: any, opts: any) => {
+        replayOpts = opts;
+        return {
+          startWithContinuation: vi.fn(async () => {
+            // What the executor reports for this execution: no generation of its own, the run it replays in.
+            handlerAny.streamExecutor?.deps?.onTurnReachedModel?.({
+              sessionKey: SESSION_KEY,
+              turnEpoch: opts?.turnEpoch,
+              replayEpoch: opts?.replayOfEpoch,
+            });
+            await tick();
+            return { hasPendingChoice: false };
+          }),
+          getLastTurnSucceeded: () => true,
+          getRetryAfterMs: () => undefined,
+        };
+      });
+      await handler.handleMessage(
+        message({ ts: '222.333', text: '[auto-compact] continue', routeContext: { compactRedispatch: true } } as any),
+        say(),
+      );
+
+      expect(replayOpts?.turnEpoch).toBeUndefined();
+      expect(replayOpts?.replayOfEpoch).toBe(compactEpoch);
+      expect(steerTurn).toHaveBeenCalledTimes(1);
+      expect(steerTurn.mock.calls[0][1]).toMatchObject({ text: 'dev2 qa 진행해' });
+      expect(items()[0].state).toBe('steered');
+      await settle();
+    });
+
+    it('a late first event of a replay does not take rows once another run holds the slot', async () => {
+      const steerTurn = withLiveTurn();
+      const { settle } = await startBusyTurn();
+      registrySession.compactTurnActive = true;
+      await handler.handleMessage(message({ ts: '333.444', text: 'dev2 qa 진행해' }), say());
+      registrySession.compactTurnActive = false;
+
+      // The replay starts inside the run and is still setting up when a Send now replaces the run.
+      const replayGate = deferred<any>();
+      let replayOpts: any;
+      createAgentSession.mockImplementationOnce((_result: any, _say: any, opts: any) => {
+        replayOpts = opts;
+        return {
+          startWithContinuation: vi.fn(() => replayGate.promise),
+          getLastTurnSucceeded: () => true,
+          getRetryAfterMs: () => undefined,
+        };
+      });
+      const replay = handler.handleMessage(
+        message({ ts: '222.333', text: '[auto-compact] continue', routeContext: { compactRedispatch: true } } as any),
+        say(),
+      );
+      await tick();
+      const holder = handlerAny.followupDispatcher.liveTurnEpoch(SESSION_KEY);
+      vi.spyOn(handlerAny.followupDispatcher, 'liveTurnEpoch').mockReturnValue(holder + 1);
+      // The new run has not opened its input yet: a message sent now is refused and waits for THAT run's open.
+      steerTurn.mockReturnValueOnce(false);
+      await handler.handleMessage(message({ ts: '444.555', text: '새 run에 보낼 것' }), say());
+      expect(steerTurn).toHaveBeenCalledTimes(1);
+
+      // The old replay's first event lands late: the run it ran in no longer holds the slot, so the rows waiting
+      // for the new run stay for the new run.
+      expect(replayOpts?.replayOfEpoch).toBe(holder);
+      handlerAny.streamExecutor?.deps?.onTurnReachedModel?.({
+        sessionKey: SESSION_KEY,
+        turnEpoch: undefined,
+        replayEpoch: replayOpts?.replayOfEpoch,
+      });
+      await tick();
+      expect(steerTurn).toHaveBeenCalledTimes(1);
+      expect(items().every((item: any) => item.state === 'queued')).toBe(true);
+
+      vi.mocked(handlerAny.followupDispatcher.liveTurnEpoch).mockRestore();
+      replayGate.resolve({ hasPendingChoice: false });
+      await replay;
+      await settle();
+    });
+
+    it('does not push a follow-up the /compact turn refused into that /compact turn when it reaches the model', async () => {
+      const steerTurn = withLiveTurn();
+      const { settle } = await startBusyTurn();
+      registrySession.compactTurnActive = true;
+
+      await handler.handleMessage(message({ ts: '333.444', text: 'dev2 qa 진행해' }), say());
+      const turnEpoch = handlerAny.followupDispatcher.liveTurnEpoch(SESSION_KEY);
+      handlerAny.streamExecutor?.deps?.onTurnReachedModel?.({ sessionKey: SESSION_KEY, turnEpoch });
+      await tick();
+
+      expect(steerTurn).not.toHaveBeenCalled();
+      expect(items()[0].state).toBe('queued');
+      registrySession.compactTurnActive = false;
+      await settle();
+    });
+
+    /**
      * `/z <instruction>` is the SAME turn with a routing prefix the dispatch
      * path strips (`command-router.ts:396-399` / `z/strip-z-prefix.ts:24`).
      * Steering pushes the text UNSTRIPPED, so the model would read the literal

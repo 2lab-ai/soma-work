@@ -751,7 +751,7 @@ interface StreamExecutorDeps {
    * generation this execution was started under (absent outside a dispatch).
    * Fired once per execution; a throw is swallowed — it must never cost the turn.
    */
-  onTurnReachedModel?: (args: { sessionKey: string; turnEpoch?: number }) => void;
+  onTurnReachedModel?: (args: { sessionKey: string; turnEpoch?: number; replayEpoch?: number }) => void;
 }
 
 interface StreamExecuteParams {
@@ -807,6 +807,12 @@ interface StreamExecuteParams {
    * surface keeps its legacy ungated behaviour.
    */
   followupTurnEpoch?: number;
+  /**
+   * #1424 — a post-compact replay run inside a run's slot without a generation of its own: that run's generation.
+   * Reported with `onTurnReachedModel` only, so the host opens THAT run's input (and no newer run's) for the rows
+   * waiting for it. Never a fence.
+   */
+  followupReplayEpoch?: number;
   /**
    * #785 — the ref the dashboard panel gave its own pending copy of this
    * instruction (`event.dashboardClientRef`). Recorded on the user turn so the
@@ -1431,6 +1437,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // concurrent executions on the same key, which is exactly the window
     // `Send now` opens.
     const turnEpochToken = params.followupTurnEpoch;
+    const replayEpochToken = params.followupReplayEpoch;
 
     // Cancel summary timer on new user input
     // Trace: docs/archive/features/turn-summary-lifecycle/trace.md, S2
@@ -2179,7 +2186,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           this.recordLiveness(session, sessionKey, { lastSignalAt: Date.now() }, turnEpochToken);
           if (!reachedModel) {
             reachedModel = true;
-            this.notifyTurnReachedModel(sessionKey, turnEpochToken);
+            this.notifyTurnReachedModel(sessionKey, turnEpochToken, replayEpochToken);
           }
         },
         // REAL PROGRESS (U9). Model output / tool call / tool result / plan /
@@ -5923,9 +5930,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
   }
 
   /** `onTurnReachedModel`, once per execution — best effort, never the turn's problem. */
-  private notifyTurnReachedModel(sessionKey: string, turnEpoch: number | undefined): void {
+  private notifyTurnReachedModel(sessionKey: string, turnEpoch: number | undefined, replayEpoch?: number): void {
     try {
-      this.deps.onTurnReachedModel?.({ sessionKey, turnEpoch });
+      this.deps.onTurnReachedModel?.({
+        sessionKey,
+        turnEpoch,
+        ...(replayEpoch !== undefined ? { replayEpoch } : {}),
+      });
     } catch (error) {
       this.logger.warn('onTurnReachedModel threw — ignored', {
         sessionKey,
