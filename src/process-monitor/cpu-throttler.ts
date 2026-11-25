@@ -243,7 +243,8 @@ export class CpuThrottler {
         // over the new one: its free rate is about old cap ÷ share, and the new share follows from it. Over the new
         // cap it stays metered (a replaced plan's pending stop is dropped: it belongs to the old object); under it,
         // it is let go. The new plan starts a fresh window: the next period only baselines, so a rate measured under
-        // the old share is never applied to the rescaled one (that would raise it twice — a free period).
+        // the old share is never applied to the rescaled one (that would raise it twice — a free period). The old
+        // window's debt and remembered counters go with it.
         replanned = true;
         this.continueHolds((h) => h.sessionKey === s.sessionKey);
         const share = cur.share * (cap / cur.cap);
@@ -263,6 +264,7 @@ export class CpuThrottler {
           prev: new Map(),
           prevAt: 0,
           charge: 0,
+          left: new Map(),
         });
         continue;
       } else if (cur) {
@@ -595,7 +597,7 @@ export class CpuThrottler {
     }
     // A hold the read did not answer would be probed live, synchronously, at its continue: the event loop stops for
     // that probe, and an identity read before it ages by as long. Read every hold again first — one async read, which
-    // blocks nothing — and continue all of them on it; only a pid missing from this read too is probed live.
+    // blocks nothing — and continue all of them on it; only a pid missing from this read too calls for a live probe.
     // It replaces what the continues trust: a hold it misses (one that landed while it was out too), or every hold if
     // it fails, is probed below.
     if ([...this.held.keys()].some((pid) => !verify.has(pid))) {
@@ -622,12 +624,14 @@ export class CpuThrottler {
     // A pid even that read could not answer is probed live — every tree's at once, before the first continue: the
     // probe is synchronous, and a tree continued before another tree's probe would run uncapped through it. It asks
     // for every hold: an identity read before a probe that took long is that much older at its continue (a pid
-    // reused meanwhile), so its answers win. If it fails, the read's answers stand and the rest wait a period.
+    // reused meanwhile), so only its answers count: a hold it does not answer (it failed, or left one out) stays held
+    // and is read again next period.
     const missing = [...this.held.keys()].filter((pid) => !verify.has(pid));
     const probed: Map<number, string | null> =
       missing.length > 0 ? (this.deps.liveStartTokens([...this.held.keys()]) ?? new Map()) : new Map();
+    const trusted = missing.length > 0 ? undefined : verify;
     // Held processes of sessions no longer metered (released while unknown): continue them now that they read.
-    this.continueHolds((h) => !this.sessions.has(h.sessionKey), verify, probed);
+    this.continueHolds((h) => !this.sessions.has(h.sessionKey), trusted, probed);
     // From here to the end of the sessions loop nothing awaits: a planned stop lands before this or after all of it.
     this.continuedSeq = seq;
     const at = this.deps.now();
@@ -678,11 +682,13 @@ export class CpuThrottler {
         next.set(m.pid, r.cpuSeconds);
         const before = s.prev.get(m.pid);
         const id = `${m.pid}:${m.startToken}`;
-        const lastSeen = fresh.has(m.pid) ? s.left.get(id) : undefined;
+        // A remembered counter is used and dropped at the member's next read, however it came back (discovery or a
+        // sample): one left behind would later charge CPU the tree was already charged for.
+        const lastSeen = s.left.get(id);
         if (before !== undefined) used += Math.max(0, r.cpuSeconds - before);
         else if (lastSeen !== undefined) used += Math.max(0, r.cpuSeconds - lastSeen);
         else if (fresh.has(m.pid) && s.prevAt > 0 && prevScanOk && !prevScanned.has(m.pid)) used += r.cpuSeconds;
-        if (lastSeen !== undefined) s.left.delete(id);
+        s.left.delete(id);
       }
       // Members that are gone, or whose pid now names another process, leave the tree. One a read merely missed is
       // remembered with its last counter, so finding it again charges only what it used meanwhile.
@@ -712,7 +718,7 @@ export class CpuThrottler {
       }
       // The run part of this period: what the cap held (it read stopped just now, which is the cap's stop) continues.
       const heldHere = new Set([...this.held].filter(([, h]) => h.sessionKey === key).map(([pid]) => pid));
-      this.continueHolds((h) => h.sessionKey === key, verify, probed);
+      this.continueHolds((h) => h.sessionKey === key, trusted, probed);
       // Let go only a tree well under its cap for a while (one held to its cap reads at its cap).
       // A period with no measured rate (a counter that has not moved yet) leaves the streak as it is.
       if (!Number.isNaN(rate)) {

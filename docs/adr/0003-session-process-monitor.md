@@ -127,14 +127,15 @@ same snapshot, and work will be placed by each node's free CPU and memory.
    erase it, and a stop that finishes after the next period started leaves discovery to that period). When the
    period's read misses a hold, every hold is read again, asynchronously, before any continue; only a pid two reads
    missed is probed live — every tree's at once, before the first tree is continued, so that synchronous probe runs
-   while all of them are still stopped (no stop timer can fire during it). That probe asks for every hold and its
-   answers win: an identity read before a probe that took long would be that much older at its continue. A failed
-   re-read is said once. Stops of several trees close together
+   while all of them are still stopped (no stop timer can fire during it). That probe asks for every hold and only
+   its answers count: an identity read before a probe that took long would be that much older at its continue, so a
+   hold the probe does not answer stays held until the next period reads it. A failed re-read is said once. Stops of several trees close together
    share one scan of the host. A cap change keeps a held tree metered on the new cap (its free rate is about old cap ÷ share; the
    sample reads it at its old cap, so re-metering from the sample would let it run free until the next one) and lets
    it go only when the new cap is over that rate. The new plan starts a fresh window (the next period only
    baselines), so a rate measured under the old share never raises the rescaled one a second time. A member a read merely missed is remembered with its last counter, so
-   finding it again charges only what it used meanwhile; a re-read for the continues never takes a valid sample from
+   finding it again (by discovery or the sample) charges only what it used meanwhile, and the memory is dropped at
+   its next read; a re-read for the continues never takes a valid sample from
    the rate. Discovery — a period's and a stop's — skips every metered tree's members and every Claude Code process the
    last update named, and checks again after its read (an update may name a found pid a session's root meanwhile), so
    a nested tree's process is never taken for a worker. A worker the last good scan already listed (its read missed it)

@@ -949,6 +949,36 @@ describe('CpuThrottler — hardening (#1421)', () => {
     expect(events).not.toContain('11:SIGCONT');
   });
 
+  it('a live probe that fails continues nothing on identities read before it: they wait for the next period', async () => {
+    const m = new Machine();
+    let reusedInProbe = false;
+    const { t, events, ctl } = probed(m, () => {
+      // The probe blocks for 1.5 s and then fails; meanwhile tree A's 11 (read fine before it) is reused.
+      vi.setSystemTime(Date.now() + 1_500);
+      if (!reusedInProbe) {
+        reusedInProbe = true;
+        m.reuse(11, true);
+        m.unknownProbes = 1;
+      }
+    });
+    m.add(10, 0).add(11, 2).add(20, 0).add(12, 2);
+    t.update(
+      [
+        session(200, [proc(10, 'root'), proc(11, 'child')], 'A'),
+        session(200, [proc(20, 'root'), proc(12, 'child')], 'B'),
+      ],
+      () => 100,
+    );
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(await until(() => !!m.procs.get(11)?.stopped && !!m.procs.get(12)?.stopped)).toBe(true);
+    events.length = 0;
+    ctl.dropTwelve = 2;
+    // 12 is continued next period, on that period's read; 11 never (it is another process now).
+    expect(await until(() => events.includes('12:SIGCONT'))).toBe(true);
+    expect(reusedInProbe).toBe(true);
+    expect(events).not.toContain('11:SIGCONT');
+  });
+
   it('a live probe (a pid two reads missed) runs while the tree is still stopped: a slow probe lets nothing run free', async () => {
     const m = new Machine();
     let ranDuringProbe = -1;
@@ -1245,29 +1275,48 @@ describe('CpuThrottler — hardening (#1421)', () => {
     expect(top).toBeLessThan(0.8);
   });
 
-  it('a pid an update names a Claude Code process while it is being read is never stopped as a worker', async () => {
+  /** A tree A whose child 11 starts 40 — another session's Claude Code process — at `when`; the monitor names it B's root while the read that would adopt it is out. */
+  async function rootRace(when: 'after-period-scan' | 'after-stop-scan') {
     const { m, t } = setup();
     m.add(10, 0).add(11, 2, START, 10);
     const a = () => session(200, [proc(10, 'root'), proc(11, 'child', { ppid: 10 })], 'A');
     t.update([a()], () => 100);
     await vi.advanceTimersByTimeAsync(3_000);
-    // Right after a parent scan, 11 starts 40: another session's Claude Code process. While the read that would
-    // adopt it as A's worker is out, the monitor's update names it session B's root (B is not over its cap).
+    let armed = false;
     let forked = false;
-    let named = false;
-    m.afterParents = () => {
-      if (forked) return;
+    const fork = () => {
       forked = true;
       m.add(40, 1, START, 11);
     };
     m.onRead = (pids) => {
-      if (named || !pids.includes(40)) return;
-      named = true;
+      // A period's read carries the Claude Code process (it follows that period's scan); a stop's own read does not.
+      if (!forked && when === 'after-period-scan' && pids.includes(10)) fork();
+      if (!forked && when === 'after-stop-scan' && !pids.includes(10)) armed = true;
+    };
+    m.afterParents = () => {
+      if (armed && !forked) fork();
+    };
+    let named: 'none' | 'stop' | 'period' = 'none';
+    m.readHook = async (pids) => {
+      if (named !== 'none' || !pids.includes(40)) return;
+      // A stop's read of what it found carries the Claude Code process; a period's read of new workers does not.
+      named = pids.includes(10) ? 'stop' : 'period';
       t.update([a(), session(50, [proc(40, 'root', { ppid: 11 })], 'B')], () => 100);
     };
     await vi.advanceTimersByTimeAsync(5_000);
-    expect(named).toBe(true);
-    expect(m.signals.some(([pid, sig]) => pid === 40 && sig === 'SIGSTOP')).toBe(false);
+    return { named, stopped: m.signals.some(([pid, sig]) => pid === 40 && sig === 'SIGSTOP') };
+  }
+
+  it('a pid the monitor names a Claude Code process while a stop reads it is never stopped as a worker', async () => {
+    const r = await rootRace('after-period-scan');
+    expect(r.named).toBe('stop');
+    expect(r.stopped).toBe(false);
+  });
+
+  it('a pid the monitor names a Claude Code process while a period reads it is never stopped as a worker', async () => {
+    const r = await rootRace('after-stop-scan');
+    expect(r.named).toBe('period');
+    expect(r.stopped).toBe(false);
   });
 
   it('a worker the last scan already listed, whose read missed it, is baselined when found later — not charged its lifetime', async () => {
@@ -1355,6 +1404,91 @@ describe('CpuThrottler — hardening (#1421)', () => {
     expect(reads30).toBeGreaterThanOrEqual(2);
     // 30 ran free from its fork to the period's read and then exited: that CPU is charged, so the share dips.
     expect(low).toBeLessThan(steady * 0.6);
+  });
+
+  it('a stop scan that failed once does not stay failed: the next stop scans again and holds a new worker', async () => {
+    const m = new Machine();
+    let lastReadWasStop = false;
+    let failStopScan = true;
+    let failed = false;
+    const t = new CpuThrottler({
+      kill: m.kill,
+      read: m.read,
+      readParents: async () => {
+        if (failStopScan && lastReadWasStop) {
+          failStopScan = false;
+          failed = true;
+          throw new Error('ps -A timed out');
+        }
+        return m.readParents();
+      },
+      liveStartTokens: m.liveStartTokens,
+      now: () => Date.now(),
+      userPaused: () => false,
+    });
+    m.add(10, 0).add(11, 2, START, 10);
+    t.update([session(200, [proc(10, 'root'), proc(11, 'child', { ppid: 10 })])], () => 100);
+    // After that failure, while a period reads, 11 forks 30 (4 cores), which exits before the next period: only a
+    // stop scan can find it.
+    let forked = false;
+    m.onRead = (pids) => {
+      lastReadWasStop = !pids.includes(10);
+      if (!failed || forked || !pids.includes(10)) return;
+      forked = true;
+      m.add(30, 4, START, 11);
+      setTimeout(() => m.procs.delete(30), 200);
+    };
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(failed).toBe(true);
+    expect(forked).toBe(true);
+    expect(m.signals.some(([pid, sig]) => pid === 30 && sig === 'SIGSTOP')).toBe(true);
+  });
+
+  it('a member that comes back through the sample drops its remembered counter: a later find does not charge it again', async () => {
+    const m = new Machine();
+    let dropNext = 0;
+    let dropped = 0;
+    const t = new CpuThrottler({
+      kill: m.kill,
+      read: async (pids) => {
+        const out = await m.read(pids);
+        // A period's read (it carries the Claude Code process) misses 12.
+        if (dropNext > 0 && pids.includes(10) && pids.includes(12)) {
+          dropNext--;
+          dropped++;
+          out.delete(12);
+        }
+        return out;
+      },
+      readParents: m.readParents,
+      liveStartTokens: m.liveStartTokens,
+      now: () => Date.now(),
+      userPaused: () => false,
+    });
+    m.add(10, 0).add(11, 2, START, 10).add(12, 2, START, 10);
+    const tree = () => [
+      session(400, [proc(10, 'root'), proc(11, 'child', { ppid: 10 }), proc(12, 'child', { ppid: 10 })]),
+    ];
+    t.update(tree(), () => 100);
+    await vi.advanceTimersByTimeAsync(5_000);
+    // A read misses 12 (it is remembered with its counter); the next sample has it, so it is a member again at once.
+    dropNext = 1;
+    expect(await until(() => dropped === 1)).toBe(true);
+    await vi.advanceTimersByTimeAsync(20);
+    t.update(tree(), () => 100);
+    // It runs, read normally, for a while: its counter moves far past the remembered one.
+    await vi.advanceTimersByTimeAsync(5_000);
+    // A cap change starts a fresh window; the read right after misses 12, and the next period finds it again.
+    t.update(tree(), () => 150);
+    const atReplan = t.meteredShare('A') ?? 0;
+    dropNext = 1;
+    let low = atReplan;
+    for (let i = 0; i < 300; i++) {
+      await vi.advanceTimersByTimeAsync(5);
+      low = Math.min(low, t.meteredShare('A') ?? low);
+    }
+    expect(dropped).toBe(2);
+    expect(low).toBeGreaterThan(atReplan * 0.3);
   });
 
   it('a stop whose identity read keeps failing is said once (a cap that stopped biting is not silent)', async () => {
