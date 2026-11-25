@@ -664,14 +664,16 @@ export async function getTurnRawContent(conversationId: string, turnId: string):
  */
 export async function markRewoundTurns(
   conversationId: string,
-  /** `keepsFinalReply`: kept up to a final reply — the answer recorded first after `from` stays (an older span). */
+  /** `keepsFinalReply`: kept up to a final reply — an older span (no turn recorded at `from`) keeps the answer first after it. */
   span: { from: number; to: number; at: number; keepsFinalReply?: boolean },
 ): Promise<number> {
   const record = await getOrLoadConversation(conversationId);
   if (!record) return 0;
+  // An older span starts before its answer; a newer one starts at it (a turn recorded exactly there) — nothing to keep.
   let first: ConversationTurn | undefined;
   for (const t of record.turns) if (t.timestamp > span.from && (!first || t.timestamp < first.timestamp)) first = t;
-  const kept = span.keepsFinalReply && first?.role === 'assistant' ? first : undefined;
+  const older = span.keepsFinalReply && !record.turns.some((t) => t.timestamp === span.from);
+  const kept = older && first?.role === 'assistant' ? first : undefined;
   const stamped = record.turns.filter(
     (t) => t !== kept && t.rewoundAt === undefined && t.timestamp > span.from && t.timestamp <= span.to,
   );

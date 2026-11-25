@@ -20304,6 +20304,8 @@ function rewindSpansOf(s, list) {
       for (var i = 0; i < list.length; i++) {
         var t = list[i];
         var ts = t ? Number(t.timestamp) || 0 : 0;
+        // A newer span starts at its answer (a turn recorded exactly there): nothing to keep.
+        if (t && !t._optimistic && !t._queued && ts === r.from) return r;
         if (t && !t._optimistic && !t._queued && ts > r.from && (!first || ts < Number(first.timestamp))) first = t;
       }
       return first && first.role === 'assistant' ? Object.assign({}, r, { from: Number(first.timestamp) }) : r;
@@ -24049,9 +24051,7 @@ function convTurnsOf(list, c) {
           a.canRetry = true;
         } else a.loading = true;
       } else a.markdown = '';
-      var own = ownedBy(start, ts);
-      var mine = own.arts;
-      var calls = own.calls;
+      var own = ownedBy(start, ts), mine = own.arts, calls = own.calls;
       if (mine.length || calls.length) {
         a.attachments = true;
         slots.push({ name: 'attachments-' + id, kind: 'arts', list: mine, start: start, end: ts });

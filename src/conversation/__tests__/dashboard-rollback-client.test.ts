@@ -520,6 +520,9 @@ describe('marks on what a rollback drops — waiting or applied (client)', () =>
     expect(clientFn('rewindSpansOf')).not.toContain('최종 답');
     expect(spansOf({ contextRewinds: [{ ...old, from: 180 }, tool] }, turns)).toEqual([{ ...old, from: 180 }, tool]);
     expect(spansOf({ contextRewinds: [old] })).toEqual([old]);
+    // A newer one starts at its answer (a turn recorded exactly there): the answer right after it is not kept.
+    const es = [...turns.slice(0, 2), { id: 'e1', role: 'assistant', timestamp: 190 }, turns[2]];
+    expect(spansOf({ contextRewinds: [{ ...old, from: 180 }] }, es)).toEqual([{ ...old, from: 180 }]);
   });
   it('a waiting rollback marks what it will drop at once (kept point → when it was asked)', () => {
     const spansOf = new Function(`${clientFn('rewindSpansOf')}\nreturn rewindSpansOf;`)() as (s: unknown) => unknown;
