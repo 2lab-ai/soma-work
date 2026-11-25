@@ -143,9 +143,10 @@ function faceOf(card, model, face, asks, effort, asked) {
   if (node) out.node = node;
   return out;
 }
-// A node's name as the badge shows it: the host part (no domain, no .local suffix), at most 12 characters.
-function nodeShortName(id) {
-  var s = String(id || '').split('.')[0] || String(id || '');
+// A node's name as the badge shows it: the worker's nickname as set (settings 작업 워커), else the host part of its id
+// (no domain, no .local suffix) — at most 12 characters.
+function nodeShortName(id, nickname) {
+  var s = nickname ? String(nickname) : String(id || '').split('.')[0] || String(id || '');
   return s.length > 12 ? s.slice(0, 11) + '…' : s;
 }
 // The badge's two gauges, 0–100, the task's own use (dashboard.ts taskGaugesOf, the same rule): CPU full at one core
@@ -165,12 +166,14 @@ function nodeBadgeOf(u) {
   if (!u || !(Number(u.processCount) > 0) || !u.nodeId) return null;
   var g = taskGaugesOf(u);
   var cpuNow = Math.max(0, Number(u.cpuPercent) || 0);
-  var b = { text: nodeShortName(u.nodeId), cpu: g.cpu, level: cpuNow >= 100 ? 'hot' : cpuNow >= 10 ? 'busy' : '' };
+  var b = { text: nodeShortName(u.nodeId, u.nodeName), cpu: g.cpu, level: cpuNow >= 100 ? 'hot' : cpuNow >= 10 ? 'busy' : '' };
   if (g.mem !== null) b.mem = g.mem;
   var cores = Number(u.cpuCount) > 0 ? ' · 코어 ' + Number(u.cpuCount) + '개' : '';
   var size = Number(u.nodeMemBytes) > 0 ? ' · 메모리 ' + procBytesText(u.nodeMemBytes) : '';
-  b.label = '노드 ' + String(u.nodeId) + ', 이 작업 CPU ' + procCpuText(cpuNow) + ', 메모리 ' + procBytesText(u.rssBytes);
-  b.title = '노드 ' + String(u.nodeId) + cores + size
+  // The nickname reads first; the node id stays in the tooltip, where a person checking the machine looks for it.
+  var who = u.nodeName ? String(u.nodeName) + ' (' + String(u.nodeId) + ')' : String(u.nodeId);
+  b.label = '노드 ' + who + ', 이 작업 CPU ' + procCpuText(cpuNow) + ', 메모리 ' + procBytesText(u.rssBytes);
+  b.title = '노드 ' + who + cores + size
     + '\n이 작업 CPU ' + procCpuText(cpuNow) + ' — 계급장 가득 = 100% (코어 1개)'
     + '\n메모리 ' + procBytesText(u.rssBytes) + (g.share > 0 ? ' — 계급장 가득 = ' + procBytesText(g.share) + ' (노드 메모리 ÷ 코어 수)' : '')
     + (Number(u.stoppedCount) > 0 ? '\n일시중지 ' + Number(u.stoppedCount) + '개' : '') + procCapLine(u);

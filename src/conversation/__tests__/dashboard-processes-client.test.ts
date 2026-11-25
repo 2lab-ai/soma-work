@@ -1086,6 +1086,16 @@ describe('P8 — the card’s node badge (card.node)', () => {
     expect(b.title).not.toContain('노드 CPU');
   });
 
+  it('a worker with a nickname (settings 작업 워커): the badge reads it; the node id stays in the label and title', () => {
+    const b = fns().nodeBadgeOf(u({ nodeName: 'm5' })) as NonNullable<Node>;
+    expect(b.text).toBe('m5');
+    expect(b.label).toBe('노드 m5 (build-box.local), 이 작업 CPU 113%, 메모리 3.3GB');
+    expect(b.title).toContain('노드 m5 (build-box.local) · 코어 18개');
+    // A nickname is shown as set (no host-part cut at a dot), at most 12 characters like any name.
+    expect(fns().nodeBadgeOf(u({ nodeName: 'rack.2' }))?.text).toBe('rack.2');
+    expect(fns().nodeBadgeOf(u({ nodeName: 'a-very-long-nickname' }))?.text).toBe('a-very-long…');
+  });
+
   it('no memory gauge without the node’s size; none at all while nothing of the task lives', () => {
     const f = fns();
     const old = f.nodeBadgeOf(u({ nodeMemBytes: undefined })) as NonNullable<Node>;

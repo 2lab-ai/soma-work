@@ -33,6 +33,7 @@ import { SECRETS_CLIENT_JS, SECRETS_TAB_CSS, SECRETS_TAB_HTML } from './settings
 import { SERVER_TOOLS_CLIENT_JS, SERVER_TOOLS_TAB_CSS, SERVER_TOOLS_TAB_HTML } from './settings-server-tools-tab';
 import { SKILLS_CLIENT_JS, SKILLS_TAB_CSS, SKILLS_TAB_HTML } from './settings-skills-tab';
 import { TASK_QUEUE_CLIENT_JS, TASK_QUEUE_TAB_CSS, TASK_QUEUE_TAB_HTML } from './settings-task-queue-tab';
+import { WORKERS_CLIENT_JS, WORKERS_TAB_CSS, WORKERS_TAB_HTML } from './settings-workers-tab';
 import { soundClientJs } from './sound-client';
 import { themeClientJs } from './theme-client';
 import { pageTokenAliases, UI_LIB_VERSION, uiLibKitCss, uiLibTokensCss } from './ui-lib';
@@ -60,6 +61,8 @@ export const SETTINGS_TABS: SettingsPageTab[] = [
   { id: 'server-tools', label: '서버 도구', icon: 'shield', adminOnly: true },
   // 작업 큐: how many tasks each person may run at once — a knob per person — admins only.
   { id: 'task-queue', label: '작업 큐', icon: 'list', adminOnly: true },
+  // 작업 워커: the machines tasks run on (process-monitor nodes) and the nickname each is read by — admins only.
+  { id: 'workers', label: '작업 워커', icon: 'tree', adminOnly: true },
   // 대시보드 화면 (SSOT 2026-11-02, .prd/21): the surface editor — card, open card, detail card, thread card.
   { id: 'layout', label: '대시보드 화면', icon: 'board' },
   // 받아쓰기 (SSOT 2026-11-02, epic #737): this device's engine — kept in this browser only — and its recogniser's details.
@@ -730,6 +733,7 @@ function onTabShown(id) {
   if (id === 'secrets' && !_scLoaded) loadSecrets();
   if (id === 'server-tools' && !_stLoaded) loadServerTools();
   if (id === 'task-queue' && !_tqLoaded) loadTaskQueue();
+  if (id === 'workers' && !_wkLoaded) loadWorkers();
   if (id === 'layout' && !_layLoaded) loadLayout();
   if (id === 'dictation' && !_dicLoaded) loadDictationTab();
 }
@@ -756,7 +760,7 @@ export function renderSettingsPage(tabs: SettingsPageTab[] = SETTINGS_TABS): str
 <style id="ui-kit">
 ${uiLibKitCss()}
 </style>
-<style>${SETTINGS_PAGE_CSS}${MEMORY_TAB_CSS}${PROJECT_TAB_CSS}${SKILLS_TAB_CSS}${SECRETS_TAB_CSS}${SERVER_TOOLS_TAB_CSS}${TASK_QUEUE_TAB_CSS}${LAYOUT_TAB_CSS}${DICTATION_TAB_CSS}</style>
+<style>${SETTINGS_PAGE_CSS}${MEMORY_TAB_CSS}${PROJECT_TAB_CSS}${SKILLS_TAB_CSS}${SECRETS_TAB_CSS}${SERVER_TOOLS_TAB_CSS}${TASK_QUEUE_TAB_CSS}${WORKERS_TAB_CSS}${LAYOUT_TAB_CSS}${DICTATION_TAB_CSS}</style>
 <!-- Tokens — @2lab.ai/ui is the single source, as on the dashboard (P10, P9): its tokens.css puts every
      --ui-* on :root and [data-theme="light|dark"], and the page's names are aliases of them. -->
 <style id="ui-tokens">
@@ -777,6 +781,7 @@ ${SKILLS_TAB_HTML}
 ${SECRETS_TAB_HTML}
 ${SERVER_TOOLS_TAB_HTML}
 ${TASK_QUEUE_TAB_HTML}
+${WORKERS_TAB_HTML}
 ${LAYOUT_TAB_HTML}
 ${DICTATION_TAB_HTML}
 </ui-tabs>
@@ -791,7 +796,7 @@ ${DICTATION_TAB_HTML}
     </div>
   </form>
 </dialog>
-<script>${MEMORY_CLIENT_JS}${PROJECT_CLIENT_JS}${SKILLS_CLIENT_JS}${SECRETS_CLIENT_JS}${SERVER_TOOLS_CLIENT_JS}${TASK_QUEUE_CLIENT_JS}${VIEW_LAYOUT_CLIENT_JS}${LAYOUT_CLIENT_JS}${DICTATION_PREF_JS}${DICTATION_SERVER_JS}${DICTATION_BROWSER_JS}${DICTATION_CLIENT_JS}${TAB_HOOKS_JS}${SETTINGS_CLIENT_JS}</script>
+<script>${MEMORY_CLIENT_JS}${PROJECT_CLIENT_JS}${SKILLS_CLIENT_JS}${SECRETS_CLIENT_JS}${SERVER_TOOLS_CLIENT_JS}${TASK_QUEUE_CLIENT_JS}${WORKERS_CLIENT_JS}${VIEW_LAYOUT_CLIENT_JS}${LAYOUT_CLIENT_JS}${DICTATION_PREF_JS}${DICTATION_SERVER_JS}${DICTATION_BROWSER_JS}${DICTATION_CLIENT_JS}${TAB_HOOKS_JS}${SETTINGS_CLIENT_JS}</script>
 <script type="module" src="/dashboard/ui/app-bar.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/setting-row.js?v=${UI_LIB_VERSION}"></script>
 <!-- <ui-settings-nav> and the library's own row filter (applySettingsFilter) for the page script's applyFilter. -->
