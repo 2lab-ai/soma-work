@@ -471,11 +471,6 @@ export class SlackHandler {
    */
   private readonly nestedAutoCompactStops = new Map<string, number>();
   /**
-   * #1424 — slot key → the generation of the run whose slot the busy fence is running a post-compact replay in
-   * (`processMessage` with no generation of its own). Its first SDK event opens that run's input again.
-   */
-  private readonly inlineReplayEpochs = new Map<string, number>();
-  /**
    * Z 2026-11-23 — the order of people's stops (`user-stop`) in this process: a count, and the count each session
    * was last stopped at. A turn compares it with the count when it began to be prepared (`stoppedWhilePreparing`);
    * a clock could not order a stop and a message that land in the same millisecond. The saved stop time
@@ -2119,10 +2114,8 @@ export class SlackHandler {
       // is handed to that run's boundary (`nestedAutoCompactStops`).
       // The run that holds the slot now — its boundary owns a stop inside it.
       const holderEpoch = dispatcher.snapshot(slotOwner).turnEpoch;
-      if (holderEpoch !== undefined) this.inlineReplayEpochs.set(slotOwner, holderEpoch);
-      const outcome = await this.processMessage(event, say).finally(() => {
-        if (this.inlineReplayEpochs.get(slotOwner) === holderEpoch) this.inlineReplayEpochs.delete(slotOwner);
-      });
+      // #1424 — the replay reports the run it runs in when it reaches the model, so that run's input opens again.
+      const outcome = await this.processMessage(event, say, { replayOfEpoch: holderEpoch });
       if (isAutoCompactStop(outcome)) {
         // Under the key the holding run's boundary reads (its canonical key).
         this.nestedAutoCompactStops.set(this.canonicalFollowupKey(slotOwner), holderEpoch);
@@ -2293,7 +2286,7 @@ export class SlackHandler {
   private async processMessage(
     event: MessageEvent,
     say: any,
-    options: { turnEpoch?: number; workingDirectory?: string; slotKey?: string } = {},
+    options: { turnEpoch?: number; workingDirectory?: string; slotKey?: string; replayOfEpoch?: number } = {},
   ): Promise<DispatchOutcome> {
     const { channel, thread_ts, ts } = event;
     const originalThreadTs = thread_ts || ts;
@@ -3193,6 +3186,7 @@ export class SlackHandler {
         // from the queue inside a callback — a late write would then compare
         // itself against the epoch of the turn that superseded it and pass (A28).
         turnEpoch: options.turnEpoch,
+        ...(options.replayOfEpoch !== undefined ? { replayOfEpoch: options.replayOfEpoch } : {}),
         // Empty string preserves the typed shape when Slack omits team
         // (synthetic events, mid-thread injection) — chat.startStream
         // then drops both recipient fields together.
@@ -3503,6 +3497,8 @@ export class SlackHandler {
        * from a superseded turn. Undefined = legacy caller, no fence.
        */
       turnEpoch?: number;
+      /** #1424 — a post-compact replay run inside a run's slot: that run's generation (`followupReplayEpoch`). */
+      replayOfEpoch?: number;
     },
   ): V1QueryAdapter {
     // Captured once, at construction. Re-reading the queue inside these
@@ -3579,6 +3575,7 @@ export class SlackHandler {
       ...(context.promptNotice ? { promptNotice: context.promptNotice } : {}),
       // Same captured token, for the executor's own late-write fence.
       followupTurnEpoch: expectedTurnEpoch,
+      ...(context.replayOfEpoch !== undefined ? { followupReplayEpoch: context.replayOfEpoch } : {}),
     };
 
     return new V1QueryAdapter({
@@ -6961,20 +6958,28 @@ export class SlackHandler {
    *
    * Best effort: a queue refusal is logged, never the turn's problem.
    */
-  private onFollowupTurnReachedModel({ sessionKey, turnEpoch }: { sessionKey: string; turnEpoch?: number }): void {
+  private onFollowupTurnReachedModel({
+    sessionKey,
+    turnEpoch,
+    replayEpoch,
+  }: {
+    sessionKey: string;
+    turnEpoch?: number;
+    replayEpoch?: number;
+  }): void {
     const dispatcher = this.followupDispatcher;
     if (!dispatcher) return;
     // The executor speaks the session's canonical key; the run holds its slot
     // under the slot key, which differs while a bot-thread migration is bound.
     const slotKey = this.boundFollowupSlot(sessionKey) ?? sessionKey;
     if (turnEpoch === undefined) {
-      // #1424 — a turn with no generation of its own: the post-compact replay the
-      // busy fence runs inside a run's slot. Its input is that run's next open —
-      // push what waits for it (a row the `/compact` turn refused), only while that
-      // run still holds the slot (a Send now may have replaced it meanwhile).
+      // #1424 — the post-compact replay the busy fence runs inside a run's slot,
+      // with no generation of its own, reports the run it runs in: its input is
+      // that run's next open. Push what waits for it (a row the `/compact` turn
+      // refused) — only while that run still holds the slot, which
+      // `steerFollowupsWaitingForOpen` checks (a Send now may have replaced it).
       // Nothing else: the run's own delivery evidence and takeover are its own.
-      const holder = this.inlineReplayEpochs.get(slotKey);
-      if (holder !== undefined) this.steerFollowupsWaitingForOpen(slotKey, holder);
+      if (replayEpoch !== undefined) this.steerFollowupsWaitingForOpen(slotKey, replayEpoch);
       return;
     }
     const marked = dispatcher.noteTurnReachedModel(slotKey, turnEpoch);

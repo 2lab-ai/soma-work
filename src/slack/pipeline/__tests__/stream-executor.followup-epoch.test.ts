@@ -395,6 +395,34 @@ describe('onTurnReachedModel — the first SDK event of the execution', () => {
     expect(onTurnReachedModel).toHaveBeenCalledWith({ sessionKey: 'C42:thread42', turnEpoch: DISPATCH_EPOCH });
   });
 
+  // #1424 — the post-compact replay the busy fence runs inside a run's slot has no generation of its own; it reports
+  // the run it replays in, so the host opens that run's input for the rows waiting for it.
+  it('a post-compact replay reports the run it replays in, with no generation of its own', async () => {
+    const session = createSession();
+    const deps = createDeps(() =>
+      (async function* () {
+        yield { type: 'assistant_delta', text: '이어서 진행' };
+        yield { type: 'result', stopReason: 'end_turn' };
+      })(),
+    );
+    const onTurnReachedModel = vi.fn();
+    const executor = new StreamExecutor({ ...deps, onTurnReachedModel });
+
+    await executor.execute({
+      ...createParams(session, new AbortController(), vi.fn().mockResolvedValue({ ts: 'm' })),
+      followupTurnEpoch: undefined,
+      followupReplayEpoch: DISPATCH_EPOCH,
+    });
+    await settle();
+
+    expect(onTurnReachedModel).toHaveBeenCalledTimes(1);
+    expect(onTurnReachedModel).toHaveBeenCalledWith({
+      sessionKey: 'C42:thread42',
+      turnEpoch: undefined,
+      replayEpoch: DISPATCH_EPOCH,
+    });
+  });
+
   it('does not fire for a local /compact turn — the auto-compact path parked the instruction, it was not delivered', async () => {
     const session = createSession();
     const deps = createDeps(() =>

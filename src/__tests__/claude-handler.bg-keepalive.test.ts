@@ -928,6 +928,52 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
     }
   });
 
+  // RoL review (PR #1428): an agent starting in a hold only a shell kept is activity — no early stop of either.
+  it('an agent starting in a shell-only hold restarts the idle deadline (#1425)', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const shell = { task_id: 'bash-1', task_type: 'local_bash', description: 'dev server' };
+      const pulledPastOpening = deferred();
+      const agentStarts = deferred();
+      const done = deferred();
+      installScriptedQuery(cli, async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield* openingTurnHead([shell]);
+        yield openingResult(cli.opening?.uuid);
+        pulledPastOpening.resolve();
+        await agentStarts.promise;
+        yield level([shell, agentTask(AGENT_ID)]);
+        await done.promise;
+        yield level([]);
+        yield taskNotification(AGENT_ID, 'completed');
+        yield INIT;
+        yield NOTIFIED;
+        yield notifiedResult();
+        cli.inputEnded = (await inputs.next()).done === true;
+      });
+
+      const framesPromise = collect(startTurn(newHandler()));
+      await pulledPastOpening.promise;
+      await vi.advanceTimersByTimeAsync(CAP_MS - 60_000);
+      agentStarts.resolve();
+      await vi.advanceTimersByTimeAsync(60_000 + 1);
+      expect(cli.stopTask).not.toHaveBeenCalled();
+
+      done.resolve();
+      await vi.advanceTimersByTimeAsync(1);
+      const frames = await framesPromise;
+      expect(resultsOf(frames)[0]).toMatchObject({ result: 'NOTIFIED' });
+      expect(cli.stopTask).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      info.mockRestore();
+    }
+  });
+
   it('the keepalive cap stops a shell that holds the turn and tells the model the host stopped it (#1425)', async () => {
     vi.useFakeTimers();
     vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));

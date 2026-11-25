@@ -1687,9 +1687,10 @@ export class ClaudeHandler implements TurnSteeringPort {
       // #1425 review — a level frame that changes the counted live task set (not an ambient watcher's churn, not the
       // same snapshot again): the only activity that re-arms the idle cap of a hold only tasks keep.
       const liveTaskSetChanges = (raw: Record<string, unknown>): boolean => {
-        const announced = liveNonAgentTaskIds(raw);
-        if (!announced) return false;
-        return announced.length !== liveNonAgents.size || announced.some((taskId) => !liveNonAgents.has(taskId));
+        const differs = (ids: string[] | undefined, live: ReadonlySet<string>) =>
+          ids !== undefined && (ids.length !== live.size || ids.some((taskId) => !live.has(taskId)));
+        // An agent starting is activity too (it then governs the hold).
+        return differs(liveNonAgentTaskIds(raw), liveNonAgents) || differs(liveAgentIds(raw), liveAgents);
       };
       // The answer: owed while any task is live — the first notification turn
       // may already be buffered behind it.
@@ -1754,6 +1755,8 @@ export class ClaudeHandler implements TurnSteeringPort {
           idleCapAtTurnEnd = true;
           return;
         }
+        // Firing now (or the ceiling): an idle cap held for a turn's result is spent with it.
+        idleCapAtTurnEnd = false;
         if (keepaliveCeilingTimer) clearTimeout(keepaliveCeilingTimer);
         keepaliveCeilingTimer = undefined;
         const live = [...liveAgents];

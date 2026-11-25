@@ -4056,12 +4056,17 @@ describe('SlackHandler — follow-up queue host', () => {
       // The /compact turn's teardown ends the compaction and replays the intercepted message: the busy fence runs it
       // inside the same run, with no generation of its own, and its first SDK event reaches the model.
       registrySession.compactTurnActive = false;
-      let replayEpoch: unknown = 'unset';
+      let replayOpts: any;
       createAgentSession.mockImplementationOnce((_result: any, _say: any, opts: any) => {
-        replayEpoch = opts?.turnEpoch;
+        replayOpts = opts;
         return {
           startWithContinuation: vi.fn(async () => {
-            handlerAny.streamExecutor?.deps?.onTurnReachedModel?.({ sessionKey: SESSION_KEY, turnEpoch: undefined });
+            // What the executor reports for this execution: no generation of its own, the run it replays in.
+            handlerAny.streamExecutor?.deps?.onTurnReachedModel?.({
+              sessionKey: SESSION_KEY,
+              turnEpoch: opts?.turnEpoch,
+              replayEpoch: opts?.replayOfEpoch,
+            });
             await tick();
             return { hasPendingChoice: false };
           }),
@@ -4074,7 +4079,8 @@ describe('SlackHandler — follow-up queue host', () => {
         say(),
       );
 
-      expect(replayEpoch).toBeUndefined();
+      expect(replayOpts?.turnEpoch).toBeUndefined();
+      expect(replayOpts?.replayOfEpoch).toBe(compactEpoch);
       expect(steerTurn).toHaveBeenCalledTimes(1);
       expect(steerTurn.mock.calls[0][1]).toMatchObject({ text: 'dev2 qa 진행해' });
       expect(items()[0].state).toBe('steered');
@@ -4090,11 +4096,15 @@ describe('SlackHandler — follow-up queue host', () => {
 
       // The replay starts inside the run and is still setting up when a Send now replaces the run.
       const replayGate = deferred<any>();
-      createAgentSession.mockImplementationOnce(() => ({
-        startWithContinuation: vi.fn(() => replayGate.promise),
-        getLastTurnSucceeded: () => true,
-        getRetryAfterMs: () => undefined,
-      }));
+      let replayOpts: any;
+      createAgentSession.mockImplementationOnce((_result: any, _say: any, opts: any) => {
+        replayOpts = opts;
+        return {
+          startWithContinuation: vi.fn(() => replayGate.promise),
+          getLastTurnSucceeded: () => true,
+          getRetryAfterMs: () => undefined,
+        };
+      });
       const replay = handler.handleMessage(
         message({ ts: '222.333', text: '[auto-compact] continue', routeContext: { compactRedispatch: true } } as any),
         say(),
@@ -4109,7 +4119,12 @@ describe('SlackHandler — follow-up queue host', () => {
 
       // The old replay's first event lands late: the run it ran in no longer holds the slot, so the rows waiting
       // for the new run stay for the new run.
-      handlerAny.streamExecutor?.deps?.onTurnReachedModel?.({ sessionKey: SESSION_KEY, turnEpoch: undefined });
+      expect(replayOpts?.replayOfEpoch).toBe(holder);
+      handlerAny.streamExecutor?.deps?.onTurnReachedModel?.({
+        sessionKey: SESSION_KEY,
+        turnEpoch: undefined,
+        replayEpoch: replayOpts?.replayOfEpoch,
+      });
       await tick();
       expect(steerTurn).toHaveBeenCalledTimes(1);
       expect(items().every((item: any) => item.state === 'queued')).toBe(true);
