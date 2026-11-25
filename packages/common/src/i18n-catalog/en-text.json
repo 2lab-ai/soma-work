@@ -2441,5 +2441,12 @@
   "작업 큐": "Task queue",
   "CPU 한도가 꺼져 있습니다 (이 인스턴스에서 시작되지 않음)": "CPU caps are off (not started on this instance)",
   "cpu는 25~6400(%), 'unlimited', 또는 null(기본값)입니다": "cpu is 25–6400 (%), 'unlimited', or null (the default)",
-  "CPU 한도를 저장하지 못했습니다": "Could not save the CPU cap"
+  "CPU 한도를 저장하지 못했습니다": "Could not save the CPU cap",
+  "작업 워커는 Slack 계정으로 로그인한 관리자만 보고 바꿉니다": "Only an admin signed in with Slack sees and changes work workers",
+  "관리자 모드를 켜야 작업 워커 닉네임을 바꿀 수 있습니다": "Turn on admin mode to change a work worker's nickname",
+  "작업 워커를 읽지 못했습니다": "Could not read the work workers",
+  "작업 워커 닉네임이 꺼져 있습니다 (이 인스턴스에서 시작되지 않음)": "Work worker nicknames are off (not started on this instance)",
+  "닉네임은 1~{0}자(제어 문자 없이), 또는 null(노드 이름으로)입니다": "A nickname is 1–{0} characters (no control characters), or null (back to the node name)",
+  "그런 작업 워커가 없습니다": "No such work worker",
+  "닉네임을 저장하지 못했습니다": "Could not save the nickname"
 }

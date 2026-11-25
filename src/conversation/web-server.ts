@@ -69,6 +69,7 @@ import { registerUserMediaRoutes } from './user-media-routes';
 import { registerUserTaskLimitsRoutes } from './user-task-limits-routes';
 import { renderConversationListPage, renderConversationViewPage } from './viewer';
 import { registerWorkLogRoutes } from './work-log-routes';
+import { registerWorkersRoutes } from './workers-routes';
 
 const logger = new Logger('ConversationWebServer');
 
@@ -773,6 +774,8 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   registerMailboxRoutes(server, authMiddleware, csrfMiddleware);
   // The per-user task queue's limits — the settings page 작업 큐 tab: an admin turns each person's knob.
   registerUserTaskLimitsRoutes(server, authMiddleware, csrfMiddleware);
+  // The work workers (process-monitor nodes) — the settings page 작업 워커 tab: an admin names each one.
+  registerWorkersRoutes(server, authMiddleware, csrfMiddleware);
 
   // Health check
   server.get('/health', async (_request, reply) => {

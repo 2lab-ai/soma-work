@@ -133,6 +133,7 @@ import { setSkillsEnvRegistrySource } from './conversation/skills-routes';
 import { createSlackDirectoryLookup } from './conversation/slack-directory-lookup';
 import { isPrivateTask } from './conversation/task-visibility';
 import { flushWorkLog, readWorkLog, setOnWorkLogAppendedCallback, type WorkLogInput } from './conversation/work-log';
+import { setWorkerNodeSource } from './conversation/workers-routes';
 import { CronScheduler, type SyntheticMessageEvent, setActiveCronScheduler } from './cron-scheduler';
 import { forceMigrateOpus1m } from './deploy/force-migrate-opus-1m';
 import { GPT_5_6_UPSTREAM_SLUG, syncLlmuxCodexModel } from './deploy/llmux-codex-model-sync';
@@ -185,6 +186,7 @@ import { BUNDLED_PLUGINS } from './plugin/bundled';
 import { PluginManager } from './plugin/plugin-manager';
 import { startProcessMonitor } from './process-monitor';
 import { setActiveCpuLimits, UserCpuLimits } from './process-monitor/cpu-limits';
+import { setActiveWorkerNicknames, WorkerNicknames } from './process-monitor/worker-nicknames';
 import { getProjectMemoryStore, normalizeProjectSlug } from './project-memory-store';
 import { getVersionInfo, notifyRelease } from './release-notifier';
 import { clearDaemonReady, clearStaleDaemonReady, publishDaemonReadiness } from './service-readiness';
@@ -931,6 +933,10 @@ async function start() {
         return ownerId ? cpuLimits.capFor(ownerId) : null;
       });
       setDashboardProcessSource(monitor);
+      // The work workers (this node, for now) and the nickname each is read by — the settings page's 작업 워커 tab;
+      // the task card's node badge shows the nickname (src/process-monitor/worker-nicknames.ts).
+      setActiveWorkerNicknames(new WorkerNicknames(DATA_DIR));
+      setWorkerNodeSource(monitor);
     }
 
     // user-memory-store, user-settings-store, AND user-skill-store mutate

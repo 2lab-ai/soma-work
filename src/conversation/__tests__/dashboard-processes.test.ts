@@ -367,6 +367,47 @@ describe('Dashboard — the 프로세스 tab and the card’s node badge', () =>
     expect(card2).not.toHaveProperty('procUsage');
   });
 
+  it('a worker with a nickname (settings 작업 워커): the card, the 프로세스 tab and the next push carry it', async () => {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'proc-nick-'));
+    const { WorkerNicknames, setActiveWorkerNicknames } = await import('../../process-monitor/worker-nicknames');
+    const names = new WorkerNicknames(dir);
+    setActiveWorkerNicknames(names);
+    try {
+      dashboard.setDashboardProcessSource(fakeSource());
+      const cardOf = async () =>
+        [
+          ...Object.values(
+            JSON.parse(
+              (await web.injectWebServer({ method: 'GET', url: '/api/dashboard/sessions', headers: AUTH_HEADER })).body,
+            ).board,
+          ),
+        ]
+          .filter(Array.isArray)
+          .flat()
+          .find((c: any) => c.key.endsWith(KEY)) as any;
+      // No nickname: the node id alone, as before.
+      expect((await cardOf()).procUsage).not.toHaveProperty('nodeName');
+      expect(JSON.parse((await get()).body).node).toEqual(node);
+      // A sample with nothing new pushes nothing…
+      const pushed = new Map<string, string>();
+      dashboard.procCardsToPush(pushed, snapshot([sessionA]));
+      expect(dashboard.procCardsToPush(pushed, snapshot([sessionA]))).toEqual([]);
+
+      names.set('n1', 'one');
+      expect((await cardOf()).procUsage).toMatchObject({ nodeId: 'n1', nodeName: 'one' });
+      expect(JSON.parse((await get()).body).node).toEqual({ ...node, name: 'one' });
+      // …and the rename alone pushes the card on the next sample, so the badge changes without a reload.
+      expect(dashboard.procCardsToPush(pushed, snapshot([sessionA]))).toEqual([KEY]);
+      expect(dashboard.procCardsToPush(pushed, snapshot([sessionA]))).toEqual([]);
+    } finally {
+      setActiveWorkerNicknames(undefined);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('GET /api/dashboard/nodes: admins get each node’s capacity and per-session totals; others 403', async () => {
     dashboard.setDashboardProcessSource(fakeSource());
     expect(

@@ -84,6 +84,8 @@ describe('settings page shell', () => {
       { id: 'server-tools', label: '서버 도구', icon: 'shield', adminOnly: true },
       // how many tasks each person may run at once — a knob per person (the per-user task queue)
       { id: 'task-queue', label: '작업 큐', icon: 'list', adminOnly: true },
+      // the machines tasks run on (process-monitor nodes) and each one's nickname
+      { id: 'workers', label: '작업 워커', icon: 'tree', adminOnly: true },
       { id: 'layout', label: '대시보드 화면', icon: 'board' },
       { id: 'dictation', label: '받아쓰기', icon: 'mic' },
     ]);

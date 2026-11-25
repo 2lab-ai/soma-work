@@ -212,6 +212,21 @@ describe('P3 — the tab’s content', () => {
     expect(html).toContain('<span class="pp-guide" aria-hidden="true">└─</span>');
   });
 
+  it('a worker with a nickname: the node line reads it, the node id in its title, markup kept as text', () => {
+    const named = { ...body, node: { ...body.node, name: '<m5 "a">' } };
+    const html = env().panelProcsHtml({ status: 200, body: named, busy: {} }, true);
+    expect(html).toContain('노드 <b title="n1">&lt;m5 &quot;a&quot;&gt;</b>');
+    // '노드 ' stays its own literal, the one the page catalog translates (review of #1431: '노드 <b' had no entry).
+    const catalog = JSON.parse(
+      readFileSync(
+        join(__dirname, '..', '..', '..', 'packages', 'common', 'src', 'i18n-catalog', 'en-page.json'),
+        'utf8',
+      ),
+    );
+    expect(catalog['노드 ']).toBe('Node ');
+    expect(TEMPLATE).toContain("nodeBits.push('노드 ' + (node.name ?");
+  });
+
   it('a reader sees the same table with no buttons', () => {
     const html = env().panelProcsHtml({ status: 200, body, busy: {} }, false);
     expect(html).toContain('>bash<');
@@ -1084,6 +1099,19 @@ describe('P8 — the card’s node badge (card.node)', () => {
     expect(b.title).toContain('이 작업 CPU 113% — 계급장 가득 = 100% (코어 1개)');
     expect(b.title).toContain('메모리 3.3GB — 계급장 가득 = 7.6GB (노드 메모리 ÷ 코어 수)');
     expect(b.title).not.toContain('노드 CPU');
+  });
+
+  it('a worker with a nickname (settings 작업 워커): the badge reads it; the node id stays in the label and title', () => {
+    const b = fns().nodeBadgeOf(u({ nodeName: 'm5' })) as NonNullable<Node>;
+    expect(b.text).toBe('m5');
+    expect(b.label).toBe('노드 m5 (build-box.local), 이 작업 CPU 113%, 메모리 3.3GB');
+    expect(b.title).toContain('노드 m5 (build-box.local) · 코어 18개');
+    // A nickname is shown as set (no host-part cut at a dot), at most 12 characters like any name.
+    expect(fns().nodeBadgeOf(u({ nodeName: 'rack.2' }))?.text).toBe('rack.2');
+    expect(fns().nodeBadgeOf(u({ nodeName: 'a-very-long-nickname' }))?.text).toBe('a-very-long…');
+    // Cut by characters: twelve emoji never leave half a surrogate pair before the ellipsis.
+    const emoji = fns().nodeBadgeOf(u({ nodeName: '🖥'.repeat(13) }))?.text ?? '';
+    expect(emoji).toBe(`${'🖥'.repeat(11)}…`);
   });
 
   it('no memory gauge without the node’s size; none at all while nothing of the task lives', () => {

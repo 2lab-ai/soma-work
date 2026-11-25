@@ -212,6 +212,7 @@ import { CARD_FINISH_CLIENT_JS, CARD_FINISH_CSS } from './card-finish-client';
 import { type HostWait, hostWaitFor } from '../work-queue/host-wait';
 import type { WorkLogEntry } from './work-log';
 import type { ProcessControlInput, ProcessInspectInput } from '../process-monitor/process-monitor';
+import { getActiveWorkerNicknames } from '../process-monitor/worker-nicknames';
 import type {
   NodeCapacity,
   NodeProcessSnapshot,
@@ -252,6 +253,8 @@ export function usageForViewer<T extends { byUser: unknown; tokenRankings: unkno
 export type KanbanProcUsage = Omit<SessionProcessUsage, 'sessionKey' | 'sampledAt'> & {
   cpuCount: number;
   nodeMemBytes: number;
+  /** The worker's nickname (settings 작업 워커): the badge reads it instead of the node id. Absent: none set. */
+  nodeName?: string;
 };
 
 export interface KanbanSession {
@@ -1318,6 +1321,8 @@ function procSignature(u: SessionProcessUsage, node?: NodeCapacity): string {
     gauges.mem === null ? -1 : gaugeStep(gauges.mem),
     u.cpuCapPercent ?? '',
     u.throttling ? 1 : 0,
+    // A worker renamed in settings: its cards' badges change on the next sample.
+    getActiveWorkerNicknames()?.nicknameOf(u.nodeId) ?? '',
   ].join('|');
 }
 
@@ -1392,9 +1397,11 @@ function procUsageField(key: string): { procUsage?: KanbanProcUsage } {
   const snapshot = _processSource?.latest();
   const u = snapshot?.sessions.find((x) => x.sessionKey === key);
   if (!snapshot || !u) return {};
+  const nodeName = getActiveWorkerNicknames()?.nicknameOf(u.nodeId);
   return {
     procUsage: {
       nodeId: u.nodeId,
+      ...(nodeName ? { nodeName } : {}),
       cpuCount: snapshot.node.cpuCount,
       nodeMemBytes: snapshot.node.totalMemBytes,
       rootAlive: u.rootAlive,
@@ -4973,7 +4980,14 @@ export async function registerDashboardRoutes(
           found && !seesCommands
             ? { ...found, processes: found.processes.map((p) => ({ ...p, command: '', cwd: '' })) }
             : found;
-        reply.send({ node: snapshot.node, sampledAt: snapshot.sampledAt, session, commands: seesCommands });
+        // The node line reads the worker's nickname when it has one (settings 작업 워커).
+        const nodeName = getActiveWorkerNicknames()?.nicknameOf(snapshot.node.nodeId);
+        reply.send({
+          node: nodeName ? { ...snapshot.node, name: nodeName } : snapshot.node,
+          sampledAt: snapshot.sampledAt,
+          session,
+          commands: seesCommands,
+        });
       } catch (error) {
         logger.warn('Process sample failed', { error: error instanceof Error ? error.message : String(error) });
         reply.status(500).send({ error: 'Process sample failed' });
@@ -17023,7 +17037,8 @@ function panelProcsHtml(state, canControl) {
   if (!st.body) return '<p class="pp-note">프로세스 목록을 읽는 중…</p>';
   var node = st.body.node || {};
   var nodeBits = [];
-  if (node.nodeId) nodeBits.push('노드 <b>' + esc(node.nodeId) + '</b>');
+  // '노드 ' alone, then the markup: the page catalog translates that literal (a nickname adds the node id as a title).
+  if (node.nodeId) nodeBits.push('노드 ' + (node.name ? '<b title="' + escAttr(node.nodeId) + '">' : '<b>') + esc(node.name || node.nodeId) + '</b>');
   if (toNum(node.cpuCount)) nodeBits.push('코어 ' + toNum(node.cpuCount) + '개');
   if (node.cpuBusyPercent !== null && node.cpuBusyPercent !== undefined) nodeBits.push('노드 CPU ' + procCpuText(node.cpuBusyPercent));
   if (toNum(node.totalMemBytes)) nodeBits.push('여유 메모리 ' + procBytesText(node.availableMemBytes) + ' / ' + procBytesText(node.totalMemBytes));

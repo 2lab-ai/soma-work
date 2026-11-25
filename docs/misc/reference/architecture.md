@@ -194,6 +194,10 @@ updates inside its terminal-cleanup boundary, including setup failures.
   (pid, 시작 시각)으로 기억해 계속 그 세션에 남긴다. 시작 시각이 다르면 재사용된 pid로 보고 버린다.
 - 스냅샷 모양은 노드 단위(`NodeProcessSnapshot`: `node` 가용량 + `sessions[]` + `unattributed`)이고, 호출부는 `ProcessHost` 인터페이스만 쓴다 —
   워커 노드는 같은 인터페이스를 자기 전송으로 구현하면 된다(ADR 0003).
+- 작업 워커 닉네임(`worker-nicknames.ts`, `DATA_DIR/worker-nicknames.json`, `atomicWriteJson` + `.bak`): 노드 id는 그대로 식별자이고 닉네임은 사람이 읽는 이름뿐이다.
+  데몬이 `setActiveWorkerNicknames`·`setWorkerNodeSource(monitor)`로 연결하고, 설정 "작업 워커" 탭(`settings-workers-tab.ts`, `workers-routes.ts`:
+  `GET /api/settings/workers`, `PUT /api/settings/workers/:nodeId/nickname` — Slack 로그인 어드민, 바꾸기는 관리자 모드 + CSRF, 목록에 있는 노드만)이 읽고 바꾼다.
+  카드 `procUsage.nodeName`과 프로세스 탭 응답 `node.name`이 닉네임을 싣고, `procSignature`에 닉네임이 들어 있어 이름을 바꾸면 다음 샘플에 배지가 다시 푸시된다.
 - 대시보드: `KanbanSession.procUsage`(카드의 `proc` foot 칩, `faceFootMetrics`) — 샘플마다 칩이 바뀐 카드만 `scheduleLiveSessionUpdate`로 per-viewer
   푸시(`procCardsToPush`). 디테일 카드 `procs` 탭(`renderPanelProcs`)은 `GET /api/dashboard/session/:key/processes`(비공개 작업 게이트 적용)를 3초마다,
   `POST …/processes/:pid/:op`(pause · resume, body `{startToken}`, owner 또는 admin mode admin + CSRF)로 `SIGSTOP`/`SIGCONT`. 서버가 그 순간 다시 샘플해
