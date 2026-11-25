@@ -29,6 +29,8 @@ export interface TreeSample {
 interface Remembered {
   readonly startToken: string;
   readonly depth: number;
+  /** Its parent when its row was last read: a carried row whose pid now has another parent was reused. */
+  readonly ppid: number;
 }
 
 /** Owner key of the unattributed group: SDK children with no session. */
@@ -53,12 +55,15 @@ export class TreeSampler {
   private readonly prevCpu = new Map<string, { cpuSeconds: number; at: number }>();
   /** `pid:start` → its working directory and when it was read. */
   private readonly cwds = new Map<string, { cwd: string; at: number }>();
+  /** The last sample's parent map. */
+  private lastParentOf = new Map<number, number>();
 
   constructor(
     private readonly runPs: RunPs,
     private readonly now: () => number = Date.now,
     private readonly readCpuSeconds?: ReadCpuSeconds,
     private readonly readCwds?: ReadCwds,
+    private readonly logger?: { warn(msg: string, meta?: unknown): void },
   ) {}
 
   /** Whether a sample would do any work (a tracked root, or a remembered leftover). */
@@ -71,6 +76,7 @@ export class TreeSampler {
     if (!this.hasWork(roots)) return { sessions: [], unattributed: { processCount: 0, cpuPercent: 0, rssBytes: 0 } };
 
     const parentOf = parseParentMap(await this.runPs(['-A', '-o', 'pid=,ppid=']));
+    this.lastParentOf = parentOf;
     const childrenOf = new Map<number, number[]>();
     for (const [pid, ppid] of parentOf) {
       if (pid === ppid) continue;
@@ -99,14 +105,24 @@ export class TreeSampler {
       const pids = [...wanted];
       const outs: string[] = [];
       let failure: unknown = null;
+      let missed = 0;
       for (let i = 0; i < pids.length; i += DETAIL_BATCH) {
+        const batch = pids.slice(i, i + DETAIL_BATCH);
         try {
-          outs.push(await this.runPs(['-ww', '-o', DETAIL_COLUMNS, '-p', pids.slice(i, i + DETAIL_BATCH).join(',')]));
+          outs.push(await this.runPs(['-ww', '-o', DETAIL_COLUMNS, '-p', batch.join(',')]));
         } catch (err) {
           failure ??= err;
+          missed += batch.length;
         }
       }
       if (outs.length === 0) throw failure;
+      // A partial sample is still a sample, but it should not look whole: say once what it lacks.
+      if (missed > 0) {
+        this.logger?.warn('process sample: a detail batch failed; its processes are missing from this sample', {
+          pids: missed,
+          error: String(failure),
+        });
+      }
       const fine = this.readCpuSeconds ? await this.readCpuSeconds(pids).catch(() => new Map<number, number>()) : null;
       for (const row of outs.flatMap((out) => parseDetailRows(out))) {
         // A pid whose parent differs between the two ps calls exited and was reused in between: not the process the
@@ -190,7 +206,7 @@ export class TreeSampler {
           command: commandPreview(argv),
           cwd: this.cwds.get(cpuKey)?.cwd ?? '',
         });
-        memory.set(pid, { startToken: row.startToken, depth });
+        memory.set(pid, { startToken: row.startToken, depth, ppid: row.ppid });
       }
       if (memory.size > 0) this.remembered.set(owner, memory);
       if (processes.length === 0) continue;
@@ -218,11 +234,9 @@ export class TreeSampler {
     // A remembered process still in the parent map whose detail row is missing (ps skipped or could not read it) is
     // not gone: keep remembering it, or an orphan — whose parent is gone — could never be found again. A pid reused
     // meanwhile is caught by the start-time check of the next sample.
-    const claimedNow = new Set<number>();
-    for (const m of membership.values()) for (const pid of m.keys()) if (rows.has(pid)) claimedNow.add(pid);
     for (const [owner, seen] of previous) {
       for (const [pid, entry] of seen) {
-        if (!parentOf.has(pid) || rows.has(pid) || claimedNow.has(pid)) continue;
+        if (!parentOf.has(pid) || rows.has(pid)) continue;
         const memory = this.remembered.get(owner) ?? new Map<number, Remembered>();
         memory.set(pid, entry);
         this.remembered.set(owner, memory);
@@ -244,6 +258,17 @@ export class TreeSampler {
   /** The owner's remembered process with this pid, if it was in the last sample. */
   rememberedStart(sessionKey: string, pid: number): string | undefined {
     return this.remembered.get(sessionKey)?.get(pid)?.startToken;
+  }
+
+  /**
+   * The start time of the owner's remembered process with this pid — one the last sample carried without its row — as
+   * long as the parent map still gives the pid the parent it had when its row was last read. A different parent means
+   * the pid was most likely reused, so nothing is vouched for (undefined).
+   */
+  carriedStart(sessionKey: string, pid: number): string | undefined {
+    const seen = this.remembered.get(sessionKey)?.get(pid);
+    if (!seen || this.lastParentOf.get(pid) !== seen.ppid) return undefined;
+    return seen.startToken;
   }
 
   private cpuPercent(key: string, row: PsRow, at: number): number {

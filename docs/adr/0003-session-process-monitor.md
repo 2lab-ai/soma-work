@@ -48,14 +48,19 @@ same snapshot, and work will be placed by each node's free CPU and memory.
    automatic resume (abort, shutdown), the pid's live start time is read and a pid the OS has reused is skipped. An
    unreadable identity is unknown, not gone: the manual signal is refused, and an automatic resume keeps its entry, as
    it does when the OS refuses the resume. An abort continues only what was paused under that turn, or between turns,
-   so a late abort of an earlier turn leaves the next turn's pauses alone. An abort's resume that could not be done is
-   retried on every sample until it lands. A turn is its spawn's number in the registry (`turnId`), not the Claude Code
+   so a late abort of an earlier turn leaves the next turn's pauses alone. An abort reads every identity it needs in one
+   batched `ps` (it runs inside the SDK's abort callback, where one 2-second probe per process would stack up). An
+   abort's resume that could not be done is retried on every sample until it lands, again in one read. A turn is its spawn's number in the registry (`turnId`), not the Claude Code
    pid, which the OS can hand to the next turn. A process keeps the turn it was seen under after it is orphaned, and
-   what an orphan starts inherits it. A pause is refused only when its own turn is aborted during the check. A pause
+   what an orphan starts inherits it. A parent the tree still has but whose row a sample skipped passes on the turn it
+   was last seen under. A process whose chain breaks at such a parent that was never read has no traceable turn: its
+   pause is refused while the session has an aborted turn still carried. A pause is refused only when its own turn is
+   aborted during the check. A pause
    missing from a sample is dropped only when its live start time says the process is gone. A pause in a turn whose
    abort already ran is refused, because nothing would continue it. Shutdown retries a few times within a 5-second
    probe budget and logs whatever it could
-   not continue. The route allows the owner, or an admin in admin mode, with CSRF. Aborting a turn continues
+   not continue. Disposing of a monitor continues what it paused before it detaches from the registry. A sample whose
+   detail read lost a batch (one `ps -p` of up to 200 pids) still counts, and says once in the log how many it lacks. The route allows the owner, or an admin in admin mode, with CSRF. Aborting a turn continues
    the paused root (in the spawner) and everything the monitor paused in that session, so a stop still lands. The
    same holds when the abort arrives after the root has exited. On shutdown (drain, crash kill) the registry first tells
    the monitor, which continues everything it paused; the SIGTERM grace period starts after that pass. Every
