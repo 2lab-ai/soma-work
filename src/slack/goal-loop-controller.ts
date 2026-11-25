@@ -396,15 +396,34 @@ export class GoalLoopController {
       return;
     }
 
-    // Environment work it asked for waits in the host's queue or runs (SSOT 2026-11-19): a wait, not a stall.
+    const workSummaryRaw = (session.goalLastTurnText ?? activeGoal.lastAssistantTurnSummary ?? '').trim();
+    const noTurnText = workSummaryRaw === '';
+
+    // Environment work it asked for waits in the host's queue or runs (SSOT 2026-11-19): a wait, not a stall — when the
+    // last turn ENDED on that wait. An auto-compact stop chose no wait: it cut the turn mid-work (no text) and left the
+    // compaction armed for the next input. For a goal session this loop is the only one that carries that stop on
+    // (`resumeAfterAutoCompactStop` leaves an active goal to it), so skipping here left the work stopped until a restart
+    // (shared-host dev 2026-11-24, 2.5 hours). No text alone is not a cut: `queue_enter` and RUN_ENV_SKILL tell the
+    // model to end its turn, and a turn that does so silently still waits. The compaction the resumed turn runs
+    // consumes the armed flag, so a stop is carried on once.
     if (this.deps.awaitingHostWork?.(sessionKey)) {
+      const cutByAutoCompact =
+        noTurnText && session.autoCompactPending === true && session.autoCompactStoppedAtMs !== undefined;
+      if (!cutByAutoCompact) {
+        logger.info(
+          'Goal loop run skipped — the session waits on environment work the host runs; its result turn drives the loop',
+          {
+            sessionKey,
+          },
+        );
+        return;
+      }
       logger.info(
-        'Goal loop run skipped — the session waits on environment work the host runs; its result turn drives the loop',
+        'Goal loop resumes a turn an auto-compact stop cut — the session waits on environment work, but the turn chose no wait',
         {
           sessionKey,
         },
       );
-      return;
     }
 
     // Transient-failure backoff gate: while a scheduled eval retry is waiting
@@ -430,7 +449,6 @@ export class GoalLoopController {
     }
 
     const objective = activeGoal.objective;
-    const workSummaryRaw = (session.goalLastTurnText ?? activeGoal.lastAssistantTurnSummary ?? '').trim();
     // Hashed as the goal persists it (bounded): after a restart only the bounded
     // mirror is left, and the same evidence must still read as unchanged.
     const summaryHash = this.hashSummary(workSummaryRaw.slice(0, GOAL_SUMMARY_PERSIST_MAX).trim());
@@ -452,7 +470,6 @@ export class GoalLoopController {
     //    worth it.
     // The last real gap stays the reason the next continuation is asked to close.
     const hasGap = !!activeGoal.lastEvalReason?.trim();
-    const noTurnText = workSummaryRaw === '';
     const alreadyJudged = activeGoal.lastEvalSummaryHash === summaryHash;
     // A task-gate gap whose named tasks are all closed since is new evidence,
     // even with no turn text: judge again (goal-task-gate).
