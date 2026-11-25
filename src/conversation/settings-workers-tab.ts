@@ -9,6 +9,9 @@
  */
 
 export const WORKERS_TAB_HTML = `<div slot="workers" data-tab="workers" class="page" hidden>
+  <aside class="side" aria-label="작업 워커 영역">
+    <input type="search" class="ui-input" id="wk-filter" placeholder="이름 검색" aria-label="이름 검색" oninput="renderWorkers()">
+  </aside>
   <main>
     <p class="intro">작업(Claude Code)이 돌아가는 머신입니다. 지금은 이 soma-work가 설치된 노드 하나이고, 워커를 더 붙이면 여기에 함께 나옵니다.</p>
     <p class="intro">닉네임을 정하면 작업 카드의 노드 배지와 프로세스 탭에 노드 이름 대신 닉네임이 나옵니다. 노드 이름은 배지의 툴팁에 남습니다.</p>
@@ -109,10 +112,16 @@ async function loadWorkers() {
 function renderWorkers() {
   var el = document.getElementById('wk-body');
   if (!el || !_wk) return;
-  var workers = _wk.workers || [];
+  var all = _wk.workers || [];
+  var q = ((document.getElementById('wk-filter') || {}).value || '').toLowerCase().trim();
+  var workers = all.filter(function(w) {
+    return !q || String(w.name || '').toLowerCase().indexOf(q) >= 0 || String(w.nodeId || '').toLowerCase().indexOf(q) >= 0;
+  });
   el.innerHTML = wkBanner() + (workers.length
     ? '<ul class="wk-rows">' + workers.map(function(w) { return wkRow(w, adminModeOn()); }).join('') + '</ul>'
-    : '<div class="notice">작업 워커가 없습니다 — 이 인스턴스에서 프로세스 모니터가 꺼져 있어요.</div>');
+    : all.length
+      ? '<div class="notice">찾는 이름의 작업 워커가 없습니다.</div>'
+      : '<div class="notice">작업 워커가 없습니다 — 이 인스턴스에서 프로세스 모니터가 꺼져 있어요.</div>');
 }
 function wkSubmit(e, form) {
   if (e && e.preventDefault) e.preventDefault();
