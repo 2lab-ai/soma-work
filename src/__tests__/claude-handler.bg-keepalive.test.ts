@@ -598,49 +598,93 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
     }
   });
 
-  // #997: a live shell or workflow never holds a turn for its lifetime — only for
-  // the follow-up grace, long enough to read a notification turn the CLI already
-  // started. Then the input closes as before, though the shell is still live.
-  it('holds the answer of a turn with live shells or workflows only for the follow-up grace (#997)', async () => {
+  // #1425 (supersedes #997's grace-then-close): closing the input does not end a CLI that still runs a
+  // background shell — it waits for the shell (dev 2026-11-10..25: 12 of 15 holds with a live shell lasted 1-35
+  // minutes after the close). A closed input only cut the host off: steers were refused, and the shell's
+  // notification turn ran with every tool call denied ("The user doesn't want to take this action"). So while a
+  // shell or workflow is live the input stays open; the turn ends on the notification turn after they settle.
+  it('keeps the input open while a shell or workflow is live, and ends on the turn after they settle (#1425)', async () => {
     vi.useFakeTimers();
     vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
     const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
     try {
       const cli = newFakeCli();
+      const pastGrace = deferred();
       const pulledPastOpening = deferred();
       installScriptedQuery(cli, async function* (inputs) {
         await readOpening(inputs, cli);
         yield* openingTurnHead([
-          { task_id: 'bash-1', task_type: 'local_bash', description: 'dev server' },
+          { task_id: 'bash-1', task_type: 'local_bash', description: 'lock wait' },
           { task_id: 'flow-1', task_type: 'local_workflow', description: 'workflow' },
         ]);
         yield openingResult(cli.opening?.uuid);
         const probe = watchInputEnd(inputs, cli);
         pulledPastOpening.resolve();
+        await pastGrace.promise;
+        // The shell and the workflow finish; the CLI runs their notification turn.
+        yield level([]);
+        yield taskNotification('bash-1', 'completed');
+        yield INIT;
+        yield NOTIFIED;
+        yield notifiedResult();
         await probe;
       });
 
       const framesPromise = collect(startTurn(newHandler()));
       await pulledPastOpening.promise;
 
-      await vi.advanceTimersByTimeAsync(BG_FOLLOWUP_GRACE_MS - 1);
+      await vi.advanceTimersByTimeAsync(BG_FOLLOWUP_GRACE_MS * 4);
       expect(cli.inputEnded).toBe(false);
+      expect(callsOf(info, SHELL_DEFER_LOG)).toHaveLength(1);
 
-      await vi.advanceTimersByTimeAsync(1);
+      pastGrace.resolve();
+      await vi.advanceTimersByTimeAsync(BG_FOLLOWUP_GRACE_MS + 1);
       const frames = await framesPromise;
 
       expect(cli.inputEnded).toBe(true);
       const results = resultsOf(frames);
       expect(results).toHaveLength(1);
-      expect(results[0]).toMatchObject({ result: 'WAITING', user_message_uuid: cli.opening?.uuid });
-      // Not the agent hold: no keepalive cap fires for a shell.
-      expect(callsOf(info, DEFER_LOG)).toHaveLength(0);
-      expect(callsOf(info, SHELL_DEFER_LOG)).toHaveLength(1);
-      await vi.advanceTimersByTimeAsync(CAP_MS + NON_TURN_RESULT_IDLE_MS * 2);
+      expect(results[0]).toMatchObject({ result: 'NOTIFIED' });
       expect(cli.stopTask).not.toHaveBeenCalled();
-      expect(cli.close).not.toHaveBeenCalled();
     } finally {
       info.mockRestore();
+    }
+  });
+
+  it('the keepalive cap stops a shell that holds the turn and tells the model the host stopped it (#1425)', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const pulledPastOpening = deferred();
+      installScriptedQuery(cli, async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield* openingTurnHead([{ task_id: 'bash-1', task_type: 'local_bash', description: 'dev server' }]);
+        yield openingResult(cli.opening?.uuid);
+        pulledPastOpening.resolve();
+        // Everything the host sends until the input ends.
+        for (;;) {
+          const next = await inputs.next();
+          if (next.done) break;
+          cli.received.push(next.value);
+        }
+        cli.inputEnded = true;
+      });
+
+      const framesPromise = collect(startTurn(newHandler()));
+      await pulledPastOpening.promise;
+      await vi.advanceTimersByTimeAsync(CAP_MS + 1);
+      const frames = await framesPromise;
+
+      expect(cli.stopTask).toHaveBeenCalledWith('bash-1');
+      const note = JSON.stringify(cli.received.slice(1));
+      expect(note).toContain('[host: keepalive cap]');
+      expect(note).toContain('bash-1');
+      expect(cli.inputEnded).toBe(true);
+      expect(resultsOf(frames)[0]).toMatchObject({ result: 'WAITING' });
+    } finally {
+      warn.mockRestore();
     }
   });
 
@@ -1743,6 +1787,9 @@ describe('ClaudeHandler: a late result does not cut a notification turn of a bac
       await readOpening(inputs, cli);
       yield INIT;
       yield level([bashTask, { task_id: 'amb-1', task_type: 'local_agent', description: 'ambient', ambient: true }]);
+      // The shell settles inside the turn: its notification turn is owed for the grace only (a shell still live
+      // keeps the input open instead, #1425).
+      yield level([{ task_id: 'amb-1', task_type: 'local_agent', description: 'ambient', ambient: true }]);
       yield WAITING;
       yield openingResult(cli.opening?.uuid);
       yield { ...INIT, parent_tool_use_id: 'toolu_ambient' };

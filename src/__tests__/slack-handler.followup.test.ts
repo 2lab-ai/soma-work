@@ -4032,6 +4032,49 @@ describe('SlackHandler — follow-up queue host', () => {
     });
 
     /**
+     * #1424 (shared-host dev 2026-11-25, `C0C8P2S9AKG:1795515138.334529`): a message sent during the `/compact` turn
+     * an auto-compact stop led to (02:05:14Z, `Follow-up not steered — a /compact turn is running`) waited for the
+     * whole run — the replay after the compaction and the background wait it ended on — and reached the model at
+     * 02:20:30Z. The replay is the run's next turn: the busy fence runs it inside the run's slot with no generation
+     * of its own, and the message the compaction refused is pushed into it once it reaches the model.
+     */
+    it('pushes a follow-up the /compact turn refused into the replay turn that follows it', async () => {
+      const steerTurn = withLiveTurn();
+      const { settle } = await startBusyTurn();
+      registrySession.compactTurnActive = true;
+
+      await handler.handleMessage(message({ ts: '333.444', text: 'dev2 qa 진행해' }), say());
+      expect(steerTurn).not.toHaveBeenCalled();
+      expect(items()[0].state).toBe('queued');
+
+      // The /compact turn's teardown ends the compaction and runs the replay inside the same run.
+      registrySession.compactTurnActive = false;
+      handlerAny.streamExecutor?.deps?.onTurnReachedModel?.({ sessionKey: SESSION_KEY, turnEpoch: undefined });
+      await tick();
+
+      expect(steerTurn).toHaveBeenCalledTimes(1);
+      expect(steerTurn.mock.calls[0][1]).toMatchObject({ text: 'dev2 qa 진행해' });
+      expect(items()[0].state).toBe('steered');
+      await settle();
+    });
+
+    it('does not push a follow-up the /compact turn refused into that /compact turn when it reaches the model', async () => {
+      const steerTurn = withLiveTurn();
+      const { settle } = await startBusyTurn();
+      registrySession.compactTurnActive = true;
+
+      await handler.handleMessage(message({ ts: '333.444', text: 'dev2 qa 진행해' }), say());
+      const turnEpoch = handlerAny.followupDispatcher.liveTurnEpoch(SESSION_KEY);
+      handlerAny.streamExecutor?.deps?.onTurnReachedModel?.({ sessionKey: SESSION_KEY, turnEpoch });
+      await tick();
+
+      expect(steerTurn).not.toHaveBeenCalled();
+      expect(items()[0].state).toBe('queued');
+      registrySession.compactTurnActive = false;
+      await settle();
+    });
+
+    /**
      * `/z <instruction>` is the SAME turn with a routing prefix the dispatch
      * path strips (`command-router.ts:396-399` / `z/strip-z-prefix.ts:24`).
      * Steering pushes the text UNSTRIPPED, so the model would read the literal

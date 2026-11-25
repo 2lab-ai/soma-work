@@ -488,17 +488,31 @@ function isMainThreadToolProgress(raw: Record<string, unknown>): boolean {
  * touched. Pushed before the input closes, so the model reads it in the same
  * process that reports the stop.
  */
-export function buildKeepaliveCapNote(agentIds: readonly string[], reason: 'idle' | 'ceiling', maxMs: number): string {
+export function buildKeepaliveCapNote(
+  agentIds: readonly string[],
+  reason: 'idle' | 'ceiling',
+  maxMs: number,
+  taskIds: readonly string[] = [],
+): string {
   const minutes = (ms: number) => Math.round(ms / 60_000);
   const why =
     reason === 'idle'
       ? `they produced no output for ${minutes(maxMs)} minutes`
       : `they ran past the ${minutes(Math.min(maxMs * BG_KEEPALIVE_HARD_CEILING_FACTOR, MAX_TIMER_DELAY_MS))}-minute ceiling`;
+  const stopped = [
+    ...(agentIds.length > 0 ? [`background agent(s) ${agentIds.join(', ')}`] : []),
+    ...(taskIds.length > 0 ? [`background task(s) ${taskIds.join(', ')}`] : []),
+  ].join(' and ');
   return [
-    `[host: keepalive cap] The host stopped background agent(s) ${agentIds.join(', ')}: ${why}.`,
+    `[host: keepalive cap] The host stopped ${stopped}: ${why}.`,
     'The user did not stop them — a task notification saying "was stopped by user" is this host stop.',
     'This process ends after this turn, so do not resume them here. Report what each finished and what is left;',
-    'each can be resumed later from its transcript with SendMessage to its agent ID.',
+    ...(agentIds.length > 0
+      ? ['each agent can be resumed later from its transcript with SendMessage to its agent ID.']
+      : []),
+    ...(taskIds.length > 0
+      ? ['a stopped shell or workflow does not resume — start it again in a later turn if it is still needed.']
+      : []),
   ].join(' ');
 }
 
@@ -1712,19 +1726,26 @@ export class ClaudeHandler implements TurnSteeringPort {
         if (keepaliveCeilingTimer) clearTimeout(keepaliveCeilingTimer);
         keepaliveCeilingTimer = undefined;
         const live = [...liveAgents];
+        // #1425 — a live shell or workflow holds the turn too (the CLI outlives it with its input closed): the cap
+        // stops it the same way, and the note names it.
+        const liveTasks = [...liveNonAgents];
         this.logger.warn('Background agents outlived the keepalive cap; stopping them', {
           live: live.length,
+          liveTasks: liveTasks.length,
           maxMs: keepaliveMaxMs,
           reason,
           sessionKey: steerKey,
         });
-        for (const taskId of live) stopBackgroundAgent(taskId);
-        if (live.length > 0) {
+        for (const taskId of [...live, ...liveTasks]) stopBackgroundAgent(taskId);
+        if (live.length + liveTasks.length > 0) {
           // Its own uuid, outside the steer ledger: the held turn waits for the
           // note's turn (the result echoing it), so the note is never left
           // queued for settlement to read as an unconsumed steer (#1041 review).
           const noteUuid = randomUUID();
-          const note = buildInitialUserMessage(buildKeepaliveCapNote(live, reason, keepaliveMaxMs), noteUuid);
+          const note = buildInitialUserMessage(
+            buildKeepaliveCapNote(live, reason, keepaliveMaxMs, liveTasks),
+            noteUuid,
+          );
           if (channel.pushUntracked(note)) {
             pendingCapNoteUuid = noteUuid;
           } else {
@@ -1890,8 +1911,9 @@ export class ClaudeHandler implements TurnSteeringPort {
             if (settled) {
               nonAgentSettledSeq = frameSeq;
               // Its notification turn is owed now: give the CLI a fresh grace to
-              // start it. Agents, when live, govern the wait instead.
-              if (held && liveAgents.size === 0 && !turnRunning()) awaitShellFollowUpTurn();
+              // start it. Agents, when live, govern the wait instead; another live
+              // task keeps the input open (#1425).
+              if (held && liveAgents.size === 0 && liveNonAgents.size === 0 && !turnRunning()) awaitShellFollowUpTurn();
             }
           }
 
@@ -1988,7 +2010,10 @@ export class ClaudeHandler implements TurnSteeringPort {
             const echoed = raw.user_message_uuid;
             const answersASend = typeof echoed === 'string' && channel.pushedUuids().includes(echoed);
             if (answersASend ? answerFollowUpOwed() : heldFollowUpOwed()) {
-              awaitShellFollowUpTurn();
+              // #1425 — a task is still live: the CLI would outlive a closed input anyway, waiting for it, and then
+              // run its notification turn with every tool call denied. Keep holding with the input open; its settle
+              // (or the keepalive cap) decides. Not owed, the turn still ends here, live task or not (#997 review).
+              if (liveNonAgents.size === 0) awaitShellFollowUpTurn();
               continue;
             }
             const { settlement, result } = await endHeldTurn(held);
@@ -2055,7 +2080,8 @@ export class ClaudeHandler implements TurnSteeringPort {
               armKeepaliveCap();
               if (liveAgents.size > 0) continue;
               if (agentsOwed) awaitFollowUpTurn();
-              else awaitShellFollowUpTurn();
+              // #1425 — a live shell or workflow: the input stays open until it settles (its settle arms the grace).
+              else if (liveNonAgents.size === 0) awaitShellFollowUpTurn();
               continue;
             }
 

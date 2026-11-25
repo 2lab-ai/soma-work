@@ -5681,18 +5681,6 @@ export class SlackHandler {
         return 'queued';
       }
 
-      // #891 — never into a dedicated `/compact` turn. Its query ends at the
-      // compaction's result: a pushed message was started by the CLI and cut
-      // off with that query, its row already consumed. Queued, it runs at the
-      // drain — the rule the initializer's compaction stash already keeps.
-      // Read here, after the awaits above and with only synchronous code left
-      // before the push: a fallback `/compact` can start while files download.
-      if (this.claudeHandler.getSessionByKey?.(this.canonicalFollowupKey(sessionKey))?.compactTurnActive === true) {
-        this.logger.debug('Follow-up not steered — a /compact turn is running', { sessionKey, itemId: item.id });
-        await this.cleanupSteerFiles(files);
-        return 'queued';
-      }
-
       // WHICH key owns the live slot, resolved exactly like the ingress fence
       // (`:949-957`): a mention's first turn opens its slot under the SOURCE key
       // and then migrates into a work thread, so the reply that lands here is
@@ -5720,11 +5708,35 @@ export class SlackHandler {
         await this.cleanupSteerFiles(files);
         return 'queued';
       }
+      const liveTurnEpoch = dispatcher.liveTurnEpoch(slotKey);
+      // #891 — never into a dedicated `/compact` turn. Its query ends at the
+      // compaction's result: a pushed message was started by the CLI and cut
+      // off with that query, its row already consumed. Read here, after the
+      // awaits above and with only synchronous code left before the push: a
+      // fallback `/compact` can start while files download.
+      // #1424 — the run's next turn is the replay of the message the compaction
+      // intercepted: the row waits for that turn to open (it is pushed when the
+      // replay reaches the model), not for the end of the whole run.
+      if (this.claudeHandler.getSessionByKey?.(this.canonicalFollowupKey(sessionKey))?.compactTurnActive === true) {
+        this.logger.debug('Follow-up not steered — a /compact turn is running; it waits for the turn after it', {
+          sessionKey,
+          itemId: item.id,
+        });
+        if (liveTurnEpoch !== undefined) {
+          this.waitForTurnOpen(slotKey, {
+            rowKey: sessionKey,
+            itemId: item.id,
+            turnEpoch: liveTurnEpoch,
+            what: 'Follow-up refused by a /compact turn',
+          });
+        }
+        await this.cleanupSteerFiles(files);
+        return 'queued';
+      }
       // #962 — rows sent before this one still wait for this run to open (or are
       // being pushed into it right now): join the end of their line, so the run
       // gets the messages in the order they were sent. Checked here, with nothing
       // but synchronous code left before the push.
-      const liveTurnEpoch = dispatcher.liveTurnEpoch(slotKey);
       if (!pinnedRun && liveTurnEpoch !== undefined && this.hasFollowupsWaitingForOpen(slotKey, liveTurnEpoch)) {
         this.waitForTurnOpen(slotKey, {
           rowKey: sessionKey,
@@ -6943,10 +6955,19 @@ export class SlackHandler {
    */
   private onFollowupTurnReachedModel({ sessionKey, turnEpoch }: { sessionKey: string; turnEpoch?: number }): void {
     const dispatcher = this.followupDispatcher;
-    if (!dispatcher || turnEpoch === undefined) return;
+    if (!dispatcher) return;
     // The executor speaks the session's canonical key; the run holds its slot
     // under the slot key, which differs while a bot-thread migration is bound.
     const slotKey = this.boundFollowupSlot(sessionKey) ?? sessionKey;
+    if (turnEpoch === undefined) {
+      // #1424 — a turn with no generation of its own, inside a run that holds the
+      // slot: the post-compact replay the busy fence runs. Its input is that run's
+      // next open — push what waits for it (a row the `/compact` turn refused).
+      // Nothing else: the run's own delivery evidence and takeover are its own.
+      const live = dispatcher.liveTurnEpoch(slotKey);
+      if (live !== undefined) this.steerFollowupsWaitingForOpen(slotKey, live);
+      return;
+    }
     const marked = dispatcher.noteTurnReachedModel(slotKey, turnEpoch);
     if (marked.status === 'failed') {
       this.logger.warn('Follow-up delivery evidence not recorded', { sessionKey: slotKey, detail: marked.detail });
