@@ -140,15 +140,32 @@ describe('ClaudeHandler — context rollback', () => {
     expect(markRewoundTurnsMock).not.toHaveBeenCalled();
   });
 
-  it('new/renew stamps the spans it is about to clear', () => {
+  it('the span the cap of 10 lets go is stamped with the rest', async () => {
+    const old = Array.from({ length: 10 }, (_, i) => ({
+      from: i * 10,
+      to: i * 10 + 5,
+      label: `p${i}`,
+      at: i * 10 + 6,
+    }));
+    const session = rollingBack({ contextRewinds: [...old] });
+    installTurn((opening) => opened(opening, 10));
     const handler = new ClaudeHandler({ getPluginManager: () => null } as unknown as McpManager);
-    const s = handler.getSessionRegistry().createSession('U1', 'Tester', 'C1', '2.2');
-    s.sessionId = SID;
-    s.conversationId = 'conv-2';
-    s.contextRewinds = [{ from: 10, to: 20, label: '입력 직전: 옛 지시', at: 21 }];
-    expect(handler.resetSessionContext('C1', '2.2')).toBe(true);
-    expect(markRewoundTurnsMock.mock.calls).toEqual([['conv-2', { from: 10, to: 20, at: 21 }]]);
-    expect(s.contextRewinds).toBeUndefined();
+    await drain(handler, session);
+    expect(session.contextRewinds).toHaveLength(10);
+    expect(session.contextRewinds[0]).toEqual(old[1]);
+    const stamped = markRewoundTurnsMock.mock.calls.map((c: any[]) => c[1].from);
+    expect(stamped).toEqual([0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 199]);
+  });
+
+  it('a rollback the CLI never opened is undone: no span, the old anchor — nothing to stamp later', async () => {
+    const earlier = { from: 10, to: 20, label: '입력 직전: 옛 지시', at: 21 };
+    const session = rollingBack({ contextRewinds: [earlier] });
+    installTurn((opening) => [{ ...result(opening), subtype: 'error_during_execution', is_error: true }]);
+    const handler = new ClaudeHandler({ getPluginManager: () => null } as unknown as McpManager);
+    await drain(handler, session).catch(() => undefined);
+    expect(session.contextRewinds).toEqual([earlier]);
+    expect(session.contextAnchor).toBe(anchorOf(9));
+    expect(markRewoundTurnsMock).not.toHaveBeenCalled();
   });
 
   it('a waiting rollback becomes resumeSessionAt once, and the anchor follows the new chain', async () => {

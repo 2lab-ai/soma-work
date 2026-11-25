@@ -119,3 +119,26 @@ describe('an instruction whose turn was stopped before any reply (its anchor is 
     expect(v.inputs[1].text).toBe('이거 무시');
   });
 });
+
+describe('a work-log point on an answer’s final reply keeps that answer (2026-11-25)', () => {
+  it('its time is the answer’s recorded time; a point inside the turn keeps its own', () => {
+    // The answer is recorded at teardown (180), after its final work-log entry (170).
+    const v = buildRollbackPointsView(
+      session({ contextAnchor: A(12) }),
+      [],
+      [
+        { seq: 3, ts: 140, kind: 'tool_result', text: 'ok', anchor: A(4) },
+        { seq: 5, ts: 170, kind: 'final', text: '배포했어요', anchor: A(5) },
+        { seq: 9, ts: 250, kind: 'final', text: '아직 기록 전', anchor: A(6) },
+      ],
+      { actor: 'U1', requestActive: false },
+      [],
+      [
+        { role: 'user', timestamp: 100 },
+        { role: 'assistant', timestamp: 180 },
+        { role: 'user', timestamp: 200 },
+      ],
+    );
+    expect(v.worklog.map((p) => p.at)).toEqual([140, 180, 250]);
+  });
+});

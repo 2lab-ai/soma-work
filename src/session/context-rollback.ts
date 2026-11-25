@@ -520,12 +520,29 @@ export function toolCallLabel(call: string, max = 80): string {
 
 const WORK_LOG_KIND_LABEL: Record<string, string> = { narration: '응답', final: '최종 답', tool_result: '툴 결과' };
 
+/**
+ * The time a work-log point keeps up to. A final reply keeps its answer: the answer is recorded at teardown, after
+ * the reply's work-log entry, so the point keeps up to the answer's recorded time — the first turn recorded at or
+ * after the entry, when it is an answer (2026-11-25). Every other point keeps its own entry's time.
+ */
+function workLogKeptAt(
+  p: RollbackWorkLogPoint,
+  turns: ReadonlyArray<Pick<ConversationTurn, 'role' | 'timestamp'>>,
+): number {
+  if (p.kind !== 'final') return p.ts;
+  let next: Pick<ConversationTurn, 'role' | 'timestamp'> | undefined;
+  for (const t of turns) if (t.timestamp >= p.ts && (!next || t.timestamp < next.timestamp)) next = t;
+  return next?.role === 'assistant' ? next.timestamp : p.ts;
+}
+
 export function buildRollbackPointsView(
   session: ConversationSession,
   inputs: RollbackInputPoint[],
   worklog: RollbackWorkLogPoint[],
   gate: { actor: string | undefined; requestActive: boolean },
   instructions: RollbackInstructionPoint[] = [],
+  /** The conversation's turns: a final reply's point keeps up to its recorded answer (`workLogKeptAt`). */
+  turns: ReadonlyArray<Pick<ConversationTurn, 'role' | 'timestamp'>> = [],
 ): RollbackPointsView {
   const refusal: ContextRollbackRefusal | undefined =
     gate.actor !== session.ownerId ? 'not-owner' : gate.requestActive ? 'busy' : undefined;
@@ -567,7 +584,7 @@ export function buildRollbackPointsView(
       seq: p.seq,
       anchor: p.anchor,
       label: `${WORK_LOG_KIND_LABEL[p.kind] ?? p.kind}까지: ${p.call ? toolCallLabel(p.call) : rollbackInputLabel(p.text)}`,
-      at: p.ts,
+      at: workLogKeptAt(p, turns),
       kind: p.kind,
     })),
   };

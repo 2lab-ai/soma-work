@@ -205,11 +205,12 @@ describe('지시와 답변: what a rollback drops leaves the chat (SSOT 2026-11-
     expect(built.turns.map((t: { id: string }) => t.id)).toEqual(['t0', 'a0']);
     expect(built.slots).toEqual([]);
   });
-  it('a rollback that keeps up to a point inside an answer’s turn keeps that answer (작업 로그 "여기까지 유지")', () => {
-    // The kept point is the answer's final work-log entry (60); the answer is recorded later (90), at teardown.
-    const keep = { from: 60, to: 500, label: '최종 답까지: …', pending: true };
-    const built = m.convTurnsOf(list, ctx({ rewinds: [keep] }));
-    expect(built.turns.map((t: { id: string }) => t.id)).toEqual(['t0', 'a0']);
+  it('every turn by its own time: a point inside an answer’s turn drops it; the final reply’s point (its recorded time) keeps it', () => {
+    // a0 is recorded at 90; its final work-log point carries 90 (the server's view), a tool result inside it 60.
+    const mid = m.convTurnsOf(list, ctx({ rewinds: [{ from: 60, to: 500, label: '툴 결과까지: …', pending: true }] }));
+    expect(mid.turns.map((t: { id: string }) => t.id)).toEqual(['t0']);
+    const fin = m.convTurnsOf(list, ctx({ rewinds: [{ from: 90, to: 500, label: '최종 답까지: …', pending: true }] }));
+    expect(fin.turns.map((t: { id: string }) => t.id)).toEqual(['t0', 'a0']);
   });
   it('a turn the record stamped (the rollback ran) stays out with no span — past the 10 spans a session keeps, after new/renew', () => {
     const stamped = list.map((t) => (t.timestamp >= 100 ? { ...t, rewoundAt: 501 } : t));
@@ -293,7 +294,7 @@ describe('the confirmation counts only what leaves the chat now', () => {
     expect(html).toHaveBeenCalledWith(expect.anything(), { dropped: 2, under: '' });
     expect(nodes['rollback-dialog'].show).toHaveBeenCalled();
   });
-  it('a work-log point inside an answer’s turn: that answer stays, so it is not counted (the chat’s own rule)', () => {
+  it('counted by the chat’s own rule: the final reply’s point keeps its answer, a point inside the turn does not', () => {
     const html = vi.fn(() => '');
     const nodes: Record<string, any> = {
       'rollback-dialog': { show: vi.fn() },
@@ -321,9 +322,12 @@ describe('the confirmation counts only what leaves the chat now', () => {
       },
       'var _rbPick = null;',
     );
-    // Kept: a0's final work-log entry at 60 (a0 itself is recorded at 90, at teardown).
-    m.rbOpenConfirm({ kind: 'worklog', p: { anchor: 'sid~0~c', label: '최종 답까지: …', at: 60, seq: 3 } });
-    expect(html).toHaveBeenCalledWith(expect.anything(), { dropped: 2, under: '' });
+    // Kept: a0's final reply — its point carries a0's recorded time (90). The queue's row is never counted.
+    m.rbOpenConfirm({ kind: 'worklog', p: { anchor: 'sid~0~c', label: '최종 답까지: …', at: 90, seq: 3 } });
+    expect(html).toHaveBeenLastCalledWith(expect.anything(), { dropped: 2, under: '' });
+    // A tool result inside a0's turn (60): a0 leaves too.
+    m.rbOpenConfirm({ kind: 'worklog', p: { anchor: 'sid~0~d', label: '툴 결과까지: …', at: 60, seq: 2 } });
+    expect(html).toHaveBeenLastCalledWith(expect.anything(), { dropped: 3, under: '' });
   });
 });
 
@@ -506,7 +510,7 @@ describe('marks on what a rollback drops — waiting or applied (client)', () =>
     expect(clientFn('renderPanelHead')).toContain('wlSyncRewinds();');
     expect(clientFn('loadWorkLog')).toContain('wlSyncRewinds();');
     expect(clientFn('convPaint')).toContain('rewinds: rewindSpansOf(s),');
-    expect(clientFn('convTurnsOf')).toContain('convRewound(t, start, c.rewinds)');
+    expect(clientFn('convTurnsOf')).toContain('convRewound(t, c.rewinds)');
     expect(clientFn('convRewound')).toContain('rewoundBy(spans');
     expect(TEMPLATE).toContain("var REWOUND_MARK = '↩︎ 문맥에서 빠짐';");
   });

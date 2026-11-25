@@ -657,12 +657,10 @@ export async function getTurnRawContent(conversationId: string, turnId: string):
 
 /**
  * SSOT 2026-11-25 ("해당 프롬프트까지 히스토리에서 삭제") — a context rollback ran: stamp the turns it dropped
- * (`rewoundAt`), so the dashboard chat leaves them out for good — the session's own list of dropped spans keeps the
- * latest 10 and `new`/renew clears it. Nothing is deleted. `span` is the rollback's: what was made after `from` (the
- * last moment it keeps) and up to `to` (when it was asked for) left the context. A person's or a system turn is
- * judged by its own time; an answer by when its turn started (the turn before it) — it is recorded at teardown,
- * after the work-log entry a rollback may keep, and a rollback that keeps a point inside an answer's turn keeps the
- * answer. A turn is stamped once. Returns how many turns this call stamped.
+ * (`rewoundAt`), so the dashboard chat leaves them out for good — the session's own list of dropped spans keeps only
+ * the latest 10. Nothing is deleted. `span` is the rollback's: every turn recorded after `from` (the last moment it
+ * keeps) and up to `to` (when it was asked for) left the context. A turn is stamped once. A save that fails takes
+ * this call's stamps back (and throws), so the next try writes them. Returns how many turns this call stamped.
  */
 export async function markRewoundTurns(
   conversationId: string,
@@ -670,18 +668,18 @@ export async function markRewoundTurns(
 ): Promise<number> {
   const record = await getOrLoadConversation(conversationId);
   if (!record) return 0;
-  let stamped = 0;
-  let start = 0;
-  for (const t of record.turns) {
-    const judged = t.role === 'assistant' ? start : t.timestamp;
-    if (t.rewoundAt === undefined && judged > span.from && judged <= span.to) {
-      t.rewoundAt = span.at;
-      stamped++;
-    }
-    start = t.timestamp;
+  const stamped = record.turns.filter(
+    (t) => t.rewoundAt === undefined && t.timestamp > span.from && t.timestamp <= span.to,
+  );
+  if (stamped.length === 0) return 0;
+  for (const t of stamped) t.rewoundAt = span.at;
+  try {
+    await serializedSave(conversationId, record);
+  } catch (error) {
+    for (const t of stamped) t.rewoundAt = undefined;
+    throw error;
   }
-  if (stamped > 0) await serializedSave(conversationId, record);
-  return stamped;
+  return stamped.length;
 }
 
 /**

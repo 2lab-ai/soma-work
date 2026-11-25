@@ -18614,7 +18614,7 @@ function nextActionsOfTurns(turns, spans) {
     var t = list[i];
     if (!t) continue;
     // SSOT 2026-11-25: a turn a rollback took out of the chat is not there to follow (spans: the session's).
-    if ((spans || t.rewoundAt) && convRewound(t, i > 0 && list[i - 1] ? list[i - 1].timestamp : 0, spans)) continue;
+    if ((spans || t.rewoundAt) && convRewound(t, spans)) continue;
     if (t.role === 'user') return null;
     if (t.role === 'assistant' && Array.isArray(t.nextActions) && t.nextActions.length) {
       return { turnId: String(t.id || ''), list: t.nextActions };
@@ -20293,15 +20293,13 @@ function rewindSpansOf(s) {
   return spans.length ? spans : null;
 }
 // Pure: is this turn out of the chat — did a rollback take it out (SSOT 2026-11-25)? Stamped on the record once the
-// rollback ran (rewoundAt — kept past the session's latest 10 spans and new/renew), or inside a span (waiting, or
-// applied before the stamp). A person's or a system turn by its own time; an answer by when its turn started (the turn
-// before it — startTs): it is recorded at teardown, after the work-log entry a rollback may keep, and a rollback that
-// keeps a point inside an answer's turn keeps the answer. This browser's own instruction (its own clock) and a row of
-// the queue are not recorded turns: never.
-function convRewound(t, startTs, spans) {
+// rollback ran (rewoundAt — kept past the session's latest 10 spans), or recorded inside a span (waiting, or applied
+// before the stamp). A final reply's point keeps up to its answer's recorded time (the server's view), so that answer
+// stays. This browser's own instruction (its own clock) and a row of the queue are not recorded turns: never.
+function convRewound(t, spans) {
   if (!t || t._optimistic || t._queued) return false;
   if (t.rewoundAt) return true;
-  return !!spans && !!rewoundBy(spans, t.role === 'user' ? toNum(t.timestamp) : toNum(startTs));
+  return !!spans && !!rewoundBy(spans, toNum(t.timestamp));
 }
 // The open log keeps the panel session's spans (st.rewinds); a change repaints it.
 function wlSyncRewinds() {
@@ -20541,14 +20539,12 @@ function rbOpenConfirm(pt) {
   var body = document.getElementById('rollback-body');
   if (!key || !dlg || !body || typeof dlg.show !== 'function') return;
   var kept = rbKeptUntil(pt);
-  // What leaves the chat now, by the chat's own rule (convRewound — an answer by when its turn started): in this
-  // rollback's span, and not already out by an earlier one.
+  // What leaves the chat now, by the chat's own rule (convRewound): in this rollback's span, and not already out by
+  // an earlier one.
   var spans = rewindSpansOf(panelSessionKey ? _sessionCache[panelSessionKey] : null);
   var proposed = [{ from: kept, to: Number.MAX_SAFE_INTEGER }];
-  var list = _panelTurnsList || [];
-  var dropped = list.filter(function(t, i) {
-    var startTs = i > 0 && list[i - 1] ? list[i - 1].timestamp : 0;
-    return convRewound(t, startTs, proposed) && !convRewound(t, startTs, spans);
+  var dropped = (_panelTurnsList || []).filter(function(t) {
+    return convRewound(t, proposed) && !convRewound(t, spans);
   }).length;
   _rbPick = { key: key, kind: pt.kind, p: pt.p };
   body.innerHTML = rbConfirmHtml(pt, { dropped: dropped, under: pt.kind === 'worklog' ? rbUnderOf(Number(pt.p.seq)) : '' });
@@ -23973,7 +23969,7 @@ function convTurnsOf(list, c) {
     // SSOT 2026-11-25: a turn a rollback drops — waiting or applied — leaves the chat (the instruction rolled
     // back before went back into the composer; convRewound). Redo brings a waiting one's back; 작업 로그 keeps
     // them, marked. A dropped answer keeps its files and calls, out of the chat with it: none moves to another turn.
-    if ((c.rewinds || t.rewoundAt) && convRewound(t, start, c.rewinds)) {
+    if ((c.rewinds || t.rewoundAt) && convRewound(t, c.rewinds)) {
       if (t.role !== 'user') ownedBy(start, ts);
       start = ts;
       continue;
