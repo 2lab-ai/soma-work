@@ -184,13 +184,14 @@ export class CpuThrottler {
   private saidTooSlow = false;
   private saidNoParents = false;
   /**
-   * Whether the last period's parent scan read the whole map. A worker the next period finds started since then only
-   * if it did; after a failed scan it may be old, so it is baselined, not charged its lifetime. Only period scans set
-   * it: a stop's extra scan failing says nothing about the bound the period's own scan gave.
+   * The period whose own parent scan succeeded last. A worker a period finds started since the previous period's scan
+   * only if that one succeeded (`scanOkSeq === seq - 1`); after a failed scan it may be old, so it is baselined, not
+   * charged its lifetime. A stop of the period may charge the workers it finds when this period's scan succeeded. Only
+   * period scans set it: a stop's extra scan failing says nothing about the bound the period's own scan gave.
    */
-  private lastPeriodScanOk = false;
-  /** The period whose own parent scan succeeded last: a stop of that period may charge the workers it finds. */
   private scanOkSeq = 0;
+  /** A stop's parent scan in flight: stops of several trees close together share it instead of each scanning the host. */
+  private stopScan: Promise<Map<number, number>> | null = null;
   /** When the next period starts, from the end of this one: its reads land the continue one period after this one's. */
   private nextDelay = THROTTLE_PERIOD_MS;
   private disposed = false;
@@ -368,10 +369,15 @@ export class CpuThrottler {
 
   /**
    * Continue the holds `which` picks, each only after its identity is read: from this period's read for a pid it
-   * answers for, else one live `ps` for all the rest. Gone or another process now: dropped, never signalled. Unknown,
+   * answers for, else the period's live probe (`probed`) or, without one, one live `ps` for all the rest. Gone or
+   * another process now: dropped, never signalled. Unknown,
    * or a continue the OS refused: kept, and tried again next period.
    */
-  private continueHolds(which: (h: Hold) => boolean, read?: Map<number, ThrottleRead>): void {
+  private continueHolds(
+    which: (h: Hold) => boolean,
+    read?: Map<number, ThrottleRead>,
+    probed?: Map<number, string | null>,
+  ): void {
     const at = this.deps.now();
     /** A hold that ends without a continue (gone, reused, a person's pause): its interval closes now. */
     const drop = (pid: number, h: Hold): void => {
@@ -388,11 +394,12 @@ export class CpuThrottler {
     });
     if (picked.length === 0) return;
     // A live probe for the holds no read answered runs before any continue: it is synchronous, so while it runs no
-    // stop timer can fire — a tree continued before it would run uncapped for as long. (A period reads every hold
-    // again, asynchronously, before it gets here, so this probe is for a pid two reads in a row could not answer.)
-    const unanswered = picked.filter(([pid]) => !read?.has(pid)).map(([pid]) => pid);
-    const live = unanswered.length > 0 ? this.deps.liveStartTokens(unanswered) : new Map<number, string | null>();
+    // stop timer can fire — a tree continued before it would run uncapped for as long. A period probes every tree's
+    // missing holds at once, before its first continue, and hands the answers in (`probed`); other callers probe here.
+    const unanswered = probed ? [] : picked.filter(([pid]) => !read?.has(pid)).map(([pid]) => pid);
+    const live = probed ?? (unanswered.length > 0 ? this.deps.liveStartTokens(unanswered) : undefined);
     for (const [pid, h] of picked) {
+      // Unknown (no read or probe answered for it): kept, tried again next period.
       const token = read?.has(pid) ? read.get(pid)?.startToken : live?.has(pid) ? live.get(pid) : undefined;
       if (token === undefined) continue;
       if (token !== h.startToken) {
@@ -499,15 +506,13 @@ export class CpuThrottler {
     const started = this.deps.now();
     let parents: Map<number, number> | null = null;
     // What this scan finds started since the last one only if that one read the whole map.
-    const prevScanOk = this.lastPeriodScanOk;
+    const prevScanOk = this.scanOkSeq === seq - 1;
     if (this.deps.readParents && this.sessions.size > 0) {
       try {
         parents = await this.deps.readParents();
         this.saidNoParents = false;
-        this.lastPeriodScanOk = true;
         this.scanOkSeq = seq;
       } catch (err) {
-        this.lastPeriodScanOk = false;
         // New workers go unseen until a scan reads again; what is known is still held.
         if (!this.saidNoParents) {
           this.saidNoParents = true;
@@ -586,8 +591,13 @@ export class CpuThrottler {
       }
       if (this.disposed) return;
     }
+    // A pid even that read could not answer is probed live — every tree's at once, before the first continue: the
+    // probe is synchronous, and a tree continued before another tree's probe would run uncapped through it.
+    const missing = [...this.held.keys()].filter((pid) => !verify.has(pid));
+    const probed: Map<number, string | null> =
+      missing.length > 0 ? (this.deps.liveStartTokens(missing) ?? new Map()) : new Map();
     // Held processes of sessions no longer metered (released while unknown): continue them now that they read.
-    this.continueHolds((h) => !this.sessions.has(h.sessionKey), verify);
+    this.continueHolds((h) => !this.sessions.has(h.sessionKey), verify, probed);
     // From here to the end of the sessions loop nothing awaits: a planned stop lands before this or after all of it.
     this.continuedSeq = seq;
     const at = this.deps.now();
@@ -666,7 +676,7 @@ export class CpuThrottler {
       }
       // The run part of this period: what the cap held (it read stopped just now, which is the cap's stop) continues.
       const heldHere = new Set([...this.held].filter(([, h]) => h.sessionKey === key).map(([pid]) => pid));
-      this.continueHolds((h) => h.sessionKey === key, verify);
+      this.continueHolds((h) => h.sessionKey === key, verify, probed);
       // Let go only a tree well under its cap for a while (one held to its cap reads at its cap).
       // A period with no measured rate (a counter that has not moved yet) leaves the streak as it is.
       if (!Number.isNaN(rate)) {
@@ -738,7 +748,21 @@ export class CpuThrottler {
     if (!current()) return;
     let parents: Map<number, number>;
     try {
-      parents = await this.deps.readParents();
+      // Stops of several trees close together share one scan of the host. One already out may predate this stop:
+      // a worker forked between its start and this stop is missed here, and the next period's scan finds it.
+      if (!this.stopScan) {
+        const scan = this.deps.readParents();
+        this.stopScan = scan;
+        void scan.then(
+          () => {
+            if (this.stopScan === scan) this.stopScan = null;
+          },
+          () => {
+            if (this.stopScan === scan) this.stopScan = null;
+          },
+        );
+      }
+      parents = await this.stopScan;
       s.saidStopScanFailed = false;
     } catch (err) {
       if (!s.saidStopScanFailed) {

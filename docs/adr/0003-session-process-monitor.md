@@ -121,8 +121,9 @@ same snapshot, and work will be placed by each node's free CPU and memory.
    whole lifetime to one window (only a period's own scan sets that bound; a stop's extra scan failing does not
    erase it, and a stop that finishes after the next period started leaves discovery to that period). When the
    period's read misses a hold, every hold is read again, asynchronously, before any continue; only a pid two reads
-   missed is probed live, and that synchronous probe runs while the tree is still stopped (no stop timer can fire
-   during it). A cap change keeps a held tree metered on the new cap (its free rate is about old cap ÷ share; the
+   missed is probed live — every tree's at once, before the first tree is continued, so that synchronous probe runs
+   while all of them are still stopped (no stop timer can fire during it). Stops of several trees close together
+   share one scan of the host. A cap change keeps a held tree metered on the new cap (its free rate is about old cap ÷ share; the
    sample reads it at its old cap, so re-metering from the sample would let it run free until the next one) and lets
    it go only when the new cap is over that rate. A member a read merely missed is remembered with its last counter, so
    finding it again charges only what it used meanwhile; a re-read for the continues never takes a valid sample from

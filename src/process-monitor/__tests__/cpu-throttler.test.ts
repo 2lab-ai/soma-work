@@ -831,17 +831,25 @@ describe('CpuThrottler — hardening (#1421)', () => {
   /** A throttler over `m` whose reads can drop pid 12 and whose live probe is recorded (and can take time). */
   function probed(m: Machine, onProbe: () => void = () => {}) {
     const events: string[] = [];
-    const ctl = { dropTwelve: 0 };
+    const ctl: { dropTwelve: number; onDrop: (() => void) | null; beforeRead: (() => void) | null } = {
+      dropTwelve: 0,
+      onDrop: null,
+      beforeRead: null,
+    };
     const t = new CpuThrottler({
       kill: (pid, sig) => {
         events.push(`${pid}:${sig}`);
         m.kill(pid, sig);
       },
       read: async (pids) => {
+        const before = ctl.beforeRead;
+        ctl.beforeRead = null;
+        before?.();
         const out = await m.read(pids);
         if (ctl.dropTwelve > 0 && pids.includes(12)) {
           ctl.dropTwelve--;
           out.delete(12);
+          ctl.onDrop?.();
         }
         return out;
       },
@@ -868,6 +876,49 @@ describe('CpuThrottler — hardening (#1421)', () => {
     ctl.dropTwelve = 1; // the next read misses 12; the re-read answers it
     expect(await until(() => events.includes('11:SIGCONT') && events.includes('12:SIGCONT'))).toBe(true);
     expect(events).not.toContain('probe');
+  });
+
+  it('a held pid reused while the hold re-read is out is not continued: the continue goes by the re-read', async () => {
+    const m = new Machine();
+    const { t, events, ctl } = probed(m);
+    m.add(10, 0).add(11, 2).add(12, 2);
+    t.update([session(400, [proc(10, 'root'), proc(11, 'child'), proc(12, 'child')])], () => 100);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(await until(() => !!m.procs.get(11)?.stopped && !!m.procs.get(12)?.stopped)).toBe(true);
+    events.length = 0;
+    // The period read misses 12; 11 changes hands while the re-read of every hold is out (the period read had it).
+    let reused = false;
+    ctl.dropTwelve = 1;
+    ctl.onDrop = () => {
+      ctl.onDrop = null;
+      ctl.beforeRead = () => {
+        reused = true;
+        m.reuse(11, true);
+      };
+    };
+    expect(await until(() => events.includes('12:SIGCONT'))).toBe(true);
+    expect(reused).toBe(true);
+    expect(events).not.toContain('11:SIGCONT');
+    expect(events).not.toContain('probe');
+  });
+
+  it('several trees: a live probe for one runs before any tree is continued', async () => {
+    const m = new Machine();
+    const { t, events, ctl } = probed(m);
+    m.add(10, 0).add(11, 2).add(20, 0).add(12, 2);
+    t.update(
+      [
+        session(200, [proc(10, 'root'), proc(11, 'child')], 'A'),
+        session(200, [proc(20, 'root'), proc(12, 'child')], 'B'),
+      ],
+      () => 100,
+    );
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(await until(() => !!m.procs.get(11)?.stopped && !!m.procs.get(12)?.stopped)).toBe(true);
+    events.length = 0;
+    ctl.dropTwelve = 2; // tree B's 12: the period read and its re-read both miss it — probed live
+    expect(await until(() => events.includes('probe') && events.includes('11:SIGCONT'))).toBe(true);
+    expect(events.indexOf('probe')).toBeLessThan(events.indexOf('11:SIGCONT'));
   });
 
   it('a live probe (a pid two reads missed) runs while the tree is still stopped: a slow probe lets nothing run free', async () => {
@@ -924,6 +975,8 @@ describe('CpuThrottler — hardening (#1421)', () => {
     const before = m.cpuOf(11) + workers() + gone;
     await vi.advanceTimersByTimeAsync(10_000);
     const rate = ((m.cpuOf(11) + workers() + gone - before) / 10) * 100;
+    // Held near its cap — and not starved by the CPU it is charged for its workers.
+    expect(rate).toBeGreaterThan(50);
     expect(rate).toBeLessThan(150);
     t.releaseAll();
   });
