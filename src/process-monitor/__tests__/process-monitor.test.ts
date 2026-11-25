@@ -27,6 +27,16 @@ function setup(
     logger?: { info(msg: string, meta?: unknown): void; warn(msg: string, meta?: unknown): void };
     inspectProcess?: import('../process-inspector').InspectProcess;
     readThrottle?: import('../cpu-throttler').ReadThrottle;
+    /** Called on every batched identity read (the default answers from the fake table through `live`). */
+    onBatchRead?: (pids: readonly number[]) => void;
+    /** Called on every one-pid identity read. */
+    onSingleRead?: (pid: number) => void;
+    /** The host brings only the one-pid identity read (no batched one). */
+    noBatch?: boolean;
+    /** While true, every batched identity read fails (a ps that timed out); one-pid reads still answer. */
+    batchFails?: () => boolean;
+    /** While true, every one-pid identity read fails; batched reads still answer. */
+    singleFails?: () => boolean;
   } = {},
 ) {
   const ps = new FakePs()
@@ -72,19 +82,25 @@ function setup(
     runPs: opts.runPs ? opts.runPs(ps) : ps.run,
     kill,
     liveStartToken: (pid) => {
+      opts.onSingleRead?.(pid);
+      if (opts.singleFails?.()) return undefined;
       const fallback = ps.procs.get(pid)?.start ?? (ps.procs.has(pid) ? 'Mon Nov 23 10:00:00 2026' : null);
       return opts.live ? opts.live(pid, fallback) : fallback;
     },
-    liveStartTokens: (pids) => {
-      const out = new Map<number, string | null>();
-      for (const pid of pids) {
-        const fallback = ps.procs.get(pid)?.start ?? (ps.procs.has(pid) ? 'Mon Nov 23 10:00:00 2026' : null);
-        const v = opts.live ? opts.live(pid, fallback) : fallback;
-        if (v === undefined) return undefined;
-        out.set(pid, v);
-      }
-      return out;
-    },
+    liveStartTokens: opts.noBatch
+      ? undefined
+      : (pids) => {
+          opts.onBatchRead?.(pids);
+          if (opts.batchFails?.()) return undefined;
+          const out = new Map<number, string | null>();
+          for (const pid of pids) {
+            const fallback = ps.procs.get(pid)?.start ?? (ps.procs.has(pid) ? 'Mon Nov 23 10:00:00 2026' : null);
+            const v = opts.live ? opts.live(pid, fallback) : fallback;
+            if (v === undefined) return undefined;
+            out.set(pid, v);
+          }
+          return out;
+        },
     platform: opts.platform ?? 'darwin',
     now: () => now,
     readCapacity: opts.readCapacity ?? (async () => capacity),
@@ -672,6 +688,22 @@ describe('LocalProcessMonitor', () => {
     ]);
   });
 
+  it('a process that exits between the identity check and the signal answers not-found (ESRCH), not denied', async () => {
+    const gone = setup({
+      kill: () => {
+        throw Object.assign(new Error('no such process'), { code: 'ESRCH' });
+      },
+    });
+    expect(await gone.monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' })).toEqual({
+      ok: false,
+      reason: 'not-found',
+    });
+    expect(await gone.monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'resume' })).toEqual({
+      ok: false,
+      reason: 'not-found',
+    });
+  });
+
   it('answers denied when the OS refuses the signal, unsupported on Windows', async () => {
     const denied = setup({
       kill: () => {
@@ -1169,6 +1201,299 @@ describe('LocalProcessMonitor', () => {
     const { monitor, ps } = setup();
     await Promise.all([monitor.sample(), monitor.sample()]);
     expect(ps.calls.filter((c) => c[0] === '-A')).toHaveLength(1);
+  });
+});
+
+describe('LocalProcessMonitor — hardening (#1407)', () => {
+  /** A runPs that drops the detail rows of the pids in `hidden` (the parent map keeps them). */
+  const skipping = (hidden: () => Set<number>) => (fake: FakePs) => async (a: readonly string[]) => {
+    const out = await fake.run(a);
+    if (a[0] === '-A') return out;
+    return out
+      .split('\n')
+      .filter((line) => !hidden().has(Number(line.trim().split(/\s+/)[0])))
+      .join('\n');
+  };
+
+  it('dispose continues what the monitor paused before it detaches (nothing is left stopped with nobody to resume it)', async () => {
+    const { monitor, signals, fireAbort } = setup();
+    await monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' });
+    monitor.dispose();
+    expect(signals).toEqual([
+      [300, 'SIGSTOP'],
+      [300, 'SIGCONT'],
+    ]);
+    // Detached: a later abort reaches nothing.
+    fireAbort({ pid: 200, sessionKey: 'A' });
+    expect(signals).toHaveLength(2);
+  });
+
+  it('abort cleanup reads every paused identity in one batched read, and so does the retry on the next sample', async () => {
+    let probing = false;
+    let singles = 0;
+    let batchFails = false;
+    const batches: number[][] = [];
+    const { monitor, ps, roots, signals, fireAbort, tick } = setup({
+      live: (_pid, fallback) => (probing && batchFails ? undefined : fallback),
+      onSingleRead: () => {
+        if (probing) singles++;
+      },
+      onBatchRead: (pids) => {
+        if (probing) batches.push([...pids].sort());
+      },
+    });
+    ps.set(310, { ppid: 200, args: '/bin/sleep 1' }).set(320, { ppid: 200, args: '/bin/sleep 2' });
+    roots.length = 1;
+    for (const pid of [300, 310, 320]) {
+      await monitor.control({ sessionKey: 'A', pid, startToken: start, action: 'pause' });
+      tick(1);
+    }
+    signals.length = 0;
+    probing = true;
+    // The read fails at the abort: one batched try (each ps can take 2 s on a loaded host — never one per process).
+    batchFails = true;
+    fireAbort({ pid: 200, sessionKey: 'A' });
+    expect(batches).toEqual([[300, 310, 320]]);
+    expect(signals).toEqual([]);
+    // The next sample retries them, again in one read.
+    batchFails = false;
+    tick(1);
+    await monitor.sample();
+    expect(batches).toEqual([
+      [300, 310, 320],
+      [300, 310, 320],
+    ]);
+    expect(signals.sort()).toEqual([
+      [300, 'SIGCONT'],
+      [310, 'SIGCONT'],
+      [320, 'SIGCONT'],
+    ]);
+    expect(singles).toBe(0);
+  });
+
+  it('a turn is traced through a carried parent whose row a sample skipped: its aborted turn refuses the pause', async () => {
+    let hidden = new Set<number>();
+    const { monitor, ps, signals, fireAbort, tick } = setup({ runPs: skipping(() => hidden) });
+    await monitor.sample(); // 300 is seen under turn 200
+    fireAbort({ pid: 200, sessionKey: 'A' }); // turn 200 is stopping; its Claude Code has not exited yet
+    // 300 starts 330; the next samples skip 300's row (the parent map still has it).
+    ps.set(330, { ppid: 300, args: '/bin/sleep 9' });
+    hidden = new Set([300]);
+    tick(1);
+    await monitor.sample();
+    tick(1);
+    expect(await monitor.control({ sessionKey: 'A', pid: 330, startToken: start, action: 'pause' })).toEqual({
+      ok: false,
+      reason: 'not-found',
+    });
+    expect(signals).toEqual([]);
+  });
+
+  it('a pause whose turn cannot be traced (a never-read parent row) is refused while the session has an aborted turn', async () => {
+    const hidden = new Set<number>([340]);
+    const { monitor, ps, signals, fireAbort, tick } = setup({ runPs: skipping(() => hidden) });
+    // 340's row is never read, so nothing knows its turn; 350 under it cannot be traced.
+    ps.set(340, { ppid: 200, args: '/bin/bash' }).set(350, { ppid: 340, args: '/bin/sleep 9' });
+    await monitor.sample();
+    // No aborted turn in session A: an untraced process may still be paused (any abort of A continues it).
+    expect(await monitor.control({ sessionKey: 'A', pid: 350, startToken: start, action: 'pause' })).toMatchObject({
+      ok: true,
+    });
+    await monitor.control({ sessionKey: 'A', pid: 350, startToken: start, action: 'resume' });
+    signals.length = 0;
+    fireAbort({ pid: 200, sessionKey: 'A' });
+    tick(1);
+    expect(await monitor.control({ sessionKey: 'A', pid: 350, startToken: start, action: 'pause' })).toEqual({
+      ok: false,
+      reason: 'not-found',
+    });
+    expect(signals).toEqual([]);
+  });
+
+  it('tracing a carried parent is what passes the pause: its live turn wins over another turn’s abort', async () => {
+    let hidden = new Set<number>();
+    const { monitor, ps, roots, signals, fireAbort, tick } = setup({ runPs: skipping(() => hidden) });
+    // Session A has two live turns: 200 and 210. 315 runs under 210.
+    ps.set(210, { ppid: 100, args: '/usr/local/bin/claude' }).set(315, { ppid: 210, args: '/bin/bash' });
+    roots.push({ pid: 210, sessionKey: 'A' });
+    await monitor.sample(); // 315 is seen under turn 210
+    fireAbort({ pid: 200, sessionKey: 'A' }); // turn 200 is stopping; 210 is not
+    ps.set(335, { ppid: 315, args: '/bin/sleep 9' });
+    hidden = new Set([315]);
+    tick(1);
+    await monitor.sample();
+    tick(1);
+    // 335 traces to 210 through its carried parent: the pause is allowed despite the session's aborted turn 200.
+    expect(await monitor.control({ sessionKey: 'A', pid: 335, startToken: start, action: 'pause' })).toMatchObject({
+      ok: true,
+    });
+    expect(signals).toEqual([[335, 'SIGSTOP']]);
+  });
+
+  it('an untraced pause is refused for the session whose turn was aborted only, not another session', async () => {
+    const hidden = new Set<number>([540]);
+    const { monitor, ps, fireAbort, tick } = setup({ runPs: skipping(() => hidden) });
+    // Session B: 550 under 540, whose row is never read.
+    ps.set(540, { ppid: 500, args: '/bin/bash' }).set(550, { ppid: 540, args: '/bin/sleep 9' });
+    await monitor.sample();
+    fireAbort({ pid: 200, sessionKey: 'A' });
+    tick(1);
+    expect(await monitor.control({ sessionKey: 'B', pid: 550, startToken: start, action: 'pause' })).toMatchObject({
+      ok: true,
+    });
+  });
+
+  it('a carried parent whose pid now has another parent was reused: its old turn is not lent, and nothing sticks', async () => {
+    let hidden = new Set<number>();
+    const { monitor, ps, roots, fireAbort, tick } = setup({ runPs: skipping(() => hidden) });
+    ps.set(210, { ppid: 100, args: '/usr/local/bin/claude' });
+    roots.push({ pid: 210, sessionKey: 'A' });
+    await monitor.sample(); // 300 is seen under turn 200
+    fireAbort({ pid: 200, sessionKey: 'A' });
+    // 300 exits; its pid goes to a shell under turn 210, whose first row is skipped; that shell starts 345.
+    ps.set(300, { ppid: 210, args: '/bin/bash', start: 'Tue Nov 24 11:00:00 2026' });
+    ps.set(345, { ppid: 300, args: '/bin/sleep 9' });
+    hidden = new Set([300]);
+    tick(1);
+    await monitor.sample();
+    // While the shell's row is missing, 345 cannot be traced (the pid's parent changed: the old turn is not lent),
+    // and the session has an aborted turn: refused.
+    expect(await monitor.control({ sessionKey: 'A', pid: 345, startToken: start, action: 'pause' })).toEqual({
+      ok: false,
+      reason: 'not-found',
+    });
+    // Once the shell's row is read, 345 traces to 210 — not to the aborted turn 200 a stale trace would have kept.
+    hidden = new Set();
+    tick(1);
+    await monitor.sample();
+    tick(1);
+    expect(await monitor.control({ sessionKey: 'A', pid: 345, startToken: start, action: 'pause' })).toMatchObject({
+      ok: true,
+    });
+  });
+
+  it('a reused carried parent never lends a live turn to a child of an aborted one', async () => {
+    let hidden = new Set<number>();
+    const { monitor, ps, roots, fireAbort, tick } = setup({ runPs: skipping(() => hidden) });
+    // 330 runs under the live turn 210 and is seen there.
+    ps.set(210, { ppid: 100, args: '/usr/local/bin/claude' }).set(330, { ppid: 210, args: '/bin/bash' });
+    roots.push({ pid: 210, sessionKey: 'A' });
+    await monitor.sample();
+    fireAbort({ pid: 200, sessionKey: 'A' }); // turn 200 is stopping
+    // 330 exits; its pid goes to a shell under the aborted turn 200 (its rows stay skipped), which starts 346.
+    ps.set(330, { ppid: 200, args: '/bin/bash', start: 'Tue Nov 24 11:00:00 2026' });
+    ps.set(346, { ppid: 330, args: '/bin/sleep 9' });
+    hidden = new Set([330]);
+    tick(1);
+    await monitor.sample();
+    tick(1);
+    // 346 must not borrow 210 from the old 330: it cannot be traced, and the session has an aborted turn.
+    expect(await monitor.control({ sessionKey: 'A', pid: 346, startToken: start, action: 'pause' })).toEqual({
+      ok: false,
+      reason: 'not-found',
+    });
+  });
+
+  it('the retry settles each paused identity, not each pid: a stale entry for a reused pid leaves the live one', async () => {
+    let batchFails = false;
+    // The next one-pid reads, in order: true fails it (the samples' check of a missing pause), false answers.
+    let singlePlan: boolean[] = [];
+    let refuseContinue = false;
+    const signals: Array<[number, NodeJS.Signals]> = [];
+    const env = setup({
+      batchFails: () => batchFails,
+      singleFails: () => singlePlan.shift() ?? false,
+      kill: (pid, signal) => {
+        signals.push([pid, signal]);
+        const p = env.ps.procs.get(pid);
+        if (!p) throw Object.assign(new Error('no such process'), { code: 'ESRCH' });
+        if (signal === 'SIGCONT' && refuseContinue) throw Object.assign(new Error('not permitted'), { code: 'EPERM' });
+        p.stat = signal === 'SIGSTOP' ? 'T' : 'S';
+      },
+    });
+    const { monitor, ps, fireAbort, tick } = env;
+    // A pauses 300; its abort cannot read the identity, so the resume waits for a retry.
+    await monitor.control({ sessionKey: 'A', pid: 300, startToken: start, action: 'pause' });
+    batchFails = true;
+    fireAbort({ pid: 200, sessionKey: 'A' });
+    // 300 exits and its pid goes to a process in session B, which B pauses (the sample's check of A's missing entry
+    // cannot read it, so A's stale entry stays); B's abort cannot read the identity either.
+    const later = 'Tue Nov 24 11:00:00 2026';
+    ps.set(300, { ppid: 500, args: '/bin/sleep 9', start: later });
+    tick(1);
+    // The check before the pause fails, the pause's own identity read answers, the check after it fails.
+    singlePlan = [true, false, true];
+    expect(await monitor.control({ sessionKey: 'B', pid: 300, startToken: later, action: 'pause' })).toMatchObject({
+      ok: true,
+    });
+    fireAbort({ pid: 500, sessionKey: 'B' });
+    // Both wait for a retry. The batched read answers: A's entry is another process now (settled); B's continue is
+    // refused, so B's stays wanted.
+    batchFails = false;
+    singlePlan = [true];
+    refuseContinue = true;
+    tick(1);
+    await monitor.sample();
+    // The next retry continues B's.
+    refuseContinue = false;
+    signals.length = 0;
+    tick(1);
+    await monitor.sample();
+    expect(signals).toContainEqual([300, 'SIGCONT']);
+  });
+
+  it('a host with only the one-pid read: a failing identity leaves the others continued', async () => {
+    const { monitor, ps, roots, signals, fireAbort, tick } = setup({
+      noBatch: true,
+      live: (pid, fallback) => (pid === 310 && probing ? undefined : fallback),
+    });
+    var probing = false;
+    ps.set(310, { ppid: 200, args: '/bin/sleep 1' }).set(320, { ppid: 200, args: '/bin/sleep 2' });
+    roots.length = 1;
+    for (const pid of [300, 310, 320]) {
+      await monitor.control({ sessionKey: 'A', pid, startToken: start, action: 'pause' });
+      tick(1);
+    }
+    signals.length = 0;
+    probing = true;
+    fireAbort({ pid: 200, sessionKey: 'A' });
+    expect(signals.sort()).toEqual([
+      [300, 'SIGCONT'],
+      [320, 'SIGCONT'],
+    ]);
+    // 310 waits for a retry: once its identity reads again, only it is continued.
+    probing = false;
+    signals.length = 0;
+    tick(1);
+    await monitor.sample();
+    expect(signals).toEqual([[310, 'SIGCONT']]);
+  });
+
+  it('a sample with a failed detail batch still succeeds, and says so once in the log', async () => {
+    const warn = vi.fn();
+    const { monitor, ps } = setup({
+      logger: { info: () => {}, warn },
+      runPs: (fake) => async (a) => {
+        // Every detail batch fails but the one that holds the Claude Code process (200).
+        if (
+          a[0] !== '-A' &&
+          !String(a[a.indexOf('-p') + 1] ?? '')
+            .split(',')
+            .includes('200')
+        ) {
+          throw Object.assign(new Error('ps: argument list too long'), { status: 1 });
+        }
+        return fake.run(a);
+      },
+    });
+    // 300 starts enough workers that the detail read takes three batches (200 pids each); two of them fail.
+    for (let pid = 9000; pid < 9450; pid++) ps.set(pid, { ppid: 300, args: '/bin/true' });
+    const snap = await monitor.sample();
+    expect(snap.sessions.find((s) => s.sessionKey === 'A')?.processes.length).toBeGreaterThan(0);
+    const said = warn.mock.calls.filter(([msg]) => String(msg).includes('a detail batch failed'));
+    expect(said).toHaveLength(1);
+    expect(said[0][1]).toMatchObject({ error: expect.stringContaining('argument list too long') });
+    expect((said[0][1] as { pids: number }).pids).toBeGreaterThanOrEqual(250);
   });
 });
 
