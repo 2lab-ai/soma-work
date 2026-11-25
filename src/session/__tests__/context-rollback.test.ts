@@ -334,6 +334,24 @@ describe('input points come from the transcript too — inputs recorded before a
     expect(points.map((p) => p.turnId)).toEqual(['f2']);
     const v = buildRollbackPointsView(s, points, [], { actor: 'U1', requestActive: false });
     expect(v.inputs[0].at).toBe(ms(39));
+    // Neither recorded with an anchor: the second still derives its own (the reply above its prompt).
+    const bare = {
+      turns: [
+        { id: 'f1', role: 'user', timestamp: ms(9), rawContent: 'first', origin: { by: 'user' } },
+        { id: 'f2', role: 'user', timestamp: ms(39), rawContent: 'second', origin: { by: 'user' } },
+      ],
+    } as never;
+    const both = inputAnchorsFromTranscript(s, bare, fresh);
+    expect([...both]).toEqual([['f2', A(6)]]);
+    const bp = rollbackInputPoints(
+      s,
+      bare,
+      activeChainFilter(s, () => fresh),
+      both,
+    );
+    expect(buildRollbackPointsView(s, bp, [], { actor: 'U1', requestActive: false }).inputs).toMatchObject([
+      { turnId: 'f2', at: ms(39) },
+    ]);
   });
 
   it('no transcript, no tail, or a prompt before the compaction boundary → nothing derived', () => {

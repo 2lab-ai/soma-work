@@ -378,18 +378,10 @@ export function inputAnchorsFromTranscript(
     if (isPrompt(e)) {
       const ts = Date.parse(e.timestamp ?? '');
       if (Number.isFinite(ts)) {
-        prompts.push({
-          ts,
-          ...(lastSafe
-            ? {
-                anchor: encodeContextAnchor({
-                  sid: session.sessionId,
-                  epoch: session.compactionCount ?? 0,
-                  uuid: lastSafe,
-                }),
-              }
-            : {}),
-        });
+        const anchor = lastSafe
+          ? encodeContextAnchor({ sid: session.sessionId, epoch: session.compactionCount ?? 0, uuid: lastSafe })
+          : undefined;
+        prompts.push({ ts, anchor });
       }
     } else if (isSafePoint(e)) {
       lastSafe = e.uuid;
