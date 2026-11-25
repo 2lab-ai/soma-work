@@ -1151,4 +1151,85 @@ describe('GoalLoopController — environment work the host runs (env run queue)'
     await h.controller.settled(SESSION_KEY);
     expect(dispatched).toBe(1);
   });
+
+  /** What a mid-turn auto-compact stop leaves on the session: no turn text, the compaction armed for the next input. */
+  const cutByAutoCompact = (session: ConversationSession) => {
+    session.goalLastTurnText = '';
+    session.autoCompactPending = true;
+    session.autoCompactStoppedAtMs = 1_000;
+  };
+
+  /**
+   * Shared-host dev 2026-11-24 (`work:C0ACM4320MQ:1795377608.069389`): an auto-compact stop cut a goal turn while the
+   * session's environment work ran. 05:41:02Z `Request was aborted` → 05:41:12Z `Goal driver fired` → `Goal loop run
+   * skipped — the session waits on environment work the host runs`. The stop leaves a goal session's continuation to
+   * this loop (`resumeAfterAutoCompactStop` returns for an active goal), so nothing ran for 2.5 hours, until the
+   * 08:08Z restart kicked the loop. The wait is a choice a turn makes when it ends; a cut turn made no choice.
+   */
+  it('resumes a turn an auto-compact stop cut, even while the session waits on environment work', async () => {
+    let dispatched = 0;
+    const h = makeHarness({
+      goal: { lastEvalReason: 'the QA run has not reported yet', lastEvalRemaining: ['read the QA result'] },
+      dispatcher: async () => {
+        dispatched += 1;
+        return JSON.stringify({ completed: false, reason: 'not yet', remaining: ['do X'] });
+      },
+      awaitingHostWork: () => true,
+    });
+    cutByAutoCompact(h.session);
+
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+
+    // No eval (nothing new to judge) — the previous gap is reused and the cut work resumes.
+    expect(dispatched).toBe(0);
+    expect(h.injected).toHaveLength(1);
+    expect(h.injected[0].text).toContain('the QA run has not reported yet');
+    expect(h.notices).toEqual(['🔄 Goal continues — no new evaluation (the last turn was cut short).']);
+  });
+
+  it('a turn an auto-compact stop cut with no earlier gap is judged, not left waiting on the environment work', async () => {
+    let dispatched = 0;
+    const h = makeHarness({
+      dispatcher: async () => {
+        dispatched += 1;
+        return JSON.stringify({ completed: false, reason: 'not yet', remaining: ['do X'] });
+      },
+      awaitingHostWork: () => true,
+    });
+    cutByAutoCompact(h.session);
+
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+
+    expect(dispatched).toBe(1);
+    expect(h.injected).toHaveLength(1);
+  });
+
+  // `queue_enter` and RUN_ENV_SKILL tell the model to end its turn: a turn that hands the work off and ends with no
+  // text still waits — resuming it would spend a turn per settle and could hand the same work off twice.
+  it('a turn that ended silently on the wait (nothing cut it) still waits on the environment work', async () => {
+    let dispatched = 0;
+    const h = makeHarness({
+      goal: { lastEvalReason: 'the QA run has not reported yet' },
+      dispatcher: async () => {
+        dispatched += 1;
+        return JSON.stringify({ completed: false, reason: 'not yet', remaining: ['do X'] });
+      },
+      awaitingHostWork: () => true,
+    });
+    h.session.goalLastTurnText = '';
+
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(dispatched).toBe(0);
+    expect(h.injected).toHaveLength(0);
+
+    // Over the threshold at its end (armed by the turn-end check) but never stopped: still a wait.
+    h.session.autoCompactPending = true;
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(dispatched).toBe(0);
+    expect(h.injected).toHaveLength(0);
+  });
 });
