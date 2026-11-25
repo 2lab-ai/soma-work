@@ -4047,14 +4047,46 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(steerTurn).not.toHaveBeenCalled();
       expect(items()[0].state).toBe('queued');
 
-      // The /compact turn's teardown ends the compaction and runs the replay inside the same run.
+      // The /compact turn's teardown ends the compaction and replays the intercepted message: the busy fence runs it
+      // inside the same run, with no generation of its own, and its first SDK event reaches the model.
       registrySession.compactTurnActive = false;
-      handlerAny.streamExecutor?.deps?.onTurnReachedModel?.({ sessionKey: SESSION_KEY, turnEpoch: undefined });
-      await tick();
+      let replayEpoch: unknown = 'unset';
+      createAgentSession.mockImplementationOnce((_result: any, _say: any, opts: any) => {
+        replayEpoch = opts?.turnEpoch;
+        return {
+          startWithContinuation: vi.fn(async () => {
+            handlerAny.streamExecutor?.deps?.onTurnReachedModel?.({ sessionKey: SESSION_KEY, turnEpoch: undefined });
+            await tick();
+            return { hasPendingChoice: false };
+          }),
+          getLastTurnSucceeded: () => true,
+          getRetryAfterMs: () => undefined,
+        };
+      });
+      await handler.handleMessage(
+        message({ ts: '222.333', text: '[auto-compact] continue', routeContext: { compactRedispatch: true } } as any),
+        say(),
+      );
 
+      expect(replayEpoch).toBeUndefined();
       expect(steerTurn).toHaveBeenCalledTimes(1);
       expect(steerTurn.mock.calls[0][1]).toMatchObject({ text: 'dev2 qa 진행해' });
       expect(items()[0].state).toBe('steered');
+      await settle();
+    });
+
+    it('a late first event of a replay does not take rows once another run holds the slot', async () => {
+      const steerTurn = withLiveTurn();
+      const { settle } = await startBusyTurn();
+      registrySession.compactTurnActive = true;
+      await handler.handleMessage(message({ ts: '333.444', text: 'dev2 qa 진행해' }), say());
+      registrySession.compactTurnActive = false;
+
+      // No replay is running in the run's slot: a stray undefined-epoch event pushes nothing.
+      handlerAny.streamExecutor?.deps?.onTurnReachedModel?.({ sessionKey: SESSION_KEY, turnEpoch: undefined });
+      await tick();
+      expect(steerTurn).not.toHaveBeenCalled();
+      expect(items()[0].state).toBe('queued');
       await settle();
     });
 

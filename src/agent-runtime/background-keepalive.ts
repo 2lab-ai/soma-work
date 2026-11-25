@@ -50,7 +50,8 @@ const AGENT_TASK_TYPE = 'local_agent';
  * Only `local_agent` tasks that are not `ambient` count. Shells
  * (`local_bash`), workflows, MCP tasks and monitors can be long-lived by
  * design, and an ambient task is by definition not activity (sdk.d.ts:3703) —
- * none of them may hold a turn open.
+ * none of them holds a turn open for the agent keepalive (the follow-up hold
+ * of a shell or workflow is {@link liveNonAgentTaskIds}'s).
  *
  * A level frame whose `tasks` is not an array carries no information, so it
  * also answers `undefined`: the caller keeps the set it has rather than
@@ -66,13 +67,14 @@ export function liveAgentIds(frame: Record<string, unknown>): string[] | undefin
  * frame announces that are NOT agents — shells, workflows, MCP tasks;
  * `undefined` for any other frame (or a malformed one, as above).
  *
- * None of them holds a turn open for its lifetime (see {@link liveAgentIds}).
- * But each one that finishes makes the CLI run a notification turn while its
- * input is open, and a host that reads the answering result late (#997: the
- * Slack consumer was 92 s behind) finds that turn already running. So the
- * handler holds such an answer for the follow-up grace only, long enough to read
- * what the CLI already emitted. Ambient tasks — every live-update watcher such
- * as a Monitor (sdk.d.ts:3703) — are not activity and never count.
+ * Each one that finishes makes the CLI run a notification turn, and a host that
+ * reads the answering result late (#997: the Slack consumer was 92 s behind)
+ * finds that turn already running. And a CLI whose input the host closes still
+ * waits for a live one, then runs its notification turn with every tool call
+ * denied (#1425). So the handler holds an answer it owes a follow-up with the
+ * input open while such a task is live, and for the follow-up grace after it
+ * settles; the keepalive cap bounds the hold. Ambient tasks — every live-update
+ * watcher such as a Monitor (sdk.d.ts:3703) — are not activity and never count.
  */
 export function liveNonAgentTaskIds(frame: Record<string, unknown>): string[] | undefined {
   return liveTaskIds(frame, false);

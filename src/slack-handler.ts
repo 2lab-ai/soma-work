@@ -471,6 +471,11 @@ export class SlackHandler {
    */
   private readonly nestedAutoCompactStops = new Map<string, number>();
   /**
+   * #1424 — slot key → the generation of the run whose slot the busy fence is running a post-compact replay in
+   * (`processMessage` with no generation of its own). Its first SDK event opens that run's input again.
+   */
+  private readonly inlineReplayEpochs = new Map<string, number>();
+  /**
    * Z 2026-11-23 — the order of people's stops (`user-stop`) in this process: a count, and the count each session
    * was last stopped at. A turn compares it with the count when it began to be prepared (`stoppedWhilePreparing`);
    * a clock could not order a stop and a message that land in the same millisecond. The saved stop time
@@ -2114,7 +2119,13 @@ export class SlackHandler {
       // is handed to that run's boundary (`nestedAutoCompactStops`).
       // The run that holds the slot now — its boundary owns a stop inside it.
       const holderEpoch = dispatcher.snapshot(slotOwner).turnEpoch;
-      const outcome = await this.processMessage(event, say);
+      if (holderEpoch !== undefined) this.inlineReplayEpochs.set(slotOwner, holderEpoch);
+      let outcome: Awaited<ReturnType<SlackHandler['processMessage']>>;
+      try {
+        outcome = await this.processMessage(event, say);
+      } finally {
+        if (this.inlineReplayEpochs.get(slotOwner) === holderEpoch) this.inlineReplayEpochs.delete(slotOwner);
+      }
       if (isAutoCompactStop(outcome)) {
         // Under the key the holding run's boundary reads (its canonical key).
         this.nestedAutoCompactStops.set(this.canonicalFollowupKey(slotOwner), holderEpoch);
@@ -6960,12 +6971,13 @@ export class SlackHandler {
     // under the slot key, which differs while a bot-thread migration is bound.
     const slotKey = this.boundFollowupSlot(sessionKey) ?? sessionKey;
     if (turnEpoch === undefined) {
-      // #1424 — a turn with no generation of its own, inside a run that holds the
-      // slot: the post-compact replay the busy fence runs. Its input is that run's
-      // next open — push what waits for it (a row the `/compact` turn refused).
+      // #1424 — a turn with no generation of its own: the post-compact replay the
+      // busy fence runs inside a run's slot. Its input is that run's next open —
+      // push what waits for it (a row the `/compact` turn refused), only while that
+      // run still holds the slot (a Send now may have replaced it meanwhile).
       // Nothing else: the run's own delivery evidence and takeover are its own.
-      const live = dispatcher.liveTurnEpoch(slotKey);
-      if (live !== undefined) this.steerFollowupsWaitingForOpen(slotKey, live);
+      const holder = this.inlineReplayEpochs.get(slotKey);
+      if (holder !== undefined) this.steerFollowupsWaitingForOpen(slotKey, holder);
       return;
     }
     const marked = dispatcher.noteTurnReachedModel(slotKey, turnEpoch);
