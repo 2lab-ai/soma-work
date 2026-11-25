@@ -974,6 +974,64 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
     }
   });
 
+  // RoL review (PR #1428): the ceiling firing over an idle cap held for a running turn stops the tasks once.
+  it('the ceiling over an idle cap held for a running turn stops the tasks and notes it exactly once (#1425)', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const pulledPastOpening = deferred();
+      const turnStarted = deferred();
+      const finishTurn = deferred();
+      const handler = newHandler();
+      installScriptedQuery(cli, async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield* openingTurnHead([{ task_id: 'bash-1', task_type: 'local_bash', description: 'dev server' }]);
+        yield openingResult(cli.opening?.uuid);
+        pulledPastOpening.resolve();
+        cli.received.push((await inputs.next()).value);
+        yield INIT;
+        yield assistantText('a very long answer');
+        turnStarted.resolve();
+        await finishTurn.promise;
+        yield successResult({ result: 'DONE', num_turns: 1, uuid: 'steer-result-uuid', user_message_uuid: 'u-steer' });
+        // Every later send (the host's cap note) gets its own turn, echoing its uuid.
+        for (;;) {
+          const next = await inputs.next();
+          if (next.done) break;
+          const sent = next.value as { uuid?: string };
+          cli.received.push(sent);
+          yield INIT;
+          yield assistantText('REPORTED');
+          yield successResult({ result: 'REPORTED', num_turns: 1, uuid: 'note-result', user_message_uuid: sent.uuid });
+        }
+        cli.inputEnded = true;
+      });
+
+      const framesPromise = collect(startTurn(handler));
+      await pulledPastOpening.promise;
+      await vi.advanceTimersByTimeAsync(CAP_MS - 60_000);
+      expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-steer', text: 'status?' })).toBe(true);
+      await turnStarted.promise;
+      // The idle cap comes due mid-turn (held), then the ceiling fires while the turn still runs.
+      await vi.advanceTimersByTimeAsync(CAP_MS * BG_KEEPALIVE_HARD_CEILING_FACTOR);
+      expect(cli.stopTask).toHaveBeenCalledTimes(1);
+
+      finishTurn.resolve();
+      await vi.advanceTimersByTimeAsync(BG_FOLLOWUP_GRACE_MS + 1);
+      await framesPromise;
+      expect(cli.stopTask).toHaveBeenCalledTimes(1);
+      expect(cli.stopTask).toHaveBeenCalledWith('bash-1');
+      const notes = cli.received.filter((m) => JSON.stringify(m).includes('[host: keepalive cap]'));
+      expect(notes).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+      info.mockRestore();
+    }
+  });
+
   it('the keepalive cap stops a shell that holds the turn and tells the model the host stopped it (#1425)', async () => {
     vi.useFakeTimers();
     vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));

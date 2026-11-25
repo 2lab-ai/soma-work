@@ -2035,7 +2035,6 @@ export class ClaudeHandler implements TurnSteeringPort {
               pushedCount: channel.pushedUuids().length,
             };
             if (idleCapAtTurnEnd) {
-              idleCapAtTurnEnd = false;
               fireKeepaliveCap('idle');
               continue;
             }
