@@ -6,11 +6,14 @@
 import { formatGoalObjectiveForSlack } from './format';
 import {
   DEFAULT_GOAL_MAX_CONTINUATIONS,
+  type GoalPhaseFingerprint,
   type GoalQueueSession,
   MAX_GOAL_HISTORY,
   type SessionGoal,
   type SessionGoalFile,
+  type StoredGoalPhase,
 } from './model';
+import { phaseOf } from './read';
 
 type SessionGoalState = SessionGoal;
 
@@ -268,8 +271,9 @@ export function advanceGoalQueue(
 
   const next = session.goalQueue && session.goalQueue.length > 0 ? session.goalQueue.shift() : undefined;
   if (!next) {
-    if (opts.clearCurrent) session.goal = undefined;
-    else session.goal = finished; // keep the completed goal visible in status
+    // .prd/39 D5 · I1 — a completed goal leaves the slot: the history holds it (and the surfaces read it there).
+    void opts;
+    session.goal = undefined;
     session.goalLastTurnText = undefined;
     session.systemPrompt = undefined;
     return undefined;
@@ -288,6 +292,7 @@ export function advanceGoalQueue(
  */
 function rebaseGoalAsActive(goal: SessionGoalState, priorEpoch: number | undefined): void {
   goal.status = 'active';
+  goal.holdWhy = undefined; // D6 — no longer held
   goal.continuationCount = 0;
   goal.epoch = Math.max(goal.epoch ?? 0, priorEpoch ?? 0) + 1;
   goal.updatedAt = Date.now();
@@ -498,6 +503,7 @@ export function pauseCurrentGoalHoldingQueue(
   if (!session.goalQueue?.length) return { paused: pauseCurrentGoal(session, opts).paused, inPlace: false };
   endGoalCapDecision(current);
   current.status = 'paused';
+  current.holdWhy = 'dashboard-stop'; // D6 — held in place: the queue waits behind it
   dropScheduledEval(current);
   bumpEpoch(current);
   current.updatedAt = Date.now();
@@ -674,4 +680,71 @@ export function restoreGoalState(session: GoalQueueSession, snapshot: GoalStateS
   // The cached prompt was built against the restored goal; keeping it is safe
   // because the snapshot is the same state the cache was built for.
   session.systemPrompt = snapshot.systemPrompt;
+}
+
+const fingerprintOf = (goal: SessionGoal): GoalPhaseFingerprint => ({
+  epoch: goal.epoch ?? 0,
+  updatedAt: goal.updatedAt,
+  continuationCount: goal.continuationCount,
+});
+
+/** The phase as stored: what `phaseOf` reads, with the question named by kind (its fields stay where they are). */
+function storedPhaseOf(goal: SessionGoal): StoredGoalPhase | undefined {
+  const phase = phaseOf(goal);
+  if (!phase) return undefined;
+  if (phase.kind === 'asking') return { kind: 'asking', ask: phase.ask.kind };
+  return phase;
+}
+
+/**
+ * .prd/39 D4 · D17 — the goal as stored. Without the judge's lease (`pendingEval`: a judge lives only in the process
+ * that runs it, D4). With its phase and the fingerprint an older version would move (`phaseFp`), written beside the
+ * legacy fields until PR10 drops them.
+ */
+export function storedGoal<T extends SessionGoal | undefined>(goal: T): T {
+  if (!goal) return goal;
+  const { pendingEval: _lease, ...rest } = goal as SessionGoal;
+  const phase = storedPhaseOf(goal as SessionGoal);
+  return { ...rest, phase, phaseFp: fingerprintOf(goal as SessionGoal) } as T;
+}
+
+/**
+ * .prd/39 D17 — the phase a loaded goal starts with. A phase with a legacy form is recomputed from the legacy fields
+ * (an older version changes only those — a first turn starting clears `openingPending`, a retry arms its fields, a cap
+ * question opens its fields — without moving the epoch, `updatedAt` or the count), so the stored one is dropped.
+ * `stopped` and a hold's `why` have no legacy form: they are kept while the fingerprint matches and the legacy fields
+ * say nothing else; an older version that changed the goal moved the fingerprint, and they lapse.
+ */
+export function settleLoadedPhase(goal: SessionGoal): SessionGoal {
+  const fp = goal.phaseFp;
+  const unchanged =
+    !!fp &&
+    fp.epoch === (goal.epoch ?? 0) &&
+    fp.updatedAt === goal.updatedAt &&
+    fp.continuationCount === goal.continuationCount;
+  const legacyRunning = phaseOf({ ...goal, phase: undefined })?.kind === 'running';
+  const keepStopped = goal.phase?.kind === 'stopped' && unchanged && legacyRunning;
+  const keepHold = goal.holdWhy !== undefined && unchanged && goal.status === 'paused';
+  if (goal.phase === undefined && goal.holdWhy === undefined) return goal;
+  return {
+    ...goal,
+    phase: keepStopped ? goal.phase : undefined,
+    holdWhy: keepHold ? goal.holdWhy : undefined,
+  };
+}
+
+/**
+ * .prd/39 D5 · I1 — a completed goal does not stay in the slot. A record written before D5 (or by an older version)
+ * moves to the history on load and revive; when the history already holds the same goal, it stays one record.
+ */
+export function settleCompletedSlot(session: GoalQueueSession): void {
+  const goal = session.goal;
+  if (!goal || goal.status !== 'complete') return;
+  const history = session.goalHistory ?? [];
+  if (!history.some((g) => g.goalId === goal.goalId)) {
+    history.push(goal);
+    if (history.length > MAX_GOAL_HISTORY) history.splice(0, history.length - MAX_GOAL_HISTORY);
+  }
+  session.goalHistory = history;
+  session.goal = undefined;
 }

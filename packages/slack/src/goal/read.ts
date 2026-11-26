@@ -3,7 +3,7 @@
  * `placeOf`; it does not test the fields they are computed from (`capDmPendingAt`, `stall`, `openingPending`,
  * `evalBackoffUntil`, `status`). Until the stored shape carries `phase` (PR7), both are computed from those fields.
  */
-import type { SessionGoal, SessionGoalStall } from './model';
+import type { GoalStopWhy, SessionGoal, SessionGoalStall, StoredGoalPhase } from './model';
 
 /** The cap question's round: open since `openedAt`; `dmRef` once its DM landed. A legacy round may have no id. */
 export interface GoalCapAsk {
@@ -20,14 +20,14 @@ export interface GoalStallAsk {
 }
 
 /**
- * The phase of the active goal (S3). `stopped` has no legacy form yet — PR8 stores it; until then it is never
- * computed here.
+ * The phase of the active goal (S3). `stopped` has no legacy form: it comes from the stored phase (PR7 · D17).
  */
 export type GoalPhase =
   | { kind: 'opening' }
   | { kind: 'running' }
   | { kind: 'retrying'; until: number; attempt: number; reason?: string }
-  | { kind: 'asking'; ask: GoalCapAsk | GoalStallAsk };
+  | { kind: 'asking'; ask: GoalCapAsk | GoalStallAsk }
+  | { kind: 'stopped'; why: GoalStopWhy; at: number };
 
 /** Where a goal sits (S2). A goal out of the session (deleted) has no place. */
 export type GoalPlace = 'slot-active' | 'slot-hold' | 'slot-complete' | 'queue' | 'shelf' | 'history';
@@ -43,6 +43,7 @@ export interface GoalPhaseFields {
   evalBackoffUntil?: number;
   evalDispatchRetryCount?: number;
   evalRetryReason?: string;
+  phase?: StoredGoalPhase;
 }
 
 /**
@@ -68,6 +69,8 @@ export function phaseOf(goal: GoalPhaseFields | undefined): GoalPhase | undefine
       reason: goal.evalRetryReason,
     };
   }
+  // `stopped` has no legacy form: the stored phase says it (the load keeps it only under a matching fingerprint, D17).
+  if (goal.phase?.kind === 'stopped') return goal.phase;
   return { kind: 'running' };
 }
 

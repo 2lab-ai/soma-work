@@ -194,6 +194,7 @@ export function answerGoalCapDecision(args: AnswerGoalCapDecisionArgs): GoalCapD
     capDmRef: goal.capDmRef,
     continuationCount: goal.continuationCount,
     status: goal.status,
+    holdWhy: goal.holdWhy,
     updatedAt: goal.updatedAt,
     epoch: goal.epoch,
     evalBackoffUntil: goal.evalBackoffUntil,
@@ -204,8 +205,10 @@ export function answerGoalCapDecision(args: AnswerGoalCapDecisionArgs): GoalCapD
   if (decision === 'continue') {
     goal.continuationCount = 0;
     goal.status = 'active';
+    goal.holdWhy = undefined;
   } else {
     goal.status = 'paused';
+    goal.holdWhy = 'cap-stop'; // D6 — held in place by the owner's answer
   }
   goal.updatedAt = args.now ?? Date.now();
   // The same invalidation every goal-state change applies: an in-flight
@@ -223,6 +226,7 @@ export function answerGoalCapDecision(args: AnswerGoalCapDecisionArgs): GoalCapD
     goal.capDmRef = before.capDmRef;
     goal.continuationCount = before.continuationCount;
     goal.status = before.status;
+    goal.holdWhy = before.holdWhy;
     goal.updatedAt = before.updatedAt;
     goal.epoch = before.epoch;
     goal.evalBackoffUntil = before.evalBackoffUntil;

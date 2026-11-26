@@ -10442,6 +10442,7 @@ export class SlackHandler {
     if (!found) return;
     const { session, goal } = found;
     goal.status = 'paused';
+    goal.holdWhy = 'opening-cancelled'; // D6 — held until the delete below takes it out
     retireGoalCapDecision(goal);
     goal.updatedAt = Date.now();
     this.persistHostGoalMutation(session);

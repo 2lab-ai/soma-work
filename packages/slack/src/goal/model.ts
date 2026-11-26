@@ -165,6 +165,16 @@ export interface SessionGoal {
    */
   openingPending?: boolean;
   /**
+   * .prd/39 S3 · D17 — the phase as stored (written with the legacy fields until PR10 drops them). Phases with a legacy
+   * form are recomputed from those fields on every load; only `stopped` — which has none — is kept, and only while
+   * {@link phaseFp} still matches.
+   */
+  phase?: StoredGoalPhase;
+  /** The fields an older version changes when it changes the goal: a mismatch means it did, and `stopped` lapses. */
+  phaseFp?: GoalPhaseFingerprint;
+  /** A hold in the slot (D6): why the goal stopped in place. Kept like `stopped`, under the same fingerprint. */
+  holdWhy?: GoalHoldWhy;
+  /**
    * The files the goal was added with from the dashboard's goal composer — already in the session's Slack thread.
    * Every opening turn of this goal carries them (`admitGoalOpeningTurn`), so a queued goal keeps them until it starts.
    */
@@ -303,4 +313,25 @@ export interface GoalQueueSession {
   goalPaused?: SessionGoal[];
   systemPrompt?: string;
   goalLastTurnText?: string;
+}
+
+/** Why a goal stopped (S3): the loop does not drive it until a person opens it again. */
+export type GoalStopWhy = 'judge-failed' | 'start-failed' | 'resume-failed' | 'person-stopped';
+
+/** Why the slot holds a goal in place (D6). */
+export type GoalHoldWhy = 'cap-stop' | 'dashboard-stop' | 'opening-cancelled' | 'owner-pause';
+
+/** The stored phase (S3). */
+export type StoredGoalPhase =
+  | { kind: 'opening' }
+  | { kind: 'running' }
+  | { kind: 'retrying'; until: number; attempt: number; reason?: string }
+  | { kind: 'asking'; ask: 'cap' | 'stall' }
+  | { kind: 'stopped'; why: GoalStopWhy; at: number };
+
+/** D17 — what an older version moves when it changes a goal it cannot represent the phase of. */
+export interface GoalPhaseFingerprint {
+  epoch: number;
+  updatedAt: number;
+  continuationCount: number;
 }
