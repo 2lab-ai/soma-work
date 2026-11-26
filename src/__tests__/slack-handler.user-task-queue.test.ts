@@ -221,6 +221,31 @@ describe('SlackHandler — per-user task queue gate', () => {
     expect(handler.runningTasksOf(OWNER)).toEqual([]);
   });
 
+  // #1474 round 11 (astra): a typed reply to the open question that waits in the person's line is kept there — its
+  // question closes now, so a card click meanwhile is no second answer queued beside it.
+  it('#1474 — a typed answer that waits in the person’s line closes its question and is stored as the answer', async () => {
+    const a = await startBusy('100.0');
+    sessions.set('C123:200.0', {
+      ownerId: OWNER,
+      channelId: CHANNEL,
+      threadTs: '200.0',
+      threadRootTs: '200.0',
+      sessionId: 's-200.0',
+      title: 'task 200.0',
+      actionPanel: { waitingForChoice: true, pendingQuestion: { type: 'user_choice', question: '어느 쪽?' } },
+    });
+
+    await handler.handleMessage(message('200.0', { ts: '200.03', text: '왼쪽으로 가자' }), vi.fn());
+
+    expect(startWithContinuation).toHaveBeenCalledTimes(1);
+    expect(ledger.entries).toHaveLength(1);
+    expect(ledger.entries[0].message).toMatchObject({ ts: '200.03', questionAnswer: true });
+    const panel = sessions.get('C123:200.0').actionPanel;
+    expect(panel.waitingForChoice).toBe(false);
+    expect(panel.pendingQuestion).toBeUndefined();
+    await a.settle();
+  });
+
   it('.prd/36 v2 D12 — the same work sent again in a new thread fails fast: nothing starts, its receipt fires', async () => {
     limits.set(OWNER, UNLIMITED);
     const gate = deferred<any>();

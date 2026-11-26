@@ -5406,7 +5406,7 @@ export class SlackHandler {
    * recorded question, choice record), so the turn that asked does not end waiting on it, and a drain its end halted
    * opens again. The thread header is redrawn on its own.
    */
-  private recordTypedAnswer(sessionKey: string): void {
+  private recordTypedAnswer(sessionKey: string, activity: 'working' | 'idle' = 'working'): void {
     const session = this.claudeHandler.getSessionByKey?.(sessionKey);
     const panel = session?.actionPanel;
     if (!panel) return;
@@ -5417,7 +5417,8 @@ export class SlackHandler {
     panel.choiceMessageLink = undefined;
     panel.choiceBlocks = undefined;
     // As a dispatched reply's record does (`processMessage`): the session works on — the reply waits behind its turn.
-    this.claudeHandler.setActivityStateByKey?.(sessionKey, 'working');
+    // A reply that waits in the person's task line instead (no turn runs in its thread) leaves the session idle.
+    this.claudeHandler.setActivityStateByKey?.(sessionKey, activity);
     try {
       this.claudeHandler.getSessionRegistry?.()?.persistAndBroadcast?.(sessionKey);
     } catch (error) {
@@ -9695,6 +9696,19 @@ export class SlackHandler {
     const userId = this.userTaskOwnerOf(sessionKey, event);
     if (!userId) return 'run';
     const route = event.routeContext;
+    // #1474 — the person's typed reply while the model's question is open answers it (#911): plain words are marked as
+    // the answer, as the thread's follow-up queue marks them (a command typed meanwhile still closes the question but
+    // is new work — it is checked for the same work) (round 10/11, astra/fable).
+    let answers = false;
+    let markAnswer = false;
+    try {
+      answers = this.answersOpenQuestion(sessionKey, event);
+      markAnswer = answers && this.isSteerableText(event);
+    } catch {
+      answers = false;
+      markAnswer = false;
+    }
+    const stored = markAnswer ? { ...event, questionAnswer: true as const } : event;
     const continuation: GateInput['continuation'] = route?.goalContinuation
       ? 'drop'
       : route?.hostTurn || route?.autoResume || route?.compactRedispatch || event.epicChild
@@ -9707,7 +9721,7 @@ export class SlackHandler {
         channel: event.channel,
         threadTs: event.thread_ts || event.ts,
         text: event.text,
-        message: JSON.parse(JSON.stringify(event)) as Record<string, unknown>,
+        message: JSON.parse(JSON.stringify(stored)) as Record<string, unknown>,
         continuation,
         admitted,
         // pr-watch reserved this event's slot as it sent it (`reserveHostTurn`): it runs on that reservation.
@@ -9717,7 +9731,7 @@ export class SlackHandler {
         // same work another thread of the person runs — a recorded answer (its question already closed) or the
         // person's typed reply while the question is open. Only that check: a Slack resend of it is still one
         // (round 9/10, astra).
-        answersQuestion: event.questionAnswer === true || this.answersOpenQuestion(sessionKey, event),
+        answersQuestion: event.questionAnswer === true || markAnswer,
       });
       if (result.action === 'same-work') {
         this.logger.info('User task queue: the same work is already running or waiting — not started', {
@@ -9728,6 +9742,10 @@ export class SlackHandler {
         });
       }
       if (result.action === 'queued') {
+        // #1474 — stored in the person's line: the answer is kept, so its question closes now — as a reply stored in
+        // the thread's follow-up queue does — and a second answer to it (a card click meanwhile) is refused, not
+        // queued beside it (round 11, astra).
+        if (answers) this.recordTypedAnswer(sessionKey, 'idle');
         this.logger.info('User task queue: message waits for the person to have a free slot', {
           sessionKey,
           userId,
