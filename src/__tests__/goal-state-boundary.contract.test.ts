@@ -166,14 +166,24 @@ describe('goal state boundary (.prd/40 §6)', () => {
     const SAVE_CALL = /\.saveSessions(OrThrow)?\(|\.broadcastSessionUpdate\?*\.?\(/;
     // A port is exempt only inside the argument list of a commitGoalChange call (review #1503): from the call's line
     // until its parentheses close. A port handed to any other helper — even in the same method — is a site.
+    // Parentheses are counted on code only (string literals and line comments removed), and the count restarts at
+    // every member boundary (review #1504).
+    const codeOf = (line: string): string =>
+      line.replace(/'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`/g, "''").replace(/\/\/.*$/, '');
     const saveSitesIn = (rows: Array<{ member: string; text: string }>): string[] => {
       const out = new Set<string>();
       let depth = 0;
+      let current = '';
       for (const { member, text } of rows) {
-        const at = text.search(/\bcommitGoalChange\(/);
+        if (member !== current) {
+          current = member;
+          depth = 0;
+        }
+        const code = codeOf(text);
+        const at = code.search(/\bcommitGoalChange\(/);
         const inCommit = depth > 0 || at >= 0;
-        if (SAVE_CALL.test(text) && !(PORT.test(text) && inCommit)) out.add(member);
-        const counted = depth > 0 ? text : at >= 0 ? text.slice(at) : '';
+        if (SAVE_CALL.test(code) && !(PORT.test(code) && inCommit)) out.add(member);
+        const counted = depth > 0 ? code : at >= 0 ? code.slice(at) : '';
         for (const ch of counted) depth += ch === '(' ? 1 : ch === ')' ? -1 : 0;
         if (depth < 0) depth = 0;
       }
@@ -188,10 +198,16 @@ describe('goal state boundary (.prd/40 §6)', () => {
         { member: 'commitThenHelper', text: '    otherHelper({' },
         { member: 'commitThenHelper', text: '      saveSessions: () => this.deps.claudeHandler.saveSessions(),' },
         { member: 'commitThenHelper', text: '    });' },
+        // A parenthesis in a string or a comment is not syntax: the call still closes, the next member starts at zero.
+        { member: 'literalParen', text: "    commitGoalChange(session, 'goal(', { drive }, { kick });" },
+        { member: 'afterLiteral', text: '      saveSessions: () => this.deps.claudeHandler.saveSessions(),' },
+        { member: 'commentParen', text: '    commitGoalChange(session, key, { drive }, { // 1) persistence ports' },
+        { member: 'commentParen', text: '      saveSessions: () => this.deps.claudeHandler.saveSessions(),' },
+        { member: 'commentParen', text: '    });' },
         { member: 'portElsewhere', text: '      saveSessions: () => this.deps.claudeHandler.saveSessions(),' },
         { member: 'direct', text: '      this.deps.claudeHandler.saveSessions();' },
       ]),
-    ).toEqual(['commitThenHelper', 'portElsewhere', 'direct']);
+    ).toEqual(['commitThenHelper', 'afterLiteral', 'portElsewhere', 'direct']);
     const sitesIn = (fileList: string[]): Set<string> =>
       new Set(fileList.flatMap((file) => saveSitesIn(membersOf(file)).map((member) => `${file}#${member}`)));
     const ALLOWED: Record<string, string> = {
