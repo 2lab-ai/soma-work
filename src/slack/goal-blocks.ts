@@ -195,7 +195,9 @@ export function buildGoalStatusBlocks(input: GoalStatusBlocksInput): any[] {
     blocks.push(section(lines.join('\n')));
     // Buttons make sense only while the goal is still live (active/paused).
     if (goal.status === 'active' || goal.status === 'paused') {
-      blocks.push(actionButtons({ ...valueFor(goal), place: 'current' }, goal.status === 'active' ? 'pause' : 'resume'));
+      blocks.push(
+        actionButtons({ ...valueFor(goal), place: 'current' }, goal.status === 'active' ? 'pause' : 'resume'),
+      );
     }
   }
 

@@ -11,6 +11,8 @@ import {
   type HandoffContext,
   type WorkflowType,
 } from '../dispatch-abort';
+import { bumpEpoch, endGoalCapDecision } from '../goal/machine';
+import type { GoalQueueSession } from '../goal/model';
 import { MessageFormatter } from '../message-formatter';
 import type { MessageValidator } from '../message-validator';
 import { LOG_DETAIL, OutputFlag, shouldOutput } from '../output-flags';
@@ -1474,8 +1476,20 @@ export class SessionInitializer {
     // `goalLastTurnText` refers to a turn of the dead thread and
     // intentionally does NOT travel.
     if (session.goal) {
-      botSession.goal = structuredClone(session.goal);
+      const moved = structuredClone(session.goal);
+      // .prd/39 D11 (X12) — a question the old thread asked closes: its buttons and form address the old session. The
+      // epoch moves with it (bumpEpoch), so nothing armed for the old thread's round applies here.
+      endGoalCapDecision(moved);
+      moved.stall = undefined;
+      bumpEpoch(moved);
+      botSession.goal = moved;
     }
+    // Every goal the thread holds moves with it — the queue, the shelf and the history, not only the slot (X12).
+    const fromGoals = session as unknown as GoalQueueSession;
+    const toGoals = botSession as unknown as GoalQueueSession;
+    if (fromGoals.goalQueue?.length) toGoals.goalQueue = structuredClone(fromGoals.goalQueue);
+    if (fromGoals.goalPaused?.length) toGoals.goalPaused = structuredClone(fromGoals.goalPaused);
+    if (fromGoals.goalHistory?.length) toGoals.goalHistory = structuredClone(fromGoals.goalHistory);
     // Store source thread for context linking (data concern only — UX is always "new conversation")
     if (hasSourceThread) {
       botSession.sourceThread = { channel, threadTs };
