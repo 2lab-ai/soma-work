@@ -1397,3 +1397,49 @@ describe('GoalLoopController — the gate reads the goal phase (.prd/39 D2, A4)'
     expect(r.dispatched).toEqual([]);
   });
 });
+
+/**
+ * .prd/39 A5 · D15 — a change committed while a judge is in flight (`goal max 20`): the commit moves the epoch and
+ * enqueues one kick. The judge in flight sees the moved epoch and discards its verdict; the kick behind it judges
+ * once more — exactly once. Nobody else re-judges on the discard (one owner).
+ */
+describe('GoalLoopController — a commit during a judge re-judges exactly once (A5)', () => {
+  it('discards the verdict of the moved epoch and judges once more behind the kick', async () => {
+    const goal = makeGoal({ continuationCount: 3, maxContinuations: 10 });
+    const session = makeSession(goal);
+    const releases: Array<() => void> = [];
+    let dispatched = 0;
+    const injected: unknown[] = [];
+    const controller = new GoalLoopController({
+      registry: { getSessionByKey: () => session, saveSessions: () => {} },
+      requestCoordinator: { isRequestActive: () => false },
+      turnHeld: () => false,
+      dispatcher: () => {
+        dispatched += 1;
+        return new Promise<string>((resolve) =>
+          releases.push(() => resolve(JSON.stringify({ completed: false, reason: 'not yet', remaining: ['x'] }))),
+        );
+      },
+      injectContinuation: async (event) => {
+        injected.push(event);
+      },
+      postNotice: async () => undefined,
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      fallbackModel: () => ({ model: 'claude-sonnet-4' }),
+    });
+
+    controller.onTurnSettled(SESSION_KEY);
+    await vi.waitFor(() => expect(dispatched).toBe(1));
+    // `goal max 20` commits: the epoch moves, one kick is enqueued.
+    goal.maxContinuations = 20;
+    goal.epoch = (goal.epoch ?? 0) + 1;
+    controller.onTurnSettled(SESSION_KEY, { cause: 'kick' });
+    releases[0]();
+    await vi.waitFor(() => expect(dispatched).toBe(2));
+    releases[1]();
+    await controller.settled(SESSION_KEY);
+
+    expect(dispatched).toBe(2);
+    expect(injected).toHaveLength(1);
+  });
+});

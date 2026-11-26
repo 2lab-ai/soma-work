@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ConversationSession } from '../../../types';
+import { resumeGoalLoop } from '../../goal-loop-resume';
 import { GoalHandler } from '../goal-handler';
 import type { CommandContext, CommandDependencies } from '../types';
+
+// A spy that still calls the real bridge: other suites here wire it with `setGoalLoopResumeHandler`.
+vi.mock('../../goal-loop-resume', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../goal-loop-resume')>();
+  return { ...actual, resumeGoalLoop: vi.fn((key: string) => actual.resumeGoalLoop(key)) };
+});
 
 function makeCtx(overrides: Partial<CommandContext> = {}): CommandContext {
   return {
@@ -551,5 +558,61 @@ describe('GoalHandler — goal clear ends an open stall (its question is retract
     } finally {
       setGoalStallRetiredListener(undefined);
     }
+  });
+});
+
+/**
+ * .prd/39 D7 · A5 (X5) — `goal max N` on a goal asking the cap question with N above its count closes the question
+ * (the DM is rewritten) and drives the loop again. Before, it raised the budget and bumped the epoch but nothing woke
+ * the loop and the question stayed open: the goal stopped where it was.
+ */
+describe('GoalHandler — goal max reopens a goal stopped at its cap (X5)', () => {
+  it('closes the open cap question and kicks the loop once', async () => {
+    const session = makeSession({
+      goal: {
+        goalId: 'g1',
+        objective: 'ship it',
+        status: 'active',
+        createdAt: 1,
+        updatedAt: 1,
+        createdBy: 'U123',
+        continuationCount: 10,
+        maxContinuations: 10,
+        capDmPendingAt: 5,
+        capDecisionId: 'round-1',
+        capDmRef: { channel: 'D1', ts: '1.1' },
+        epoch: 2,
+      },
+    });
+    vi.mocked(resumeGoalLoop).mockClear();
+
+    await new GoalHandler(makeDeps(session)).execute(makeCtx({ text: 'goal max 20' }));
+
+    expect(session.goal?.maxContinuations).toBe(20);
+    expect(session.goal?.capDmPendingAt).toBeUndefined();
+    expect(session.goal?.capDecisionId).toBeUndefined();
+    expect(session.goal?.epoch).toBe(3);
+    expect(resumeGoalLoop).toHaveBeenCalledTimes(1);
+    expect(resumeGoalLoop).toHaveBeenCalledWith('C123:171.001');
+  });
+
+  it('a running goal is kicked too: a judge in flight is discarded by the epoch and runs again once', async () => {
+    const session = makeSession({
+      goal: {
+        goalId: 'g1',
+        objective: 'ship it',
+        status: 'active',
+        createdAt: 1,
+        updatedAt: 1,
+        createdBy: 'U123',
+        continuationCount: 3,
+        maxContinuations: 10,
+      },
+    });
+    vi.mocked(resumeGoalLoop).mockClear();
+
+    await new GoalHandler(makeDeps(session)).execute(makeCtx({ text: 'goal max 20' }));
+
+    expect(resumeGoalLoop).toHaveBeenCalledTimes(1);
   });
 });
