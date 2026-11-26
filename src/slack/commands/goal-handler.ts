@@ -1,4 +1,4 @@
-import { capAskOf, slotGoalInFlight, slotHoldOf } from '@soma/slack/goal/read';
+import { capAskOf, placeOf, slotGoalInFlight, slotHoldOf } from '@soma/slack/goal/read';
 import { Logger } from '../../logger';
 import { validateSessionGoalObjective } from '../../prompt/session-goal-block';
 import type { ConversationSession, SessionGoal } from '../../types';
@@ -350,6 +350,20 @@ export class GoalHandler implements CommandHandler {
     if (index === undefined && current?.status === 'active' && current.stall) {
       return this.resumeStalledGoal(channel, threadTs, session, current);
     }
+    // .prd/39 D12 (X16) — a goal asking the cap question goes on the way the question's ✅ does: its budget back, the
+    // question closed (DM rewritten), the loop driven. It used to answer "already running".
+    if (index === undefined && current && capAskOf(current)) {
+      retireGoalCapDecision(current);
+      current.continuationCount = 0;
+      current.updatedAt = Date.now();
+      this.persistGoalChange(session, { drive: 'kick' });
+      await this.deps.slackApi.postSystemMessage(
+        channel,
+        `▶️ The current goal had used its ${current.maxContinuations}-turn auto-continuation budget — its budget is back and it runs again: ${formatGoalObjectiveForSlack(current.objective)}`,
+        { threadTs },
+      );
+      return { handled: true };
+    }
     if (shelf.length === 0 && !slotPaused) {
       if (!current) await this.postNoGoal(channel, threadTs);
       else
@@ -461,6 +475,16 @@ export class GoalHandler implements CommandHandler {
   ): Promise<CommandResult> {
     if (!session.goal) {
       await this.postNoGoal(channel, threadTs);
+      return { handled: true };
+    }
+    // .prd/39 D12 (X13) — a goal that is already complete keeps the record of how it ended (the evaluator's verdict,
+    // or an earlier `goal done`); a second close-out would rewrite it as a direct completion.
+    if (placeOf(session, session.goal) === 'slot-complete') {
+      await this.deps.slackApi.postSystemMessage(
+        channel,
+        '✅ The current goal is already complete — nothing changed. Set a new goal to continue.',
+        { threadTs },
+      );
       return { handled: true };
     }
     const snapshot = admitOpening ? snapshotGoalState(session) : undefined;

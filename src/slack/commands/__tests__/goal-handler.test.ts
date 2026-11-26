@@ -616,3 +616,65 @@ describe('GoalHandler — goal max reopens a goal stopped at its cap (X5)', () =
     expect(resumeGoalLoop).toHaveBeenCalledTimes(1);
   });
 });
+
+const activeGoalAt = (over: Record<string, unknown> = {}) =>
+  ({
+    goalId: 'g1',
+    objective: 'ship it',
+    status: 'active',
+    createdAt: 1,
+    updatedAt: 1,
+    createdBy: 'U123',
+    continuationCount: 10,
+    maxContinuations: 10,
+    epoch: 1,
+    ...over,
+  }) as NonNullable<ConversationSession['goal']>;
+
+/** .prd/39 D12 · A13 (X13) — `goal done` leaves a goal that is already complete as it was recorded. */
+describe('GoalHandler — goal done on a complete goal (X13)', () => {
+  it('does not overwrite the record of a goal the evaluator completed', async () => {
+    const session = makeSession({
+      goal: activeGoalAt({
+        status: 'complete',
+        completedAt: 50,
+        completedBy: 'eval-model',
+        completedVia: 'eval-model',
+        completionReason: 'all done by eval',
+      }),
+    });
+    const deps = makeDeps(session);
+
+    await new GoalHandler(deps).execute(makeCtx({ text: 'goal done' }));
+
+    expect(session.goal).toMatchObject({
+      status: 'complete',
+      completedAt: 50,
+      completedBy: 'eval-model',
+      completedVia: 'eval-model',
+      completionReason: 'all done by eval',
+    });
+    expect(deps.claudeHandler.saveSessions).not.toHaveBeenCalled();
+  });
+});
+
+/** .prd/39 D12 · A16 (X16) — `goal resume` on a goal stopped at its cap does what the cap question's ✅ does. */
+describe('GoalHandler — goal resume on a goal asking the cap question (X16)', () => {
+  it('gives the budget back, closes the question and drives the loop', async () => {
+    const session = makeSession({
+      goal: activeGoalAt({ capDmPendingAt: 5, capDecisionId: 'round-1', capDmRef: { channel: 'D1', ts: '1.1' } }),
+    });
+    vi.mocked(resumeGoalLoop).mockClear();
+    const deps = makeDeps(session);
+
+    await new GoalHandler(deps).execute(makeCtx({ text: 'goal resume' }));
+
+    expect(session.goal?.status).toBe('active');
+    expect(session.goal?.continuationCount).toBe(0);
+    expect(session.goal?.capDmPendingAt).toBeUndefined();
+    expect(resumeGoalLoop).toHaveBeenCalledTimes(1);
+    const calls = (deps.slackApi.postSystemMessage as ReturnType<typeof vi.fn>).mock.calls;
+    const posted = calls[calls.length - 1]?.[1] as string;
+    expect(posted).not.toContain('already running');
+  });
+});
