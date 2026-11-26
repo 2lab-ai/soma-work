@@ -8467,11 +8467,15 @@ body.nt-open .new-task-fab { display: none !important; }
    thumbnail, name and meta, its own hover, press and 44px chip on touch. The audio play button (T8) sits on the
    thumbnail's lower right: 4px card inset + the 16:10 thumbnail of a (--fc-tile-w − 8px) wide box. */
 .art-tile > ui-file-card { display: block; }
-.art-tile:has(> ui-file-card[variant="chip"]) { max-width: 240px; }
 .panel-artifacts { padding: 10px 16px 4px; border-bottom: 1px solid var(--border); min-height: 44px; }
 .panel-arts-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; font-size: 12px; font-weight: 600; color: var(--text); }
 .panel-arts-hint { margin-left: auto; font-size: 11px; font-weight: 400; color: var(--text-tertiary); }
-.art-strip-panel .art-tile { --fc-tile-w: 152px; }
+/* The detail card's 산출물 tab (owner 2026-11-26): the open card's preview tiles, as a grid that shows every file at
+   once — columns of at least the open card's 128px, each tile the column's width. A short panel body (a phone held
+   sideways, a docked drawer under a tall top bar) keeps them in one row that scrolls sideways, as the open card's
+   strip does, so the conversation keeps its rows (@container pbody below). */
+.art-strip.art-strip-panel { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); overflow-x: visible; scroll-snap-type: none; }
+.art-strip-panel .art-tile { min-width: 0; --fc-tile-w: 100%; }
 .turn-arts-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 /* Phone calls (.prd/30 §3.2–3.3): a call card in the chat, and the call view. */
 .ph-cards { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
@@ -8554,9 +8558,8 @@ body.nt-open .new-task-fab { display: none !important; }
 .um-file.is-remote { opacity: 0.8; }
 .um-compact .um-file { width: auto; max-width: 200px; }
 .io-row .um-media { margin: 4px 0 6px; }
-/* A row of its own above the 산출물 (the section lays its head and chips out as one flex row in the minimal
-   view and on a short body: this one wraps onto a full line of its own there). */
-.panel-user-media { flex: 1 1 100%; margin-bottom: 6px; }
+/* The 지시 첨부 row sits above the 산출물 in the tab. */
+.panel-user-media { margin-bottom: 6px; }
 /* The 지시 첨부 row (D4 K-06): the summary slotted into <ui-disclosure> — glyph · 지시 첨부 · count · hint. */
 .panel-um-head { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--text); font-size: 12px; font-weight: 600; }
 .panel-um-body { padding: 4px 0 2px; }
@@ -8637,22 +8640,12 @@ body.nt-open .new-task-fab { display: none !important; }
    100vw, so a narrow window never pushes its left edge off screen. */
 .cron-drawer::part(panel) { padding-right: env(safe-area-inset-right, 0px); }
 .cron-drawer::part(header) { padding-top: max(14px, env(safe-area-inset-top, 0px)); }
-/* Task view (T1.6): minimal — the artifacts are one row of name chips, like a
-   short panel body below; 자세히 shows them as thumbnails. The chips are the file cards' chip variant
-   (artPanelVariant); this row only lays them out. */
-.slide-panel:not(.is-detail) .panel-artifacts { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-top: 6px; padding-bottom: 6px; }
-.slide-panel:not(.is-detail) .panel-arts-head { flex: none; margin-bottom: 0; }
-.slide-panel:not(.is-detail) .panel-arts-hint { display: none; }
-.slide-panel:not(.is-detail) .art-strip-panel { flex: 1 1 auto; min-width: 0; padding-top: 2px; padding-bottom: 2px; }
-/* A short panel body (landscape phones, the unfolded Duo, a docked drawer under a
-   tall top bar; below 560px R/2 cannot hold full thumbnails plus a couple of task
-   rows): artifacts become name chips with the play button inline, so the
-   pinned strip stays one short row; every tile is still reachable sideways. */
+/* A short panel body (landscape phones, the unfolded Duo, a docked drawer under a tall top bar; below 560px R/2
+   cannot hold a grid of thumbnails plus a couple of task rows): the 산출물 tab's tiles stay previews, in one row
+   that scrolls sideways at the open card's 128px, so every tile is still reachable. */
 @container pbody (max-height: 560px) {
-  .panel-artifacts { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-top: 6px; padding-bottom: 6px; }
-  .panel-arts-head { flex: none; margin-bottom: 0; }
-  .panel-arts-hint { display: none; }
-  .art-strip-panel { flex: 1 1 auto; min-width: 0; padding-top: 2px; padding-bottom: 2px; }
+  .art-strip.art-strip-panel { display: flex; overflow-x: auto; scroll-snap-type: x proximity; }
+  .art-strip-panel .art-tile { --fc-tile-w: 128px; }
 }
 /* Plan mode (SSOT 2026-11-02): the plan on the open task card, the detail card's plan and its bottom bar; a simple
    question's choices as buttons on the task card. */
@@ -15686,7 +15679,6 @@ var _panelDetail = false;
 function applyPanelDetail() {
   var panel = document.getElementById('slide-panel');
   if (panel) panel.classList.toggle('is-detail', _panelDetail);
-  syncPanelArtVariant();
 }
 // The sections an opening starts with: every one open in 어드밴스드 — except the goal,
 // which always opens folded (SSOT 2026-10-29) — else the defaults.
@@ -16368,7 +16360,7 @@ function loadOlderWorkLog() {
     });
   }
   if (typeof ResizeObserver === 'function') {
-    var size = new ResizeObserver(function() { sizePanelSections(); syncPanelArtVariant(); });
+    var size = new ResizeObserver(function() { sizePanelSections(); });
     ['panel-scroll', 'panel-surface', 'panel-tabs', 'panel-agents', 'panel-tasks', 'panel-sections'].forEach(function(id) {
       var el = document.getElementById(id);
       if (el) size.observe(el);
@@ -23410,6 +23402,8 @@ function wlIsCard(el) {
 //   goal / agent / tasks (관리 →, a tree item, 전체 N개 → 상세, 전체 task →):
 //     that section at the top of the scroll area (under the sticky agent tabs),
 //     once per opening — the turns loading below it never drag it away;
+//   artifacts (the open card's 산출물 전체 N개 →): the same, on the tab bar — its open 산출물 tab and the
+//     preview grid under it in view (owner 2026-11-26), not the chat below them;
 //   answer, default: the permission or question the session waits on, which
 //     sits in the common surface at the top, so the answer form is in view at
 //     once. The question landing is made once per opening: turns load below the
@@ -23427,16 +23421,16 @@ function landPanel() {
   if (!scrollEl) return;
   // Task view: Tasks sit in the tab under the sticky agent tabs — a tasks
   // opening lands on the (unfolded) plan's head, just under the tab strip.
-  if (_panelLand === 'goal' || _panelLand === 'agent' || _panelLand === 'tasks') {
+  if (_panelLand === 'goal' || _panelLand === 'agent' || _panelLand === 'tasks' || _panelLand === 'artifacts') {
     if (_panelLanded) return;
-    var sec = document.getElementById(_panelLand === 'goal' ? 'panel-goal' : _panelLand === 'tasks' ? 'panel-tasks' : 'panel-agents');
+    var sec = document.getElementById(_panelLand === 'goal' ? 'panel-goal' : _panelLand === 'tasks' ? 'panel-tasks' : _panelLand === 'artifacts' ? 'panel-midbar' : 'panel-agents');
     if (sec && sec.style.display !== 'none') {
       // The reader scrolled since the last try: they stay where they are.
       if (_panelLandAt !== null && Math.abs(scrollEl.scrollTop - _panelLandAt) > 1) { _panelLanded = true; return; }
       // Phone chrome (#918): a landing while reading starts the card over first — head and composer in, the box as it
       // opens — as the question landing does; the target is measured after.
       if (panelReading()) rdReset();
-      var under = _panelLand === 'goal' ? 0 : panelTabsHeight();
+      var under = _panelLand === 'goal' || _panelLand === 'artifacts' ? 0 : panelTabsHeight();
       var target = scrollEl.scrollTop + sec.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top - under;
       // The landing is the reader's new place: an anchor the layout coordinator
       // captured before it (layoutBeforeChange) must not pull the panel back.
@@ -23512,11 +23506,11 @@ function holdPanelLanding() {
   // Past the settle window a move with no input (find in page, a scrollbar) is the reader's.
   if (Date.now() > _panelHoldUntil) { _panelHold = false; return; }
   var scrollEl = document.getElementById('panel-scroll');
-  var sec = document.getElementById(_panelLand === 'goal' ? 'panel-goal' : _panelLand === 'tasks' ? 'panel-tasks' : 'panel-agents');
+  var sec = document.getElementById(_panelLand === 'goal' ? 'panel-goal' : _panelLand === 'tasks' ? 'panel-tasks' : _panelLand === 'artifacts' ? 'panel-midbar' : 'panel-agents');
   if (!scrollEl || !sec || sec.style.display === 'none') return;
   // Phone chrome (#918): held while reading, the card starts over first (as landPanel does).
   if (panelReading()) rdReset();
-  var under = _panelLand === 'goal' ? 0 : panelTabsHeight();
+  var under = _panelLand === 'goal' || _panelLand === 'artifacts' ? 0 : panelTabsHeight();
   var drift = sec.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top - under;
   var top = Math.max(0, Math.min(scrollEl.scrollTop + drift, scrollEl.scrollHeight - scrollEl.clientHeight));
   if (Math.abs(top - scrollEl.scrollTop) <= 1) return;
@@ -23818,13 +23812,15 @@ function deckStop(panel) {
   }
 }
 // The landing target of this opening, for the keyboard: the answer form, the
-// goal section, the focused node's header, the Tasks head, the 작업 로그 tab —
-// else the heading.
+// goal section, the focused node's header, the Tasks head, the 산출물 tab, the
+// 작업 로그 tab — else the heading.
 function focusPanelLanding() {
   var t = null;
   if (_panelLand === 'goal') t = goalCardFocusTarget() || document.getElementById('panel-goal');
   else if (_panelLand === 'agent') t = document.querySelector('#panel-agents .pa-focus');
   else if (_panelLand === 'tasks') t = document.getElementById('panel-tasks');
+  // 산출물 (the open card's 전체 N개 →): the tab it landed on — focus where the eye is.
+  else if (_panelLand === 'artifacts') t = document.querySelector('#panel-midbar .pm-tab[data-mid="artifacts"]');
   // The 작업 로그 tab is <ui-tabs>' own (D4 E-24): its selected tab — the one this opening chose — takes focus.
   else if (_panelLand === 'worklog' && uiTabsFocus(document.getElementById('panel-sections'))) return;
   if (!t || t.style.display === 'none') {
@@ -25271,7 +25267,7 @@ document.addEventListener('keydown', function(e) {
       if (_panelHold && panelOpen) holdPanelLanding();
       // A section landing the body was still too short for (the parts load
       // after the opening) lands as it grows; a reader who scrolled meanwhile stays.
-      else if (panelOpen && !_panelLanded && (_panelLand === 'goal' || _panelLand === 'agent' || _panelLand === 'tasks')) landPanel();
+      else if (panelOpen && !_panelLanded && (_panelLand === 'goal' || _panelLand === 'agent' || _panelLand === 'tasks' || _panelLand === 'artifacts')) landPanel();
     });
     land.observe(scrollEl);
     ['panel-surface', 'panel-sections-body'].forEach(function(id) {
@@ -27110,10 +27106,10 @@ function artSortForDisplay(list) {
   return files.sort(function(x, y) { return toNum(y.createdAt) - toNum(x.createdAt); });
 }
 
-// A strip tile: the file card (thumbnail, name, meta; a play / pause toggle on audio — T8 — and video tiles, one
-// clip at a time across the page: playable); variant 'chip' in the panel's minimal row.
-function artTile(cid, a, variant) {
-  return '<div class="art-tile' + (a.stored ? '' : ' is-remote') + '">' + artCard(cid, a, variant || 'tile', true) + artVerBadge(a) + '</div>';
+// A tile — the open card's strip and the detail card's 산출물 tab: the file card (thumbnail, name, meta; a play /
+// pause toggle on audio — T8 — and video tiles, one clip at a time across the page: playable).
+function artTile(cid, a) {
+  return '<div class="art-tile' + (a.stored ? '' : ' is-remote') + '">' + artCard(cid, a, 'tile', true) + artVerBadge(a) + '</div>';
 }
 
 // The full list once fetched, else the card's summary (the newest few).
@@ -27140,13 +27136,16 @@ function renderCardArtifacts(s) {
     + '</div>';
 }
 
-// Panel (T6): pinned above the conversation, so it is in view wherever the reader is.
-function renderPanelArtifacts(list, cid, variant) {
+// The detail card's 산출물 tab (T6; owner 2026-11-26): every file as the open card draws it — the preview tile (a
+// picture, or the kind's glyph on its wash with the extension, then name and size · age), never a name chip. The
+// tab is the gallery the open card's 전체 N개 → lands on: a grid of every file (one row that scrolls sideways on a
+// short panel body — the CSS of .art-strip-panel).
+function renderPanelArtifacts(list, cid) {
   var sorted = artLatestOnly(artSortForDisplay(list));
   if (!sorted.length || !cid) return '';
   return '<div class="panel-arts-head"><span>산출물</span><span class="art-count">' + sorted.length + '</span>'
     + '<span class="panel-arts-hint">올리면 미리보기 · 누르면 크게</span></div>'
-    + '<div class="art-strip art-strip-panel">' + sorted.map(function(a) { return artTile(cid, a, variant); }).join('') + '</div>';
+    + '<div class="art-strip art-strip-panel">' + sorted.map(function(a) { return artTile(cid, a); }).join('') + '</div>';
 }
 
 // Did this artifact come from the turn that ran between startTs and endTs?
@@ -27633,27 +27632,13 @@ function renderPanelArtifactsSection() {
   var list = c && c.list ? c.list : ((s && s.artifacts && s.artifacts.recent) || []);
   // The user's files (지시 첨부) first, one collapsed line; then the model's 산출물.
   var umHtml = cid ? renderPanelUserMedia(_umList[cid] || [], cid, _umPanelOpen === true, _umPanelOpen === 'folding') : '';
-  var html = cid ? (umHtml ? '<div class="panel-user-media" id="panel-user-media">' + umHtml + '</div>' : '') + renderPanelArtifacts(list, cid, artPanelVariant()) : '';
+  var html = cid ? (umHtml ? '<div class="panel-user-media" id="panel-user-media">' + umHtml + '</div>' : '') + renderPanelArtifacts(list, cid) : '';
   // Morphed (D4 K-06): the 지시 첨부 disclosure keeps its node across a repaint, so its open grows in place.
   writePanelPart(el, html);
   el.style.display = html ? '' : 'none';
   // The files each answer produced go under it (convTurnsOf: an artifact goes to
   // the first answer whose turn window holds its turn start).
   convPaint();
-}
-
-// The panel's strip is a row of name chips in the minimal view (자세히 off) or on a short panel body (≤ 560px:
-// landscape phones, a docked drawer under a tall top bar), else thumbnails — the file card's variant.
-var ART_PANEL_SHORT_PX = 560;
-function artPanelVariant() {
-  var body = document.querySelector('#slide-panel .panel-body');
-  var h = body ? body.clientHeight : 0;
-  return !_panelDetail || (h > 0 && h <= ART_PANEL_SHORT_PX) ? 'chip' : 'tile';
-}
-function syncPanelArtVariant() {
-  var v = artPanelVariant();
-  var cards = document.querySelectorAll('#panel-artifacts .art-strip-panel ui-file-card');
-  for (var i = 0; i < cards.length; i++) if (cards[i].getAttribute('variant') !== v) cards[i].setAttribute('variant', v);
 }
 
 // ── The peek (I-05) is @2lab.ai/ui <ui-hovercard id="art-peek">: one card for every tile — the board's face chips
