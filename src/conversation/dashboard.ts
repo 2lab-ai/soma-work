@@ -23812,13 +23812,15 @@ function deckStop(panel) {
   }
 }
 // The landing target of this opening, for the keyboard: the answer form, the
-// goal section, the focused node's header, the Tasks head, the 작업 로그 tab —
-// else the heading.
+// goal section, the focused node's header, the Tasks head, the 산출물 tab, the
+// 작업 로그 tab — else the heading.
 function focusPanelLanding() {
   var t = null;
   if (_panelLand === 'goal') t = goalCardFocusTarget() || document.getElementById('panel-goal');
   else if (_panelLand === 'agent') t = document.querySelector('#panel-agents .pa-focus');
   else if (_panelLand === 'tasks') t = document.getElementById('panel-tasks');
+  // 산출물 (the open card's 전체 N개 →): the tab it landed on — focus where the eye is.
+  else if (_panelLand === 'artifacts') t = document.querySelector('#panel-midbar .pm-tab[data-mid="artifacts"]');
   // The 작업 로그 tab is <ui-tabs>' own (D4 E-24): its selected tab — the one this opening chose — takes focus.
   else if (_panelLand === 'worklog' && uiTabsFocus(document.getElementById('panel-sections'))) return;
   if (!t || t.style.display === 'none') {
@@ -27104,10 +27106,10 @@ function artSortForDisplay(list) {
   return files.sort(function(x, y) { return toNum(y.createdAt) - toNum(x.createdAt); });
 }
 
-// A strip tile: the file card (thumbnail, name, meta; a play / pause toggle on audio — T8 — and video tiles, one
-// clip at a time across the page: playable); variant 'chip' in the panel's minimal row.
-function artTile(cid, a, variant) {
-  return '<div class="art-tile' + (a.stored ? '' : ' is-remote') + '">' + artCard(cid, a, variant || 'tile', true) + artVerBadge(a) + '</div>';
+// A tile — the open card's strip and the detail card's 산출물 tab: the file card (thumbnail, name, meta; a play /
+// pause toggle on audio — T8 — and video tiles, one clip at a time across the page: playable).
+function artTile(cid, a) {
+  return '<div class="art-tile' + (a.stored ? '' : ' is-remote') + '">' + artCard(cid, a, 'tile', true) + artVerBadge(a) + '</div>';
 }
 
 // The full list once fetched, else the card's summary (the newest few).

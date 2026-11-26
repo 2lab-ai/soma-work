@@ -460,10 +460,10 @@ describe('T6 — right panel: pinned strip and per-answer attachments', () => {
 // Owner 2026-11-26: "디테일 작업 카드 산출물 탭에서 파일 이름이 아니라 작업 카드(extended)처럼 미리 보기 포함한 ui로 표시"
 // — the detail card's 산출물 tab draws every file as the open task card does: the preview tile (a picture, or the kind's
 // glyph on its wash with the extension, then name and size · age). Never the name chip, whatever the layout opens
-// with (처음부터 펼침) and however short the panel body is.
+// with (처음부터 펼침); a short panel body only lays the same tiles out in one row (dashboard-responsive.test.ts).
 describe('the detail card’s 산출물 tab — preview tiles like the open task card, never name chips', () => {
   type Section = { innerHTML: string; style: { display: string } };
-  const paint = (panelDetail: boolean, bodyHeight: number) => {
+  const paint = (panelDetail: boolean) => {
     const el: Section = { innerHTML: '', style: { display: '' } };
     const m = load<{ renderPanelArtifactsSection(): void }>(
       [
@@ -478,7 +478,6 @@ describe('the detail card’s 산출물 tab — preview tiles like the open task
       {
         document: {
           getElementById: (id: string) => (id === 'panel-artifacts' ? el : null),
-          querySelector: () => ({ clientHeight: bodyHeight }),
         },
         panelConvId: 'conv-9',
         panelSessionKey: 'k',
@@ -500,17 +499,15 @@ describe('the detail card’s 산출물 tab — preview tiles like the open task
   const variants = (out: string) => [...out.matchAll(/<ui-file-card [^>]*variant="([^"]+)"/g)].map((x) => x[1]);
 
   it('the default layout (처음부터 펼침 off): every file is a preview tile', () => {
-    const out = paint(false, 800);
-    expect(variants(out)).toEqual(['tile', 'tile', 'tile']);
+    expect(variants(paint(false))).toEqual(['tile', 'tile', 'tile']);
   });
 
-  it('a short panel body (a phone held sideways) keeps the previews too', () => {
-    expect(variants(paint(false, 300))).toEqual(['tile', 'tile', 'tile']);
-    expect(variants(paint(true, 300))).toEqual(['tile', 'tile', 'tile']);
+  it('처음부터 펼침 on draws the very same tiles — the layout does not pick the variant', () => {
+    expect(paint(true)).toBe(paint(false));
   });
 
   it('the same tile the open card draws for the same file', () => {
-    const tab = paint(false, 800);
+    const tab = paint(false);
     const card = load<{ renderCardArtifacts(s: unknown): string }>(
       [...BASE_FNS, 'artSortForDisplay', 'artLatestOnly', 'artTile', 'artListFor', 'renderCardArtifacts'],
       BASE_VARS,
@@ -561,6 +558,24 @@ describe('the detail card’s 산출물 tab — preview tiles like the open task
     expect(calls).toEqual([388]);
     m.landPanel(); // the turns arrive: landed already, nothing moves
     expect(calls).toEqual([388]);
+  });
+
+  it('a keyboard opening on 산출물 focuses the 산출물 tab it landed on, not a card scrolled out of view', () => {
+    const focused: string[] = [];
+    const tab = { style: { display: '' }, focus: () => focused.push('artifacts-tab') };
+    const question = { style: { display: '' }, focus: () => focused.push('question') };
+    const m = load<{ focusPanelLanding(): void }>(['focusPanelLanding'], [], {
+      _panelLand: 'artifacts',
+      acFirstOpen: () => question,
+      goalCardFocusTarget: () => null,
+      uiTabsFocus: () => false,
+      document: {
+        getElementById: () => null,
+        querySelector: (sel: string) => (sel === '#panel-midbar .pm-tab[data-mid="artifacts"]' ? tab : null),
+      },
+    });
+    m.focusPanelLanding();
+    expect(focused).toEqual(['artifacts-tab']);
   });
 });
 
