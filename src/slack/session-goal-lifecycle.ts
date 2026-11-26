@@ -98,6 +98,13 @@ export function migrateLegacyGoal(goal: SessionGoal | undefined): SessionGoal | 
   if (typeof goal.goalId !== 'string' || goal.goalId.length === 0) {
     goal = { ...goal, goalId: `goal-legacy-${goal.createdAt}-${Math.random().toString(36).slice(2, 8)}` };
   }
+  // `openingFilesSent` (#1467) is now `openingSent` (it covers a goal's opening skill too): a goal saved by that build
+  // keeps the fact that its files already went, so they never go again.
+  const legacy = goal as SessionGoal & { openingFilesSent?: boolean };
+  if (legacy.openingFilesSent !== undefined) {
+    const { openingFilesSent, ...rest } = legacy;
+    goal = { ...rest, openingSent: goal.openingSent ?? openingFilesSent };
+  }
   // Fast path — goal already has all post-followup fields.
   if (
     typeof goal.continuationCount === 'number' &&

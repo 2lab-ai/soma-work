@@ -313,8 +313,8 @@ describe('the section’s data and the element’s requests (convPaint, convRetr
     const slots: unknown[] = [];
     const el = { data: undefined };
     const m = load<{ convPaint(): void }>(
-      ['botNameOf', 'ansLinkTitles', 'ansSession', 'sentAwaitsStart', 'ansPendingShow', 'convPaint'],
-      ['CONV_EMPTY', '_resumSent', 'SENT_AWAIT_MS'],
+      ['botNameOf', 'ansLinkTitles', 'ansSession', 'ansPendingShow', 'convPaint'],
+      ['CONV_EMPTY', '_resumSent'],
       {
         convEl: () => el,
         _psec: 'conv',
@@ -343,8 +343,6 @@ describe('the section’s data and the element’s requests (convPaint, convRetr
         rbIndex: () => null,
         rewindSpansOf: (s: { contextRewinds?: unknown[] } | null) =>
           s && Array.isArray(s.contextRewinds) && s.contextRewinds.length ? s.contextRewinds : null,
-        // Instructions this browser sent that no turn has started yet (session key → { at }).
-        _sentAwait: {},
         ...env,
       },
     );
@@ -367,52 +365,6 @@ describe('the section’s data and the element’s requests (convPaint, convRetr
     expect(paint({ _sessionCache: { k: { ...SESSION, activityState: 'idle' } } }).pending).toBe(false);
     // repaintPanelSession → convPaint: the row follows the session state.
     expect(clientFn('repaintPanelSession')).toContain('convPaint();');
-  });
-
-  describe('Z 2026-11-26 — an instruction sent from here shows the writing row at once, before the turn starts', () => {
-    const IDLE = { ...SESSION, activityState: 'idle' };
-    const now = Date.now();
-    // fin: the session's finishedAt when it was sent (the server's clock — never compared with this browser's).
-    const FIN = 1_790_000_000_000;
-    const sent = (at = now) => ({ k: { at, fin: FIN } });
-
-    it('sent to an idle session: the row shows while the session has not started the turn', () => {
-      expect(paint({ _sessionCache: { k: IDLE }, _sentAwait: sent() }).pending).toBe(true);
-      // Nothing sent from here: an idle session shows no row (the D12 rule as before).
-      expect(paint({ _sessionCache: { k: IDLE } }).pending).toBe(false);
-    });
-
-    it('the row goes once the session answered, finished, asks, queued it, or never started in time', () => {
-      expect(paint({ _sessionCache: { k: IDLE }, _sentAwait: sent(), _panelTurnsList: [INSTR, ANSWER] }).pending).toBe(
-        false,
-      );
-      // The turn ran and ended after the send: its switch to idle moved past the one the send saw.
-      expect(paint({ _sessionCache: { k: { ...IDLE, finishedAt: FIN + 5 } }, _sentAwait: sent() }).pending).toBe(false);
-      // The switch the send saw says nothing about this instruction — even far from this browser's clock.
-      expect(paint({ _sessionCache: { k: { ...IDLE, finishedAt: FIN } }, _sentAwait: sent() }).pending).toBe(true);
-      expect(paint({ _sessionCache: { k: { ...IDLE, activityState: 'waiting' } }, _sentAwait: sent() }).pending).toBe(
-        false,
-      );
-      // The person's task queue holds it: the card waits in 개인별 큐, nothing is being written.
-      const queued = { ...IDLE, userQueue: { entryId: 'e1', kind: 'request', position: 1, since: now } };
-      expect(paint({ _sessionCache: { k: queued }, _sentAwait: sent() }).pending).toBe(false);
-      // Sent too long ago without a start: the row does not hang on.
-      expect(paint({ _sessionCache: { k: IDLE }, _sentAwait: sent(now - 10 * 60_000) }).pending).toBe(false);
-      // Another card's send does not show here.
-      expect(paint({ _sessionCache: { k: IDLE }, _sentAwait: { other: { at: now } } }).pending).toBe(false);
-    });
-
-    it('sendCommand marks the send before the instruction shows, under its own ref, and clears it once answered', () => {
-      const src = clientFn('sendCommand');
-      const mark = src.indexOf('if (!running) sentAwaitMark(sendingSessionKey, optimisticId);');
-      expect(mark).toBeGreaterThan(-1);
-      expect(mark).toBeLessThan(src.indexOf('appendTurnToPanel('));
-      // One clear, right after the request settled — whatever it answered (review on #1461: a refused send answers ok).
-      expect(src.match(/sentAwaitClear\(/g)).toHaveLength(1);
-      expect(src.indexOf('sentAwaitClear(sendingSessionKey, optimisticId);')).toBeGreaterThan(
-        src.indexOf('_pcInFlight--;'),
-      );
-    });
   });
 
   it('paging: hasMore, the page in flight (first or older), the empty state, a failure with 다시 시도', () => {
@@ -542,21 +494,9 @@ describe('the section’s data and the element’s requests (convPaint, convRetr
     const appendedAtRequest: number[] = [];
     let unreadable = false;
     const api = load<{ sendCommand(text: string, ref: string, files?: unknown[]): Promise<void> }>(
-      [
-        'esc',
-        'escJs',
-        'pcCanSend',
-        'pcCommandBody',
-        'acPost',
-        'pcGiveBack',
-        'sentAwaitMark',
-        'sentAwaitClear',
-        'sendCommand',
-      ],
-      ['SENT_AWAIT_MS'],
+      ['esc', 'escJs', 'pcCanSend', 'pcCommandBody', 'acPost', 'pcGiveBack', 'sendCommand'],
+      [],
       {
-        _sentAwait: {},
-        setTimeout: () => 0,
         document: {
           getElementById: (id: string) => (id === 'cmd-steer' ? steer : id === 'pc-composer' ? composer : null),
           querySelector: () => null,
@@ -627,109 +567,6 @@ describe('the section’s data and the element’s requests (convPaint, convRetr
     expect(composer.addFiles).toHaveBeenCalledWith([file]);
     expect(toast).toHaveBeenLastCalledWith({ title: '파일을 읽지 못했어요', description: 'shot.png', tone: 'error' });
     expect(noteFiles).toEqual({});
-  });
-});
-
-describe('Z 2026-11-26 — an idle send marks the writing row before it shows; its answer clears it', () => {
-  // The command route answers an idle send only once its turn is over, or at once when no turn starts from it.
-  type Reply = { status: number; body?: Record<string, unknown> };
-  function sender(opts: { running?: boolean } = {}) {
-    const steer = { data: { running: !!opts.running }, value: '', setItemState: vi.fn() };
-    const sentAwait: Record<string, { at: number; fin: number; ref: string }> = {};
-    const appended: string[] = [];
-    const marksAtAppend: boolean[] = [];
-    const timers: number[] = [];
-    const answer: ((r: Reply) => void)[] = [];
-    const api = load<{ sendCommand(text: string, ref: string): Promise<unknown> }>(
-      [
-        'esc',
-        'escJs',
-        'pcCanSend',
-        'pcCommandBody',
-        'acPost',
-        'pcGiveBack',
-        'sentAwaitMark',
-        'sentAwaitClear',
-        'sendCommand',
-      ],
-      ['SENT_AWAIT_MS'],
-      {
-        _sentAwait: sentAwait,
-        setTimeout: (_fn: () => void, ms: number) => timers.push(ms),
-        convPaintSoon: () => {},
-        document: { getElementById: (id: string) => (id === 'cmd-steer' ? steer : null), querySelector: () => null },
-        appendTurnToPanel: (t: { id: string }) => {
-          appended.push(t.id);
-          marksAtAppend.push(!!sentAwait.k);
-        },
-        dropTurnFromPanel: () => true,
-        _viewerUserId: 'U_Z',
-        fetch: () =>
-          new Promise((resolve) =>
-            answer.push((r) =>
-              resolve({ ok: r.status < 400, status: r.status, json: () => Promise.resolve(r.body ?? {}) }),
-            ),
-          ),
-        refreshCsrfToken: () => Promise.resolve(),
-        dashToast: vi.fn(),
-        pcThreadAnswerToast: () => ({}),
-        effortSettled: () => Promise.resolve(),
-        panelSessionKey: 'k',
-        _sessionCache: { k: { activityState: 'idle', finishedAt: 1_790_000_000_000 } },
-        _csrfToken: '',
-        _pcSending: false,
-        _pcInFlight: 0,
-        _pcFailed: {},
-        _pcNoteFiles: {},
-        ntReadFile: () => Promise.resolve({}),
-      },
-    );
-    const flush = () => new Promise((r) => setTimeout(r, 0));
-    return { api, sentAwait, appended, marksAtAppend, timers, answer, flush };
-  }
-
-  it('marked before the instruction is in the chat, kept while the request is open, gone once it is answered', async () => {
-    for (const reply of [
-      { status: 200 }, // the turn ran — or none started (refused as the same work answers a plain ok)
-      { status: 500 },
-      { status: 200, body: { answer: 'thread' } },
-      { status: 200, body: { pendingApproval: true } },
-    ]) {
-      const t = sender();
-      const done = t.api.sendCommand('go', 'r1');
-      await t.flush();
-      expect(t.marksAtAppend, JSON.stringify(reply)).toEqual([true]);
-      expect(t.sentAwait.k, JSON.stringify(reply)).toMatchObject({ fin: 1_790_000_000_000, ref: t.appended[0] });
-      expect(t.timers).toEqual([180_050]);
-      t.answer[0](reply);
-      await done;
-      expect(t.sentAwait.k, JSON.stringify(reply)).toBeUndefined();
-    }
-  });
-
-  it('two sends: the first one answered does not take the second one’s mark', async () => {
-    const t = sender();
-    const first = t.api.sendCommand('one', 'r1');
-    await t.flush();
-    const second = t.api.sendCommand('two', 'r2');
-    await t.flush();
-    expect(t.sentAwait.k.ref).toBe(t.appended[1]);
-    t.answer[0]({ status: 200, body: { answer: 'thread' } });
-    await first;
-    expect(t.sentAwait.k?.ref).toBe(t.appended[1]);
-    t.answer[1]({ status: 200 });
-    await second;
-    expect(t.sentAwait.k).toBeUndefined();
-  });
-
-  it('sent into a running turn: no mark (the session works; the queue row says what happens to the note)', async () => {
-    const t = sender({ running: true });
-    const done = t.api.sendCommand('go', 'r1');
-    await t.flush();
-    expect(t.marksAtAppend).toEqual([false]);
-    t.answer[0]({ status: 200 });
-    await done;
-    expect(t.sentAwait.k).toBeUndefined();
   });
 });
 
