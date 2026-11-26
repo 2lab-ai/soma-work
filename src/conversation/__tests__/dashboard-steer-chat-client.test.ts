@@ -180,9 +180,13 @@ describe('the queue as turns of the chat (convQueueTurns)', () => {
     // The queue listed it once (convPaint marked it), and no longer does: its recorded turn is on the way.
     const listed = optimistic({ _rowSeen: true });
     expect(api.convQueueTurns([opening, listed], { turnEpoch: 3, items: [] }).chips).toEqual({});
-    // A turn sent while idle starts its own turn: it never read 보내는 중.
+    // #1466 — sent while idle, it reads 보내는 중 too until the server reports a stage for it (convPaint puts that
+    // stage in its place: convProgressChip).
     const idle = optimistic({ _running: false });
-    expect(api.convQueueTurns([opening, idle], undefined).chips).toEqual({});
+    expect(api.convQueueTurns([opening, idle], undefined).chips).toEqual({ 'optimistic-1-abc': 'sending' });
+    // Answered already (its recorded turn has not replaced it yet): nothing is on its way any more.
+    const reply: Turn = { id: 'srv-9', role: 'assistant', timestamp: T0 + 9_000, summaryTitle: 'done' };
+    expect(api.convQueueTurns([opening, idle, reply], undefined).chips).toEqual({});
   });
 
   it('a message already recorded as a turn is not shown twice', () => {
@@ -338,9 +342,16 @@ describe('what is happening to a message, above its words', () => {
     'STEER_CHIP_STARTING',
     'STEER_CHIP_FAILED',
     'STEER_CHIP_APPLIED',
+    'STEER_CHIP_RECEIVED',
+    'STEER_CHIP_APPROVAL',
+    'STEER_CHIP_USERQUEUE',
+    'STEER_CHIP_USERQUEUE_AT',
+    'STEER_CHIP_SAMEWORK',
+    'STEER_CHIP_DELIVERED',
+    'STEER_CHIP_UNDELIVERED',
     'STEER_CHIP',
   ];
-  const chips = () => load<{ steerChipHtml(kind: string): string }>(['esc', 'steerChipHtml'], CHIP_VARS);
+  const chips = () => load<{ steerChipHtml(kind: string): string }>(['esc', 'adminFmt', 'steerChipHtml'], CHIP_VARS);
 
   it('every state has its own words and tone; an unknown one draws nothing', () => {
     const { steerChipHtml } = chips();

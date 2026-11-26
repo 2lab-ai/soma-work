@@ -108,14 +108,14 @@ const RELEASE_WHY: Record<string, string> = {
 };
 
 function releaseWhy(reason: string): string {
-  if (reason.startsWith('admin:')) return '관리자가 돌려놓음';
+  if (reason.startsWith('admin:')) return '관리자가 차례를 끝냄';
   return RELEASE_WHY[reason] ?? reason;
 }
 
 export function releasedText(entry: Pick<WorkQueueEntry, 'queue' | 'id'>, reason: string): string {
   return (
-    `⏹ 작업 큐 \`${entry.queue}\` 차례를 돌려놓았습니다 (${entry.id} · ${releaseWhy(reason)}). ` +
-    '다시 하려면 큐에 다시 들어가세요.'
+    `⏹ 작업 큐 \`${entry.queue}\` 차례가 끝나 이 작업은 레인에서 빠졌습니다 (${entry.id} · ${releaseWhy(reason)}). ` +
+    '이 레인이 필요한 일이 남았으면 큐에 다시 들어가세요.'
   );
 }
 

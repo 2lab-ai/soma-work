@@ -38,6 +38,24 @@ describe('SkillForceHandler', () => {
     vi.clearAllMocks();
   });
 
+  // 2026-11-26 — the dashboard goal composer splits an objective only on a skill that exists (not the bare pattern).
+  describe('skillExists()', () => {
+    it('a qualified or bare token that resolves to a SKILL.md on disk', () => {
+      vi.mocked(fs.existsSync).mockImplementation((p) => String(p).includes('local/skills/z/SKILL.md'));
+      expect(handler.skillExists('$local:z')).toBe(true);
+      expect(handler.skillExists('$z')).toBe(true);
+    });
+
+    it('a `$a:b` token in prose that names no skill is none (canHandle would claim it)', () => {
+      vi.mocked(fs.existsSync).mockReturnValue(false);
+      expect(handler.canHandle('$REDIS_HOST:6379')).toBe(true);
+      expect(handler.skillExists('$REDIS_HOST:6379')).toBe(false);
+      expect(handler.skillExists('$local:nope')).toBe(false);
+      expect(handler.skillExists('$nope')).toBe(false);
+      expect(handler.skillExists('$20')).toBe(false);
+    });
+  });
+
   describe('canHandle()', () => {
     it('matches "$local:z"', () => {
       expect(handler.canHandle('$local:z')).toBe(true);

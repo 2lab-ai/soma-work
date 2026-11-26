@@ -12,6 +12,7 @@ import {
   type RunReport,
 } from '@soma/slack/followup-dispatcher';
 import {
+  FOLLOWUP_PENDING_DISPATCH_STATES,
   FOLLOWUP_REDELIVER_AFTER_RESTART_REASON,
   type FollowupContext,
   type FollowupItem,
@@ -40,6 +41,11 @@ import { isAwaitingUserChoice, TurnRunner, V1QueryAdapter } from './agent-sessio
 import type { ClaudeHandler } from './claude-handler';
 import { getFollowupQueueCapacity, getReleaseNotesChannels } from './config';
 import { isClientRef } from './conversation/client-ref';
+import {
+  noteInstructionReachedModel,
+  noteInstructionRunEnded,
+  noteInstructionStage,
+} from './conversation/instruction-progress';
 import { captureUserMedia, getConversation, recordUserTurn } from './conversation/recorder';
 import { readWorkLog } from './conversation/work-log';
 import { FileHandler, type ProcessedFile } from './file-handler';
@@ -1029,6 +1035,9 @@ export class SlackHandler {
       },
       inputReopened: (sessionKey) => this.onFollowupInputReopened(sessionKey),
     });
+    // #1472 — a turn held open only for background work asks this at each safe boundary: does a person's command
+    // wait at the head of the line, one that can never be pushed into the turn? Then the hold ends and the line runs.
+    this.claudeHandler.setHoldReleaseGate?.((sessionKey) => this.holdReleaseWanted(sessionKey));
     // Goal stall: a question whose round ended without an answer is retracted.
     setGoalStallRetiredListener((goal, stall, cause) => this.onGoalStallRetired(goal, stall, cause));
     // #917 — every Executive Summary verdict on a follow-up: a new one may ask its question, a gone one retracts it.
@@ -1366,6 +1375,8 @@ export class SlackHandler {
       // front of the ephemeral the user is waiting for.
       onItemProcessed: (sessionKey, itemId) => {
         void this.syncFollowupReactions(sessionKey, itemId);
+        // #1472 — a cancel can put a waiting command at the head of the line: the held turn asks its gate again.
+        this.claudeHandler.requestHoldRelease?.(this.canonicalFollowupKey(sessionKey));
       },
       // A goal's queued opening turn IS that goal's start: cancelling it means
       // cancelling the goal (see `onGoalOpeningCancelled`).
@@ -2196,12 +2207,15 @@ export class SlackHandler {
     }
     if (userTask === 'queued') {
       // Durably stored, like a follow-up behind a busy slot: a host waiting for the receipt hears it now.
+      // #1466 — a dashboard send's chat says it waits in the person's task queue.
+      noteInstructionStage(sessionKey, event.dashboardClientRef, 'queued');
       this.noteTurnAccepted(event.channel, event.ts);
       return;
     }
     if (userTask === 'same-work') {
       // .prd/36 v2 D12 — every key it names already runs or waits in another thread of the person: nothing starts,
       // the thread was told who has it (그래도 시작 sends it on once).
+      noteInstructionStage(sessionKey, event.dashboardClientRef, 'same-work');
       this.noteTurnAccepted(event.channel, event.ts);
       return;
     }
@@ -2212,7 +2226,12 @@ export class SlackHandler {
     // (`followup-dispatcher.ts:329`, `:567`) — so this never leaks across runs.
     this.rememberInitialSay(sessionKey, say);
     const started = dispatcher.runInitial(sessionKey, event, this.captureFollowupContext(event));
-    if (started.status === 'dispatched') this.noteUserTaskSlot(sessionKey, event);
+    if (started.status === 'dispatched') {
+      this.noteUserTaskSlot(sessionKey, event);
+      // #1466 — its turn is dispatched: the session is set up next, then the prompt reaches the model (that run's
+      // first SDK event — bound to its epoch, so a late event of another run never says the model has this one).
+      noteInstructionStage(sessionKey, event.dashboardClientRef, 'starting', Date.now(), started.run.turnEpoch);
+    }
     // --- end of fence ---
 
     if (started.status !== 'dispatched') {
@@ -2248,6 +2267,8 @@ export class SlackHandler {
     }
 
     const report = await started.run.settled;
+    // #1466 — the run ended: a dashboard send still starting never reached the model (an error, a stop).
+    noteInstructionRunEnded(sessionKey, event.dashboardClientRef, started.run.turnEpoch);
     // Items parked during a migrating turn were stored under the CANONICAL
     // (work-thread) key, because that is the session that still exists — drain
     // there, not under the source key whose session the pipeline deleted.
@@ -4602,11 +4623,15 @@ export class SlackHandler {
     // The files the goal was added with (the dashboard's goal composer) ride every opening of THAT goal — started at
     // once, promoted from the queue or resumed — unless the message that set it carries its own.
     const liveGoal = this.claudeHandler.getSessionByKey?.(sessionKey)?.goal;
-    const goalFiles =
-      liveGoal?.goalId === opening.goalId && liveGoal.openingFiles?.length ? liveGoal.openingFiles : undefined;
+    const sameGoal = liveGoal?.goalId === opening.goalId ? liveGoal : undefined;
+    const goalFiles = sameGoal?.openingFiles?.length ? sameGoal.openingFiles : undefined;
     const files = anchor.files?.length ? anchor.files : goalFiles;
+    // The skill a goal composer objective carried (`$skill`): its opening runs it as a command — unless the command
+    // that set the goal split its own.
+    const prompt = opening.prompt ?? sameGoal?.openingPrompt;
     // The loop's continuations need not carry them again (the snapshot a refused admission restores undoes this).
-    if (goalFiles && liveGoal) liveGoal.openingFilesSent = true;
+    if (sameGoal && (goalFiles || (opening.prompt === undefined && sameGoal.openingPrompt)))
+      sameGoal.openingSent = true;
     const openingEvent = {
       type: 'message',
       channel: anchor.channel,
@@ -4615,12 +4640,12 @@ export class SlackHandler {
       user: anchor.user,
       // The objective verbatim — or, for a `goal … $skill` split, the `$skill`
       // part, routed as a command when it runs so the skill is resolved then.
-      text: opening.prompt ?? opening.objective,
+      text: prompt ?? opening.objective,
       ...(anchor.team ? { team: anchor.team } : {}),
       ...(files?.length ? { files } : {}),
       ...(anchor.dashboardClientRef ? { dashboardClientRef: anchor.dashboardClientRef } : {}),
       routeContext:
-        opening.prompt === undefined
+        prompt === undefined
           ? { verbatimPrompt: true, goalOpeningId: opening.goalId }
           : { goalOpeningId: opening.goalId },
     } as MessageEvent;
@@ -5294,6 +5319,8 @@ export class SlackHandler {
    * receipt for an item nobody stored (ssot.md:89).
    */
   private async enqueueFollowup(sessionKey: string, event: MessageEvent, say: any): Promise<void> {
+    // #1466 (review on #1468) — behind a running turn: the follow-up queue's rows say what happens to it from here.
+    noteInstructionStage(sessionKey, event.dashboardClientRef, 'followup');
     const queue = this.followupQueue;
     const threadTs = event.thread_ts || event.ts;
 
@@ -5688,7 +5715,12 @@ export class SlackHandler {
       // authorization policy that throws here used to propagate out of
       // `enqueueFollowup` past the receipt, leaving the message stored and the
       // user told nothing at all.
-      if (!this.isSteerableText(event)) return 'queued';
+      if (!this.isSteerableText(event)) {
+        // #1472 — it can only run once the turn ends: a turn held open only for background work ends its hold for
+        // it at its next safe boundary (the turn re-asks `holdReleaseWanted` there, so this is only a nudge).
+        this.claudeHandler.requestHoldRelease?.(this.canonicalFollowupKey(sessionKey));
+        return 'queued';
+      }
 
       // Steering injects text into a turn someone else is running, so it takes
       // the SAME authorization `Send now` takes (`:3082`). Denied, the message
@@ -6189,6 +6221,8 @@ export class SlackHandler {
         this.logger.debug('Queued item edit refused', { sessionKey, itemId: item.id, reason: result.reason });
         return;
       }
+      // #1472 — an edit can turn the head of the line into a command: the held turn asks its gate again.
+      this.claudeHandler.requestHoldRelease?.(this.canonicalFollowupKey(sessionKey));
       await this.refreshFollowupSurface(sessionKey);
       return;
     }
@@ -6540,6 +6574,8 @@ export class SlackHandler {
     }
     const result = queue.editQueued(request.sessionKey, request.itemId, request.epoch, text);
     if (!result.ok) return { ok: false, status: 409, message: SlackHandler.dashboardEditRefusal(result.reason, item) };
+    // #1472 — an edit can turn the head of the line into a command: the held turn asks its gate again.
+    this.claudeHandler.requestHoldRelease?.(this.canonicalFollowupKey(request.sessionKey));
     await this.refreshFollowupSurface(request.sessionKey);
     return { ok: true };
   }
@@ -7007,6 +7043,9 @@ export class SlackHandler {
     turnEpoch?: number;
     replayEpoch?: number;
   }): void {
+    // #1466 — a dashboard send whose run this is (its epoch, or the run a post-compact replay runs in): the model has it.
+    // Recorded under the slot's key (handleMessage's), which differs from the executor's while a migration is bound.
+    noteInstructionReachedModel(this.boundFollowupSlot(sessionKey) ?? sessionKey, { turnEpoch, replayEpoch });
     const dispatcher = this.followupDispatcher;
     if (!dispatcher) return;
     // The executor speaks the session's canonical key; the run holds its slot
@@ -7738,6 +7777,51 @@ export class SlackHandler {
     const threadTs = session.threadRootTs || session.threadTs;
     const allowed = this.claudeHandler?.canInterrupt?.(session.channelId, threadTs, requestedBy) === true;
     return allowed ? { allowed: true } : { allowed: false, reason: `<@${requestedBy}> cannot interrupt this session` };
+  }
+
+  /**
+   * #1472 — does a person's command wait at the head of this session's line, one
+   * that can never be pushed into a running turn (`$<skill>`, `new`, `%model …`
+   * — {@link isSteerableText})? A turn held open only for background work then
+   * ends its hold at its next safe boundary, so the drain runs the line.
+   *
+   * The head is the row the drain at the run's end would claim (the canonical
+   * key, lowest `seq`). Only the head row and only a `queued` one: the line keeps its order, and a
+   * plain message refused by the turn waits for the re-offer, never for this
+   * (it would be delivered twice). Only an author who may interrupt the session
+   * (as `Send now` and steering ask) and whose row the drain would run now.
+   * Nothing while the drain is halted: ending the hold could not run the row.
+   */
+  private holdReleaseWanted(sessionKey: string): boolean {
+    const queue = this.followupQueue;
+    const dispatcher = this.followupDispatcher;
+    if (!queue || !dispatcher || this.followupReadFailed) return false;
+    // The line the drain at the run's end takes, in the order it takes it: the canonical key (rows a migrating turn
+    // parked live there too), by `seq` (`FollowupQueue.claimNext`).
+    const slotKey = this.boundFollowupSlot(sessionKey);
+    const keys = slotKey !== undefined ? [sessionKey, slotKey] : [sessionKey];
+    if (keys.some((key) => dispatcher.drainHalt(key))) return false;
+    try {
+      const rows = queue.list(sessionKey);
+      // A `Send now` is already replacing this run (its row is reserved or claimed): that dispatch is the next run.
+      if (keys.some((key) => queue.list(key).some((item) => FOLLOWUP_PENDING_DISPATCH_STATES.includes(item.state)))) {
+        return false;
+      }
+      const head = rows.filter((item) => item.state === 'queued').sort((a, b) => a.seq - b.seq)[0];
+      if (!head) return false;
+      const event = head.message as MessageEvent;
+      if (this.isSteerableText(event)) return false;
+      const author = event.user;
+      if (!author || !this.authorizeFollowupInterrupt(sessionKey, author).allowed) return false;
+      return this.authorizeFollowupDispatch(sessionKey, event, head.context).allowed;
+    } catch (error) {
+      // Not knowing is not a yes: the hold stays, and the drain still runs the row when the run ends.
+      this.logger.warn('Could not tell whether a waiting command should end the hold — it stays', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      });
+      return false;
+    }
   }
 
   /**
@@ -9785,7 +9869,11 @@ export class SlackHandler {
     if (!channel || !threadTs) throw new HostGoalActionError(409, 'Session has no Slack thread');
 
     if (request.action === 'add') {
+      // A `$skill` in the goal composer's words (one that exists — splitGoalSkill) runs on the goal's first turn: the
+      // skill part as a command, as `goal <objective> $skill` does. The goal keeps every word that was written (what
+      // the eval judges, the notice and the editor show) — nothing is cut off.
       const objective = request.objective.trim();
+      const openingPrompt = this.goalOpeningSkillOf(objective, actor);
       const invalid = validateSessionGoalObjective(objective);
       if (invalid) throw new HostGoalActionError(400, invalid);
       // Whether the goal will START or QUEUE is only known after the anchor
@@ -9843,6 +9931,7 @@ export class SlackHandler {
       );
       // On the goal itself: its opening turn carries them whenever it runs (`admitGoalOpeningTurnOrThrow`).
       if (openingFiles?.length) result.goal.openingFiles = openingFiles;
+      if (openingPrompt) result.goal.openingPrompt = openingPrompt;
       if (!result.activated) {
         // Behind the goal in flight: no opening turn, no epoch bump (the
         // running goal's in-flight eval stays valid, M1).
@@ -9886,7 +9975,7 @@ export class SlackHandler {
     if (request.action === 'pause') return this.pauseGoalFromHost(sessionKey, session, request.goalId, actor);
     if (request.action === 'resume') return this.resumeGoalFromHost(sessionKey, session, request.goalId, actor);
     if (request.action === 'move') return this.moveGoalFromHost(session, request.goalId, request.to);
-    if (request.action === 'edit') return this.editGoalFromHost(session, request.goalId, request.objective);
+    if (request.action === 'edit') return this.editGoalFromHost(session, request.goalId, request.objective, actor);
 
     // ── delete ──
     const { goalId, expect } = request;
@@ -10020,10 +10109,19 @@ export class SlackHandler {
    * Rewrite a queued goal's objective (the dashboard's Edit), validated like an add; the thread gets one notice line.
    * Refused as stale when the goal is no longer queued — a goal that started is not rewritten under its turn.
    */
+  /**
+   * The command a goal's opening turn runs for a `$skill` in its objective: from the first token that names an
+   * existing skill to the end (`CommandRouter.splitGoalSkill`), else none — the objective then opens verbatim.
+   */
+  private goalOpeningSkillOf(objective: string, actor?: string): string | undefined {
+    return this.commandRouter?.splitGoalSkill?.(objective, actor)?.skillText || undefined;
+  }
+
   private async editGoalFromHost(
     session: ConversationSession,
     goalId: string,
     rawObjective: string,
+    actor?: string,
   ): Promise<HostGoalActionResult> {
     const objective = rawObjective.trim();
     const invalid = validateSessionGoalObjective(objective);
@@ -10032,6 +10130,13 @@ export class SlackHandler {
     const edited = editQueuedGoal(session, goalId, objective);
     if (!edited.edited) throw new HostGoalActionError(409, 'That goal is no longer queued — refresh and try again');
     if (edited.previous === objective) return { outcome: 'edited', goalId };
+    // The edited words decide the opening skill again, as an add does: a `$skill` kept, changed or removed with them.
+    const goal = session.goalQueue?.find((g) => g.goalId === goalId);
+    if (goal) {
+      const openingPrompt = this.goalOpeningSkillOf(objective, actor ?? goal.createdBy);
+      if (openingPrompt) goal.openingPrompt = openingPrompt;
+      else delete goal.openingPrompt;
+    }
     this.claudeHandler.saveSessions();
     await this.postGoalNoticeBestEffort(
       session.channelId as string,
