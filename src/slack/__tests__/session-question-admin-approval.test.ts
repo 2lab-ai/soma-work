@@ -170,9 +170,10 @@ describe('sessionQuestionAdminApprovalAdapter wired to the real ChoiceActionHand
       clearChoice: vi.fn().mockResolvedValue(undefined),
       attachChoice: vi.fn().mockResolvedValue(undefined),
     };
+    const slackApi = { updateMessage: vi.fn().mockResolvedValue(undefined), postEphemeral: vi.fn() };
     const handler = new ChoiceActionHandler(
       {
-        slackApi: { updateMessage: vi.fn().mockResolvedValue(undefined), postEphemeral: vi.fn() },
+        slackApi,
         claudeHandler: { getSessionByKey: vi.fn().mockReturnValue(s), setActivityStateByKey: vi.fn() },
         messageHandler,
         threadPanel,
@@ -183,11 +184,11 @@ describe('sessionQuestionAdminApprovalAdapter wired to the real ChoiceActionHand
       sessions: () => [['C123:root-ts', s]],
       answer: (...args) => handler.handleChoiceFromDashboard(...args),
     });
-    return { adapter, messageHandler, threadPanel };
+    return { adapter, messageHandler, threadPanel, slackApi };
   }
 
   it('answers as soon as the question is taken, while the turn runs — as the owner, naming the admin', async () => {
-    const { adapter, messageHandler, threadPanel } = wired(() => new Promise<void>(() => {}));
+    const { adapter, messageHandler, slackApi } = wired(() => new Promise<void>(() => {}));
     await expect(adapter.answer('C123:root-ts~choice-ts', 'approve', 'U_ADMIN')).resolves.toEqual({
       ok: true,
       outcome: 'approved',
@@ -200,7 +201,14 @@ describe('sessionQuestionAdminApprovalAdapter wired to the real ChoiceActionHand
       text: 'approve\n\n(관리자 <@U_ADMIN>가 대시보드 관리자 승인에서 답함)',
     });
     expect(messageHandler.mock.calls[0][0]).not.toHaveProperty('routeContext');
-    expect(threadPanel.resolveChoice.mock.calls[0][3]).toContain('<@U_ADMIN>');
+    // #1474 — the card is drawn by the answer itself (not `resolveChoice`), naming the admin who answered.
+    expect(slackApi.updateMessage).toHaveBeenCalledWith(
+      'C123',
+      'choice-ts',
+      expect.stringContaining('<@U_ADMIN>'),
+      expect.any(Array),
+      [],
+    );
   });
 
   it('a second answer to the same question is refused as already answered (the real handler’s refusal)', async () => {

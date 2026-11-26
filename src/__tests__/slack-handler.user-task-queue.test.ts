@@ -221,6 +221,36 @@ describe('SlackHandler — per-user task queue gate', () => {
     expect(handler.runningTasksOf(OWNER)).toEqual([]);
   });
 
+  // #1474 round 11 (astra): a typed reply to the open question that waits in the person's line is kept there — its
+  // question closes now, so a card click meanwhile is no second answer queued beside it.
+  it('#1474 — a typed answer that waits in the person’s line closes its question and is stored as the answer', async () => {
+    const a = await startBusy('100.0');
+    sessions.set('C123:200.0', {
+      ownerId: OWNER,
+      channelId: CHANNEL,
+      threadTs: '200.0',
+      threadRootTs: '200.0',
+      sessionId: 's-200.0',
+      title: 'task 200.0',
+      actionPanel: { waitingForChoice: true, pendingQuestion: { type: 'user_choice', question: '어느 쪽?' } },
+    });
+
+    const takeForms = vi.spyOn((handler as any).actionHandlers, 'takeAnsweredForms');
+
+    await handler.handleMessage(message('200.0', { ts: '200.03', text: '왼쪽으로 가자' }), vi.fn());
+
+    // The question's forms are answered with it: a submit on one is no second answer (round 12, astra).
+    expect(takeForms).toHaveBeenCalledWith('C123:200.0', expect.any(Array));
+
+    expect(startWithContinuation).toHaveBeenCalledTimes(1);
+    expect(ledger.entries).toHaveLength(1);
+    expect(ledger.entries[0].message).toMatchObject({ ts: '200.03', questionAnswer: true });
+    const panel = sessions.get('C123:200.0').actionPanel;
+    expect(panel.waitingForChoice).toBe(false);
+    expect(panel.pendingQuestion).toBeUndefined();
+    await a.settle();
+  });
+
   it('.prd/36 v2 D12 — the same work sent again in a new thread fails fast: nothing starts, its receipt fires', async () => {
     limits.set(OWNER, UNLIMITED);
     const gate = deferred<any>();
@@ -250,6 +280,58 @@ describe('SlackHandler — per-user task queue gate', () => {
     // Some of the work is new: it runs.
     await handler.handleMessage(message('300.0', { ts: '300.01', text: 'ABC-1 and ABC-2' }), vi.fn());
     expect(startWithContinuation).toHaveBeenCalledTimes(2);
+    gate.resolve({ hasPendingChoice: false });
+    await first;
+  });
+
+  // #1474 round 9 (astra): an answer to the model's question goes on with its own thread's work — naming a key another
+  // thread of the person runs does not make it the same work (its question is already recorded answered).
+  it('#1474 — an answer naming a key another thread runs is not refused as the same work: it runs', async () => {
+    limits.set(OWNER, UNLIMITED);
+    const gate = deferred<any>();
+    startWithContinuation.mockImplementationOnce(() => gate.promise);
+    const first = handler.handleMessage(
+      message('100.0', { text: 'ABC-1 구현해줘' }),
+      vi.fn().mockResolvedValue({ ts: 'x' }),
+    );
+    await tick();
+    expect(handler.runningTasksOf(OWNER)[0].keys).toEqual(['ABC-1']);
+
+    await handler.handleMessage(
+      message('200.0', { ts: '200.01', text: 'ABC-1 기준으로 설명해 줘', questionAnswer: true } as any),
+      vi.fn(),
+    );
+    expect(startWithContinuation).toHaveBeenCalledTimes(2);
+    expect(startWithContinuation.mock.calls[1][0]).toContain('ABC-1 기준으로 설명해 줘');
+    gate.resolve({ hasPendingChoice: false });
+    await first;
+  });
+
+  // #1474 round 10 (astra): the person's typed reply in a thread whose question is open, after the asking turn ended,
+  // is that question's answer — not the same work another thread runs.
+  it('#1474 — a typed reply to the open question naming a key another thread runs is not refused: it runs', async () => {
+    limits.set(OWNER, UNLIMITED);
+    const gate = deferred<any>();
+    startWithContinuation.mockImplementationOnce(() => gate.promise);
+    const first = handler.handleMessage(
+      message('100.0', { text: 'ABC-1 구현해줘' }),
+      vi.fn().mockResolvedValue({ ts: 'x' }),
+    );
+    await tick();
+    // The other thread's turn asked which issue, and ended waiting on the question.
+    sessions.set('C123:200.0', {
+      ownerId: OWNER,
+      channelId: CHANNEL,
+      threadTs: '200.0',
+      threadRootTs: '200.0',
+      sessionId: 's-200.0',
+      title: 'task 200.0',
+      actionPanel: { waitingForChoice: true, pendingQuestion: { type: 'user_choice', question: '어느 이슈?' } },
+    });
+
+    await handler.handleMessage(message('200.0', { ts: '200.02', text: 'ABC-1' }), vi.fn());
+    expect(startWithContinuation).toHaveBeenCalledTimes(2);
+    expect(startWithContinuation.mock.calls[1][0]).toContain('ABC-1');
     gate.resolve({ hasPendingChoice: false });
     await first;
   });

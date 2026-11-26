@@ -324,6 +324,32 @@ describe('Dashboard — the follow-up queue (batch 2)', () => {
       expect(fromSlack).not.toHaveProperty('clientRef');
     });
 
+    // #1474 — the card tells an answer on its way to the model apart from plain running: a note that is the
+    // owner's answer to the model's question (the choice handlers mark it) says so.
+    it('names a note that is the answer to the model question', async () => {
+      view = {
+        sessionKey: KEY,
+        turnEpoch: 7,
+        items: [
+          item('queued', {
+            message: {
+              type: 'message',
+              channel: 'C1',
+              thread_ts: 't1',
+              ts: '6.0',
+              user: 'U1',
+              text: '1',
+              questionAnswer: true,
+            } as any,
+          }),
+          item('queued', { text: 'an instruction' }),
+        ],
+      };
+      const [answer, instruction] = (await card()).followups.items;
+      expect(answer.answer).toBe(true);
+      expect(instruction).not.toHaveProperty('answer');
+    });
+
     it('says what a note that just left the queue came to — read by the running turn, or cancelled', async () => {
       const now = Date.now();
       view = {

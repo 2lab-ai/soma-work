@@ -1967,6 +1967,11 @@ export interface DashboardFollowupItem {
   editable: boolean;
   /** The dashboard send it was (#785 — `message.dashboardClientRef`): the chat finds the sender's own turn by it. */
   clientRef?: string;
+  /**
+   * #1474 — the owner's answer to a question the model asked (`message.questionAnswer`, set by the choice
+   * handlers): while it waits here the card reads 답변 접수 · 모델 전달 대기, not plain running.
+   */
+  answer?: true;
 }
 /** A note that just left the queue, and what it came to (SSOT 2026-11-12). */
 export interface DashboardSettledFollowup extends DashboardFollowupItem {
@@ -2101,6 +2106,7 @@ export function followupsOf(sessionKey: string, ownerId: string | undefined): Da
       editable: item.state === 'queued' && !!author && item.message?.routeContext?.goalOpeningId === undefined,
       ...(author ? { authorId: author } : {}),
       ...(isClientRef(ref) ? { clientRef: ref } : {}),
+      ...(item.message?.questionAnswer === true ? { answer: true as const } : {}),
     };
     if (author && author !== ownerId) out.author = nameOf(author);
     if (item.stateReason && !FOLLOWUP_STATE_ECHO.has(item.stateReason)) out.stateReason = item.stateReason;
@@ -9323,6 +9329,9 @@ var STRINGS = {
   statusSleeping: '휴면',
   statusArchived: '보관됨',
   statusSafeguard: '세이프가드 에러 · 관리자만 재시도',
+  // #1474 — a question the model asked while its run still works, and an answer not yet read by the model.
+  statusWorkingNeedsAnswer: '작업 중 · 응답 필요',
+  statusAnswerAwaitsModel: '답변 접수 · 모델 전달 대기',
   // SSOT 2026-11-10 T1/T3: a close on its way (the face, the button), and the open card's Close asking once.
   statusClosing: '닫는 중',
   closeArmed: '한 번 더 눌러 닫기',
@@ -14415,11 +14424,17 @@ function cardOf(s, col) {
     if (toNum(queueWait.since) > 0) card.since = toNum(queueWait.since);
   } else if (col === 'waiting') {
     card.status = 'waiting';
+    // #1474 — the model asked and its run still works (background work, a held turn): the question stays here, it
+    // is the owner's to answer, but nothing stopped. A busy slot never hides the question.
+    if (s.pendingQuestion && turnHolds(s)) card.statusText = STRINGS.statusWorkingNeedsAnswer;
     if (toNum(s.waitingSince) > 0) card.since = toNum(s.waitingSince);
     // .prd/39 S6 — the goal put it here (its question, the loop's stop): say which.
     if (s.goalBoard && s.goalBoard.col === 'waiting' && s.activityState !== 'waiting') card.statusText = GOAL_BOARD_LABELS[s.goalBoard.why] || '';
   } else if (col === 'working') {
     card.status = 'running';
+    // #1474 — the owner answered and the model has not read the answer yet: it waits in the queue, or it was
+    // handed into the running turn without a read receipt. Read, the card is plain running again.
+    if (answerAwaitsModel(s)) card.statusText = STRINGS.statusAnswerAwaitsModel;
     var leg = Number(s.activeLegStartedAtMs) || 0;
     if (leg) card.since = leg;
     if (acc) card.elapsedMs = acc;
@@ -16604,6 +16619,19 @@ function steeringData(s, mode) {
 // A turn holds the session: it works, or it was dispatched and has not settled yet (the server's turnBusy).
 function turnHolds(s) {
   return !!s && (s.activityState === 'working' || s.turnBusy === true);
+}
+// #1474 — the owner's answer to the model's question is on its way: a queue row the server marks as the answer, in a
+// state before the model has it — queued (or parked), handed into the running turn without a read receipt (steered),
+// or taken for its own turn that has not reached the model (reserved · claimed · dispatched — the server lists a
+// dispatched row only until its run's first SDK event). A read answer leaves the list (settled: consumed); a failed
+// one is the queue's to show.
+function answerAwaitsModel(s) {
+  var list = (s && s.followups && s.followups.items) || [];
+  for (var i = 0; i < list.length; i++) {
+    var f = list[i];
+    if (f && f.answer === true && /^(queued|paused|steered|reserved|claimed|dispatched)$/.test(String(f.state))) return true;
+  }
+  return false;
 }
 // The note the element names (its host id) as the payload has it: the generation
 // an action on it carries. A local row (a send that failed) is not in the queue.

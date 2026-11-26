@@ -293,6 +293,37 @@ describe('SessionInitializer — bot-thread migration copies goal (#1082)', () =
     expect(live.compactTurnActive).toBeUndefined();
   });
 
+  it('does not claim the /compact turn marker for an answer that starts with /compact (#1474)', async () => {
+    const live = makeOriginalSession({ threadTs: '111.222', sessionId: 'sess-2' });
+    mockClaudeHandler.getSession.mockReturnValue(live);
+
+    await sessionInitializer.initialize(
+      {
+        user: 'U123',
+        channel: 'C123',
+        thread_ts: '111.222',
+        ts: '111.445',
+        text: '/compact 옵션을 설명해 줘',
+        questionAnswer: true,
+      } as any,
+      '/test/dir',
+    );
+
+    expect(live.compactTurnActive).toBeUndefined();
+  });
+
+  it('still claims the /compact turn marker for a typed /compact (control)', async () => {
+    const live = makeOriginalSession({ threadTs: '111.222', sessionId: 'sess-2' });
+    mockClaudeHandler.getSession.mockReturnValue(live);
+
+    await sessionInitializer.initialize(
+      { user: 'U123', channel: 'C123', thread_ts: '111.222', ts: '111.446', text: '/compact' } as any,
+      '/test/dir',
+    );
+
+    expect(live.compactTurnActive).toBe(true);
+  });
+
   it('clones the goal onto the bot session (deep copy, not a shared reference)', async () => {
     const goal = makeGoal();
     const original = makeOriginalSession({ goal });

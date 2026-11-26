@@ -153,6 +153,18 @@ describe('UserTaskQueue — the same work sent again fails fast', () => {
     expect(h.queue.gate(input('ABC-1')).action).toBe('duplicate');
   });
 
+  // #1474 round 10 (astra): an answer to the model's question goes on with its own thread's work — not the same work
+  // another thread runs. Only that check: a Slack resend of the answer is still a resend.
+  it('#1474 — an answer naming a key another thread runs is not refused; its resend is still a duplicate', () => {
+    const h = harness();
+    h.limits.set('U1', 1);
+    h.running.set('U1', [taskA]);
+    expect(h.queue.gate(input('ABC-1 기준으로', { answersQuestion: true })).action).toBe('queued');
+    expect(h.refusals).toEqual([]);
+    expect(h.queue.gate(input('ABC-1 기준으로', { answersQuestion: true })).action).toBe('duplicate');
+    expect(h.queue.snapshot().entries).toHaveLength(1);
+  });
+
   it('a refused request is held for 그래도 시작 30 minutes, then the button says it expired', () => {
     const h = harness();
     h.running.set('U1', [taskA]);

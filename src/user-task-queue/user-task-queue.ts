@@ -102,6 +102,11 @@ export interface GateInput extends UserTaskThread {
   hostReserved?: boolean;
   /** The person chose 그래도 시작 on a refused request: it is not checked for the same work again. */
   sameWorkOk?: boolean;
+  /**
+   * #1474 — the message answers the question the model asked in its thread: it goes on with that thread's own work and
+   * is never refused as the same work another thread runs. A Slack resend of it is still a resend.
+   */
+  answersQuestion?: boolean;
 }
 
 export type GateResult =
@@ -275,7 +280,7 @@ export class UserTaskQueue {
       if (this.recentlyLeft.has(key)) return { action: 'duplicate' };
     }
     // The same work sent again: every key it names already runs or waits in another thread of the person.
-    if (isPersonRequest(input) && !input.sameWorkOk) {
+    if (isPersonRequest(input) && !input.sameWorkOk && !input.answersQuestion) {
       const keys = keysInText(input.text);
       // A request naming more keys than one entry carries was cut at WORK_KEYS_MAX: the rest might be new work, so it
       // is never refused on the first ones alone.

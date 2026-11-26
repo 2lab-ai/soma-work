@@ -111,6 +111,13 @@ export interface MessageEvent {
    */
   dashboardClientRef?: string;
   /**
+   * #1474 — the message is its owner's answer to a question the model asked (a choice, a form, direct input),
+   * handed in by the choice handlers. A follow-up row that holds it says so (`DashboardFollowupItem.answer`), so
+   * the card can tell an answer on its way to the model apart from an answer the model read. Set only by the host;
+   * dropped from Slack events (`HOST_ONLY_EVENT_FIELDS`).
+   */
+  questionAnswer?: true;
+  /**
    * Original message text BEFORE leading inline session directives
    * (`%model <v>` / `%nogoal`) were stripped by the message handler.
    * Replay stashes (channel-route halt advisory `userMessage`, auto-compact

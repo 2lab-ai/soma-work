@@ -41,7 +41,7 @@ function setup(allowed: boolean) {
   const handler = new FormActionHandler(
     { slackApi, claudeHandler, messageHandler, threadPanel } as any,
     { get: () => undefined, set() {}, delete() {} } as any,
-    {} as any,
+    { refuseAnswered: async () => false } as any,
   );
   return { handler, slackApi, threadPanel, claudeHandler, messageHandler, session };
 }

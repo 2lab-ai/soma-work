@@ -66,6 +66,7 @@ describe('ChoiceActionHandler', () => {
       threadTs: 'thread-root',
       actionPanel: {
         choiceMessageTs: 'thread-choice-message-ts',
+        waitingForChoice: true,
       },
     });
 
@@ -192,6 +193,7 @@ describe('ChoiceActionHandler', () => {
       channelId: 'C123',
       actionPanel: {
         choiceMessageTs: 'thread-choice-message-ts',
+        waitingForChoice: true,
       },
     });
 
@@ -231,6 +233,7 @@ describe('ChoiceActionHandler', () => {
       channelId: 'C123',
       actionPanel: {
         choiceMessageTs: 'thread-choice-message-ts',
+        waitingForChoice: true,
       },
     });
 
@@ -794,25 +797,34 @@ describe('ChoiceActionHandler — P3 (PHASE>=3) classifyClick', () => {
   });
 
   it('matching pendingChoice + matching turnId → p3 path', async () => {
-    claudeHandler.getSessionByKey.mockReturnValue({
+    const session = {
       threadRootTs: 'thread-root',
       threadTs: 'thread-root',
       channelId: 'C1',
       actionPanel: {
-        pendingChoice: { turnId: 't1', kind: 'single', choiceTs: 'msg-1', formIds: [] },
-        choiceMessageTs: 'msg-1',
+        pendingChoice: { turnId: 't1', kind: 'single', choiceTs: 'msg-1', formIds: [] } as any,
+        choiceMessageTs: 'msg-1' as string | undefined,
+        waitingForChoice: true,
       },
-    });
+    };
+    claudeHandler.getSessionByKey.mockReturnValue(session);
     await handler.handleUserChoice(clickBody('t1', 'msg-1'));
-    expect(threadPanel.resolveChoice).toHaveBeenCalledWith(
-      expect.any(Object),
-      sessionKey,
+    // #1474 — the record is taken off the session before any Slack write; the choice message is drawn answered.
+    expect(session.actionPanel.pendingChoice).toBeUndefined();
+    expect(session.actionPanel.waitingForChoice).toBe(false);
+    expect(slackApi.updateMessage).toHaveBeenCalledWith(
       'C1',
+      'msg-1',
       expect.stringContaining('선택'),
       expect.any(Array),
+      [],
     );
+    expect(threadPanel.resolveChoice).not.toHaveBeenCalled();
     expect(claudeHandler.setActivityStateByKey).toHaveBeenCalledWith(sessionKey, 'working');
-    expect(messageHandler).toHaveBeenCalled();
+    expect(messageHandler).toHaveBeenCalledWith(
+      expect.objectContaining({ questionAnswer: true }),
+      expect.any(Function),
+    );
   });
 
   it('payload turnId + no pendingChoice → stale (not legacy)', async () => {
@@ -833,12 +845,29 @@ describe('ChoiceActionHandler — P3 (PHASE>=3) classifyClick', () => {
     claudeHandler.getSessionByKey.mockReturnValue({
       threadRootTs: 'thread-root',
       threadTs: 'thread-root',
-      actionPanel: {},
+      actionPanel: { waitingForChoice: true },
     });
     await handler.handleUserChoice(clickBody(undefined, 'msg-1'));
     expect(threadPanel.resolveChoice).not.toHaveBeenCalled();
     expect(slackApi.updateMessage).toHaveBeenCalled();
     expect(messageHandler).toHaveBeenCalled();
+  });
+
+  // #1474 round 3 (astra): the remembered cards do not survive a restart; the record does.
+  it('legacy click with no question open on the session → told so, nothing sent, the card untouched', async () => {
+    claudeHandler.getSessionByKey.mockReturnValue({
+      threadRootTs: 'thread-root',
+      threadTs: 'thread-root',
+      actionPanel: {},
+    });
+    await handler.handleUserChoice(clickBody(undefined, 'msg-1'));
+    expect(messageHandler).not.toHaveBeenCalled();
+    expect(slackApi.updateMessage).not.toHaveBeenCalled();
+    expect(slackApi.postEphemeral).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.stringContaining('더 이상 열려 있지 않습니다'),
+    );
   });
 
   it('pendingChoice present + turnId mismatch → stale', async () => {
@@ -944,7 +973,9 @@ describe('ChoiceActionHandler — P3 (PHASE>=3) classifyClick', () => {
       await expect(handler.handleChoiceFromDashboard(sessionKey, '2', 'B', 'Q?', 'U1')).rejects.toThrow('send failed');
 
       expect(session.actionPanel.pendingQuestion).toBe(question);
-      expect(session.activityState).toBe('waiting');
+      // #1474 — given back as it was: a question waited on is waited on again; one recorded on an idle session (the
+      // goal's cap decision shows it) is idle again.
+      expect(session.activityState).toBe(activity);
       const persists = sessionRegistry.persistAndBroadcast.mock.invocationCallOrder;
       expect(persists[persists.length - 1], 'the restored question is saved').toBeGreaterThan(
         messageHandler.mock.invocationCallOrder[0],
@@ -999,7 +1030,7 @@ describe('ChoiceActionHandler — P3 (PHASE>=3) classifyClick', () => {
       ).rejects.toThrow('send failed');
 
       expect(session.actionPanel.pendingQuestion).toBe(multi);
-      expect(session.activityState).toBe('waiting');
+      expect(session.activityState).toBe('idle'); // #1474 — as it was answered from
       const persists = sessionRegistry.persistAndBroadcast.mock.invocationCallOrder;
       expect(persists[persists.length - 1]).toBeGreaterThan(messageHandler.mock.invocationCallOrder[0]);
     });

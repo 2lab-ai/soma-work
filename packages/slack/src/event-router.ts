@@ -366,6 +366,7 @@ export const HOST_ONLY_EVENT_FIELDS = [
   'workingDirectoryOverride',
   'botThreadRoot',
   'sourceThreadLink',
+  'questionAnswer',
 ] as const;
 
 /** The event without the host-only fields (the same object when it has none). */

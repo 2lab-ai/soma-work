@@ -19,6 +19,12 @@ export const VIEWER_FNS = ['viewerOwns', 'viewerCanManage', 'viewerCanInstruct',
  * (`_epicParentOf`, the board's placement map — empty unless a test names one).
  */
 export const CARD_FAMILY_FNS = ['epicChildCol', 'epicChildrenOf', 'epicFamilyOf', 'epicChildFace'] as const;
+/**
+ * #1474 — what `cardOf` reads for its status words: a turn still holding the session (`turnHolds` — a question open
+ * while the run works) and the owner's answer on its way to the model (`answerAwaitsModel`). Pinned by
+ * dashboard-question-answer-states-client.test.ts.
+ */
+export const CARD_STATE_FNS = ['turnHolds', 'answerAwaitsModel'] as const;
 
 /**
  * Next actions as buttons (SSOT 2026-11-11): the open card's body (`renderCardBody` → `cardNextActionsHtml`), its
@@ -99,7 +105,7 @@ export function viewerScope(
   if (!fns.includes('repaintViewerControls')) defaults.repaintViewerControls = () => {};
   // The board's child → epic map: shared by cardOf, withEpicChildren and applyEpicPush.
   defaults._epicParentOf = Object.create(null);
-  const family = fns.includes('cardOf') ? CARD_FAMILY_FNS.filter((f) => !fns.includes(f)) : [];
+  const family = fns.includes('cardOf') ? [...CARD_FAMILY_FNS, ...CARD_STATE_FNS].filter((f) => !fns.includes(f)) : [];
   if (fns.includes('cardOf')) defaults._sessionCache = Object.create(null);
   Object.assign(defaults, nextActionSeams(fns, inject));
   return {

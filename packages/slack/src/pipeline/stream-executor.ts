@@ -1496,6 +1496,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
      * failed to post, a plain-text fallback went out) is still unanswered.
      */
     let choiceRegistered = false;
+    /**
+     * #1474 — a question open on the session (its bit up, its P3 record held) when this turn started, which this turn
+     * did not ask: the rest of a split form whose answered chunk started this turn, or a host turn's (#854). It stays
+     * open across the turn, and the turn ends waiting on it unless it is answered meanwhile.
+     */
+    let carriedChoice = false;
     let toolContinuation: Continuation | undefined;
     const requestStartedAt = new Date();
     const contextUsagePercentBefore = this.getCurrentContextUsagePercent(session.usage);
@@ -1701,6 +1707,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           logger: this.logger,
         });
       }
+      carriedChoice =
+        session.actionPanel?.waitingForChoice === true && session.actionPanel?.pendingChoice !== undefined;
+      // The turn works, carried question or not: `working` moves the activity clock an answer's give-back reads, and
+      // keeps a cron fire queued instead of injected into the running turn (round 6, fable). The carried question's
+      // bit stays up below, and the turn ends waiting on it.
       this.setActivity(session, sessionKey, channel, threadTs, 'working');
       // Epoch-scoped like every other status write on this turn (#688): a
       // superseded turn's late working-state write must not overwrite the
@@ -1711,7 +1722,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         {
           agentPhase: '생각 중',
           activeTool: undefined,
-          waitingForChoice: false,
+          // #1474 — a carried question keeps its bit (round 4, astra): only this turn's own question starts closed.
+          waitingForChoice: carriedChoice ? undefined : false,
         },
         turnEpochToken,
       );
@@ -3222,7 +3234,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // the asked-this-turn behaviour.
       const askedChoice = Boolean(streamResult.hasUserChoice || toolChoicePending);
       const choiceStillOpen = () =>
-        askedChoice && !(choiceRegistered && session.actionPanel?.waitingForChoice === false);
+        (askedChoice && !(choiceRegistered && session.actionPanel?.waitingForChoice === false)) ||
+        (carriedChoice && session.actionPanel?.waitingForChoice === true);
       let hasPendingChoice = choiceStillOpen();
       const finalStatus = hasSdkError ? 'error' : hasPendingChoice ? 'waiting' : 'completed';
       if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
@@ -3253,7 +3266,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             // A registered open choice already has its bit up. Re-writing `true`
             // here would re-open an answer that lands during this write, so
             // only an unregistered choice (or a cleared one) is written.
-            waitingForChoice: hasPendingChoice && choiceRegistered ? undefined : hasPendingChoice,
+            waitingForChoice: hasPendingChoice && (choiceRegistered || carriedChoice) ? undefined : hasPendingChoice,
           },
           turnEpochToken,
         );
@@ -7269,9 +7282,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     /** Host questions: re-checked after the post; false = do not open the session as waiting. */
     commitGuard?: () => boolean,
   ): Promise<boolean> {
+    /** #1474 — the question was answered while its forms were being posted (a typed reply took them). */
+    let answeredWhilePosting = false;
     try {
       if (question.type === 'user_choices') {
-        await this.renderMultiChoiceFromCommand(turnId, question, context);
+        answeredWhilePosting = (await this.renderMultiChoiceFromCommand(turnId, question, context)) === 'answered';
       } else {
         await this.renderSingleChoiceFromCommand(turnId, question, context);
       }
@@ -7284,6 +7299,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       });
     }
     if (commitGuard && !commitGuard()) return false;
+    // #1474 — answered while it was being posted (a typed reply answered the first chunk while the rest went up): the
+    // answer took its forms and closed it; it is not opened again as waiting — the turn would end on an answered
+    // question and the answer would wait behind it (round 14, astra). Judged by its record, not the open bit (the
+    // panel's choice meta may raise it): one chunk answered by a click leaves the record (it only shrank) and the
+    // question is still opened (round 15, astra/fable).
+    if (answeredWhilePosting && session.actionPanel?.pendingChoice?.turnId !== turnId) {
+      this.logger.info('A question was answered while its forms were posted — not opened again', {
+        sessionKey: context.sessionKey,
+      });
+      // Registered, and already answered: not a question that failed to register (round 15, review-of-legends).
+      return true;
+    }
 
     // Store raw question data on session for dashboard access (before setActivityState triggers broadcast)
     if (session.actionPanel) {
@@ -7448,7 +7475,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     turnId: string | undefined,
     question: UserChoices,
     context: StreamContext,
-  ): Promise<void> {
+  ): Promise<'answered' | undefined> {
     const maxQuestionsPerForm = 6;
     const chunks: UserChoices[] = [];
     for (let index = 0; index < question.questions.length; index += maxQuestionsPerForm) {
@@ -7522,12 +7549,21 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             this.deps.actionHandlers.setPendingForm(fId, { ...pending, messageTs: result.allTs[i] });
           }
         }
-        return;
+        // #1474 — a form of this question answered meanwhile (a typed reply to the chunks already up took them, or a
+        // click): the question was answered while it was posted.
+        return this.deps.actionHandlers.formsAnswered?.(context.sessionKey, formIds) === true ? 'answered' : undefined;
       }
       if (result.reason === 'post-failed') {
+        // #1474 — the whole question answered before the failed chunk (a typed reply to the chunks already up took
+        // every form of it): no fallback question for an answered one (round 15, astra). One chunk answered by a
+        // click is not the whole question: the fallback still asks it (round 16, astra/grok).
+        const answered =
+          formIds.length > 0 &&
+          formIds.every((fId) => this.deps.actionHandlers.formsAnswered?.(context.sessionKey, [fId]) === true);
         for (const fId of formIds) {
           this.deps.actionHandlers.deletePendingForm(fId);
         }
+        if (answered) return 'answered';
         await this.sendCommandChoiceFallback(question, context);
         return;
       }

@@ -112,6 +112,7 @@ import {
   ToolTracker,
   withoutHostOnlyFields,
 } from './slack';
+import { AnswerNotKeptError } from './slack/actions/answer-not-kept';
 import {
   type CancelSteeredOutcome,
   CANCEL_STEERED_DELIVERED_TEXT as FOLLOWUP_CANCEL_ALREADY_DELIVERED_TEXT,
@@ -373,7 +374,9 @@ const FOLLOWUP_RESTART_SWEEP_DELAYS_MS: readonly number[] = [150_000, 10 * 60_00
  * an inline `%` directive, or the `!` abort/steer marker again.
  */
 function isVerbatimPrompt(event: MessageEvent): boolean {
-  return event.routeContext?.verbatimPrompt === true;
+  // #1474 — so is an answer to the model's question (a choice, a typed direct input): the person's words to the model,
+  // never `help`, a `%` directive or the `!` stop (round 4, astra).
+  return event.routeContext?.verbatimPrompt === true || event.questionAnswer === true;
 }
 
 /**
@@ -2264,12 +2267,15 @@ export class SlackHandler {
       // durable transaction behind it.
       const detail = (started as { detail?: string }).detail ?? 'queue transaction failed';
       this.logger.error('Follow-up dispatch could not be opened — message NOT run', { sessionKey, detail });
-      await this.slackApi.addReaction(event.channel, event.ts, 'warning');
-      await this.slackApi.postSystemMessage(
-        event.channel,
-        `❌ 실행을 시작하지 못했습니다 — ${detail}\n_저장에 실패해 이 메시지는 실행되지 않았습니다. 다시 보내주세요._`,
-        { threadTs: event.thread_ts || event.ts },
-      );
+      // #1474 — an answer that did not run is not kept: its question goes back (round 3, astra).
+      await this.refuseFollowup(event, 'dispatch_open_failed', async () => {
+        await this.slackApi.addReaction(event.channel, event.ts, 'warning');
+        await this.slackApi.postSystemMessage(
+          event.channel,
+          `❌ 실행을 시작하지 못했습니다 — ${detail}\n_저장에 실패해 이 메시지는 실행되지 않았습니다. 다시 보내주세요._`,
+          { threadTs: event.thread_ts || event.ts },
+        );
+      });
       return;
     }
 
@@ -2286,7 +2292,27 @@ export class SlackHandler {
 
     const failure = this.takeInitialError(sessionKey);
     if (failure) throw failure;
+    // #1474 — an answer the dispatch dropped before any turn (an invalid working directory, a gate) was not kept: its
+    // question goes back (round 5, astra).
+    const outcome = report?.outcome as { result?: string; reason?: string } | undefined;
+    if (
+      event.questionAnswer === true &&
+      outcome?.result === 'blocked' &&
+      SlackHandler.ANSWER_DROPPED_REASONS.has(outcome.reason ?? '')
+    ) {
+      throw new AnswerNotKeptError(`dispatch dropped it: ${outcome.reason}`);
+    }
   }
+
+  /** #1474 — `blocked` reasons of a dispatch that dropped its message before any turn ran (never a kept one). */
+  private static readonly ANSWER_DROPPED_REASONS = new Set([
+    'working directory invalid',
+    'dm input not allowed for non-admin',
+    'incident-owned thread: ordinary message dropped',
+    'nothing to process',
+    'dm rejected after routing',
+    'session initialization halted',
+  ]);
 
   /** The `blocked` reason of a turn that ended on the person's question — the ASK pause (A8). */
   private static readonly AWAITING_USER_CHOICE = 'awaiting user choice';
@@ -3174,12 +3200,17 @@ export class SlackHandler {
 
       // Only the user's own word completes the choice; a host turn (an epic's wake, a goal continuation)
       // leaves the choice the owner has to make where it is (#854, review #872 R2 astra).
+      // #1474 — an answer the answer handler handed on was recorded there: the question it answered is already off
+      // the session — or, for one chunk of a form, only that chunk is. What is open now (the form's other chunks, or
+      // a question the model asked since) is not this message's to close.
+      const answerRecorded = event.questionAnswer === true;
+      // Words answer a question; a file alone does not (round 6, grok — as `answersOpenQuestion`).
+      const answersWithWords = userWord && !answerRecorded && effectiveText.trim().length > 0;
       const hasPendingChoice = sessionResult.session.actionPanel?.waitingForChoice === true;
-      if (hasPendingChoice && userWord) {
-        await this.threadPanel?.clearChoice(sessionResult.sessionKey);
-        // Treat direct user message as completing manual input from choice UI.
-        this.claudeHandler.setActivityStateByKey(sessionResult.sessionKey, 'working');
-      }
+      // #1474 — the question closes with the answer before any Slack write: its forms (a submit on one is no second
+      // answer), its recorded question (a dashboard answer finds nothing to claim) and the session's state, all before
+      // the panel's redraw waits in Slack's line (round 12–14, astra/grok).
+      if (hasPendingChoice && answersWithWords) this.takeAnsweredForms(sessionResult.sessionKey);
       // The user's own message answers the question the model asked.
       // Left recorded, the question outlived its answer: the next goal cap
       // decision made the card read NEEDS YOU and showed it again (SSOT
@@ -3187,8 +3218,24 @@ export class SlackHandler {
       // question: a host turn (synthetic, or a post-compaction replay of one —
       // `routeContext.hostTurn`) and a maintenance turn (`/compact`, forwarded
       // to the SDK as a local slash command) — `userWord` above.
-      if (userWord && sessionResult.session.actionPanel?.pendingQuestion) {
+      if (answersWithWords && sessionResult.session.actionPanel?.pendingQuestion) {
         sessionResult.session.actionPanel.pendingQuestion = undefined;
+      }
+      if (hasPendingChoice && answersWithWords) {
+        // Its record leaves the session at the call; only the redraw waits.
+        const clearing = this.threadPanel?.clearChoice(sessionResult.sessionKey);
+        // Treat direct user message as completing manual input from choice UI.
+        this.claudeHandler.setActivityStateByKey(sessionResult.sessionKey, 'working');
+        // The question is already closed: a redraw that fails must not stop its answer from running (round 15,
+        // review-of-legends).
+        try {
+          await clearing;
+        } catch (error) {
+          this.logger.warn('The answered question’s panel redraw failed — the answer runs', {
+            sessionKey: sessionResult.sessionKey,
+            error: (error as Error)?.message ?? String(error),
+          });
+        }
       }
       // #911 — and the drain the question paused reopens with it.
       if (userWord) {
@@ -5354,6 +5401,103 @@ export class SlackHandler {
    * the queue untouched and the user gets an explicit failure instead of a
    * receipt for an item nobody stored (ssot.md:89).
    */
+  /**
+   * #1474 — the owner's answer to the model's question that the queue could not keep is a failure its sender must
+   * hear: the answer handler already took the question off the session, and gives it back when the hand-on throws.
+   * It is refused at once — the notice runs on its own. Any other message ends here as before, after the thread
+   * was told it was not kept.
+   */
+  private async refuseFollowup(event: MessageEvent, reason: string, notify: () => Promise<unknown>): Promise<void> {
+    if (event.questionAnswer !== true) {
+      await notify();
+      return;
+    }
+    // The refusal does not wait for Slack's line: the question goes back to the session now, and the thread hears
+    // it was not kept when the line gets there (round 2, astra/fable).
+    void notify().catch((error: unknown) =>
+      this.logger.warn('Refusal notice for an unkept answer failed', {
+        reason,
+        error: (error as Error)?.message ?? String(error),
+      }),
+    );
+    throw new AnswerNotKeptError(reason);
+  }
+
+  /**
+   * #1474 — is this queued message the person's answer to the question open on the session? The person's own word
+   * reaching the session answers it (#911, `userWord` in `processMessage`); queued behind the turn that asked, it used to
+   * answer it only when dispatched — and the turn, ending meanwhile on the still-open question, halted the line it
+   * waited in (`awaiting user choice`), with the answer stuck behind its own question (round 4, astra). So it is
+   * recorded when it is stored, as every other answer is. Not a host turn, not `/compact`, not an answer the answer
+   * handler already recorded.
+   */
+  private answersOpenQuestion(sessionKey: string, event: MessageEvent): boolean {
+    if (event.questionAnswer === true || event.synthetic || event.routeContext?.hostTurn === true) return false;
+    const text = (event.text ?? '').trim();
+    // Words answer a question; a file alone does not (round 5, astra).
+    if (!text || shouldForwardAsLocalSlashCommand(text, false)) return false;
+    const panel = this.claudeHandler.getSessionByKey?.(sessionKey)?.actionPanel;
+    if (panel?.waitingForChoice !== true && panel?.pendingQuestion === undefined) return false;
+    // Only a message that reaches the model as a turn answers: a command that only answers itself (`help`, bare
+    // `%model x` — `control`) never does, and leaves the question open (review-of-legends, correctness). It runs live
+    // and is not queued (`isQueueableFollowup`); this keeps the rule here too, for any other way into the queue. A
+    // classifier that fails closes nothing: the message is still stored, as it is.
+    try {
+      return this.commandRouter?.classifyText?.(text, event.user) !== 'control';
+    } catch {
+      return false;
+    }
+  }
+
+  /** #1474 — a typed reply answered the session's question: its forms leave the store, remembered answered. */
+  private takeAnsweredForms(sessionKey: string): void {
+    // The open choice's own forms (a split form still posting has no ts yet), read before its record is cleared.
+    const questionFormIds = this.claudeHandler.getSessionByKey?.(sessionKey)?.actionPanel?.pendingChoice?.formIds ?? [];
+    try {
+      this.actionHandlers?.takeAnsweredForms?.(sessionKey, questionFormIds);
+    } catch (error) {
+      this.logger.debug('takeAnsweredForms failed', { sessionKey, error: (error as Error)?.message ?? String(error) });
+    }
+  }
+
+  /**
+   * #1474 — the record of a typed answer, synchronously with its store: the question leaves the session (open bit,
+   * recorded question, choice record), so the turn that asked does not end waiting on it, and a drain its end halted
+   * opens again. The thread header is redrawn on its own.
+   */
+  private recordTypedAnswer(sessionKey: string, activity: 'working' | 'idle' = 'working'): void {
+    const session = this.claudeHandler.getSessionByKey?.(sessionKey);
+    const panel = session?.actionPanel;
+    if (!panel) return;
+    // The question's forms first — the open choice still names them (round 14, astra).
+    this.takeAnsweredForms(sessionKey);
+    panel.waitingForChoice = false;
+    panel.pendingQuestion = undefined;
+    panel.pendingChoice = undefined;
+    panel.choiceMessageTs = undefined;
+    panel.choiceMessageLink = undefined;
+    panel.choiceBlocks = undefined;
+    // As a dispatched reply's record does (`processMessage`): the session works on — the reply waits behind its turn.
+    // A reply that waits in the person's task line instead (no turn runs in its thread) leaves the session idle.
+    this.claudeHandler.setActivityStateByKey?.(sessionKey, activity);
+    try {
+      this.claudeHandler.getSessionRegistry?.()?.persistAndBroadcast?.(sessionKey);
+    } catch (error) {
+      this.logger.debug('recordTypedAnswer: persistAndBroadcast failed', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
+    this.reopenDrainAfterAnswer(sessionKey);
+    // The header drops the choice the same way a dispatched reply's does (`clearChoice`: its fields, a forced render).
+    void this.threadPanel?.clearChoice?.(sessionKey)?.catch?.((error: unknown) =>
+      this.logger.debug('recordTypedAnswer: header redraw failed', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      }),
+    );
+  }
+
   private async enqueueFollowup(sessionKey: string, event: MessageEvent, say: any): Promise<void> {
     // #1466 (review on #1468) — behind a running turn: the follow-up queue's rows say what happens to it from here.
     noteInstructionStage(sessionKey, event.dashboardClientRef, 'followup');
@@ -5368,19 +5512,31 @@ export class SlackHandler {
         ...this.followupCounts(sessionKey),
         reason: 'queue_degraded',
       });
-      await this.slackApi.addReaction(event.channel, event.ts, 'warning');
-      await this.slackApi.postSystemMessage(
-        event.channel,
-        `⚠️ 큐를 사용할 수 없어 이 메시지를 보관하지 못했습니다 — ${this.followupDegradedReason ?? 'queue unavailable'}\n` +
-          '_실행 중인 턴이 끝난 뒤 다시 보내주세요._',
-        { threadTs },
-      );
+      const degradedReason = this.followupDegradedReason ?? 'queue unavailable';
+      await this.refuseFollowup(event, 'queue_degraded', async () => {
+        await this.slackApi.addReaction(event.channel, event.ts, 'warning');
+        await this.slackApi.postSystemMessage(
+          event.channel,
+          `⚠️ 큐를 사용할 수 없어 이 메시지를 보관하지 못했습니다 — ${degradedReason}\n` +
+            '_실행 중인 턴이 끝난 뒤 다시 보내주세요._',
+          { threadTs },
+        );
+      });
       return;
     }
 
+    // #1474 — the person's own word while the model's question is open is its answer (#911), taken when it is stored.
+    // Only plain words are marked as the answer (`questionAnswer`, dispatched as words): a command typed meanwhile
+    // (`new …`, `$skill`, `%model …`) still closes the question, and still runs as the command it is (round 5, fable).
+    const answers = this.answersOpenQuestion(sessionKey, event);
+    const markAnswer = answers && this.isSteerableText(event);
     let result: ReturnType<FollowupQueue['enqueue']>;
     try {
-      result = queue.enqueue(sessionKey, event, this.captureFollowupContext(event));
+      result = queue.enqueue(
+        sessionKey,
+        markAnswer ? { ...event, questionAnswer: true } : event,
+        this.captureFollowupContext(event),
+      );
     } catch (error) {
       const detail = (error as Error)?.message ?? String(error);
       this.logger.error('Follow-up enqueue failed — message NOT stored', { sessionKey, error: detail });
@@ -5390,12 +5546,14 @@ export class SlackHandler {
         ...this.followupCounts(sessionKey),
         reason: 'persist_failed',
       });
-      await this.slackApi.addReaction(event.channel, event.ts, 'warning');
-      await this.slackApi.postSystemMessage(
-        event.channel,
-        `❌ 큐 저장에 실패해 이 메시지를 보관하지 못했습니다 — ${detail}\n_다시 보내주세요._`,
-        { threadTs },
-      );
+      await this.refuseFollowup(event, 'persist_failed', async () => {
+        await this.slackApi.addReaction(event.channel, event.ts, 'warning');
+        await this.slackApi.postSystemMessage(
+          event.channel,
+          `❌ 큐 저장에 실패해 이 메시지를 보관하지 못했습니다 — ${detail}\n_다시 보내주세요._`,
+          { threadTs },
+        );
+      });
       return;
     }
 
@@ -5407,12 +5565,15 @@ export class SlackHandler {
         uncertainCount: this.followupCounts(sessionKey).uncertainCount,
         reason: 'capacity',
       });
-      await this.slackApi.addReaction(event.channel, event.ts, 'warning');
-      await this.slackApi.postSystemMessage(
-        event.channel,
-        `⚠️ 큐가 가득 찼습니다 (${result.pending}/${result.capacity}) — 이 메시지는 보관되지 않았습니다.`,
-        { threadTs },
-      );
+      const { pending, capacity } = result;
+      await this.refuseFollowup(event, 'capacity', async () => {
+        await this.slackApi.addReaction(event.channel, event.ts, 'warning');
+        await this.slackApi.postSystemMessage(
+          event.channel,
+          `⚠️ 큐가 가득 찼습니다 (${pending}/${capacity}) — 이 메시지는 보관되지 않았습니다.`,
+          { threadTs },
+        );
+      });
       return;
     }
 
@@ -5424,7 +5585,33 @@ export class SlackHandler {
     }
     // Stored: the message will run behind the turn in flight (#853 — a host waiting on it hears so).
     this.noteTurnAccepted(event.channel, event.ts);
+    if (answers) this.recordTypedAnswer(sessionKey);
 
+    // #1474 — from here an answer to the model's question is kept: it is in the queue. A failure on the way (a Slack
+    // paint, a notice) is not the answer's, and must not read as an answer the queue did not keep — its handler would
+    // give the question back while the answer waits in the queue, and a retry would queue it twice (round 3, astra).
+    if (event.questionAnswer === true) {
+      try {
+        await this.continueStoredFollowup(sessionKey, event, result.item, threadTs);
+      } catch (error) {
+        this.logger.warn('A stored answer’s surface failed after it was queued — the answer is kept', {
+          sessionKey,
+          itemId: result.item.id,
+          error: (error as Error)?.message ?? String(error),
+        });
+      }
+      return;
+    }
+    await this.continueStoredFollowup(sessionKey, event, result.item, threadTs);
+  }
+
+  /** The rest of `enqueueFollowup` once the message is stored: its receipt, the steer, the lane's notice. */
+  private async continueStoredFollowup(
+    sessionKey: string,
+    event: MessageEvent,
+    item: FollowupItem,
+    threadTs: string,
+  ): Promise<void> {
     // The receipt AND both controls, in ONE paint, BEFORE the steer (09 §3.1,
     // corrected 2026-09-21). The controls used to wait for the steer to answer,
     // which cost them a second trip through the shared rate-limit queue behind
@@ -5436,7 +5623,7 @@ export class SlackHandler {
     // sync below has nothing to take away.
     await this.paintFollowupReactions({ channel: event.channel, ts: event.ts }, () => ({
       sessionKey,
-      itemId: result.item.id,
+      itemId: item.id,
       roles: rolesForFollowupState('queued'),
       retain: true,
     }));
@@ -5455,13 +5642,13 @@ export class SlackHandler {
     const halted = this.followupDispatcher?.drainHalt(sessionKey);
     // D1: the default is to hand the message to the turn that is already
     // running instead of making the user wait for it.
-    const steered = halted ? 'queued' : await this.trySteerFollowup(sessionKey, event, result.item);
+    const steered = halted ? 'queued' : await this.trySteerFollowup(sessionKey, event, item);
 
     // Re-read INSIDE the paint: `result.item` is the enqueue-time snapshot, the
     // steer above moved the item, and a cancellation can land while this very
     // paint is queued — so the state the user ends up seeing is resolved in the
     // serialized section, not here.
-    await this.syncFollowupReactions(sessionKey, result.item.id);
+    await this.syncFollowupReactions(sessionKey, item.id);
     // The two facts a reaction cannot carry, and only these two: a halted lane
     // (nothing will drain while it stands — about the LANE, not this item) and
     // an undetermined state after a failed rollback. Everything the old item
@@ -5951,6 +6138,8 @@ export class SlackHandler {
    * without a command router keeps its pre-steering behavior.
    */
   private isSteerableText(event: MessageEvent): boolean {
+    // #1474 — an answer to the model's question is plain words for the turn that asked it (never a command).
+    if (event.questionAnswer === true) return true;
     // A goal's opening turn is its own turn: pushed into the running turn, the
     // new goal's first instruction would be answered as part of whatever that
     // turn was doing. Verbatim objectives AND the non-verbatim `$skill` opening
@@ -6911,29 +7100,38 @@ export class SlackHandler {
       }
     };
 
-    const reaction = await attempt('reaction', () =>
-      this.slackApi.addReaction(event.channel, event.ts, parked ? 'inbox_tray' : 'warning'),
-    );
-    const notice = await attempt('notice', () =>
-      this.slackApi.postSystemMessage(
-        event.channel,
-        parked
-          ? '📥 재시작 준비 중이라 지금 실행하지 못했습니다 — Queue에 보관했습니다. 재시작 후 Queue에서 `Resume`을 눌러주세요.'
-          : '⚠️ 재시작 준비 중이라 이 메시지를 받지 못했습니다 — 잠시 후 다시 보내주세요.',
-        { threadTs },
-      ),
-    );
+    const tell = async (): Promise<void> => {
+      const reaction = await attempt('reaction', () =>
+        this.slackApi.addReaction(event.channel, event.ts, parked ? 'inbox_tray' : 'warning'),
+      );
+      const notice = await attempt('notice', () =>
+        this.slackApi.postSystemMessage(
+          event.channel,
+          parked
+            ? '📥 재시작 준비 중이라 지금 실행하지 못했습니다 — Queue에 보관했습니다. 재시작 후 Queue에서 `Resume`을 눌러주세요.'
+            : '⚠️ 재시작 준비 중이라 이 메시지를 받지 못했습니다 — 잠시 후 다시 보내주세요.',
+          { threadTs },
+        ),
+      );
+      if (parkFailure) {
+        this.logger.error('Message NOT stored during shutdown preparation', {
+          sessionKey,
+          channel: event.channel,
+          ts: event.ts,
+          parkFailure,
+          reaction,
+          notice,
+        });
+      }
+    };
 
-    if (parkFailure) {
-      this.logger.error('Message NOT stored during shutdown preparation', {
-        sessionKey,
-        channel: event.channel,
-        ts: event.ts,
-        parkFailure,
-        reaction,
-        notice,
-      });
+    // #1474 — an answer to the model's question that was not stored is refused to its sender at once: the question
+    // goes back to the session (and is saved with it), so the owner can answer it after the restart.
+    if (!parked && event.questionAnswer === true) {
+      void tell();
+      throw new AnswerNotKeptError(parkFailure ? 'shutdown_park_failed' : 'shutdown');
     }
+    await tell();
   }
 
   /**
@@ -9566,6 +9764,19 @@ export class SlackHandler {
     const userId = this.userTaskOwnerOf(sessionKey, event);
     if (!userId) return 'run';
     const route = event.routeContext;
+    // #1474 — the person's typed reply while the model's question is open answers it (#911): plain words are marked as
+    // the answer, as the thread's follow-up queue marks them (a command typed meanwhile still closes the question but
+    // is new work — it is checked for the same work) (round 10/11, astra/fable).
+    let answers = false;
+    let markAnswer = false;
+    try {
+      answers = this.answersOpenQuestion(sessionKey, event);
+      markAnswer = answers && this.isSteerableText(event);
+    } catch {
+      answers = false;
+      markAnswer = false;
+    }
+    const stored = markAnswer ? { ...event, questionAnswer: true as const } : event;
     const continuation: GateInput['continuation'] = route?.goalContinuation
       ? 'drop'
       : route?.hostTurn || route?.autoResume || route?.compactRedispatch || event.epicChild
@@ -9578,12 +9789,17 @@ export class SlackHandler {
         channel: event.channel,
         threadTs: event.thread_ts || event.ts,
         text: event.text,
-        message: JSON.parse(JSON.stringify(event)) as Record<string, unknown>,
+        message: JSON.parse(JSON.stringify(stored)) as Record<string, unknown>,
         continuation,
         admitted,
         // pr-watch reserved this event's slot as it sent it (`reserveHostTurn`): it runs on that reservation.
         hostReserved: route?.userTaskReady === true,
         sameWorkOk: route?.userTaskSameWorkOk === true,
+        // #1474 — an answer to the model's question goes on with the thread's own work: it is never refused as the
+        // same work another thread of the person runs — a recorded answer (its question already closed) or the
+        // person's typed reply while the question is open. Only that check: a Slack resend of it is still one
+        // (round 9/10, astra).
+        answersQuestion: event.questionAnswer === true || markAnswer,
       });
       if (result.action === 'same-work') {
         this.logger.info('User task queue: the same work is already running or waiting — not started', {
@@ -9594,6 +9810,10 @@ export class SlackHandler {
         });
       }
       if (result.action === 'queued') {
+        // #1474 — stored in the person's line: the answer is kept, so its question closes now — as a reply stored in
+        // the thread's follow-up queue does — and a second answer to it (a card click meanwhile) is refused, not
+        // queued beside it (round 11, astra).
+        if (answers) this.recordTypedAnswer(sessionKey, 'idle');
         this.logger.info('User task queue: message waits for the person to have a free slot', {
           sessionKey,
           userId,

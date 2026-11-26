@@ -454,6 +454,11 @@ export class ThreadPanel {
       };
     }
 
+    // #1474 — answered while the later chunks went up (a typed reply took the question's forms and closed its
+    // record): no choice meta for it — `setChoiceMeta` raises the open bit again (round 15, astra/fable).
+    if (session.actionPanel?.pendingChoice?.turnId !== turnId) {
+      return { ok: true, primaryTs: allTs[0], allTs, formIds };
+    }
     // All chunks posted: fire-and-forget permalink warm for primary.
     this.surface.setChoiceMeta(sessionKey, allTs[0]).catch((err) => {
       this.logger.warn('askUserForm: setChoiceMeta failed', {

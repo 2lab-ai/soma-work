@@ -20,6 +20,7 @@ import {
 } from '@soma/slack/followup-queue-blocks';
 import { parseFollowupQueueSnapshot } from '@soma/slack/followup-queue-store';
 import { getMetricsEmitter } from '../metrics/event-emitter';
+import { AnswerNotKeptError } from '../slack/actions/answer-not-kept';
 import { ChoiceActionHandler } from '../slack/actions/choice-action-handler';
 import { QueueHandler } from '../slack/commands/queue-handler';
 import { GoalLoopController } from '../slack/goal-loop-controller';
@@ -3008,6 +3009,44 @@ describe('SlackHandler — follow-up queue host', () => {
       await settle();
     });
 
+    // #1474 round 5 (astra): an answer the dispatch dropped before any turn (an invalid working directory) was not kept.
+    it('refuses an answer the dispatch dropped before any turn ran (an invalid working directory)', async () => {
+      handlerAny.sessionInitializer.validateWorkingDirectory.mockResolvedValueOnce({ valid: false });
+
+      await expect(
+        handler.handleMessage(message({ ts: '333.903', text: '1', questionAnswer: true } as any), say()),
+      ).rejects.toThrow(AnswerNotKeptError);
+      expect(startWithContinuation).not.toHaveBeenCalled();
+    });
+
+    // #1474 round 3 (astra): an answer the idle dispatch could not open did not run — its question goes back.
+    it('refuses an answer whose turn could not be opened (the store failed), at once', async () => {
+      saveError = new Error('disk full');
+      addReaction.mockImplementationOnce(() => new Promise(() => undefined));
+
+      await expect(
+        handler.handleMessage(message({ ts: '333.901', text: '1', questionAnswer: true } as any), say()),
+      ).rejects.toThrow(AnswerNotKeptError);
+      expect(startWithContinuation).not.toHaveBeenCalled();
+
+      saveError = undefined;
+    });
+
+    // #1474 round 3 (astra): once stored, the answer is kept — a Slack failure after it is not a refusal.
+    it('an answer stored behind a running turn is kept, though its receipt paint then fails', async () => {
+      const { settle } = await startBusyTurn();
+      const sync = handlerAny.syncFollowupReactions;
+      handlerAny.syncFollowupReactions = vi.fn().mockRejectedValue(new Error('slack down'));
+
+      await expect(
+        handler.handleMessage(message({ ts: '333.902', text: '1', questionAnswer: true } as any), say()),
+      ).resolves.toBeUndefined();
+      expect(items().some((item: any) => item.message.ts === '333.902')).toBe(true);
+
+      handlerAny.syncFollowupReactions = sync;
+      await settle();
+    });
+
     it('emits a coded reject when the queue is over capacity', async () => {
       process.env.SOMA_FOLLOWUP_QUEUE_CAPACITY = '1';
       const scoped = new SlackHandler({ client: {}, assistant: vi.fn() } as any, claudeHandler as any, {} as any, {
@@ -3032,6 +3071,15 @@ describe('SlackHandler — follow-up queue host', () => {
 
       const rejects = opsFor('reject');
       expect(rejects.some((metric: any) => metric.reason === 'capacity')).toBe(true);
+
+      // #1474 — an answer to the model's question the full queue did not keep is a failure its sender hears: the
+      // answer handler took the question off the session, and gives it back on this error. A plain message ends as
+      // above (the thread is told), without a throw.
+      // Refused at once: the thread's notice waits in Slack's line on its own, and does not hold the give-back.
+      addReaction.mockImplementationOnce(() => new Promise(() => undefined));
+      await expect(
+        scoped.handleMessage(message({ ts: '333.333', text: '1', questionAnswer: true } as any), say()),
+      ).rejects.toThrow(AnswerNotKeptError);
 
       gate.resolve({ hasPendingChoice: false });
       await first;
@@ -3139,6 +3187,19 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(startWithContinuation.mock.calls.length).toBe(before);
       expect(items()).toHaveLength(queuedBefore + 1);
       expect(items().at(-1).message.ts).toBe('555.666');
+    });
+
+    it('refuses an answer to the model’s question it could not park, at once, so the question goes back (#1474)', async () => {
+      await parkOneAndGoIdle();
+      handler.prepareFollowupShutdown();
+      saveError = new Error('disk full');
+      addReaction.mockImplementationOnce(() => new Promise(() => undefined));
+
+      await expect(
+        handler.handleMessage(message({ ts: '555.888', text: '1', questionAnswer: true } as any), say()),
+      ).rejects.toThrow(AnswerNotKeptError);
+
+      saveError = undefined;
     });
 
     it('fails loud and keeps accepting work when the freeze cannot be persisted', async () => {
@@ -9158,6 +9219,164 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(registrySession.actionPanel.pendingQuestion).toEqual(singleQuestion());
     });
 
+    // #1474 round 4 (astra): the person's typed reply to a question the running turn asked is its answer, taken when
+    // stored — the turn does not end waiting on it, and the reply runs next instead of waiting behind its own question.
+    it('T2 a typed reply queued behind the turn that asked answers it when stored: the reply runs when the turn ends', async () => {
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const first = handler.handleMessage(message({ ts: '333.500', text: '작업해' }), say());
+      await tick();
+      // The running turn asks (the question card is up) and keeps working.
+      registrySession.activityState = 'waiting';
+      registrySession.actionPanel = { waitingForChoice: true, pendingQuestion: singleQuestion() };
+
+      await handler.handleMessage(message({ ts: '333.501', text: '머지하고 배포해' }), say());
+
+      expect(registrySession.actionPanel.waitingForChoice).toBe(false);
+      expect(registrySession.actionPanel.pendingQuestion).toBeUndefined();
+      expect(items().find((item: any) => item.message.ts === '333.501')?.message.questionAnswer).toBe(true);
+      // The card leaves NEEDS YOU: the session works on, the answer waits behind the turn (round 5, grok/astra).
+      expect(claudeHandler.setActivityStateByKey).toHaveBeenCalledWith(SESSION_KEY, 'working');
+
+      gate.resolve({ hasPendingChoice: true }); // the turn's own snapshot: it asked
+      await first;
+      await vi.waitFor(() => expect(startWithContinuation).toHaveBeenCalledTimes(2));
+      expect(startWithContinuation.mock.calls[1][0]).toContain('머지하고 배포해');
+    });
+
+    // #1474 round 5 (fable): a command typed while the question is open closes it (the person's word, #911) but is not
+    // marked as the answer — it still runs as the command it is.
+    it('T2 a command queued while the question is open closes it, and is not stored as an answer', async () => {
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const first = handler.handleMessage(message({ ts: '333.520', text: '작업해' }), say());
+      await tick();
+      registrySession.actionPanel = { waitingForChoice: true, pendingQuestion: singleQuestion() };
+
+      await handler.handleMessage(message({ ts: '333.521', text: '%model sonnet 계속해' }), say());
+
+      expect(registrySession.actionPanel.waitingForChoice).toBe(false);
+      expect(registrySession.actionPanel.pendingQuestion).toBeUndefined();
+      const stored = items().find((item: any) => item.message.ts === '333.521');
+      expect(stored).toBeDefined();
+      expect(stored.message.questionAnswer).toBeUndefined();
+
+      gate.resolve({ hasPendingChoice: true });
+      await first;
+    });
+
+    // #1474 round 9 (review-of-legends, correctness): a command that only answers itself (`help`, a bare `%model x`) never
+    // reaches the model as a turn — it is no answer, and the question stays open.
+    it.each([
+      ['help'],
+      ['%model sonnet'],
+    ])('T2 a command that starts no turn (%s), typed while the question is open, leaves it open', async (text) => {
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const first = handler.handleMessage(message({ ts: '333.525', text: '작업해' }), say());
+      await tick();
+      registrySession.actionPanel = { waitingForChoice: true, pendingQuestion: singleQuestion() };
+      handlerAny.threadPanel.clearChoice.mockClear();
+      routeCommand.mockResolvedValueOnce({ handled: true }); // the router answers it (its card), no prompt
+
+      await handler.handleMessage(message({ ts: '333.526', text }), say());
+
+      expect(registrySession.actionPanel.waitingForChoice).toBe(true);
+      expect(registrySession.actionPanel.pendingQuestion).toEqual(singleQuestion());
+      expect(handlerAny.threadPanel.clearChoice).not.toHaveBeenCalled();
+      expect(items().find((item: any) => item.message.ts === '333.526')).toBeUndefined();
+
+      gate.resolve({ hasPendingChoice: true });
+      await first;
+    });
+
+    // #1474 round 13 (astra): a typed reply dispatched at once answers the question — its forms are taken before the
+    // panel's redraw waits in Slack's line, so a submit on one meanwhile is no second answer.
+    it('T2 a dispatched typed answer takes the question’s forms before its Slack redraw', async () => {
+      registrySession.activityState = 'waiting';
+      registrySession.actionPanel = { waitingForChoice: true, pendingQuestion: singleQuestion() };
+      const redraw = deferred<void>();
+      handlerAny.threadPanel.clearChoice = vi.fn(() => redraw.promise);
+      const takeForms = vi.spyOn(handlerAny.actionHandlers, 'takeAnsweredForms');
+
+      const answering = handler.handleMessage(message({ ts: '333.540', text: '왼쪽으로' }), say());
+      await vi.waitFor(() => expect(handlerAny.threadPanel.clearChoice).toHaveBeenCalled());
+
+      expect(takeForms).toHaveBeenCalledWith(SESSION_KEY, expect.any(Array)); // while the redraw still waits
+      // The whole question is off the session before the redraw: a dashboard answer finds nothing to claim (round 14).
+      expect(registrySession.actionPanel.pendingQuestion).toBeUndefined();
+      expect(claudeHandler.setActivityStateByKey).toHaveBeenCalledWith(SESSION_KEY, 'working');
+      redraw.resolve();
+      await answering;
+    });
+
+    // #1474 round 15 (review-of-legends): the question closed before its redraw — a redraw that fails does not stop the
+    // answer from running.
+    it('T2 a dispatched typed answer runs even when its panel redraw fails', async () => {
+      registrySession.activityState = 'waiting';
+      registrySession.actionPanel = { waitingForChoice: true, pendingQuestion: singleQuestion() };
+      handlerAny.threadPanel.clearChoice = vi.fn().mockRejectedValue(new Error('slack down'));
+
+      await handler.handleMessage(message({ ts: '333.541', text: '왼쪽으로' }), say());
+
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      expect(startWithContinuation.mock.calls[0][0]).toContain('왼쪽으로');
+    });
+
+    // #1474 round 6 (grok): a file alone does not answer the question — the person's words do.
+    it('T2 a message with only a file leaves the open question open', async () => {
+      registrySession.activityState = 'waiting';
+      registrySession.actionPanel = { waitingForChoice: true, pendingQuestion: singleQuestion() };
+      handlerAny.threadPanel.clearChoice.mockClear();
+
+      await handler.handleMessage(
+        message({ ts: '333.530', text: '', files: [{ id: 'F1', name: 'shot.png' }] } as any),
+        say(),
+      );
+
+      expect(handlerAny.threadPanel.clearChoice).not.toHaveBeenCalled();
+      expect(registrySession.actionPanel.pendingQuestion).toEqual(singleQuestion());
+    });
+
+    // #1474 round 4 (astra): an answer is the person's words to the model — never a command, a directive or `!`.
+    it.each([
+      ['help'],
+      ['!'],
+      ['%model sonnet'],
+    ])('T2 an answer reading %s is handed to the model, not routed', async (text) => {
+      registrySession.activityState = 'waiting';
+      registrySession.actionPanel = { waitingForChoice: false };
+
+      await handler.handleMessage(message({ ts: '333.510', text, questionAnswer: true } as any), say());
+
+      expect(routeCommand).not.toHaveBeenCalled();
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      expect(startWithContinuation.mock.calls[0][0]).toContain(text);
+    });
+
+    // #1474 round 2 (astra/fable): the answer handler recorded the answer — one chunk of a form leaves the others open.
+    it('T2 an answer the answer handler recorded closes nothing more: the form’s other chunks stay open', async () => {
+      const remaining = { kind: 'multi', turnId: 'turn-1', formIds: ['form-b'] };
+      registrySession.activityState = 'waiting';
+      registrySession.actionPanel = {
+        waitingForChoice: true,
+        pendingQuestion: singleQuestion(),
+        pendingChoice: remaining,
+      };
+      handlerAny.threadPanel.clearChoice.mockClear();
+
+      await handler.handleMessage(
+        message({ ts: '333.448', text: 'A?: 1. 빠른 수정', questionAnswer: true } as any),
+        say(),
+      );
+
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      expect(handlerAny.threadPanel.clearChoice).not.toHaveBeenCalled();
+      expect(registrySession.actionPanel.waitingForChoice).toBe(true);
+      expect(registrySession.actionPanel.pendingQuestion).toEqual(singleQuestion());
+      expect(registrySession.actionPanel.pendingChoice).toBe(remaining);
+    });
+
     // astra review P1 (second round): one answer per question across Slack AND the dashboard.
     describe('one answer per question across Slack and the dashboard', () => {
       const QUESTION_TS = 'q-msg';
@@ -9272,14 +9491,24 @@ describe('SlackHandler — follow-up queue host', () => {
 
       it('a Slack click on the question the dashboard is answering is refused — the answer runs once', async () => {
         openSingle();
+        handlerAny.slackApi.updateMessage = vi.fn(() => gate.promise);
         const [dashboard] = await race(dashboardAnswer, slackClick);
 
         expect(dashboard.status).toBe('fulfilled');
         expect(startWithContinuation).toHaveBeenCalledTimes(1);
+        // #1474 — the dashboard answer took the question off the session before any Slack write, and remembers its
+        // card: the click is told the question was answered, and the answered card is not marked invalid.
         expect(handlerAny.slackApi.postEphemeral).toHaveBeenCalledWith(
           CHANNEL,
           'U_OWNER',
-          expect.stringContaining('이미 답변'),
+          expect.stringContaining('이미 답변을 받았습니다'),
+        );
+        expect(handlerAny.slackApi.updateMessage).not.toHaveBeenCalledWith(
+          CHANNEL,
+          QUESTION_TS,
+          expect.stringContaining('더 이상 유효하지 않습니다'),
+          expect.any(Array),
+          [],
         );
       });
 
@@ -9352,10 +9581,12 @@ describe('SlackHandler — follow-up queue host', () => {
         expect(dashboard.status).toBe('fulfilled');
         expect(startWithContinuation).toHaveBeenCalledTimes(1);
         expect(startWithContinuation.mock.calls[0][0]).toContain('anyone. 누구나');
+        // #1474 — the dashboard answer took the whole question (its Slack forms with it) before any Slack write: the
+        // form submit is told the question was answered.
         expect(handlerAny.slackApi.postEphemeral).toHaveBeenCalledWith(
           CHANNEL,
           'U_OWNER',
-          expect.stringContaining('이미 답변'),
+          expect.stringContaining('이미 답변을 받았습니다'),
         );
       });
     });

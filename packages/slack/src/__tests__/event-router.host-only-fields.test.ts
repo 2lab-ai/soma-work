@@ -19,6 +19,8 @@ describe('withoutHostOnlyFields', () => {
       epicOverride: true,
       // SSOT 2026-11-12 — a Slack event cannot link itself to someone's source thread.
       sourceThreadLink: { channel: 'C9', threadTs: '9.9' },
+      // #1474 — a Slack event cannot pass itself off as the owner's answer to the model's question.
+      questionAnswer: true,
     };
     const clean = withoutHostOnlyFields(event) as Record<string, unknown>;
     expect(clean).toEqual({ user: 'U1', channel: 'C1', ts: '1.1', text: 'hi' });

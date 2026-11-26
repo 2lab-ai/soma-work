@@ -40,6 +40,9 @@ export class FormActionHandler {
       const fallbackThreadTs = body.message?.thread_ts || messageTs;
       const threadTs = this.resolveSessionThreadTs(sessionKey, fallbackThreadTs);
 
+      // #1474 — the question this card asked is already answered (its edit is still on its way): no input to open.
+      if (await this.choiceHandler.refuseAnswered(sessionKey, channel, body.user?.id, messageTs)) return;
+
       await client.views.open({
         trigger_id: triggerId,
         view: this.buildCustomInputModal(
@@ -69,6 +72,9 @@ export class FormActionHandler {
       const messageTs = body.message?.ts;
       const fallbackThreadTs = body.message?.thread_ts || messageTs;
       const threadTs = this.resolveSessionThreadTs(sessionKey, fallbackThreadTs);
+
+      // #1474 — the form is already answered (its edit is still on its way): no input to open.
+      if (await this.choiceHandler.refuseAnswered(sessionKey, channel, body.user?.id, formId, messageTs)) return;
 
       // P3 (PHASE>=3): inherit turnId from the PendingFormStore record so the
       // modal submission path can classify stale vs live clicks.
@@ -107,6 +113,17 @@ export class FormActionHandler {
         inputLength: inputValue.length,
         userId,
       });
+
+      // #1474 — a card or form already answered refuses the typed answer first, whoever sends it (round 4, fable).
+      if (
+        await this.choiceHandler.refuseAnswered(
+          sessionKey,
+          channel,
+          userId,
+          ...(type === 'multi' ? [formId, messageTs] : [messageTs]),
+        )
+      )
+        return;
 
       // #767 — a typed answer from someone who is not the owner (nor approved) is an instruction:
       // checked before the question is touched. A single question's answer goes to the message
@@ -183,7 +200,6 @@ export class FormActionHandler {
     inputValue: string,
     payloadTurnId?: string,
   ): Promise<void> {
-    const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
     const completedText = `✅ *${question}*\n직접 입력: _${inputValue.substring(0, 200)}${inputValue.length > 200 ? '...' : ''}_`;
     const completedBlocks = [
       {
@@ -191,6 +207,10 @@ export class FormActionHandler {
         text: { type: 'mrkdwn', text: completedText },
       },
     ];
+
+    // #1474 — a card already answered (a modal opened before, or the edit still on its way): told so, before the
+    // classifier would read it stale and mark the answered card invalid.
+    if (await this.choiceHandler.refuseAnswered(sessionKey, channel, userId, messageTs)) return;
 
     // P3 (PHASE>=3) classifier — reuse the same matrix as ChoiceActionHandler.
     const branch = classifyClick(this.ctx.claudeHandler, { sessionKey, payloadTurnId, messageTs });
@@ -206,76 +226,17 @@ export class FormActionHandler {
       return;
     }
 
-    if (branch === 'p3' && session && channel) {
-      const resolved = await this.ctx.threadPanel
-        ?.resolveChoice(session, sessionKey, channel, completedText, completedBlocks)
-        .catch((err) => {
-          this.logger.warn('resolveChoice (custom input) threw — falling back to legacy', {
-            sessionKey,
-            error: (err as Error)?.message ?? String(err),
-          });
-          return false;
-        });
-      if (resolved) {
-        if (session.actionPanel) {
-          session.actionPanel.pendingQuestion = undefined;
-        }
-        try {
-          this.ctx.claudeHandler.getSessionRegistry?.()?.persistAndBroadcast?.(sessionKey);
-        } catch (err) {
-          this.logger.debug('handleSingleCustomInput: persistAndBroadcast failed', {
-            sessionKey,
-            error: (err as Error)?.message ?? String(err),
-          });
-        }
-        this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'working');
-        const say = this.createSayFn(channel);
-        const resolvedThreadTs = this.resolveSessionThreadTs(sessionKey, threadTs);
-        await this.ctx.messageHandler(
-          { user: userId, channel, thread_ts: resolvedThreadTs, ts: messageTs, text: inputValue },
-          say,
-        );
-        return;
-      }
-      // Fall through to legacy below.
-    }
-
-    const completionMessageTs = this.resolveChoiceMessageTs(sessionKey, messageTs);
-
-    // 메시지 업데이트 (모든 동기화 대상에 대해)
-    if (channel) {
-      const targetTimestamps = this.resolveChoiceSyncMessageTs(sessionKey, messageTs, completionMessageTs);
-      for (const targetTs of targetTimestamps) {
-        try {
-          await this.ctx.slackApi.updateMessage(
-            channel,
-            targetTs,
-            completedText,
-            completedBlocks,
-            [], // 기존 attachments(버튼) 제거
-          );
-        } catch (error) {
-          this.logger.warn('Failed to update choice message after custom input', { targetTs, error });
-        }
-      }
-    }
-
-    // Claude에 전송
-    if (session) {
-      await this.ctx.threadPanel?.clearChoice(sessionKey);
-      // TODO: Delete tracked completion messages on custom input submission
-      // Trace: docs/archive/features/turn-summary-lifecycle/trace.md, S8
-      // CompletionMessageTracker.deleteAll(sessionKey, ...) should be called here.
-      // Wiring requires passing the tracker through FormActionContext,
-      // which is a larger change.
-      this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'working');
-      const say = this.createSayFn(channel);
-      const resolvedThreadTs = this.resolveSessionThreadTs(sessionKey, threadTs);
-      await this.ctx.messageHandler(
-        { user: userId, channel, thread_ts: resolvedThreadTs, ts: messageTs, text: inputValue },
-        say,
-      );
-    }
+    // #1474 — taken like a button's answer: held, recorded, handed on, then drawn (ChoiceActionHandler).
+    await this.choiceHandler.answerWithText({
+      sessionKey,
+      channel,
+      threadTs,
+      messageTs,
+      userId,
+      text: inputValue,
+      completedText,
+      completedBlocks,
+    });
   }
 
   private async handleMultiCustomInput(
@@ -289,9 +250,18 @@ export class FormActionHandler {
     userId: string,
     inputValue: string,
   ): Promise<void> {
+    // #1474 — the form is already answered: told so, instead of a form that silently is not there.
+    if (await this.choiceHandler.refuseAnswered(sessionKey, channel, userId, formId, messageTs)) return;
+
     const pendingForm = this.formStore.get(formId);
     if (!pendingForm) {
       this.logger.warn('Pending form not found for custom input', { formId });
+      // #1474 — told, not dropped in silence (a restart or an expiry took the form) (round 4, grok).
+      if (channel && userId) {
+        await this.ctx.slackApi
+          .postEphemeral(channel, userId, '❌ 폼을 찾을 수 없습니다. 시간이 만료되었을 수 있습니다.')
+          .catch(() => undefined);
+      }
       return;
     }
 
@@ -320,6 +290,15 @@ export class FormActionHandler {
 
     const totalQuestions = pendingForm.questions.length;
     const answeredCount = Object.keys(pendingForm.selections).length;
+
+    // 모든 질문 완료 시 — this typed answer completes the form: it is answered at once (#1474 — recorded and handed on
+    // before any Slack write; the form is drawn as answered). The intermediate form redraw below is for a form
+    // still waiting on other answers.
+    if (answeredCount === totalQuestions) {
+      const resolvedThreadTs = this.resolveSessionThreadTs(sessionKey, threadTs);
+      await this.choiceHandler.completeMultiChoiceForm(pendingForm, userId, channel, resolvedThreadTs, messageTs);
+      return;
+    }
 
     // 폼 UI 업데이트
     const choicesData: UserChoices = {
@@ -372,14 +351,10 @@ export class FormActionHandler {
         }
       }
 
+      // #1474 — answered while the edits above waited (the dashboard, another chunk, a typed reply — `isAnswered`
+      // also reads "nothing open on the session"): attaching the form would raise the answered question's bit again.
+      if (!this.formStore.get(formId) || this.choiceHandler.isAnswered(sessionKey, formId)) return;
       await this.ctx.threadPanel?.attachChoice(sessionKey, updatedPayload, pendingForm.messageTs);
-    }
-
-    // 모든 질문 완료 시 — delegate to ChoiceActionHandler.completeMultiChoiceForm,
-    // which already routes through ThreadPanel.resolveMultiChoice under P3.
-    if (answeredCount === totalQuestions) {
-      const resolvedThreadTs = this.resolveSessionThreadTs(sessionKey, threadTs);
-      await this.choiceHandler.completeMultiChoiceForm(pendingForm, userId, channel, resolvedThreadTs, messageTs);
     }
   }
 
@@ -456,11 +431,6 @@ export class FormActionHandler {
   private resolveSessionThreadTs(sessionKey: string, fallbackThreadTs: string | undefined): string | undefined {
     const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
     return session?.threadRootTs || session?.threadTs || fallbackThreadTs;
-  }
-
-  private resolveChoiceMessageTs(sessionKey: string, fallbackMessageTs: string | undefined): string | undefined {
-    const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
-    return session?.actionPanel?.choiceMessageTs || fallbackMessageTs;
   }
 
   private resolveChoiceSyncMessageTs(
