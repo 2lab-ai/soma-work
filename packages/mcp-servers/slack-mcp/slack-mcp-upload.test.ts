@@ -6,6 +6,7 @@
  */
 
 import * as fs from 'fs/promises';
+import * as os from 'os';
 import * as path from 'path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ALLOWED_MEDIA_EXTENSIONS, getMediaType, validateFilePath } from './helpers/file-validator.js';
@@ -80,6 +81,79 @@ describe('validateFilePath — real filesystem', () => {
     await fs.writeFile(realFile, 'real');
     await fs.symlink(realFile, linkFile);
     await expect(validateFilePath(linkFile)).rejects.toThrow('Symlinks not allowed');
+  });
+});
+
+describe("validateFilePath — a non-admin's own root", () => {
+  let base: string;
+  let own: string;
+  let other: string;
+
+  beforeAll(async () => {
+    base = await fs.mkdtemp(path.join('/tmp', 'slack-mcp-roots-'));
+    own = path.join(base, 'own');
+    other = path.join(base, 'other');
+    await fs.mkdir(own, { recursive: true });
+    await fs.mkdir(other, { recursive: true });
+    await fs.writeFile(path.join(own, 'mine.png'), 'png');
+    // Different bytes, so an upload of the wrong file would show.
+    await fs.writeFile(path.join(other, 'theirs.png'), 'THEIRS');
+    // A directory link inside the own root that points at another user's folder.
+    await fs.symlink(other, path.join(own, 'via-link'));
+  });
+
+  afterAll(async () => {
+    await fs.rm(base, { recursive: true, force: true });
+  });
+
+  it('accepts a file in the own root, and hands back a snapshot of it, not the path the session can swap', async () => {
+    const checked = await validateFilePath(path.join(own, 'mine.png'), [own]);
+    expect(checked.size).toBe(3);
+    expect(checked.resolvedPath).not.toBe(path.join(own, 'mine.png'));
+    expect(path.basename(checked.resolvedPath)).toBe('mine.png');
+    // Swapping the checked path afterwards changes nothing that is uploaded.
+    await fs.rm(path.join(own, 'mine.png'));
+    await fs.symlink(path.join(other, 'theirs.png'), path.join(own, 'mine.png'));
+    expect(await fs.readFile(checked.resolvedPath, 'utf8')).toBe('png');
+    await checked.cleanup?.();
+    await expect(fs.stat(checked.resolvedPath)).rejects.toThrow();
+  });
+
+  it("refuses another user's file, by its path or through a linked parent directory", async () => {
+    await expect(validateFilePath(path.join(other, 'theirs.png'), [own])).rejects.toThrow(/your own folder/);
+    await expect(validateFilePath(path.join(own, 'via-link', 'theirs.png'), [own])).rejects.toThrow(/your own folder/);
+  });
+
+  it('a downloaded thread file in the uploads directory outside /tmp can be sent on', async () => {
+    const uploads = await fs.mkdtemp(path.join(os.tmpdir(), 'slack-mcp-uploads-'));
+    try {
+      const file = path.join(uploads, 'thread.png');
+      await fs.writeFile(file, 'png');
+      // A non-admin: its own roots include the uploads directory.
+      const asUser = await validateFilePath(file, [own, uploads]);
+      expect(asUser.size).toBe(3);
+      await asUser.cleanup?.();
+      // An admin: the uploads directory beside /tmp.
+      await expect(validateFilePath(file, [], [uploads])).resolves.toMatchObject({ resolvedPath: file });
+      // Neither: outside /tmp.
+      if (!file.startsWith('/tmp/') && !file.startsWith('/private/tmp/')) {
+        await expect(validateFilePath(file)).rejects.toThrow(/restricted to \/tmp/);
+      }
+    } finally {
+      await fs.rm(uploads, { recursive: true, force: true });
+    }
+  });
+
+  it('an allowed root that became a link is ignored, so its target is not authorized', async () => {
+    const swappedRoot = path.join(base, 'swapped-root');
+    await fs.symlink(other, swappedRoot);
+    await expect(validateFilePath(path.join(swappedRoot, 'theirs.png'), [swappedRoot])).rejects.toThrow(
+      /your own folder/,
+    );
+  });
+
+  it('without roots (an admin) the /tmp rule alone applies', async () => {
+    await expect(validateFilePath(path.join(other, 'theirs.png'))).resolves.toMatchObject({ size: 6 });
   });
 });
 

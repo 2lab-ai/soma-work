@@ -554,21 +554,26 @@ describe('FileHandler.formatFilePrompt — a long text file is previewed and its
     }
   });
 
-  it('a copy that cannot be made falls back to the download path, still with the Read note', async () => {
-    const f = textFile('notes.txt', 'L'.repeat(10001));
-    // os.tmpdir() reads TMPDIR on every call: a temp dir that does not exist makes the copy's mkdtemp fail.
-    const saved = process.env.TMPDIR;
-    process.env.TMPDIR = pathx.join(pathx.dirname(f.path), `fh-missing-${Date.now()}`, 'nested');
-    try {
-      const out = await handler.formatFilePrompt([f], '');
-      expect(out).toContain(`Path: ${f.path}`);
-      expect(out).toMatch(/Read tool/);
-    } finally {
-      if (saved === undefined) delete process.env.TMPDIR;
-      else process.env.TMPDIR = saved;
-      await handler.cleanupTempFiles([f]);
-    }
-  });
+  // A directory the bot cannot write is how the copy is made to fail; root writes it anyway.
+  it.skipIf(process.getuid?.() === 0)(
+    'a copy that cannot be made falls back to the download path, still with the Read note',
+    async () => {
+      // The copy is made next to the download: a directory the bot cannot write makes the copy's mkdtemp fail.
+      const dir = fsx.mkdtempSync(pathx.join(os.tmpdir(), 'fh-readonly-'));
+      const p = pathx.join(dir, 'slack-file-1-notes.txt');
+      fsx.writeFileSync(p, 'L'.repeat(10001), 'utf-8');
+      const f: ProcessedFile = { ...textFile('notes.txt', ''), path: p, tempPath: p, size: 10001 };
+      fsx.chmodSync(dir, 0o500);
+      try {
+        const out = await handler.formatFilePrompt([f], '');
+        expect(out).toContain(`Path: ${f.path}`);
+        expect(out).toMatch(/Read tool/);
+      } finally {
+        fsx.chmodSync(dir, 0o700);
+        fsx.rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('an instruction that is only pasted text is not framed as files to analyse', async () => {
     const f = textFile('pasted-text-20261104-090507.txt', '이 스펙대로 구현해줘');
@@ -608,5 +613,88 @@ describe('FileHandler.formatFilePrompt — a long text file is previewed and its
     } finally {
       await handler.cleanupTempFiles([f]);
     }
+  });
+});
+
+/**
+ * Uploads are saved in the uploader's own part of the data directory: their sessions may read it (the read
+ * boundary lets the file tools and the shell through to it), other users' sessions may not, and no session
+ * may write it — the file a turn reads is the one the bot saved.
+ */
+describe('FileHandler — where uploads are saved', () => {
+  async function serveOnePng(): Promise<{ url: string; close: () => void; size: number }> {
+    const http = await import('node:http');
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0]);
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'image/png' });
+      res.end(png);
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+    const port = (server.address() as { port: number }).port;
+    return { url: `http://127.0.0.1:${port}/f`, close: () => server.close(), size: png.length };
+  }
+
+  it("saves a user's upload in DATA_DIR/{userId}/uploads, a private directory", async () => {
+    const { DATA_DIR } = await import('../env-paths');
+    const served = await serveOnePng();
+    const handler = new FileHandler();
+    try {
+      const [result] = await handler.downloadAndProcessFiles(
+        [{ id: 'F1', name: 'shot.png', mimetype: 'image/png', size: served.size, url_private_download: served.url }],
+        'U0UPLOAD01',
+      );
+      const dir = pathx.join(DATA_DIR, 'U0UPLOAD01', 'uploads');
+      expect(pathx.dirname(result.path)).toBe(dir);
+      expect(fsx.statSync(dir).mode & 0o777).toBe(0o700);
+      await handler.cleanupTempFiles([result]);
+      expect(fsx.existsSync(result.path)).toBe(false);
+    } finally {
+      served.close();
+    }
+  });
+
+  it("when the user's uploads directory cannot be made, the files are kept as metadata, never saved elsewhere", async () => {
+    const { DATA_DIR } = await import('../env-paths');
+    // A file where the user's data directory should be makes the directory impossible to create.
+    const blocker = pathx.join(DATA_DIR, 'U0UPLOAD03');
+    fsx.writeFileSync(blocker, 'not a directory');
+    try {
+      const out = await new FileHandler().downloadAndProcessFiles(
+        [
+          {
+            id: 'F3',
+            name: 'shot.png',
+            mimetype: 'image/png',
+            size: 10,
+            url_private_download: 'https://files.slack.com/x',
+          },
+        ],
+        'U0UPLOAD03',
+      );
+      expect(out).toHaveLength(1);
+      expect(out[0]).toMatchObject({ name: 'shot.png', path: '', unavailable: 'download_failed' });
+    } finally {
+      fsx.rmSync(blocker, { force: true });
+    }
+  });
+
+  it('without a usable user id, saves to the OS temp dir as before', async () => {
+    const { uploadsDirFor } = await import('../file-handler');
+    expect(uploadsDirFor(undefined)).toBe(os.tmpdir());
+    expect(uploadsDirFor('../U1')).toBe(os.tmpdir());
+    expect(uploadsDirFor('U1', '/data')).toBe('/data/U1/uploads');
+  });
+
+  it('removes kept text directories older than a week, and keeps newer ones', async () => {
+    const { DATA_DIR } = await import('../env-paths');
+    const dir = pathx.join(DATA_DIR, 'U0UPLOAD02', 'uploads');
+    fsx.mkdirSync(dir, { recursive: true });
+    const old = fsx.mkdtempSync(pathx.join(dir, 'soma-text-'));
+    const fresh = fsx.mkdtempSync(pathx.join(dir, 'soma-text-'));
+    const eightDaysAgo = (Date.now() - 8 * 24 * 60 * 60 * 1000) / 1000;
+    fsx.utimesSync(old, eightDaysAgo, eightDaysAgo);
+    await new FileHandler().downloadAndProcessFiles([], 'U0UPLOAD02');
+    expect(fsx.existsSync(old)).toBe(false);
+    expect(fsx.existsSync(fresh)).toBe(true);
   });
 });

@@ -44,6 +44,7 @@ import {
   checkEnvPluginMcpAccess,
   checkEnvSkillAccess,
   type EnvSkillRegistry,
+  envSkillReadableSkillDirs,
   envSkillRegistry,
   envSkillSandboxDenyRead,
 } from '../../env-skill-registry';
@@ -69,6 +70,12 @@ import { extendSandboxWithGrant, loadDeploySandboxGrant } from '../../sandbox/de
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
 import { launchAllFrom, mcpLaunchDir, wrapPluginLaunchers } from '../../sandbox/mcp-launch-dir';
 import { projectConfigRoot } from '../../sandbox/project-config-root';
+import {
+  ensureClaudeTmpDir,
+  tenantReadBoundary,
+  throughLink,
+  userUploadsDir,
+} from '../../sandbox/tenant-read-boundary';
 import { checkSecretAccess } from '../../secrets/secret-access';
 import { loadServerToolsSection } from '../../secrets/secret-usage';
 import { ADMIN_ONLY_SERVER_TOOLS } from '../../server-tools-admin/catalog';
@@ -206,6 +213,8 @@ export interface BuildStreamOptionsDeps {
    * the registry can key by attempt without re-deriving it.
    */
   onIncidentEvidence?: (request: IncidentRequestLike, evidence: IncidentEvidence) => void;
+  /** Parent of the non-admin CLI temp directories (default `CLAUDE_TMP_ROOT`); tests point it at a scratch dir. */
+  claudeTmpRoot?: string;
 }
 
 /** A `Skill` call step 6b denied: who asked, for which environment skill, in which thread. */
@@ -899,8 +908,9 @@ export async function buildStreamOptions(
     // wildcards, symbolic links — what step 6b's text check cannot see). OS-enforced read deny
     // of their directories, unless the all-environment-skills grant opens them.
     if (contextUser && !isAdminUser(contextUser)) {
-      const envRegistry = deps.getEnvSkillRegistry?.();
-      const denyRead = envRegistry ? envSkillSandboxDenyRead(envRegistry, contextUser) : [];
+      // Without the plugin manager's registry, the environment plugins are read from config.json (fail closed).
+      const envRegistry = deps.getEnvSkillRegistry?.() ?? envSkillRegistry(undefined, PLUGINS_DIR, CONFIG_FILE);
+      const denyRead = envSkillSandboxDenyRead(envRegistry, contextUser);
       if (denyRead.length > 0) {
         sandboxConfig.filesystem = {
           ...(sandboxConfig.filesystem ?? {}),
@@ -1096,7 +1106,163 @@ export async function buildStreamOptions(
     options.plugins = launchers.plugins;
   }
 
+  // Reads: a non-admin session reads its own work area and the code it runs, nothing else of the host
+  // (`src/sandbox/tenant-read-boundary.ts`). Last, once the plugins and the write roots are final.
+  if (!sandboxDisabled && options.sandbox && contextUser && sandboxUserDir && !isAdminUser(contextUser)) {
+    const envRegistry = deps.getEnvSkillRegistry?.() ?? envSkillRegistry(undefined, PLUGINS_DIR, CONFIG_FILE);
+    const scope = slackContext
+      ? { channel: slackContext.channel, threadTs: slackContext.threadTs }
+      : execCtx
+        ? { channel: execCtx.sessionKey }
+        : undefined;
+    applyTenantReadBoundary(
+      options,
+      {
+        user: contextUser,
+        userRoot: sandboxUserDir,
+        workingDirectory,
+        queryEnv,
+        grantedSkillDirs: envSkillReadableSkillDirs(envRegistry, contextUser, scope),
+        claudeTmpRoot: deps.claudeTmpRoot,
+      },
+      logger,
+    );
+  }
+  if (contextUser && !isAdminUser(contextUser)) {
+    addUploadRoots(options, [workingDirectory, options.env?.CLAUDE_CODE_TMPDIR]);
+  }
+
   return attachStderrCapture(options, logger, processOwner);
+}
+
+/**
+ * Close a non-admin session's reads to its own work area (see `tenantReadBoundary`): the file tools
+ * through the CLI's working-directory read block, the shell through the sandbox's read lists, and the
+ * CLI's temp directory moved into the user's root.
+ */
+function applyTenantReadBoundary(
+  options: Options,
+  input: {
+    user: string;
+    userRoot: string;
+    workingDirectory?: string;
+    queryEnv: Record<string, string | undefined>;
+    grantedSkillDirs: string[];
+    claudeTmpRoot?: string;
+  },
+  logger: BuildStreamOptionsDeps['logger'],
+): void {
+  // A session folder the session replaced with a link would make the CLI treat where it points as the working
+  // directory: the session does not start.
+  if (input.workingDirectory && throughLink(input.workingDirectory, process.platform)) {
+    throw new Error(`The session folder is reached through a link; not starting: ${input.workingDirectory}`);
+  }
+  // A session folder that could not be made leaves the CLI in the daemon's directory, which the file tools would
+  // then treat as the working directory: the session does not start.
+  if (input.workingDirectory && options.cwd !== input.workingDirectory) {
+    throw new Error(`The session folder could not be made; not starting: ${input.workingDirectory}`);
+  }
+  // Without a session folder the CLI would run in the daemon's directory and the file tools would read it as their
+  // working directory: give them an empty one instead.
+  if (!options.cwd) {
+    options.cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'soma-no-cwd-'));
+    logger.warn('A non-admin turn without a session folder runs in an empty directory', { user: input.user });
+  }
+  // The user's root, also a working directory of the file tools, is kept only where it really is.
+  if (options.additionalDirectories) {
+    const linked = options.additionalDirectories.filter((dir) => throughLink(dir, process.platform));
+    if (linked.length > 0) {
+      logger.warn('Working directories reached through a link are left out', { user: input.user, dirs: linked });
+      options.additionalDirectories = options.additionalDirectories.filter((dir) => !linked.includes(dir));
+    }
+  }
+  const sandbox = options.sandbox as NonNullable<Options['sandbox']>;
+  const filesystem = sandbox.filesystem ?? {};
+  sandbox.filesystem = filesystem;
+  const home = os.homedir();
+
+  // The CLI's temp directory (cwd tracking, background output, TMPDIR of its commands) is otherwise one directory
+  // shared by every user's session, under the closed temp root. Its own directory under a parent only the bot
+  // writes, so the session cannot swap it — also for a speaker new to someone else's thread, who has no root yet.
+  const claudeTmpDir = ensureClaudeTmpDir(input.user, input.claudeTmpRoot);
+  if (claudeTmpDir) {
+    if (!options.env) options.env = {};
+    options.env.CLAUDE_CODE_TMPDIR = claudeTmpDir;
+    filesystem.allowWrite = [...(filesystem.allowWrite ?? []), claudeTmpDir];
+  } else {
+    logger.warn("The session's temp directory could not be made: its shell keeps the CLI's default", {
+      user: input.user,
+    });
+  }
+  // Made before the lists are built: a missing directory is not opened. Thread files land in the uploads directory
+  // mid-turn; the CLI writes its shell snapshot (which every command sources) on the first run of a config dir.
+  const claudeConfigDir = input.queryEnv.CLAUDE_CONFIG_DIR || path.join(home, '.claude');
+  const uploads = userUploadsDir(DATA_DIR, input.user);
+  for (const dir of [uploads, path.join(claudeConfigDir, 'shell-snapshots')]) {
+    if (!dir) continue;
+    try {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    } catch (error) {
+      logger.warn('A directory the session reads could not be made', { user: input.user, dir, error });
+    }
+  }
+  const boundary = tenantReadBoundary({
+    platform: process.platform,
+    home,
+    tmpdir: os.tmpdir(),
+    writeRoots: [...(input.workingDirectory ? [input.workingDirectory] : []), ...(filesystem.allowWrite ?? [])],
+    installDir: path.dirname(CONFIG_FILE),
+    codeRoot: path.resolve(__dirname, '..', '..', '..'),
+    dataDir: DATA_DIR,
+    ownDataDir: path.join(DATA_DIR, input.user),
+    claudeConfigDir,
+    ghConfigDir: input.queryEnv.GH_CONFIG_DIR,
+    pluginPaths: (options.plugins ?? []).map((plugin) => plugin.path),
+    grantedSkillDirs: input.grantedSkillDirs,
+    denied: filesystem.denyRead ?? [],
+  });
+  if (boundary.redirected.length > 0) {
+    logger.warn('Write roots reached through a link are not opened for reading', {
+      user: input.user,
+      roots: boundary.redirected,
+    });
+  }
+  filesystem.denyRead = [...(filesystem.denyRead ?? []), ...boundary.denyRead];
+  filesystem.allowRead = [...(filesystem.allowRead ?? []), ...boundary.allowRead];
+
+  const base = options.settings && typeof options.settings === 'object' ? options.settings : {};
+  options.settings = {
+    ...base,
+    permissions: {
+      ...(base.permissions ?? {}),
+      blockReadsOutsideWorkingDirectories: true,
+      blockReadsExemptPaths: boundary.exemptPaths,
+    },
+  };
+  logger.debug('Read boundary applied', {
+    user: input.user,
+    denyRead: boundary.denyRead.length,
+    allowRead: boundary.allowRead.length,
+    exempt: boundary.exemptPaths.length,
+  });
+}
+
+/**
+ * A shared thread's session folder lies in the owner's root: a non-admin speaker may still attach what it made
+ * there, and what its commands wrote to the CLI temp directory. Sandbox on or off.
+ */
+function addUploadRoots(options: Options, dirs: readonly (string | undefined)[]): void {
+  const slackMcp = options.mcpServers?.['slack-mcp'] as { env?: Record<string, string> } | undefined;
+  if (!slackMcp?.env?.SOMA_UPLOAD_ROOTS) return;
+  try {
+    const roots = JSON.parse(slackMcp.env.SOMA_UPLOAD_ROOTS) as string[];
+    for (const dir of dirs) {
+      if (dir && !roots.includes(dir)) roots.push(dir);
+    }
+    slackMcp.env.SOMA_UPLOAD_ROOTS = JSON.stringify(roots);
+  } catch {
+    // Left as built: the server then closes uploads rather than opening them.
+  }
 }
 
 /**

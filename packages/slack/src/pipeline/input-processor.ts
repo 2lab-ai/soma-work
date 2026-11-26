@@ -5,7 +5,8 @@ import { isAutoCompactPaused } from '../compact-state';
 import type { MessageEvent, ProcessedFile, SayFn } from './types';
 
 export interface FileHandlerReader {
-  downloadAndProcessFiles(files: NonNullable<MessageEvent['files']>): Promise<ProcessedFile[]>;
+  /** `userId`: the uploader — their files are saved where only their sessions read them. */
+  downloadAndProcessFiles(files: NonNullable<MessageEvent['files']>, userId?: string): Promise<ProcessedFile[]>;
 }
 
 /** See `DeferredSkillFire` in `commands/command-router.ts`. */
@@ -116,7 +117,7 @@ export class InputProcessor {
     let processedFiles: ProcessedFile[] = [];
     if (files && files.length > 0) {
       this.logger.info('Processing uploaded files', { count: files.length });
-      processedFiles = await this.deps.fileHandler.downloadAndProcessFiles(files);
+      processedFiles = await this.deps.fileHandler.downloadAndProcessFiles(files, user);
 
       if (processedFiles.length > 0) {
         await say({

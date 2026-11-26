@@ -21,6 +21,9 @@
  *   - SLACK_MCP_CONTEXT: JSON { channel, threadTs, mentionTs }
  *   - SOMA_ARTIFACT_INDEX: the session's artifact index (read only) — an upload's version (#1074)
  *   - SOMA_DISPLAY_LANG: `ko` | `en` — the language of the version line in an upload's comment
+ *   - SOMA_DOWNLOAD_DIR: where download_thread_file saves (the speaker's uploads directory); else the OS temp dir
+ *   - SOMA_UPLOAD_ROOTS: JSON array of the roots a non-admin session may upload from (send_file, send_media)
+ *   - SOMA_UPLOAD_EXTRA_ROOTS: JSON array of roots an admin may upload from beside /tmp (its uploads directory)
  */
 
 import { WebClient } from '@slack/web-api';
@@ -40,6 +43,7 @@ import {
   type VersionLang,
   versionFields,
 } from './helpers/artifact-version.js';
+import { pruneOldDownloads } from './helpers/downloads.js';
 import {
   ALLOWED_MEDIA_EXTENSIONS,
   getMediaType,
@@ -57,6 +61,34 @@ import type { GetThreadMessagesResult, SlackMcpContext } from './types.js';
 
 /** Allowed Slack file URL hosts — prevents token exfiltration to attacker-controlled domains */
 const ALLOWED_FILE_HOSTS = new Set(['files.slack.com', 'files-pri.slack.com', 'files-tmb.slack.com']);
+
+/** A JSON array of absolute paths from `name`; undefined when unset. A value that is set but not one closes. */
+function rootsFromEnv(name: string): string[] | undefined {
+  const raw = process.env[name];
+  if (raw === undefined) return undefined;
+  try {
+    const roots: unknown = JSON.parse(raw);
+    if (
+      Array.isArray(roots) &&
+      roots.length > 0 &&
+      roots.every((r) => typeof r === 'string' && r.length > 0 && path.isAbsolute(r))
+    ) {
+      return roots as string[];
+    }
+  } catch {
+    // Falls through: closed.
+  }
+  return ['/nonexistent-upload-root'];
+}
+
+/**
+ * The roots of an upload: SOMA_UPLOAD_ROOTS (a non-admin: only these, strictly) and SOMA_UPLOAD_EXTRA_ROOTS (an
+ * admin: the uploads directory beside /tmp). A value that is set but malformed closes uploads rather than opening
+ * them.
+ */
+function uploadRoots(): { own: string[]; extra: string[] } {
+  return { own: rootsFromEnv('SOMA_UPLOAD_ROOTS') ?? [], extra: rootsFromEnv('SOMA_UPLOAD_EXTRA_ROOTS') ?? [] };
+}
 
 /** #1074 — how an upload becomes a new version of an earlier one. */
 const ARTIFACT_KEY_NOTE = [
@@ -761,8 +793,10 @@ class SlackMcpServer extends BaseMcpServer {
     if (!response.ok) throw new Error(`File download failed: ${response.status} ${response.statusText}`);
 
     const buffer = Buffer.from(await response.arrayBuffer());
-    const tempDir = path.join(os.tmpdir(), 'slack-mcp-files');
-    await fs.mkdir(tempDir, { recursive: true });
+    // The daemon names the speaker's download directory (SOMA_DOWNLOAD_DIR); downloads older than a week go.
+    const tempDir = process.env.SOMA_DOWNLOAD_DIR || path.join(os.tmpdir(), 'slack-mcp-files');
+    await fs.mkdir(tempDir, { recursive: true, mode: 0o700 });
+    await pruneOldDownloads(tempDir);
     const safeName = path.basename(file_name).replace(/[^a-zA-Z0-9._-]/g, '_');
     const tempPath = path.join(tempDir, `${Date.now()}_${safeName}`);
     await fs.writeFile(tempPath, buffer);
@@ -839,58 +873,72 @@ class SlackMcpServer extends BaseMcpServer {
     thread?: string;
     artifact_key?: string;
   }): Promise<ToolResult> {
-    const { resolvedPath, size } = await validateFilePath(args.file_path);
-    const displayName = args.filename || path.basename(resolvedPath);
-    const resolved = this.resolveThread(args.thread);
-    // Checked before the upload, so a bad URL uploads nothing.
-    const url = args.url !== undefined && args.url !== '' ? validateLinkUrl(args.url) : undefined;
-    this.logger.info('Uploading file', { name: displayName, size, path: resolvedPath, thread: args.thread || 'work' });
-
-    const uploadArgs: any = {
-      file: resolvedPath,
-      filename: displayName,
-      channel_id: resolved.channel,
-      thread_ts: resolved.threadTs,
-    };
-    if (args.title) uploadArgs.title = args.title;
-    const { version, uploadedFile, result } = await this.uploadVersioned(
-      resolvedPath,
-      displayName,
-      args.artifact_key,
-      args.initial_comment,
-      uploadArgs,
+    // A non-admin's file is uploaded from a snapshot the bot took of the file it checked, never re-read by path.
+    const { resolvedPath, size, cleanup } = await validateFilePath(
+      args.file_path,
+      uploadRoots().own,
+      uploadRoots().extra,
     );
-
-    if (!uploadedFile?.id) {
-      this.logger.error('Slack filesUploadV2 returned unexpected response shape', {
+    try {
+      const displayName = args.filename || path.basename(resolvedPath);
+      const resolved = this.resolveThread(args.thread);
+      // Checked before the upload, so a bad URL uploads nothing.
+      const url = args.url !== undefined && args.url !== '' ? validateLinkUrl(args.url) : undefined;
+      this.logger.info('Uploading file', {
         name: displayName,
-        resultKeys: Object.keys(result || {}),
+        size,
+        path: resolvedPath,
+        thread: args.thread || 'work',
       });
-      throw new Error(
-        `File upload succeeded but Slack returned no file metadata. Response keys: ${Object.keys(result || {}).join(', ')}`,
+
+      const uploadArgs: any = {
+        file: resolvedPath,
+        filename: displayName,
+        channel_id: resolved.channel,
+        thread_ts: resolved.threadTs,
+      };
+      if (args.title) uploadArgs.title = args.title;
+      const { version, uploadedFile, result } = await this.uploadVersioned(
+        resolvedPath,
+        displayName,
+        args.artifact_key,
+        args.initial_comment,
+        uploadArgs,
       );
+
+      if (!uploadedFile?.id) {
+        this.logger.error('Slack filesUploadV2 returned unexpected response shape', {
+          name: displayName,
+          resultKeys: Object.keys(result || {}),
+        });
+        throw new Error(
+          `File upload succeeded but Slack returned no file metadata. Response keys: ${Object.keys(result || {}).join(', ')}`,
+        );
+      }
+
+      this.logger.info('File uploaded', { name: displayName, size, file_id: uploadedFile.id });
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              uploaded: true,
+              file_id: uploadedFile.id,
+              filename: displayName,
+              size,
+              ...(url ? { url } : {}),
+              permalink: uploadedFile.permalink || '',
+              channel: resolved.channel,
+              thread_ts: resolved.threadTs,
+              ...versionFields(version),
+            }),
+          },
+        ],
+      };
+    } finally {
+      await cleanup?.();
     }
-
-    this.logger.info('File uploaded', { name: displayName, size, file_id: uploadedFile.id });
-
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({
-            uploaded: true,
-            file_id: uploadedFile.id,
-            filename: displayName,
-            size,
-            ...(url ? { url } : {}),
-            permalink: uploadedFile.permalink || '',
-            channel: resolved.channel,
-            thread_ts: resolved.threadTs,
-            ...versionFields(version),
-          }),
-        },
-      ],
-    };
   }
 
   // ── send_media ─────────────────────────────────────────
@@ -904,71 +952,80 @@ class SlackMcpServer extends BaseMcpServer {
     thread?: string;
     artifact_key?: string;
   }): Promise<ToolResult> {
-    const { resolvedPath, size } = await validateFilePath(args.file_path);
-    const displayName = args.filename || path.basename(resolvedPath);
-    const resolved = this.resolveThread(args.thread);
-
-    const ext = path.extname(resolvedPath).toLowerCase().slice(1);
-    if (!ALLOWED_MEDIA_EXTENSIONS.has(ext)) {
-      throw new Error(`Unsupported media type: .${ext}. Allowed: ${[...ALLOWED_MEDIA_EXTENSIONS].join(', ')}`);
-    }
-
-    const media_type = getMediaType(ext);
-    this.logger.info('Uploading media', {
-      name: displayName,
-      size,
-      media_type,
-      path: resolvedPath,
-      thread: args.thread || 'work',
-    });
-
-    const uploadArgs: any = {
-      file: resolvedPath,
-      filename: displayName,
-      channel_id: resolved.channel,
-      thread_ts: resolved.threadTs,
-    };
-    if (args.title) uploadArgs.title = args.title;
-    if (args.alt_text) uploadArgs.alt_text = args.alt_text;
-    const { version, uploadedFile, result } = await this.uploadVersioned(
-      resolvedPath,
-      displayName,
-      args.artifact_key,
-      args.initial_comment,
-      uploadArgs,
+    // A non-admin's file is uploaded from a snapshot the bot took of the file it checked, never re-read by path.
+    const { resolvedPath, size, cleanup } = await validateFilePath(
+      args.file_path,
+      uploadRoots().own,
+      uploadRoots().extra,
     );
+    try {
+      const displayName = args.filename || path.basename(resolvedPath);
+      const resolved = this.resolveThread(args.thread);
 
-    if (!uploadedFile?.id) {
-      this.logger.error('Slack filesUploadV2 returned unexpected response shape', {
+      const ext = path.extname(resolvedPath).toLowerCase().slice(1);
+      if (!ALLOWED_MEDIA_EXTENSIONS.has(ext)) {
+        throw new Error(`Unsupported media type: .${ext}. Allowed: ${[...ALLOWED_MEDIA_EXTENSIONS].join(', ')}`);
+      }
+
+      const media_type = getMediaType(ext);
+      this.logger.info('Uploading media', {
         name: displayName,
+        size,
         media_type,
-        resultKeys: Object.keys(result || {}),
+        path: resolvedPath,
+        thread: args.thread || 'work',
       });
-      throw new Error(
-        `Media upload succeeded but Slack returned no file metadata. Response keys: ${Object.keys(result || {}).join(', ')}`,
+
+      const uploadArgs: any = {
+        file: resolvedPath,
+        filename: displayName,
+        channel_id: resolved.channel,
+        thread_ts: resolved.threadTs,
+      };
+      if (args.title) uploadArgs.title = args.title;
+      if (args.alt_text) uploadArgs.alt_text = args.alt_text;
+      const { version, uploadedFile, result } = await this.uploadVersioned(
+        resolvedPath,
+        displayName,
+        args.artifact_key,
+        args.initial_comment,
+        uploadArgs,
       );
+
+      if (!uploadedFile?.id) {
+        this.logger.error('Slack filesUploadV2 returned unexpected response shape', {
+          name: displayName,
+          media_type,
+          resultKeys: Object.keys(result || {}),
+        });
+        throw new Error(
+          `Media upload succeeded but Slack returned no file metadata. Response keys: ${Object.keys(result || {}).join(', ')}`,
+        );
+      }
+
+      this.logger.info('Media uploaded', { name: displayName, size, file_id: uploadedFile.id, media_type });
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              uploaded: true,
+              file_id: uploadedFile.id,
+              filename: displayName,
+              size,
+              media_type,
+              permalink: uploadedFile.permalink || '',
+              channel: resolved.channel,
+              thread_ts: resolved.threadTs,
+              ...versionFields(version),
+            }),
+          },
+        ],
+      };
+    } finally {
+      await cleanup?.();
     }
-
-    this.logger.info('Media uploaded', { name: displayName, size, file_id: uploadedFile.id, media_type });
-
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({
-            uploaded: true,
-            file_id: uploadedFile.id,
-            filename: displayName,
-            size,
-            media_type,
-            permalink: uploadedFile.permalink || '',
-            channel: resolved.channel,
-            thread_ts: resolved.threadTs,
-            ...versionFields(version),
-          }),
-        },
-      ],
-    };
   }
 
   // ── send_link ──────────────────────────────────────────

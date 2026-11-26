@@ -4,7 +4,9 @@ import * as os from 'os';
 import * as path from 'path';
 import { getA2tService } from './a2t/a2t-service';
 import { config } from './config';
+import { DATA_DIR } from './env-paths';
 import { Logger } from './logger';
+import { userUploadsDir } from './sandbox/tenant-read-boundary';
 
 export interface ProcessedFile {
   path: string;
@@ -34,11 +36,22 @@ const PASTED_TEXT_NAME = /^pasted-text-\d{8}-\d{6}\.txt$/;
 
 /**
  * The prefix of the directory each long text file is kept in for the agent to read past the turn: a fresh
- * `mkdtemp` directory (mode 0700) under the OS temp dir, outside every directory a session may write (its working
- * directory and /tmp/{userId}, native-write-boundary.ts) — so a session cannot point it anywhere else. The OS clears
- * its temp dir in time; the download itself is deleted when the turn ends (cleanupTempFiles).
+ * `mkdtemp` directory (mode 0700) next to the download, outside every directory a session may write (its working
+ * directory and /tmp/{userId}, native-write-boundary.ts) — so a session cannot point it anywhere else. Kept
+ * directories older than KEPT_TEXT_MAX_AGE_MS are removed at the next download; the download itself is deleted
+ * when the turn ends (cleanupTempFiles).
  */
 const KEPT_TEXT_PREFIX = 'soma-text-';
+const KEPT_TEXT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Where a user's uploads are saved: `DATA_DIR/{userId}/uploads` (userUploadsDir) — that user's sessions may read
+ * it and no session may write it, so the file a turn reads is the one the bot saved, and other users' sessions
+ * cannot read it. Without a usable user id, the OS temp dir.
+ */
+export function uploadsDirFor(userId: string | undefined, dataDir: string = DATA_DIR): string {
+  return userUploadsDir(dataDir, userId) ?? os.tmpdir();
+}
 
 /** The Slack file's id and permalink, when the event carries them (strings only). */
 function slackRef(file: any): { slackFileId?: string; permalink?: string } {
@@ -50,12 +63,22 @@ function slackRef(file: any): { slackFileId?: string; permalink?: string } {
 export class FileHandler {
   private logger = new Logger('FileHandler');
 
-  async downloadAndProcessFiles(files: any[]): Promise<ProcessedFile[]> {
+  /** `userId`: whose uploads these are (see uploadsDirFor). */
+  async downloadAndProcessFiles(files: any[], userId?: string): Promise<ProcessedFile[]> {
     const processedFiles: ProcessedFile[] = [];
+    let dir: string;
+    try {
+      dir = this.prepareUploadsDir(uploadsDirFor(userId));
+    } catch (error) {
+      // Saving anywhere else would hand the session a path it cannot read (src/sandbox/tenant-read-boundary.ts):
+      // the files are kept as metadata only, and the turn says they could not be downloaded.
+      this.logger.error("Could not prepare the user's uploads directory", { error });
+      return files.map((file) => this.unavailableFile(file, 'download_failed'));
+    }
 
     for (const file of files) {
       try {
-        const processed = await this.downloadFile(file);
+        const processed = await this.downloadFile(file, dir);
         if (processed) {
           processedFiles.push(processed);
         }
@@ -88,7 +111,29 @@ export class FileHandler {
     };
   }
 
-  private async downloadFile(file: any): Promise<ProcessedFile | null> {
+  /** The uploads directory, made private (0700), with kept text directories past their age removed. Throws when it cannot be made. */
+  private prepareUploadsDir(dir: string): string {
+    if (dir === os.tmpdir()) return dir;
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    try {
+      const now = Date.now();
+      for (const name of fs.readdirSync(dir)) {
+        if (!name.startsWith(KEPT_TEXT_PREFIX)) continue;
+        const kept = path.join(dir, name);
+        try {
+          if (now - fs.lstatSync(kept).mtimeMs > KEPT_TEXT_MAX_AGE_MS)
+            fs.rmSync(kept, { recursive: true, force: true });
+        } catch {
+          // Gone already, or not ours to remove: the next download tries again.
+        }
+      }
+    } catch (error) {
+      this.logger.warn('Could not list the uploads directory to remove old kept text', { error });
+    }
+    return dir;
+  }
+
+  private async downloadFile(file: any, dir: string = os.tmpdir()): Promise<ProcessedFile | null> {
     // Video and audio are downloaded like any other file (same 50 MB cap), so
     // the dashboard keeps a copy it can play (user media, SSOT 2026-10-25).
     // The model's prompt still never carries a video's path, nor an audio
@@ -147,11 +192,10 @@ export class FileHandler {
         });
       }
 
-      const tempDir = os.tmpdir();
-      // basename: a Slack file name is user input and must not move the path out of the temp dir.
-      const tempPath = path.join(tempDir, `slack-file-${Date.now()}-${path.basename(String(file.name || 'file'))}`);
+      // basename: a Slack file name is user input and must not move the path out of the uploads dir.
+      const tempPath = path.join(dir, `slack-file-${Date.now()}-${path.basename(String(file.name || 'file'))}`);
 
-      fs.writeFileSync(tempPath, buffer);
+      fs.writeFileSync(tempPath, buffer, { mode: 0o600 });
 
       const processed: ProcessedFile = {
         path: tempPath,
@@ -308,7 +352,7 @@ export class FileHandler {
    */
   private keepTextFile(file: ProcessedFile): string {
     try {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), KEPT_TEXT_PREFIX));
+      const dir = fs.mkdtempSync(path.join(path.dirname(file.path), KEPT_TEXT_PREFIX));
       // The download's own name (slack-file-<ts>-<basename>), never a path out of dir.
       const kept = path.join(dir, path.basename(file.path));
       fs.copyFileSync(file.path, kept, fs.constants.COPYFILE_EXCL);

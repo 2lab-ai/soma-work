@@ -23,7 +23,8 @@
  *            deletes itself as soon as it lands.
  *
  * Reads only this process's downloads: a regular file (never a symlink) named
- * `slack-file-*` whose real path is under the OS temp dir or /tmp. The stored
+ * `slack-file-*` whose real path is under the OS temp dir or /tmp, or in a user's
+ * uploads directory (`DATA_DIR/{userId}/uploads`, file-handler.ts). The stored
  * file is named by the server-made id only — the user's file name is display text.
  */
 
@@ -130,6 +131,18 @@ function tempRoots(): string[] {
   return [...roots];
 }
 
+/** `real` sits directly in a user's uploads directory: `<real DATA_DIR>/<userId>/uploads/`. */
+function inUploadsDir(real: string): boolean {
+  let dataDir: string;
+  try {
+    dataDir = fs.realpathSync(DATA_DIR);
+  } catch {
+    return false;
+  }
+  const dir = path.dirname(real);
+  return path.basename(dir) === 'uploads' && path.dirname(path.dirname(dir)) === dataDir;
+}
+
 /**
  * The download, if it may be read: an absolute `slack-file-*` regular file (not
  * a symlink) whose real path sits directly in a temp root.
@@ -141,7 +154,7 @@ async function readableDownload(filePath: string, roots: string[]): Promise<{ re
     const lst = await fs.promises.lstat(filePath);
     if (!lst.isFile()) return null; // a symlink reports isSymbolicLink(), not isFile()
     const real = await fs.promises.realpath(filePath);
-    if (!roots.includes(`${path.dirname(real)}/`)) return null;
+    if (!roots.includes(`${path.dirname(real)}/`) && !inUploadsDir(real)) return null;
     return { real, size: lst.size };
   } catch {
     return null;

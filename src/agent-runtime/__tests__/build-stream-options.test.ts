@@ -53,10 +53,19 @@ function makeMcpConfig(overrides: Partial<McpConfig> = {}): McpConfig {
   };
 }
 
+// Non-admin CLI temp directories go under a scratch parent, not the host's.
+const CLAUDE_TMP_SCRATCH = path.join(WORK_DIR, 'soma-ct');
+
+/** The write roots without the non-admin CLI temp directory, which every non-admin turn now gets. */
+function withoutClaudeTmp(list: string[] | undefined): string[] {
+  return (list ?? []).filter((p) => !p.startsWith(`${CLAUDE_TMP_SCRATCH}/`));
+}
+
 function makeDeps(overrides: Partial<BuildStreamOptionsDeps> = {}): BuildStreamOptionsDeps {
   const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   return {
     logger,
+    claudeTmpRoot: CLAUDE_TMP_SCRATCH,
     getEffectivePluginPaths: () => [{ type: 'local', path: '/plugins/demo' } as never],
     buildModelCommandContext: () => undefined,
     mcpConfigBuilder: { buildConfig: vi.fn(async () => makeMcpConfig()) },
@@ -402,22 +411,26 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
         makeDeps({ getEnvSkillRegistry: () => envRegistry('/srv/soma/plugins') }),
       );
       const denyRead = (options.sandbox as { filesystem?: { denyRead?: string[] } } | undefined)?.filesystem?.denyRead;
-      expect(denyRead).toEqual([
+      // The denies set on purpose come first; the read boundary's data roots follow them.
+      const onPurpose = [
         SECRETS_DIR,
         ...credentialPaths(os.homedir()),
         '/srv/soma/plugins/acme-env',
         '/srv/soma/plugins/.backups/acme-env',
-      ]);
-      // The write mount is kept.
-      expect((options.sandbox as { filesystem?: { allowWrite?: string[] } }).filesystem?.allowWrite?.length).toBe(1);
+      ];
+      expect(denyRead?.slice(0, onPurpose.length)).toEqual(onPurpose);
+      // The write mount is kept (beside it at most the CLI temp directory, once the user's root exists).
+      const allowWrite = (options.sandbox as { filesystem?: { allowWrite?: string[] } }).filesystem?.allowWrite ?? [];
+      expect(allowWrite[0]).toContain(SAFE_USER);
+      expect(allowWrite.slice(1).every((p) => p.startsWith(`${CLAUDE_TMP_SCRATCH}/`))).toBe(true);
     });
 
-    it('only the secret store and the credential files are read-denied on a host without environment plugins', async () => {
+    it('on a host without environment plugins, the denies set on purpose are the secret store and the credential files', async () => {
       const { options } = await buildStreamOptions({ queryEnv: {}, slackContext: makeSlackContext() }, makeDeps());
-      expect((options.sandbox as { filesystem?: { denyRead?: string[] } } | undefined)?.filesystem?.denyRead).toEqual([
-        SECRETS_DIR,
-        ...credentialPaths(os.homedir()),
-      ]);
+      const denyRead = (options.sandbox as { filesystem?: { denyRead?: string[] } } | undefined)?.filesystem?.denyRead;
+      const onPurpose = [SECRETS_DIR, ...credentialPaths(os.homedir())];
+      expect(denyRead?.slice(0, onPurpose.length)).toEqual(onPurpose);
+      expect(denyRead).not.toContain('/srv/soma/plugins/acme-env');
     });
   });
 
@@ -859,6 +872,165 @@ describe('sandbox: admin profile and write protection (env-access WU2, #1210)', 
     );
   });
 
+  describe("reads: a non-admin session reads its own work area, not the host's data", () => {
+    type ReadSettings = {
+      permissions?: { blockReadsOutsideWorkingDirectories?: boolean; blockReadsExemptPaths?: string[] };
+    };
+    type ReadSandbox = { filesystem?: { denyRead?: string[]; allowRead?: string[] } };
+
+    it('the file tools refuse reads outside the working directories, in every mode', async () => {
+      const { options } = await withSettings(false, () => build(SAFE_USER));
+      const permissions = (options.settings as ReadSettings).permissions;
+      expect(permissions?.blockReadsOutsideWorkingDirectories).toBe(true);
+      // The working directories are the session folder and the user's root.
+      expect(options.cwd).toBe(WORK_DIR);
+      expect(options.additionalDirectories).toContain(path.join('/tmp', SAFE_USER));
+      // The service data is not let through; the user's own part of it is when it exists.
+      expect(permissions?.blockReadsExemptPaths).not.toContain(DATA_DIR);
+    });
+
+    it("the shell cannot read the deployment, its data, the CLI config or the service user's home", async () => {
+      const { options } = await withSettings(false, () => build(SAFE_USER));
+      const filesystem = (options.sandbox as ReadSandbox).filesystem;
+      const real = (p: string) => fs.realpathSync(p);
+      expect(filesystem?.denyRead).toEqual(
+        expect.arrayContaining([real(path.dirname(CONFIG_FILE)), real(DATA_DIR), real(os.homedir())]),
+      );
+      // The session folder is re-opened, as the OS resolves it.
+      expect(filesystem?.allowRead).toContain(real(WORK_DIR));
+      expect(filesystem?.allowRead).not.toContain(real(DATA_DIR));
+      expect(filesystem?.allowRead).not.toContain(real(os.homedir()));
+      // Nothing re-opens the secret store.
+      for (const entry of filesystem?.allowRead ?? []) {
+        expect(SECRETS_DIR === entry || SECRETS_DIR.startsWith(`${entry}${path.sep}`), entry).toBe(false);
+      }
+    });
+
+    it("the user's own data directory (memory, own skills, uploads) is made first and readable", async () => {
+      const own = path.join(DATA_DIR, SAFE_USER);
+      fs.rmSync(own, { recursive: true, force: true });
+      try {
+        const { options } = await withSettings(false, () => build(SAFE_USER));
+        // Made before the lists are built, so a thread file downloaded mid-turn is readable.
+        expect(fs.statSync(path.join(own, 'uploads')).mode & 0o777).toBe(0o700);
+        expect((options.settings as ReadSettings).permissions?.blockReadsExemptPaths).toContain(own);
+        expect((options.sandbox as ReadSandbox).filesystem?.allowRead).toContain(fs.realpathSync(own));
+      } finally {
+        fs.rmSync(own, { recursive: true, force: true });
+      }
+    });
+
+    it('a session folder reached through a link does not start', async () => {
+      const elsewhere = fs.mkdtempSync(path.join(WORK_DIR, 'elsewhere-'));
+      const link = path.join(WORK_DIR, `linked-session-${process.pid}`);
+      fs.symlinkSync(elsewhere, link);
+      try {
+        await expect(
+          withSettings(false, () =>
+            buildStreamOptions(
+              { queryEnv: {}, slackContext: makeSlackContext({ user: SAFE_USER }), workingDirectory: link },
+              makeDeps(),
+            ),
+          ),
+        ).rejects.toThrow(/reached through a link/);
+      } finally {
+        fs.unlinkSync(link);
+      }
+    });
+
+    it("the CLI's temp directory is the user's own, under a parent only the bot writes", async () => {
+      // A user whose root exists: the host makes /tmp/{userId} with the first session folder.
+      const user = `U0RDTMP${process.pid}`;
+      const root = path.join('/tmp', user);
+      const tmp = path.join(CLAUDE_TMP_SCRATCH, user);
+      fs.mkdirSync(root, { recursive: true });
+      try {
+        const { options } = await withSettings(false, () => build(user));
+        expect(options.env?.CLAUDE_CODE_TMPDIR).toBe(tmp);
+        expect(fs.statSync(tmp).mode & 0o777).toBe(0o700);
+        const filesystem = (options.sandbox as ReadSandbox & { filesystem?: { allowWrite?: string[] } }).filesystem;
+        // The session writes inside it, reads it, but cannot write its parent (so cannot swap it).
+        expect(filesystem?.allowWrite).toContain(tmp);
+        expect(filesystem?.allowWrite).not.toContain(CLAUDE_TMP_SCRATCH);
+        expect(filesystem?.allowRead).toContain(fs.realpathSync(tmp));
+        expect(filesystem?.allowRead).toContain(fs.realpathSync(root));
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it('a session folder that could not be made does not start (the CLI would run in the daemon directory)', async () => {
+      const blocker = path.join(WORK_DIR, `not-a-dir-${process.pid}`);
+      fs.writeFileSync(blocker, 'x');
+      try {
+        await expect(
+          withSettings(false, () =>
+            buildStreamOptions(
+              {
+                queryEnv: {},
+                slackContext: makeSlackContext({ user: SAFE_USER }),
+                workingDirectory: path.join(blocker, 'session'),
+              },
+              makeDeps(),
+            ),
+          ),
+        ).rejects.toThrow(/could not be made/);
+      } finally {
+        fs.rmSync(blocker, { force: true });
+      }
+    });
+
+    it('in a shared thread the speaker may attach files from the session folder it works in', async () => {
+      const deps = makeDeps({
+        mcpConfigBuilder: {
+          buildConfig: vi.fn(async () =>
+            makeMcpConfig({
+              mcpServers: {
+                'slack-mcp': {
+                  type: 'stdio',
+                  command: 'slack-mcp',
+                  env: { SOMA_UPLOAD_ROOTS: JSON.stringify([path.join('/tmp', SAFE_USER)]) },
+                },
+              },
+            }),
+          ),
+        },
+      });
+      const { options } = await withSettings(false, () => build(SAFE_USER, deps));
+      const env = (options.mcpServers?.['slack-mcp'] as { env?: Record<string, string> }).env;
+      const roots = JSON.parse(env?.SOMA_UPLOAD_ROOTS ?? '[]') as string[];
+      // The roots built for the speaker, then the session folder (and the CLI temp directory once the user's root
+      // exists on this host).
+      expect(roots.slice(0, 2)).toEqual([path.join('/tmp', SAFE_USER), WORK_DIR]);
+      expect(roots.slice(2).every((p) => p.startsWith(`${CLAUDE_TMP_SCRATCH}/`))).toBe(true);
+    });
+
+    it("a speaker new to someone else's thread (no root of its own yet) still gets its temp directory", async () => {
+      const user = 'U0RDNOROOT1';
+      const { options } = await withSettings(false, () => build(user));
+      expect(options.env?.CLAUDE_CODE_TMPDIR).toBe(path.join(CLAUDE_TMP_SCRATCH, user));
+      expect(fs.statSync(path.join(CLAUDE_TMP_SCRATCH, user)).mode & 0o777).toBe(0o700);
+    });
+
+    it("a turn without a session folder reads an empty directory, never the daemon's", async () => {
+      const { options } = await withSettings(false, () =>
+        buildStreamOptions({ queryEnv: {}, slackContext: makeSlackContext({ user: SAFE_USER }) }, makeDeps()),
+      );
+      expect(options.cwd).toBeDefined();
+      expect(options.cwd).not.toBe(process.cwd());
+      expect(fs.readdirSync(options.cwd as string)).toEqual([]);
+    });
+
+    it('an admin keeps the wide profile: no read block, no read lists', async () => {
+      await asAdmin();
+      const { options } = await withSettings(false, () => build(ADMIN));
+      expect((options.settings as ReadSettings).permissions?.blockReadsOutsideWorkingDirectories).toBeUndefined();
+      expect((options.sandbox as ReadSandbox).filesystem?.allowRead).toBeUndefined();
+      expect(options.env?.CLAUDE_CODE_TMPDIR).toBeUndefined();
+    });
+  });
+
   it('a host that allows it lets an admin run without the sandbox', async () => {
     await asAdmin();
     process.env.SOMA_SANDBOX_OFF_ALLOWED = 'true';
@@ -987,7 +1159,11 @@ describe('sandbox: admin profile and write protection (env-access WU2, #1210)', 
     };
     expect(sandbox.enableWeakerNetworkIsolation).toBeUndefined();
     expect(sandbox.network?.allowLocalBinding).toBeUndefined();
-    expect(sandbox.filesystem?.allowWrite).toEqual([path.join('/tmp', SAFE_USER)]);
+    // The user's root, and at most the CLI temp directory once that root exists.
+    expect(sandbox.filesystem?.allowWrite?.[0]).toBe(path.join('/tmp', SAFE_USER));
+    expect((sandbox.filesystem?.allowWrite ?? []).slice(1).every((p) => p.startsWith(`${CLAUDE_TMP_SCRATCH}/`))).toBe(
+      true,
+    );
     const settings = options.settings as { permissions?: { allow?: string[] } };
     expect(settings.permissions?.allow ?? []).not.toContain('WebFetch(domain:*)');
   });
@@ -1094,7 +1270,11 @@ describe('sandbox: deploy-workflow grant (config.json#deploySandbox)', () => {
     );
 
     const sandbox = sandboxOf(options);
-    expect(sandbox?.filesystem?.allowWrite).toEqual([path.join('/tmp', APPROVED), '/srv/qa/lock', '/srv/qa/runs']);
+    expect(withoutClaudeTmp(sandbox?.filesystem?.allowWrite)).toEqual([
+      path.join('/tmp', APPROVED),
+      '/srv/qa/lock',
+      '/srv/qa/runs',
+    ]);
     expect(sandbox?.network?.allowedDomains).toEqual([
       ...DEV_DOMAIN_ALLOWLIST,
       'qa.example.test',
@@ -1113,7 +1293,7 @@ describe('sandbox: deploy-workflow grant (config.json#deploySandbox)', () => {
     );
 
     const sandbox = sandboxOf(options);
-    expect(sandbox?.filesystem?.allowWrite).toEqual([path.join('/tmp', OTHER)]);
+    expect(withoutClaudeTmp(sandbox?.filesystem?.allowWrite)).toEqual([path.join('/tmp', OTHER)]);
     expect(sandbox?.network?.allowedDomains).toEqual([...DEV_DOMAIN_ALLOWLIST]);
     expect(grantLogs(deps)).toEqual([]);
   });
@@ -1128,7 +1308,7 @@ describe('sandbox: deploy-workflow grant (config.json#deploySandbox)', () => {
       deps,
     );
 
-    expect(sandboxOf(options)?.filesystem?.allowWrite).toEqual([path.join('/tmp', APPROVED)]);
+    expect(withoutClaudeTmp(sandboxOf(options)?.filesystem?.allowWrite)).toEqual([path.join('/tmp', APPROVED)]);
     expect(sandboxOf(options)?.network?.allowedDomains).toEqual([...DEV_DOMAIN_ALLOWLIST]);
     expect(grantLogs(deps)).toEqual([]);
   });
@@ -1153,7 +1333,7 @@ describe('sandbox: deploy-workflow grant (config.json#deploySandbox)', () => {
       deps,
     );
 
-    expect(sandboxOf(options)?.filesystem?.allowWrite).toEqual([
+    expect(withoutClaudeTmp(sandboxOf(options)?.filesystem?.allowWrite)).toEqual([
       path.join('/tmp', APPROVED),
       '/srv/qa/lock',
       '/srv/qa/runs',
@@ -1173,7 +1353,7 @@ describe('sandbox: deploy-workflow grant (config.json#deploySandbox)', () => {
       deps,
     );
 
-    expect(sandboxOf(options)?.filesystem?.allowWrite).toEqual([path.join('/tmp', APPROVED)]);
+    expect(withoutClaudeTmp(sandboxOf(options)?.filesystem?.allowWrite)).toEqual([path.join('/tmp', APPROVED)]);
   });
 
   it.each(['default', 'pr-review', undefined])('(c) workflow %j + listed sender: no grant', async (workflow) => {
@@ -1185,7 +1365,7 @@ describe('sandbox: deploy-workflow grant (config.json#deploySandbox)', () => {
     );
 
     const sandbox = sandboxOf(options);
-    expect(sandbox?.filesystem?.allowWrite).toEqual([path.join('/tmp', APPROVED)]);
+    expect(withoutClaudeTmp(sandbox?.filesystem?.allowWrite)).toEqual([path.join('/tmp', APPROVED)]);
     expect(sandbox?.network?.allowedDomains).toEqual([...DEV_DOMAIN_ALLOWLIST]);
     expect(grantLogs(deps)).toEqual([]);
   });
@@ -1198,7 +1378,7 @@ describe('sandbox: deploy-workflow grant (config.json#deploySandbox)', () => {
       deps,
     );
 
-    expect(sandboxOf(options)?.filesystem?.allowWrite).toEqual([path.join('/tmp', APPROVED)]);
+    expect(withoutClaudeTmp(sandboxOf(options)?.filesystem?.allowWrite)).toEqual([path.join('/tmp', APPROVED)]);
   });
 
   it('(d) listed sender with networkDisabled: paths appended, network untouched', async () => {
@@ -1212,7 +1392,11 @@ describe('sandbox: deploy-workflow grant (config.json#deploySandbox)', () => {
       );
 
       const sandbox = sandboxOf(options);
-      expect(sandbox?.filesystem?.allowWrite).toEqual([path.join('/tmp', APPROVED), '/srv/qa/lock', '/srv/qa/runs']);
+      expect(withoutClaudeTmp(sandbox?.filesystem?.allowWrite)).toEqual([
+        path.join('/tmp', APPROVED),
+        '/srv/qa/lock',
+        '/srv/qa/runs',
+      ]);
       expect(sandbox?.network).toBeUndefined();
       expect(grantLogs(deps)).toEqual([['Deploy sandbox grant applied', { paths: 2, domains: 0 }]]);
     } finally {
@@ -1288,7 +1472,7 @@ describe('sandbox: deploy-workflow grant (config.json#deploySandbox)', () => {
       deps,
     );
 
-    expect(sandboxOf(options)?.filesystem?.allowWrite).toEqual([path.join('/tmp', APPROVED)]);
+    expect(withoutClaudeTmp(sandboxOf(options)?.filesystem?.allowWrite)).toEqual([path.join('/tmp', APPROVED)]);
     expect(grantLogs(deps)).toEqual([]);
   });
 
@@ -1300,9 +1484,9 @@ describe('sandbox: deploy-workflow grant (config.json#deploySandbox)', () => {
     );
 
     writeHostConfig({ plugin: {} });
-    expect(sandboxOf((await buildStreamOptions(input, makeDeps())).options)?.filesystem?.allowWrite).toEqual([
-      path.join('/tmp', APPROVED),
-    ]);
+    expect(
+      withoutClaudeTmp(sandboxOf((await buildStreamOptions(input, makeDeps())).options)?.filesystem?.allowWrite),
+    ).toEqual([path.join('/tmp', APPROVED)]);
   });
 });
 
