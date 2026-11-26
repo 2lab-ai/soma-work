@@ -9,9 +9,10 @@ import type { CompletionMessageTracker } from '../completion-message-tracker';
 import type { SlackApiHelper } from '../slack-api-helper';
 import type { ThreadPanel } from '../thread-panel';
 import { UserChoiceHandler } from '../user-choice-handler';
+import { AnswerNotKeptError } from './answer-not-kept';
 import { classifyClick, markClickAsStale } from './click-classifier';
 import type { PendingFormStore } from './pending-form-store';
-import type { MessageHandler, PendingChoiceFormData, SayFn } from './types';
+import type { MessageEvent, MessageHandler, PendingChoiceFormData, SayFn } from './types';
 
 /** Sentinel choiceId for custom text input (직접입력) */
 const CUSTOM_INPUT_CHOICE_ID = '직접입력';
@@ -38,16 +39,24 @@ interface AnswerHold {
   formId?: string;
 }
 
-/** What a dashboard answer took when it was claimed — what its rollback checks against. */
+/** What a dashboard answer took when it was claimed: its hold on the question, released when the answer returns. */
 interface DashboardAnswerClaim {
-  /** The cross-surface hold on the question. */
   hold: AnswerHold;
-  /** The question the answer was for. */
+}
+
+/**
+ * #1474 — what an answer took off the session (`ChoiceActionHandler.recordAnswer`), kept so a hand-on that failed can
+ * give the question back as it was.
+ */
+interface TakenQuestion {
+  /** The session's activity clock right after the record: unmoved = no turn started or ended since. */
+  recordedAt: ConversationSession['activityStateChangedAt'];
   question: NonNullable<ConversationSession['actionPanel']>['pendingQuestion'];
-  /** The `working` transition the claim made. */
-  claimedAt: ConversationSession['activityStateChangedAt'];
-  /** #1474 — the question's open bit before the claim took it down: a give-back puts it back as it was. */
+  choice: NonNullable<ConversationSession['actionPanel']>['pendingChoice'];
   openBit: boolean | undefined;
+  choiceMessageTs: string | undefined;
+  choiceMessageLink: string | undefined;
+  choiceBlocks: NonNullable<ConversationSession['actionPanel']>['choiceBlocks'];
 }
 
 /**
@@ -67,26 +76,6 @@ export function isAnswerableFromDashboard(
 ): boolean {
   if (session.activityState === 'waiting') return true;
   return (session.activityState ?? 'idle') === 'idle' && session.actionPanel?.pendingQuestion?.type === kind;
-}
-
-/**
- * #1474 — an answer to the model's question is taken: the question stops being open NOW, before any of the
- * answer's Slack writes. Those writes wait in the one Slack line, which on a busy host ran an hour behind (#1470).
- * A turn that asked the question and ends meanwhile reads the open bit (`actionPanel.waitingForChoice`): left up,
- * the turn ended `waiting`, its run settled `blocked: awaiting user choice`, the follow-up drain the answer joins
- * was held behind a question that already had its answer, and the card read NEEDS YOU again. A question the model
- * asks after this raises the bit again and still holds.
- *
- * The session reads `working` from here: its owner answered, and the answer is on its way to the model.
- */
-export function markAnswerTaken(
-  claudeHandler: Pick<ClaudeHandler, 'setActivityStateByKey'>,
-  session: ConversationSession | undefined,
-  sessionKey: string,
-): void {
-  if (!session) return;
-  if (session.actionPanel) session.actionPanel.waitingForChoice = false;
-  if (session.activityState === 'waiting') claudeHandler.setActivityStateByKey(sessionKey, 'working');
 }
 
 /**
@@ -205,149 +194,27 @@ export class ChoiceActionHandler {
       // Before the first await: the dashboard (or another click) answering this
       // same question right now makes this click a second answer.
       if (session) {
-        const taken = this.holdAnswer(sessionKey, session);
-        if (!taken) {
+        const heldAnswer = this.holdAnswer(sessionKey, session);
+        if (!heldAnswer) {
           this.logger.info('User choice refused — the question is already being answered', { sessionKey });
           if (channel && userId) await this.ctx.slackApi.postEphemeral(channel, userId, ANSWER_IN_PROGRESS_TEXT);
           return;
         }
-        hold = { key: sessionKey, value: taken };
-        // #1474 — recorded before the Slack writes below: a turn ending while they wait reads it answered.
-        markAnswerTaken(this.ctx.claudeHandler, session, sessionKey);
-      }
-
-      if (branch === 'p3' && session && channel) {
+        hold = { key: sessionKey, value: heldAnswer };
         const completedText = `✅ *${question}*\n선택: *${choiceId}. ${label}*`;
-        const completedBlocks = [
-          {
-            type: 'section',
-            text: { type: 'mrkdwn', text: completedText },
-          },
-        ];
-        const resolved = await this.ctx.threadPanel
-          ?.resolveChoice(session, sessionKey, channel, completedText, completedBlocks)
-          .catch((err) => {
-            this.logger.warn('resolveChoice threw — falling back to legacy path', {
-              sessionKey,
-              error: (err as Error)?.message ?? String(err),
-            });
-            return false;
-          });
-        if (resolved) {
-          await this.afterP3Resolve(session, sessionKey, channel);
-          try {
-            const say = this.createSayFn(channel);
-            await this.ctx.messageHandler(
-              { user: userId, channel, thread_ts: threadTs, ts: messageTs, text: choiceId, questionAnswer: true },
-              say,
-            );
-          } catch (handlerError) {
-            this.logger.error('Choice handler failed (P3), rolling back to waiting', {
-              sessionKey,
-              error: handlerError,
-            });
-            try {
-              this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'waiting');
-            } catch (rollbackError) {
-              this.logger.error('Failed to rollback activity state', { sessionKey, rollbackError });
-            }
-          }
-          return;
-        }
-        // resolve returned false (unexpected under PHASE>=3 + matching pc) → fall through to legacy.
-      }
-
-      // 선택 메시지 업데이트 (모든 동기화 대상에 대해)
-      // Immediately replace buttons to prevent double-click on other options
-      if (channel) {
-        const completedBlocks = [
-          {
-            type: 'section',
-            text: {
-              type: 'mrkdwn',
-              text: `✅ *${question}*\n선택: *${choiceId}. ${label}*`,
-            },
-          },
-        ];
-        const targetTimestamps = this.resolveChoiceSyncMessageTs(sessionKey, messageTs, completionMessageTs);
-        await Promise.all(
-          targetTimestamps.map((targetTs) =>
-            this.ctx.slackApi
-              .updateMessage(
-                channel,
-                targetTs,
-                `✅ *${question}*\n선택: *${choiceId}. ${label}*`,
-                completedBlocks,
-                [], // 기존 attachments(버튼) 제거
-              )
-              .catch((error: unknown) => this.logger.warn('Failed to update choice message', { targetTs, error })),
-          ),
+        const completedBlocks = [{ type: 'section', text: { type: 'mrkdwn', text: completedText } }];
+        // The messages the card shows the question in — read before the record takes the choice off the session.
+        const targets = channel ? this.resolveChoiceSyncMessageTs(sessionKey, messageTs, completionMessageTs) : [];
+        // #1474 — recorded, then handed on, then drawn (answerQuestion).
+        await this.answerQuestion({
+          session,
+          sessionKey,
+          channel,
+          event: { user: userId, channel, thread_ts: threadTs, ts: messageTs, text: choiceId, questionAnswer: true },
+          draw: () => this.drawAnswered(session, sessionKey, channel, targets, completedText, completedBlocks),
+        }).catch((handlerError) =>
+          this.logger.error('Choice handler failed — the question is given back', { sessionKey, error: handlerError }),
         );
-        // Clear action panel choice immediately (thread header buttons)
-        this.ctx.threadPanel
-          ?.clearChoice(sessionKey)
-          .catch((err: unknown) =>
-            this.logger.debug('Failed to clear choice panel (user choice)', { sessionKey, error: err }),
-          );
-      }
-
-      // 세션 확인 및 메시지 처리
-      if (session) {
-        // clearChoice already fired above (line 75); only clear pending question here
-        // Clear pending question from session (dashboard sync)
-        if (session.actionPanel) {
-          session.actionPanel.pendingQuestion = undefined;
-        }
-        // pendingQuestion clear must persist+broadcast so dashboard restart
-        // doesn't restore a stale question.
-        try {
-          this.ctx.claudeHandler.getSessionRegistry?.()?.persistAndBroadcast?.(sessionKey);
-        } catch (err) {
-          this.logger.debug('handleUserChoice: persistAndBroadcast failed', {
-            sessionKey,
-            error: (err as Error)?.message ?? String(err),
-          });
-        }
-        // Delete tracked completion messages on choice selection (S8)
-        if (channel) {
-          const threadRootTs = session.threadRootTs;
-          this.ctx.completionMessageTracker
-            ?.deleteAll(
-              sessionKey,
-              async (ch, ts) => {
-                // Defense-in-depth: never delete the thread root message (header)
-                if (threadRootTs && ts === threadRootTs) {
-                  this.logger.error('BLOCKED: attempted to delete thread root via completion tracker (choice)', {
-                    sessionKey,
-                    ts,
-                    threadRootTs,
-                  });
-                  return;
-                }
-                try {
-                  await this.ctx.slackApi.deleteMessage(ch, ts);
-                } catch {}
-              },
-              channel,
-            )
-            .catch(() => {});
-        }
-        // Transition waiting→working when user responds to a choice
-        this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'working');
-        try {
-          const say = this.createSayFn(channel);
-          await this.ctx.messageHandler(
-            { user: userId, channel, thread_ts: threadTs, ts: messageTs, text: choiceId, questionAnswer: true },
-            say,
-          );
-        } catch (handlerError) {
-          this.logger.error('Choice handler failed, rolling back to waiting', { sessionKey, error: handlerError });
-          try {
-            this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'waiting');
-          } catch (rollbackError) {
-            this.logger.error('Failed to rollback activity state', { sessionKey, rollbackError });
-          }
-        }
       } else {
         this.logger.warn('Session not found for user choice', { sessionKey });
         await this.ctx.slackApi.postEphemeral(
@@ -538,8 +405,6 @@ export class ChoiceActionHandler {
       // submit returns, past its dispatch, though the form store entry is
       // deleted on the way. Another chunk of the same form still submits.
       const hold = session ? this.holdAnswer(sessionKey, session, formId) : undefined;
-      // #1474 — recorded before the submit's Slack writes: a turn ending while they wait reads it answered.
-      markAnswerTaken(this.ctx.claudeHandler, session, sessionKey);
       pendingForm.submitting = true;
       try {
         await this.submitMultiChoiceForm(body, pendingForm, sessionKey, channel, userId, messageTs);
@@ -553,7 +418,11 @@ export class ChoiceActionHandler {
     }
   }
 
-  /** The Slack form submit once it holds the form's submitting lock. */
+  /**
+   * The Slack form submit once it holds the form's submitting lock. #1474 — no Slack write comes first: the form is
+   * recorded and handed on (`completeMultiChoiceForm` → `answerQuestion`) before any await, and its messages are
+   * drawn as answered alongside. The lock (`submitting`) and the hold already refuse a second click.
+   */
   private async submitMultiChoiceForm(
     body: any,
     pendingForm: PendingChoiceFormData,
@@ -562,36 +431,9 @@ export class ChoiceActionHandler {
     userId: string,
     messageTs: string,
   ): Promise<void> {
-    // ── Immediately replace form with "submitting" indicator ──
-    // Slack buttons cannot be disabled; replace the entire message to prevent further clicks
-    if (channel && messageTs) {
-      const submittingBlocks = [
-        {
-          type: 'section',
-          text: { type: 'mrkdwn', text: '⏳ *제출 처리 중...*' },
-        },
-      ];
-      const immediateTargets = this.resolveChoiceSyncMessageTs(sessionKey, messageTs, pendingForm.messageTs);
-      await Promise.all(
-        immediateTargets.map((ts) =>
-          this.ctx.slackApi
-            .updateMessage(channel, ts, '⏳ 제출 처리 중...', submittingBlocks, [])
-            .catch((err: unknown) => this.logger.debug('Failed to show submitting state', { ts, error: err })),
-        ),
-      );
-    }
-    // Clear action panel choice immediately (thread header buttons)
-    this.ctx.threadPanel
-      ?.clearChoice(sessionKey)
-      .catch((err: unknown) =>
-        this.logger.debug('Failed to clear choice panel (form submit)', { sessionKey, error: err }),
-      );
-
     const fallbackThreadTs = pendingForm.threadTs || body.message?.thread_ts || messageTs;
     const sessionForThread = this.ctx.claudeHandler.getSessionByKey(sessionKey);
     const threadTs = this.resolveSessionThreadTs(sessionForThread, fallbackThreadTs);
-
-    // 제출 처리
     await this.completeMultiChoiceForm(pendingForm, userId, channel, threadTs, messageTs);
   }
 
@@ -684,13 +526,6 @@ export class ChoiceActionHandler {
       formId: pendingForm.formId,
       selections: pendingForm.selections,
     });
-    // #1474 — the form is answered: recorded before its Slack writes (markAnswerTaken). A typed answer that
-    // completes a form comes in here without a submit of its own (form-action-handler).
-    markAnswerTaken(
-      this.ctx.claudeHandler,
-      this.ctx.claudeHandler.getSessionByKey(pendingForm.sessionKey),
-      pendingForm.sessionKey,
-    );
 
     const responses = pendingForm.questions.map((q) => {
       const sel = pendingForm.selections[q.id];
@@ -700,190 +535,59 @@ export class ChoiceActionHandler {
       return `${q.question}: ${sel.choiceId}. ${sel.label}`;
     });
     const combinedMessage = responses.join('\n');
-
     const completedText = `✅ *모든 선택 완료*\n\n${responses.map((r, i) => `${i + 1}. ${r}`).join('\n')}`;
-    const completedBlocks = [
-      {
-        type: 'section',
-        text: { type: 'mrkdwn', text: completedText },
-      },
-    ];
+    const completedBlocks = [{ type: 'section', text: { type: 'mrkdwn', text: completedText } }];
 
-    const session = this.ctx.claudeHandler.getSessionByKey(pendingForm.sessionKey);
+    const sessionKey = pendingForm.sessionKey;
+    const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
     const resolvedThreadTs = this.resolveSessionThreadTs(session, threadTs);
 
-    // P3 (PHASE>=3) — submit is per-chunk (handleFormSubmit only validates
-    // the submitted form's questions). Resolve only THIS chunk's messageTs
-    // in place. Remove this chunk's formId from pendingChoice.formIds; only
-    // when the last chunk is submitted does pendingChoice fully clear.
-    // Other chunks remain live so the user can answer them independently
-    // (matches legacy per-chunk semantics; prevents codex-flagged bug where
-    // submitting chunk 1 would clear chunks 2..N as "completed" while they
-    // were still unanswered).
+    // P3 (PHASE>=3) — a form split into chunks: each chunk is submitted on its own, and only the LAST one answers
+    // the question (codex-flagged: submitting chunk 1 must not end chunks 2..N). This chunk's own message is drawn;
+    // while others remain, the record shrinks and the question stays open (#1474: the open bit goes down only when
+    // the question is answered).
     const pc = session?.actionPanel?.pendingChoice;
-    const canUseP3 =
-      !!session && !!this.ctx.threadPanel && !!pc && pc.kind === 'multi' && pc.turnId === pendingForm.turnId;
+    const chunked = !!pc && pc.kind === 'multi' && pc.turnId === pendingForm.turnId;
+    const remainingFormIds = chunked ? pc.formIds.filter((fId) => fId !== pendingForm.formId) : [];
+    const remainingChoice = chunked && remainingFormIds.length > 0 ? { ...pc, formIds: remainingFormIds } : undefined;
+    const targets = chunked
+      ? pendingForm.messageTs
+        ? [pendingForm.messageTs]
+        : []
+      : this.resolveChoiceSyncMessageTs(sessionKey, messageTs, pendingForm.messageTs || messageTs);
+    this.formStore.delete(pendingForm.formId);
 
-    if (canUseP3 && session && channel && pc && pendingForm.messageTs) {
-      // Slack update: mark ONLY this chunk's message done.
-      try {
-        await this.ctx.slackApi.updateMessage(channel, pendingForm.messageTs, '✅ 모든 선택 완료', completedBlocks, []);
-      } catch (err) {
-        this.logger.warn('P3 per-chunk resolve: updateMessage failed', {
-          sessionKey: pendingForm.sessionKey,
-          formId: pendingForm.formId,
-          error: (err as Error)?.message ?? String(err),
-        });
-      }
-
-      // Remove this chunk from pendingChoice.formIds (and the formStore entry).
-      this.formStore.delete(pendingForm.formId);
-      const remainingFormIds = pc.formIds.filter((fId) => fId !== pendingForm.formId);
-      if (session.actionPanel) {
-        if (remainingFormIds.length === 0) {
-          // Last chunk submitted — clear the whole pending record.
-          session.actionPanel.pendingChoice = undefined;
-          session.actionPanel.choiceMessageTs = undefined;
-          session.actionPanel.choiceMessageLink = undefined;
-          session.actionPanel.waitingForChoice = false;
-          session.actionPanel.choiceBlocks = undefined;
-        } else {
-          // Chunks still outstanding — shrink formIds, keep pendingChoice live.
-          session.actionPanel.pendingChoice = {
-            ...pc,
-            formIds: remainingFormIds,
-          };
-        }
-      }
-
-      // afterP3Resolve handles the single persistAndBroadcast for both the
-      // formIds shrink/clear above and the pendingQuestion clear below.
-      await this.afterP3Resolve(session, pendingForm.sessionKey, channel);
-      try {
-        const say = this.createSayFn(channel);
-        await this.ctx.messageHandler(
-          {
-            user: userId,
-            channel,
-            thread_ts: resolvedThreadTs,
-            ts: messageTs,
-            text: combinedMessage,
-            questionAnswer: true,
-          },
-          say,
-        );
-      } catch (handlerError) {
-        this.logger.error('Multi-choice handler failed (P3), rolling back to waiting', {
-          sessionKey: pendingForm.sessionKey,
-          error: handlerError,
-        });
-        try {
-          this.ctx.claudeHandler.setActivityStateByKey(pendingForm.sessionKey, 'waiting');
-        } catch (rollbackError) {
-          this.logger.error('Failed to rollback activity state', {
-            sessionKey: pendingForm.sessionKey,
-            rollbackError,
-          });
-        }
+    if (!session) {
+      // Nothing to answer on: the form's messages still lose their buttons.
+      for (const targetTs of targets) {
+        await this.ctx.slackApi
+          .updateMessage(channel, targetTs, '✅ 모든 선택 완료', completedBlocks, [])
+          .catch((error: unknown) => this.logger.warn('Failed to update completed form', { targetTs, error }));
       }
       return;
     }
 
-    this.formStore.delete(pendingForm.formId);
-
-    const completionMessageTs = pendingForm.messageTs || messageTs;
-
-    const targetTimestamps = this.resolveChoiceSyncMessageTs(pendingForm.sessionKey, messageTs, completionMessageTs);
-    for (const targetTs of targetTimestamps) {
-      try {
-        await this.ctx.slackApi.updateMessage(
-          channel,
-          targetTs,
-          '✅ 모든 선택 완료',
-          completedBlocks,
-          [], // 기존 attachments(버튼 폼) 제거
-        );
-      } catch (error) {
-        this.logger.warn('Failed to update completed form', { targetTs, error });
-      }
-    }
-
-    // Claude에 전송
-    if (session) {
-      // clearChoice already fired in handleFormSubmit; only clear pending question here
-      if (session.actionPanel) {
-        session.actionPanel.pendingQuestion = undefined;
-      }
-      // pendingQuestion clear must persist+broadcast (dashboard restart parity).
-      try {
-        this.ctx.claudeHandler.getSessionRegistry?.()?.persistAndBroadcast?.(pendingForm.sessionKey);
-      } catch (err) {
-        this.logger.debug('completeMultiChoiceForm: persistAndBroadcast failed', {
-          sessionKey: pendingForm.sessionKey,
-          error: (err as Error)?.message ?? String(err),
-        });
-      }
-      // Delete tracked completion messages on form submission (S8)
-      if (channel) {
-        const formThreadRootTs = session.threadRootTs;
-        this.ctx.completionMessageTracker
-          ?.deleteAll(
-            pendingForm.sessionKey,
-            async (ch, ts) => {
-              // Defense-in-depth: never delete the thread root message (header)
-              if (formThreadRootTs && ts === formThreadRootTs) {
-                this.logger.error('BLOCKED: attempted to delete thread root via completion tracker (form)', {
-                  sessionKey: pendingForm.sessionKey,
-                  ts,
-                  threadRootTs: formThreadRootTs,
-                });
-                return;
-              }
-              try {
-                await this.ctx.slackApi.deleteMessage(ch, ts);
-              } catch {}
-            },
-            channel,
-          )
-          .catch(() => {});
-      }
-      // Transition waiting→working when user submits form
-      this.ctx.claudeHandler.setActivityStateByKey(pendingForm.sessionKey, 'working');
-      try {
-        const say = this.createSayFn(channel);
-        await this.ctx.messageHandler(
-          {
-            user: userId,
-            channel,
-            thread_ts: resolvedThreadTs,
-            ts: messageTs,
-            text: combinedMessage,
-            questionAnswer: true,
-          },
-          say,
-        );
-      } catch (handlerError) {
-        this.logger.error('Multi-choice handler failed, rolling back to waiting', {
-          sessionKey: pendingForm.sessionKey,
-          error: handlerError,
-        });
-        try {
-          this.ctx.claudeHandler.setActivityStateByKey(pendingForm.sessionKey, 'waiting');
-        } catch (rollbackError) {
-          this.logger.error('Failed to rollback activity state', {
-            sessionKey: pendingForm.sessionKey,
-            rollbackError,
-          });
-        }
-      }
-    } else {
-      this.logger.warn('Session not found for multi-choice completion', { sessionKey: pendingForm.sessionKey });
-      await this.ctx.slackApi.postEphemeral(
+    // #1474 — recorded, then handed on, then drawn (answerQuestion); a failed hand-on gives the question back.
+    await this.answerQuestion({
+      session,
+      sessionKey,
+      channel,
+      event: {
+        user: userId,
         channel,
-        userId,
-        '❌ 세션을 찾을 수 없습니다. 대화가 만료되었을 수 있습니다.',
-      );
-    }
+        thread_ts: resolvedThreadTs,
+        ts: messageTs,
+        text: combinedMessage,
+        questionAnswer: true,
+      },
+      remainingChoice,
+      draw: () => this.drawAnswered(session, sessionKey, channel, targets, '✅ 모든 선택 완료', completedBlocks),
+    }).catch((handlerError) =>
+      this.logger.error('Multi-choice handler failed — the question is given back', {
+        sessionKey,
+        error: handlerError,
+      }),
+    );
   }
 
   /**
@@ -1012,8 +716,6 @@ export class ChoiceActionHandler {
       if (answeredCount === totalCount) {
         // Held until the submit returns, as a form submit's chunk hold is.
         const hold = session ? this.holdAnswer(sessionKey, session, formId) : undefined;
-        // #1474 — recorded before the form's Slack writes (markAnswerTaken).
-        markAnswerTaken(this.ctx.claudeHandler, session, sessionKey);
         try {
           pendingForm.submitting = true;
           this.formStore.set(formId, pendingForm);
@@ -1177,7 +879,7 @@ export class ChoiceActionHandler {
     const claim = this.claimDashboardAnswer(session, sessionKey);
     opts.onClaimed?.();
     try {
-      await this.sendDashboardChoice(session, sessionKey, claim, choiceId, label, question, userId, adminAnswer);
+      await this.sendDashboardChoice(session, sessionKey, choiceId, label, question, userId, adminAnswer);
     } finally {
       this.endAnswerHold(sessionKey, claim.hold);
     }
@@ -1187,7 +889,6 @@ export class ChoiceActionHandler {
   private async sendDashboardChoice(
     session: ConversationSession,
     sessionKey: string,
-    claim: DashboardAnswerClaim,
     choiceId: string,
     label: string,
     question: string,
@@ -1211,136 +912,23 @@ export class ChoiceActionHandler {
       ? `직접 입력: _${escapeSlackMrkdwn(label.substring(0, 200))}${label.length > 200 ? '...' : ''}_`
       : `선택: *${choiceId}. ${label}*`;
 
-    // P3 (PHASE>=3) — when a pendingChoice exists, route through resolveChoice.
-    // Dashboard payloads don't carry turnId, but pc.turnId always matches itself,
-    // so the classifier returns 'p3' whenever pc exists under PHASE>=3.
+    const completedText = `✅ *${question}*\n${picked} _(${via})_`;
+    const completedBlocks = [{ type: 'section', text: { type: 'mrkdwn', text: completedText } }];
+    // The card's messages, read before the record takes the choice off the session (the P3 record's own message
+    // is among them: its choiceTs is the choice message).
     const pcSingle = session.actionPanel?.pendingChoice;
-    const canUseDashboardP3 = !!this.ctx.threadPanel && !!pcSingle && pcSingle.kind === 'single';
-    if (canUseDashboardP3 && channel) {
-      const completedText = `✅ *${question}*\n${picked} _(${via})_`;
-      const completedBlocks = [
-        {
-          type: 'section',
-          text: { type: 'mrkdwn', text: completedText },
-        },
-      ];
-      const resolved = await this.ctx
-        .threadPanel!.resolveChoice(session, sessionKey, channel, completedText, completedBlocks)
-        .catch((err) => {
-          this.logger.warn('resolveChoice (dashboard) threw — falling back to legacy path', {
-            sessionKey,
-            error: (err as Error)?.message ?? String(err),
-          });
-          return false;
-        });
-      if (resolved) {
-        try {
-          await this.afterP3Resolve(session, sessionKey, channel);
-          const say = this.createSayFn(channel);
-          await this.ctx.messageHandler(
-            {
-              user: turnUser,
-              channel,
-              thread_ts: threadTs,
-              ts: String(Date.now() / 1000),
-              text: turnText,
-              questionAnswer: true,
-            },
-            say,
-          );
-        } catch (error) {
-          this.logger.error('Error processing dashboard choice (P3)', { sessionKey, choiceId, error });
-          this.releaseDashboardAnswer(session, sessionKey, claim);
-          throw error;
-        }
-        return;
-      }
-      // Fall through to legacy path.
-    }
-
+    const targets = this.resolveChoiceSyncMessageTs(
+      sessionKey,
+      pcSingle?.kind === 'single' ? pcSingle.choiceTs : choiceMessageTs,
+      choiceMessageTs,
+    );
+    // #1474 — recorded, then handed on, then drawn (answerQuestion); a failed hand-on gives the question back.
     try {
-      // Update Slack choice messages with selection confirmation
-      const completedBlocks = [
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: `✅ *${question}*\n${picked} _(${via})_`,
-          },
-        },
-      ];
-      const targetTimestamps = this.resolveChoiceSyncMessageTs(sessionKey, choiceMessageTs, choiceMessageTs);
-      for (const targetTs of targetTimestamps) {
-        try {
-          await this.ctx.slackApi.updateMessage(
-            channel,
-            targetTs,
-            `✅ *${question}*\n${picked} (${via})`,
-            completedBlocks,
-            [],
-          );
-        } catch (error) {
-          this.logger.warn('Failed to update choice message from dashboard', { targetTs, error });
-        }
-      }
-
-      // Clear thread header choice + pending question
-      await this.ctx.threadPanel?.clearChoice(sessionKey);
-      if (session.actionPanel) {
-        session.actionPanel.pendingQuestion = undefined;
-      }
-      try {
-        this.ctx.claudeHandler.getSessionRegistry?.()?.persistAndBroadcast?.(sessionKey);
-      } catch (err) {
-        this.logger.debug('handleChoiceFromDashboard: persistAndBroadcast failed', {
-          sessionKey,
-          error: (err as Error)?.message ?? String(err),
-        });
-      }
-
-      // Delete tracked completion messages
-      if (channel) {
-        const threadRootTs = session.threadRootTs;
-        this.ctx.completionMessageTracker
-          ?.deleteAll(
-            sessionKey,
-            async (ch, ts) => {
-              if (threadRootTs && ts === threadRootTs) {
-                this.logger.error(
-                  'BLOCKED: attempted to delete thread root via completion tracker (dashboard choice)',
-                  {
-                    sessionKey,
-                    ts,
-                    threadRootTs,
-                  },
-                );
-                return;
-              }
-              try {
-                await this.ctx.slackApi.deleteMessage(ch, ts);
-              } catch (deleteError) {
-                this.logger.warn('Failed to delete completion message (dashboard choice)', {
-                  sessionKey,
-                  ts,
-                  error: deleteError,
-                });
-              }
-            },
-            channel,
-          )
-          .catch((deleteAllError) => {
-            this.logger.warn('Failed to delete all completion messages (dashboard choice)', {
-              sessionKey,
-              error: deleteAllError,
-            });
-          });
-      }
-
-      // The session is already `working` (the claim above).
-      // Send choiceId (or the direct input) as user message to Claude
-      const say = this.createSayFn(channel);
-      await this.ctx.messageHandler(
-        {
+      await this.answerQuestion({
+        session,
+        sessionKey,
+        channel,
+        event: {
           user: turnUser,
           channel,
           thread_ts: threadTs,
@@ -1348,11 +936,10 @@ export class ChoiceActionHandler {
           text: turnText,
           questionAnswer: true,
         },
-        say,
-      );
+        draw: () => this.drawAnswered(session, sessionKey, channel, targets, completedText, completedBlocks),
+      });
     } catch (error) {
       this.logger.error('Error processing dashboard choice', { sessionKey, choiceId, error });
-      this.releaseDashboardAnswer(session, sessionKey, claim);
       throw error;
     }
   }
@@ -1442,150 +1029,26 @@ export class ChoiceActionHandler {
         },
       ];
 
-      // P3 (PHASE>=3) — route through resolveMultiChoice when pendingChoice is
-      // a multi record. Dashboard payloads don't carry turnId, but pc.turnId
-      // always matches itself.
+      // The form's messages, read before the record takes the choice off the session: the P3 record's chunks (their
+      // forms' messages) and the legacy choice message.
       const pcMulti = session.actionPanel?.pendingChoice;
-      const canUseDashboardMultiP3 = !!this.ctx.threadPanel && !!pcMulti && pcMulti.kind === 'multi';
-      if (canUseDashboardMultiP3 && channel) {
-        const tsList: string[] = [];
-        for (const fId of pcMulti!.formIds) {
+      const choiceMessageTs = session.actionPanel?.choiceMessageTs;
+      const targets = this.resolveChoiceSyncMessageTs(sessionKey, choiceMessageTs, choiceMessageTs);
+      if (pcMulti?.kind === 'multi') {
+        for (const fId of pcMulti.formIds) {
           const form = this.formStore.get(fId);
-          if (form?.messageTs) tsList.push(form.messageTs);
+          if (form?.messageTs && !targets.includes(form.messageTs)) targets.push(form.messageTs);
         }
-        const resolved = await this.ctx
-          .threadPanel!.resolveMultiChoice(
-            session,
-            sessionKey,
-            channel,
-            tsList,
-            dashboardCompletedText,
-            dashboardCompletedBlocks,
-          )
-          .catch((err) => {
-            this.logger.warn('resolveMultiChoice (dashboard) threw — falling back to legacy', {
-              sessionKey,
-              error: (err as Error)?.message ?? String(err),
-            });
-            return false;
-          });
-        if (resolved) {
-          // Invalidate any pending Slack forms for this session
-          const sessionForms = this.formStore.getFormsBySession(sessionKey);
-          for (const [formId] of sessionForms) {
-            this.formStore.delete(formId);
-          }
-          try {
-            await this.afterP3Resolve(session, sessionKey, channel);
-            const say = this.createSayFn(channel);
-            await this.ctx.messageHandler(
-              {
-                user: userId,
-                channel,
-                thread_ts: threadTs,
-                ts: String(Date.now() / 1000),
-                text: combinedMessage,
-                questionAnswer: true,
-              },
-              say,
-            );
-          } catch (error) {
-            this.logger.error('Error processing dashboard multi-choice (P3)', { sessionKey, error });
-            this.releaseDashboardAnswer(session, sessionKey, claim);
-            throw error;
-          }
-          return;
-        }
-        // Fall through to legacy path.
       }
-
+      // The whole question is answered here: every Slack form of it is done.
+      for (const [formId] of this.formStore.getFormsBySession(sessionKey)) this.formStore.delete(formId);
+      // #1474 — recorded, then handed on, then drawn (answerQuestion); a failed hand-on gives the question back.
       try {
-        // Update Slack form messages with completion
-        const completedBlocks = dashboardCompletedBlocks;
-
-        // Try to update the Slack form message(s)
-        const choiceMessageTs = session.actionPanel?.choiceMessageTs;
-        const targetTimestamps = this.resolveChoiceSyncMessageTs(sessionKey, choiceMessageTs, choiceMessageTs);
-        for (const targetTs of targetTimestamps) {
-          try {
-            await this.ctx.slackApi.updateMessage(
-              channel,
-              targetTs,
-              `✅ 모든 선택 완료 (대시보드)\n${responses.join('\n')}`,
-              completedBlocks,
-              [],
-            );
-          } catch (error) {
-            this.logger.warn('Failed to update multi-choice message from dashboard', { targetTs, error });
-          }
-        }
-
-        // Clear thread header (non-critical — don't abort submission on failure)
-        try {
-          await this.ctx.threadPanel?.clearChoice(sessionKey);
-        } catch (clearError) {
-          this.logger.warn('Failed to clear thread panel choice (dashboard multi-choice)', {
-            sessionKey,
-            error: clearError,
-          });
-        }
-        if (session.actionPanel) {
-          session.actionPanel.pendingQuestion = undefined;
-        }
-        try {
-          this.ctx.claudeHandler.getSessionRegistry?.()?.persistAndBroadcast?.(sessionKey);
-        } catch (err) {
-          this.logger.debug('handleMultiChoiceFromDashboard: persistAndBroadcast failed', {
-            sessionKey,
-            error: (err as Error)?.message ?? String(err),
-          });
-        }
-
-        // Delete tracked completion messages
-        if (channel) {
-          const threadRootTs = session.threadRootTs;
-          this.ctx.completionMessageTracker
-            ?.deleteAll(
-              sessionKey,
-              async (ch, ts) => {
-                if (threadRootTs && ts === threadRootTs) {
-                  this.logger.error(
-                    'BLOCKED: attempted to delete thread root via completion tracker (dashboard multi-choice)',
-                    { sessionKey, ts, threadRootTs },
-                  );
-                  return;
-                }
-                try {
-                  await this.ctx.slackApi.deleteMessage(ch, ts);
-                } catch (deleteError) {
-                  this.logger.warn('Failed to delete completion message (dashboard multi-choice)', {
-                    sessionKey,
-                    ts,
-                    error: deleteError,
-                  });
-                }
-              },
-              channel,
-            )
-            .catch((deleteAllError) => {
-              this.logger.warn('Failed to delete all completion messages (dashboard multi-choice)', {
-                sessionKey,
-                error: deleteAllError,
-              });
-            });
-        }
-
-        // Invalidate any pending Slack forms for this session
-        const sessionForms = this.formStore.getFormsBySession(sessionKey);
-        for (const [formId] of sessionForms) {
-          this.formStore.delete(formId);
-        }
-
-        // The session is already `working` (the claim above).
-        // Send combined response to Claude
-        const say = this.createSayFn(channel);
-        await this.ctx.messageHandler(
-          {
+        await this.answerQuestion({
+          session,
+          sessionKey,
+          channel,
+          event: {
             user: userId,
             channel,
             thread_ts: threadTs,
@@ -1593,11 +1056,11 @@ export class ChoiceActionHandler {
             text: combinedMessage,
             questionAnswer: true,
           },
-          say,
-        );
+          draw: () =>
+            this.drawAnswered(session, sessionKey, channel, targets, dashboardCompletedText, dashboardCompletedBlocks),
+        });
       } catch (error) {
         this.logger.error('Error processing dashboard multi-choice', { sessionKey, error });
-        this.releaseDashboardAnswer(session, sessionKey, claim);
         throw error;
       }
     } finally {
@@ -1621,16 +1084,9 @@ export class ChoiceActionHandler {
       });
       throw new Error('Session is not waiting for a choice');
     }
-    // #1474 — the question stops being open now, before the answer's Slack writes (markAnswerTaken).
-    const openBit = session.actionPanel?.waitingForChoice;
-    if (session.actionPanel) session.actionPanel.waitingForChoice = false;
-    this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'working');
-    return {
-      hold,
-      question: session.actionPanel?.pendingQuestion,
-      claimedAt: session.activityStateChangedAt,
-      openBit,
-    };
+    // #1474 — the record itself (open bit down, question off, `working`) is `answerQuestion`'s, which the caller
+    // reaches with no await in between.
+    return { hold };
   }
 
   /**
@@ -1657,6 +1113,244 @@ export class ChoiceActionHandler {
    * already taken. Held until the answer's handler returns — past its dispatch
    * handoff, whatever its Slack cleanup deletes on the way.
    */
+  /**
+   * #1474 — a typed answer to a single question (직접 입력, `FormActionHandler`): taken like a button's — held,
+   * recorded, handed on, then drawn. A question already being answered refuses it.
+   */
+  async answerWithText(args: {
+    sessionKey: string;
+    channel: string;
+    threadTs: string | undefined;
+    messageTs: string;
+    userId: string;
+    text: string;
+    completedText: string;
+    completedBlocks: any[];
+  }): Promise<void> {
+    const { sessionKey, channel, messageTs, userId } = args;
+    const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
+    const targets = channel
+      ? this.resolveChoiceSyncMessageTs(sessionKey, messageTs, this.resolveChoiceMessageTs(session, messageTs))
+      : [];
+    if (!session) {
+      for (const targetTs of targets) {
+        await this.ctx.slackApi
+          .updateMessage(channel, targetTs, args.completedText, args.completedBlocks, [])
+          .catch((error: unknown) => this.logger.warn('Failed to update choice message', { targetTs, error }));
+      }
+      return;
+    }
+    const hold = this.holdAnswer(sessionKey, session);
+    if (!hold) {
+      this.logger.info('Typed answer refused — the question is already being answered', { sessionKey });
+      if (channel && userId) await this.ctx.slackApi.postEphemeral(channel, userId, ANSWER_IN_PROGRESS_TEXT);
+      return;
+    }
+    try {
+      await this.answerQuestion({
+        session,
+        sessionKey,
+        channel,
+        event: {
+          user: userId,
+          channel,
+          thread_ts: this.resolveSessionThreadTs(session, args.threadTs),
+          ts: messageTs,
+          text: args.text,
+          questionAnswer: true,
+        },
+        draw: () => this.drawAnswered(session, sessionKey, channel, targets, args.completedText, args.completedBlocks),
+      });
+    } catch (handlerError) {
+      this.logger.error('Typed answer failed — the question is given back', { sessionKey, error: handlerError });
+    } finally {
+      this.endAnswerHold(sessionKey, hold);
+    }
+  }
+
+  /**
+   * #1474 — answer the session's open question: record it, hand it on, then draw it.
+   *
+   * 1. Record, before any await (`recordAnswer`): the question stops being open and leaves the session, and the
+   *    session reads `working`. A turn that asked and ends from here reads it answered, so its run does not settle
+   *    `blocked: awaiting user choice` and lock the line again. A chunk of a form whose other chunks are still to
+   *    answer keeps the question open (`remainingChoice`).
+   * 2. Hand on, at once: the answer goes to the pipeline — into the queue behind a running turn, in the order it was
+   *    given, or as the next turn. It does not wait for its Slack edits: Slack's one line ran an hour behind on a busy
+   *    host (#1470), and an answer that waited there was in no queue, while the line behind it could move on.
+   * 3. Draw: the card's edits start before the hand-on, so they keep their place in Slack's line ahead of what the
+   *    answer's turn posts, and are awaited after it. Drawing never changes the session: a question asked after this
+   *    answer is never taken down by it.
+   *
+   * A hand-on that throws gives the question back (`giveBackQuestion`) and rethrows.
+   */
+  async answerQuestion(args: {
+    session: ConversationSession;
+    sessionKey: string;
+    channel: string | undefined;
+    event: MessageEvent;
+    draw: () => Promise<unknown>;
+    /** A chunk of a form whose other chunks are still to answer: the choice record that remains open. */
+    remainingChoice?: NonNullable<ConversationSession['actionPanel']>['pendingChoice'];
+  }): Promise<void> {
+    const taken = this.recordAnswer(args.session, args.sessionKey, args.remainingChoice);
+    const drawing = args.draw().catch((error: unknown) =>
+      this.logger.warn('Drawing an answered question failed', {
+        sessionKey: args.sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      }),
+    );
+    try {
+      await this.ctx.messageHandler(args.event, this.createSayFn(args.channel as string));
+    } catch (error) {
+      this.giveBackQuestion(args.session, args.sessionKey, taken, error);
+      await drawing;
+      throw error;
+    }
+    await drawing;
+  }
+
+  /**
+   * #1474 — the record of an answer, synchronously: what the question left on the session is kept (for a give-back)
+   * and taken off. A whole answer takes the open bit, the recorded question and the choice record; a form chunk
+   * whose other chunks are still to answer only shrinks the record (`remainingChoice`) — the question stays open.
+   */
+  private recordAnswer(
+    session: ConversationSession,
+    sessionKey: string,
+    remainingChoice?: NonNullable<ConversationSession['actionPanel']>['pendingChoice'],
+  ): TakenQuestion {
+    const panel = session.actionPanel;
+    const taken: TakenQuestion = {
+      recordedAt: undefined,
+      question: panel?.pendingQuestion,
+      choice: panel?.pendingChoice,
+      openBit: panel?.waitingForChoice,
+      choiceMessageTs: panel?.choiceMessageTs,
+      choiceMessageLink: panel?.choiceMessageLink,
+      choiceBlocks: panel?.choiceBlocks,
+    };
+    if (panel && remainingChoice !== undefined) {
+      panel.pendingChoice = remainingChoice;
+    } else {
+      if (panel) {
+        panel.waitingForChoice = false;
+        panel.pendingQuestion = undefined;
+        panel.pendingChoice = undefined;
+        panel.choiceMessageTs = undefined;
+        panel.choiceMessageLink = undefined;
+        panel.choiceBlocks = undefined;
+      }
+      this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'working');
+    }
+    taken.recordedAt = session.activityStateChangedAt;
+    try {
+      this.ctx.claudeHandler.getSessionRegistry?.()?.persistAndBroadcast?.(sessionKey);
+    } catch (err) {
+      this.logger.debug('recordAnswer: persistAndBroadcast failed', {
+        sessionKey,
+        error: (err as Error)?.message ?? String(err),
+      });
+    }
+    return taken;
+  }
+
+  /**
+   * #1474 — an answer the pipeline did not take gives its question back as it was — open bit, recorded question,
+   * choice record — and the session waits on it again:
+   * - the queue did not keep it (`AnswerNotKeptError`): whatever the turn that asked did meanwhile, the owner's
+   *   question is still unanswered;
+   * - or nothing moved since the record (the session's activity clock): the dispatch failed before a turn started.
+   * A failure after the answer's own turn ran (the clock moved, and no queue refused it) does not offer the used
+   * answer again. Nor is anything given back over a newer question the model asked since: that one is open, and
+   * this answer was not its answer.
+   */
+  private giveBackQuestion(
+    session: ConversationSession,
+    sessionKey: string,
+    taken: TakenQuestion,
+    error: unknown,
+  ): void {
+    const panel = session.actionPanel;
+    if (panel?.pendingQuestion !== undefined && panel.pendingQuestion !== taken.question) {
+      this.logger.info('Answer not given back — the model asked a newer question since', { sessionKey });
+      return;
+    }
+    const notKept = error instanceof AnswerNotKeptError;
+    const untouched = session.activityStateChangedAt === taken.recordedAt;
+    if (!notKept && !untouched) {
+      this.logger.info('Answer not given back — a turn already ran on it', {
+        sessionKey,
+        activityState: session.activityState,
+      });
+      return;
+    }
+    try {
+      if (panel) {
+        panel.pendingQuestion = taken.question;
+        panel.pendingChoice = taken.choice;
+        panel.waitingForChoice = taken.openBit;
+        panel.choiceMessageTs = taken.choiceMessageTs;
+        panel.choiceMessageLink = taken.choiceMessageLink;
+        panel.choiceBlocks = taken.choiceBlocks;
+      }
+      // The session waits on its question again: a click (or a form) is how it was answered, so it was waiting.
+      this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'waiting');
+      this.ctx.claudeHandler.getSessionRegistry?.()?.persistAndBroadcast?.(sessionKey);
+    } catch (rollbackError) {
+      this.logger.error('Failed to give an answer back', { sessionKey, rollbackError });
+    }
+  }
+
+  /**
+   * #1474 — draw an answered question: the card's messages lose their buttons, the thread header re-renders from
+   * the session as it is now, the turn's completion messages go. Slack only — the session was recorded before.
+   */
+  private async drawAnswered(
+    session: ConversationSession,
+    sessionKey: string,
+    channel: string | undefined,
+    targets: string[],
+    completedText: string,
+    completedBlocks: any[],
+  ): Promise<void> {
+    if (!channel) return;
+    const edits = targets.map((targetTs) =>
+      this.ctx.slackApi
+        .updateMessage(channel, targetTs, completedText, completedBlocks, [])
+        .catch((error: unknown) => this.logger.warn('Failed to update choice message', { targetTs, error })),
+    );
+    const header = this.ctx.threadPanel
+      ?.updatePanel?.(session, sessionKey)
+      .catch((err: unknown) => this.logger.debug('Failed to redraw the thread header', { sessionKey, error: err }));
+    this.deleteCompletionMessages(session, sessionKey, channel);
+    await Promise.all([...edits, header]);
+  }
+
+  /** Delete the turn's tracked completion messages (S8), never the thread root (the header). Fire-and-forget. */
+  private deleteCompletionMessages(session: ConversationSession, sessionKey: string, channel: string): void {
+    const threadRootTs = session.threadRootTs;
+    this.ctx.completionMessageTracker
+      ?.deleteAll(
+        sessionKey,
+        async (ch, ts) => {
+          if (threadRootTs && ts === threadRootTs) {
+            this.logger.error('BLOCKED: attempted to delete thread root via completion tracker (answer)', {
+              sessionKey,
+              ts,
+              threadRootTs,
+            });
+            return;
+          }
+          try {
+            await this.ctx.slackApi.deleteMessage(ch, ts);
+          } catch {}
+        },
+        channel,
+      )
+      .catch(() => {});
+  }
+
   private holdAnswer(sessionKey: string, session: ConversationSession, formId?: string): AnswerHold | undefined {
     if (this.questionTaken(sessionKey, session, formId)) return undefined;
     const hold: AnswerHold = {
@@ -1675,39 +1369,6 @@ export class ChoiceActionHandler {
     if (!holds) return;
     holds.delete(hold);
     if (holds.size === 0) this.answering.delete(sessionKey);
-  }
-
-  /**
-   * Give a dashboard answer back after its send failed: the question returns,
-   * the session waits on it again, and both are saved so a restart keeps them.
-   *
-   * Only while nothing moved past the answer. A turn that ran on it moves the
-   * session off the claim's `working` (its end settles idle or waiting, and a
-   * later turn's start is a new transition); a newer recorded question means
-   * the model asked again. Either way the answer was used, and offering it
-   * again would run it twice — the newer state stays.
-   */
-  private releaseDashboardAnswer(session: ConversationSession, sessionKey: string, claim: DashboardAnswerClaim): void {
-    const panel = session.actionPanel;
-    const untouched = session.activityState === 'working' && session.activityStateChangedAt === claim.claimedAt;
-    const newerQuestion = panel?.pendingQuestion !== undefined && panel.pendingQuestion !== claim.question;
-    if (!untouched || newerQuestion) {
-      this.logger.info('Dashboard answer not given back — a turn already ran on it', {
-        sessionKey,
-        activityState: session.activityState,
-        newerQuestion,
-      });
-      return;
-    }
-    try {
-      if (panel && claim.question) panel.pendingQuestion = claim.question;
-      // The question is open again: a turn that ends from here reads it so (#1474).
-      if (panel && claim.openBit !== undefined) panel.waitingForChoice = claim.openBit;
-      this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'waiting');
-      this.ctx.claudeHandler.getSessionRegistry?.()?.persistAndBroadcast?.(sessionKey);
-    } catch (rollbackError) {
-      this.logger.error('Failed to give a dashboard answer back', { sessionKey, rollbackError });
-    }
   }
 
   private createSayFn(channel: string): SayFn {
@@ -1748,48 +1409,5 @@ export class ChoiceActionHandler {
     }
 
     return [...targets];
-  }
-
-  /**
-   * Common "click resolved" terminus (P3 single + multi path). Clears the
-   * pendingQuestion, persists+broadcasts, transitions waiting→working, then
-   * deletes tracked completion messages. Caller dispatches to messageHandler
-   * after this returns.
-   */
-  private async afterP3Resolve(session: any, sessionKey: string, channel: string | undefined): Promise<void> {
-    if (session.actionPanel) {
-      session.actionPanel.pendingQuestion = undefined;
-    }
-    try {
-      this.ctx.claudeHandler.getSessionRegistry?.()?.persistAndBroadcast?.(sessionKey);
-    } catch (err) {
-      this.logger.debug('afterP3Resolve: persistAndBroadcast failed', {
-        sessionKey,
-        error: (err as Error)?.message ?? String(err),
-      });
-    }
-    if (channel) {
-      const threadRootTs = session.threadRootTs;
-      this.ctx.completionMessageTracker
-        ?.deleteAll(
-          sessionKey,
-          async (ch, ts) => {
-            if (threadRootTs && ts === threadRootTs) {
-              this.logger.error('BLOCKED: attempted to delete thread root via completion tracker (P3 choice)', {
-                sessionKey,
-                ts,
-                threadRootTs,
-              });
-              return;
-            }
-            try {
-              await this.ctx.slackApi.deleteMessage(ch, ts);
-            } catch {}
-          },
-          channel,
-        )
-        .catch(() => {});
-    }
-    this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'working');
   }
 }

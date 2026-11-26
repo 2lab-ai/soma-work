@@ -23,6 +23,7 @@ import { getMetricsEmitter } from '../metrics/event-emitter';
 import { ChoiceActionHandler } from '../slack/actions/choice-action-handler';
 import { QueueHandler } from '../slack/commands/queue-handler';
 import { GoalLoopController } from '../slack/goal-loop-controller';
+import { AnswerNotKeptError } from '../slack/actions/answer-not-kept';
 import { ThreadSurface } from '../slack/thread-surface';
 import { SlackHandler } from '../slack-handler';
 import { userSettingsStore } from '../user-settings-store';
@@ -3032,6 +3033,13 @@ describe('SlackHandler — follow-up queue host', () => {
 
       const rejects = opsFor('reject');
       expect(rejects.some((metric: any) => metric.reason === 'capacity')).toBe(true);
+
+      // #1474 — an answer to the model's question the full queue did not keep is a failure its sender hears: the
+      // answer handler took the question off the session, and gives it back on this error. A plain message ends as
+      // above (the thread is told), without a throw.
+      await expect(
+        scoped.handleMessage(message({ ts: '333.333', text: '1', questionAnswer: true } as any), say()),
+      ).rejects.toThrow(AnswerNotKeptError);
 
       gate.resolve({ hasPendingChoice: false });
       await first;
@@ -9272,14 +9280,19 @@ describe('SlackHandler — follow-up queue host', () => {
 
       it('a Slack click on the question the dashboard is answering is refused — the answer runs once', async () => {
         openSingle();
+        handlerAny.slackApi.updateMessage = vi.fn(() => gate.promise);
         const [dashboard] = await race(dashboardAnswer, slackClick);
 
         expect(dashboard.status).toBe('fulfilled');
         expect(startWithContinuation).toHaveBeenCalledTimes(1);
-        expect(handlerAny.slackApi.postEphemeral).toHaveBeenCalledWith(
+        // #1474 — the dashboard answer took the question off the session before any Slack write: the click finds
+        // no question to answer and its message is marked as one that no longer holds.
+        expect(handlerAny.slackApi.updateMessage).toHaveBeenCalledWith(
           CHANNEL,
-          'U_OWNER',
-          expect.stringContaining('이미 답변'),
+          QUESTION_TS,
+          expect.stringContaining('더 이상 유효하지 않습니다'),
+          expect.any(Array),
+          [],
         );
       });
 
@@ -9352,10 +9365,12 @@ describe('SlackHandler — follow-up queue host', () => {
         expect(dashboard.status).toBe('fulfilled');
         expect(startWithContinuation).toHaveBeenCalledTimes(1);
         expect(startWithContinuation.mock.calls[0][0]).toContain('anyone. 누구나');
+        // #1474 — the dashboard answer took the whole question (its Slack forms with it) before any Slack write: the
+        // form submit finds its form gone and is told so.
         expect(handlerAny.slackApi.postEphemeral).toHaveBeenCalledWith(
           CHANNEL,
           'U_OWNER',
-          expect.stringContaining('이미 답변'),
+          expect.stringContaining('폼을 찾을 수 없습니다'),
         );
       });
     });

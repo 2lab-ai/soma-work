@@ -1,20 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { isAwaitingUserChoice } from '../../../agent-session/derive-status';
+import { AnswerNotKeptError } from '../answer-not-kept';
 import { ChoiceActionHandler } from '../choice-action-handler';
 
 /**
  * #1474 — an answer that arrives before the turn that asked has ended must not get locked behind that question
- * again.
+ * again, and must not be overtaken while it waits for Slack.
  *
- * Every answer path writes to Slack first (the question card loses its buttons) and only then cleared the
- * question's open bit (`actionPanel.waitingForChoice`). The turn that asked reads that bit when it ends
- * (`stream-executor.ts` choiceStillOpen, `isAwaitingUserChoice` in the dispatch outcome). On a busy host the one
- * Slack line ran an hour behind (#1470): a turn ending while the answer's Slack write waited read the question as
- * still open, ended `waiting`, its run settled `blocked: awaiting user choice`, the follow-up drain stopped, and the
- * card read NEEDS YOU again — with the answer already given.
+ * Every answer path used to write to Slack first (the question card loses its buttons) and only then clear the
+ * question and hand the answer on. On a busy host Slack's one serial lane ran an hour behind (#1470): a turn ending
+ * meanwhile read the question as still open (`waitingForChoice`), ended `waiting`, its run settled `blocked:
+ * awaiting user choice` and the line stopped — with the answer already given; and the answer sat in no queue while
+ * other messages could move on.
  *
- * So the bit goes down the moment the answer is taken, before any Slack write. A question the model asks after that
- * raises it again and still holds.
+ * Now an answer is recorded (the question leaves the session), handed on (into the queue or as the next turn) and
+ * only then drawn, the drawing alongside. A question the model asks after that still holds; a hand-on that fails
+ * gives the question back.
  */
 
 function deferred() {
@@ -45,7 +46,7 @@ const QUESTION = {
   ],
 };
 
-describe('ChoiceActionHandler — the answer is recorded before its Slack writes (#1474)', () => {
+describe('ChoiceActionHandler — recorded, handed on, then drawn (#1474)', () => {
   let session: any;
   let slackWrite: ReturnType<typeof deferred>;
   let slackApi: any;
@@ -88,7 +89,7 @@ describe('ChoiceActionHandler — the answer is recorded before its Slack writes
         slackApi,
         claudeHandler,
         messageHandler,
-        threadPanel: { clearChoice: vi.fn().mockResolvedValue(undefined), attachChoice: vi.fn() },
+        threadPanel: { clearChoice: vi.fn(), attachChoice: vi.fn(), updatePanel: vi.fn().mockResolvedValue(undefined) },
       } as any,
       formStore as any,
     );
@@ -96,76 +97,108 @@ describe('ChoiceActionHandler — the answer is recorded before its Slack writes
 
   /** What the turn that asked reads when it ends now (the dispatch outcome's ASK pause). */
   const turnEndingNowWaits = () => isAwaitingUserChoice(true, session.actionPanel?.waitingForChoice);
+  const button = (choiceId: string) => ({
+    actions: [{ value: JSON.stringify({ sessionKey: KEY, choiceId, label: '진행', question: QUESTION.question }) }],
+    user: { id: 'U1' },
+    channel: { id: 'C1' },
+    message: { ts: 'q-ts' },
+  });
 
-  it('a Slack button answer: the question is answered while its card edit still waits for Slack', async () => {
-    const answering = handler.handleUserChoice({
-      actions: [
-        { value: JSON.stringify({ sessionKey: KEY, choiceId: '1', label: '진행', question: QUESTION.question }) },
-      ],
-      user: { id: 'U1' },
-      channel: { id: 'C1' },
-      message: { ts: 'q-ts' },
-    });
+  it('a Slack button answer is in the pipeline, and the question gone, while its card edit still waits', async () => {
+    const answering = handler.handleUserChoice(button('1'));
     await Promise.resolve();
 
-    expect(slackApi.updateMessage).toHaveBeenCalled();
-    expect(messageHandler).not.toHaveBeenCalled();
+    expect(slackApi.updateMessage).toHaveBeenCalled(); // the edit is in Slack's line, not answered
+    expect(messageHandler).toHaveBeenCalledWith(
+      expect.objectContaining({ text: '1', questionAnswer: true }),
+      expect.any(Function),
+    );
     expect(session.actionPanel.waitingForChoice).toBe(false);
+    expect(session.actionPanel.pendingQuestion).toBeUndefined();
     expect(session.activityState).toBe('working');
     expect(turnEndingNowWaits()).toBe(false);
 
     slackWrite.release();
     await answering;
-    expect(messageHandler).toHaveBeenCalledWith(
-      expect.objectContaining({ text: '1', questionAnswer: true }),
-      expect.any(Function),
-    );
   });
 
-  it('a dashboard answer: the same, and the answer is marked as one', async () => {
+  it('a dashboard answer: the same', async () => {
     const answering = handler.handleChoiceFromDashboard(KEY, '2', '중단', QUESTION.question, 'U1');
     await Promise.resolve();
 
-    expect(slackApi.updateMessage).toHaveBeenCalled();
+    expect(messageHandler).toHaveBeenCalledWith(
+      expect.objectContaining({ text: '2', questionAnswer: true }),
+      expect.any(Function),
+    );
     expect(session.actionPanel.waitingForChoice).toBe(false);
     expect(turnEndingNowWaits()).toBe(false);
 
     slackWrite.release();
     await answering;
-    expect(messageHandler).toHaveBeenCalledWith(
-      expect.objectContaining({ text: '2', questionAnswer: true }),
-      expect.any(Function),
-    );
   });
 
-  it('a question the model asks after the answer was taken still holds', async () => {
+  it('a question the model asks while the answer is still being drawn stays open after the drawing', async () => {
+    const next = { type: 'user_choice', question: '다음은?', choices: [{ id: '1', label: 'A' }] };
     const answering = handler.handleChoiceFromDashboard(KEY, '1', '진행', QUESTION.question, 'U1');
     await Promise.resolve();
-    expect(turnEndingNowWaits()).toBe(false);
-
-    // The running turn asks again (stream-executor onChoiceCreated raises the bit).
+    // The running turn asks again (stream-executor: the question recorded, the open bit up).
+    session.actionPanel.pendingQuestion = next;
     session.actionPanel.waitingForChoice = true;
-    expect(turnEndingNowWaits()).toBe(true);
 
     slackWrite.release();
     await answering;
+
+    expect(session.actionPanel.pendingQuestion).toBe(next);
+    expect(session.actionPanel.waitingForChoice).toBe(true);
+    expect(turnEndingNowWaits()).toBe(true);
   });
 
-  it('a dashboard answer given back after its send failed opens the question again, bit and all', async () => {
+  it('an answer the queue did not keep gives the question back, though the turn that asked has ended', async () => {
     slackWrite.release();
-    messageHandler.mockRejectedValueOnce(new Error('send failed'));
+    messageHandler.mockImplementationOnce(async () => {
+      claudeHandler.setActivityStateByKey(KEY, 'idle'); // the turn that asked ended meanwhile
+      throw new AnswerNotKeptError('capacity');
+    });
 
     await expect(handler.handleChoiceFromDashboard(KEY, '1', '진행', QUESTION.question, 'U1')).rejects.toThrow(
-      'send failed',
+      AnswerNotKeptError,
     );
 
     expect(session.activityState).toBe('waiting');
     expect(session.actionPanel.pendingQuestion).toBe(QUESTION);
     expect(session.actionPanel.waitingForChoice).toBe(true);
+    expect(session.actionPanel.choiceMessageTs).toBe('q-ts');
     expect(turnEndingNowWaits()).toBe(true);
   });
 
-  it('a Slack form submit: answered before its "submitting" edit, marked as an answer', async () => {
+  it('a dispatch that failed before any turn started gives the question back', async () => {
+    slackWrite.release();
+    messageHandler.mockRejectedValueOnce(new Error('session init failed'));
+
+    await handler.handleUserChoice(button('1'));
+
+    expect(session.activityState).toBe('waiting');
+    expect(session.actionPanel.pendingQuestion).toBe(QUESTION);
+    expect(session.actionPanel.waitingForChoice).toBe(true);
+  });
+
+  it('a failure after the answer’s own turn ran does not offer the used answer again', async () => {
+    slackWrite.release();
+    messageHandler.mockImplementationOnce(async () => {
+      claudeHandler.setActivityStateByKey(KEY, 'working'); // the answer's turn ran…
+      claudeHandler.setActivityStateByKey(KEY, 'idle'); // …and ended; then something after it failed
+      throw new Error('drain failed');
+    });
+
+    await expect(handler.handleChoiceFromDashboard(KEY, '1', '진행', QUESTION.question, 'U1')).rejects.toThrow(
+      'drain failed',
+    );
+
+    expect(session.actionPanel.pendingQuestion).toBeUndefined();
+    expect(session.activityState).toBe('idle');
+  });
+
+  it('a Slack form submit is handed on before its message is drawn, and closes the question', async () => {
     formStore.set('form-1', {
       formId: 'form-1',
       sessionKey: KEY,
@@ -185,16 +218,50 @@ describe('ChoiceActionHandler — the answer is recorded before its Slack writes
     });
     await Promise.resolve();
 
-    expect(slackApi.updateMessage).toHaveBeenCalled();
+    expect(messageHandler).toHaveBeenCalledWith(expect.objectContaining({ questionAnswer: true }), expect.any(Function));
     expect(session.actionPanel.waitingForChoice).toBe(false);
     expect(turnEndingNowWaits()).toBe(false);
 
     slackWrite.release();
     await submitting;
-    expect(messageHandler).toHaveBeenCalledWith(
-      expect.objectContaining({ questionAnswer: true }),
-      expect.any(Function),
-    );
+  });
+
+  it('a chunk of a form other chunks still answer keeps the question open; the last chunk closes it', async () => {
+    const record = { kind: 'multi', turnId: 'turn-1', formIds: ['form-a', 'form-b'] };
+    session.actionPanel.pendingChoice = record;
+    const form = (formId: string, messageTs: string) => ({
+      formId,
+      sessionKey: KEY,
+      channel: 'C1',
+      threadTs: 'root',
+      messageTs,
+      turnId: 'turn-1',
+      questions: [{ id: formId, question: `${formId}?`, choices: [{ id: '1', label: 'A' }] }],
+      selections: { [formId]: { choiceId: '1', label: 'A' } },
+      createdAt: Date.now(),
+    });
+    formStore.set('form-a', form('form-a', 'ts-a'));
+    formStore.set('form-b', form('form-b', 'ts-b'));
+    slackWrite.release();
+    const submit = (formId: string, ts: string) =>
+      handler.handleFormSubmit({
+        actions: [{ value: JSON.stringify({ formId, sessionKey: KEY }) }],
+        user: { id: 'U1' },
+        channel: { id: 'C1' },
+        message: { ts },
+      });
+
+    await submit('form-a', 'ts-a');
+    expect(session.actionPanel.waitingForChoice).toBe(true);
+    expect(session.actionPanel.pendingQuestion).toBe(QUESTION);
+    expect(session.actionPanel.pendingChoice).toMatchObject({ formIds: ['form-b'] });
+    expect(turnEndingNowWaits()).toBe(true);
+
+    await submit('form-b', 'ts-b');
+    expect(session.actionPanel.waitingForChoice).toBe(false);
+    expect(session.actionPanel.pendingQuestion).toBeUndefined();
+    expect(session.actionPanel.pendingChoice).toBeUndefined();
+    expect(messageHandler).toHaveBeenCalledTimes(2);
   });
 
   it('a click on an older question takes nothing: the open question stays open', async () => {

@@ -5,7 +5,7 @@ import type { UserChoices } from '../../types';
 import type { SlackApiHelper } from '../slack-api-helper';
 import type { ThreadPanel } from '../thread-panel';
 import { UserChoiceHandler } from '../user-choice-handler';
-import { type ChoiceActionHandler, markAnswerTaken } from './choice-action-handler';
+import type { ChoiceActionHandler } from './choice-action-handler';
 import { classifyClick, markClickAsStale } from './click-classifier';
 import type { PendingFormStore } from './pending-form-store';
 import type { MessageHandler, SayFn } from './types';
@@ -183,7 +183,6 @@ export class FormActionHandler {
     inputValue: string,
     payloadTurnId?: string,
   ): Promise<void> {
-    const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
     const completedText = `✅ *${question}*\n직접 입력: _${inputValue.substring(0, 200)}${inputValue.length > 200 ? '...' : ''}_`;
     const completedBlocks = [
       {
@@ -206,79 +205,17 @@ export class FormActionHandler {
       return;
     }
 
-    // #1474 — recorded before the Slack writes below: a turn ending while they wait reads it answered.
-    markAnswerTaken(this.ctx.claudeHandler, session, sessionKey);
-
-    if (branch === 'p3' && session && channel) {
-      const resolved = await this.ctx.threadPanel
-        ?.resolveChoice(session, sessionKey, channel, completedText, completedBlocks)
-        .catch((err) => {
-          this.logger.warn('resolveChoice (custom input) threw — falling back to legacy', {
-            sessionKey,
-            error: (err as Error)?.message ?? String(err),
-          });
-          return false;
-        });
-      if (resolved) {
-        if (session.actionPanel) {
-          session.actionPanel.pendingQuestion = undefined;
-        }
-        try {
-          this.ctx.claudeHandler.getSessionRegistry?.()?.persistAndBroadcast?.(sessionKey);
-        } catch (err) {
-          this.logger.debug('handleSingleCustomInput: persistAndBroadcast failed', {
-            sessionKey,
-            error: (err as Error)?.message ?? String(err),
-          });
-        }
-        this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'working');
-        const say = this.createSayFn(channel);
-        const resolvedThreadTs = this.resolveSessionThreadTs(sessionKey, threadTs);
-        await this.ctx.messageHandler(
-          { user: userId, channel, thread_ts: resolvedThreadTs, ts: messageTs, text: inputValue, questionAnswer: true },
-          say,
-        );
-        return;
-      }
-      // Fall through to legacy below.
-    }
-
-    const completionMessageTs = this.resolveChoiceMessageTs(sessionKey, messageTs);
-
-    // 메시지 업데이트 (모든 동기화 대상에 대해)
-    if (channel) {
-      const targetTimestamps = this.resolveChoiceSyncMessageTs(sessionKey, messageTs, completionMessageTs);
-      for (const targetTs of targetTimestamps) {
-        try {
-          await this.ctx.slackApi.updateMessage(
-            channel,
-            targetTs,
-            completedText,
-            completedBlocks,
-            [], // 기존 attachments(버튼) 제거
-          );
-        } catch (error) {
-          this.logger.warn('Failed to update choice message after custom input', { targetTs, error });
-        }
-      }
-    }
-
-    // Claude에 전송
-    if (session) {
-      await this.ctx.threadPanel?.clearChoice(sessionKey);
-      // TODO: Delete tracked completion messages on custom input submission
-      // Trace: docs/archive/features/turn-summary-lifecycle/trace.md, S8
-      // CompletionMessageTracker.deleteAll(sessionKey, ...) should be called here.
-      // Wiring requires passing the tracker through FormActionContext,
-      // which is a larger change.
-      this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'working');
-      const say = this.createSayFn(channel);
-      const resolvedThreadTs = this.resolveSessionThreadTs(sessionKey, threadTs);
-      await this.ctx.messageHandler(
-        { user: userId, channel, thread_ts: resolvedThreadTs, ts: messageTs, text: inputValue, questionAnswer: true },
-        say,
-      );
-    }
+    // #1474 — taken like a button's answer: held, recorded, handed on, then drawn (ChoiceActionHandler).
+    await this.choiceHandler.answerWithText({
+      sessionKey,
+      channel,
+      threadTs,
+      messageTs,
+      userId,
+      text: inputValue,
+      completedText,
+      completedBlocks,
+    });
   }
 
   private async handleMultiCustomInput(
@@ -323,6 +260,15 @@ export class FormActionHandler {
 
     const totalQuestions = pendingForm.questions.length;
     const answeredCount = Object.keys(pendingForm.selections).length;
+
+    // 모든 질문 완료 시 — this typed answer completes the form: it is answered at once (#1474 — recorded and handed on
+    // before any Slack write; the form is drawn as answered). The intermediate form redraw below is for a form
+    // still waiting on other answers.
+    if (answeredCount === totalQuestions) {
+      const resolvedThreadTs = this.resolveSessionThreadTs(sessionKey, threadTs);
+      await this.choiceHandler.completeMultiChoiceForm(pendingForm, userId, channel, resolvedThreadTs, messageTs);
+      return;
+    }
 
     // 폼 UI 업데이트
     const choicesData: UserChoices = {
@@ -376,13 +322,6 @@ export class FormActionHandler {
       }
 
       await this.ctx.threadPanel?.attachChoice(sessionKey, updatedPayload, pendingForm.messageTs);
-    }
-
-    // 모든 질문 완료 시 — delegate to ChoiceActionHandler.completeMultiChoiceForm,
-    // which already routes through ThreadPanel.resolveMultiChoice under P3.
-    if (answeredCount === totalQuestions) {
-      const resolvedThreadTs = this.resolveSessionThreadTs(sessionKey, threadTs);
-      await this.choiceHandler.completeMultiChoiceForm(pendingForm, userId, channel, resolvedThreadTs, messageTs);
     }
   }
 
@@ -459,11 +398,6 @@ export class FormActionHandler {
   private resolveSessionThreadTs(sessionKey: string, fallbackThreadTs: string | undefined): string | undefined {
     const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
     return session?.threadRootTs || session?.threadTs || fallbackThreadTs;
-  }
-
-  private resolveChoiceMessageTs(sessionKey: string, fallbackMessageTs: string | undefined): string | undefined {
-    const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
-    return session?.actionPanel?.choiceMessageTs || fallbackMessageTs;
   }
 
   private resolveChoiceSyncMessageTs(

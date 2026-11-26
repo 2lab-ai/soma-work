@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { ChoiceActionHandler } from '../choice-action-handler';
 import { FormActionHandler } from '../form-action-handler';
 
 describe('FormActionHandler', () => {
@@ -29,8 +30,14 @@ describe('FormActionHandler', () => {
       set: vi.fn(),
       delete: vi.fn(),
     };
+    // #1474 — a typed answer is taken like a button's: the real ChoiceActionHandler holds, records, hands on, draws.
+    const choice = new ChoiceActionHandler(
+      { slackApi, claudeHandler, messageHandler, threadPanel } as any,
+      formStore as any,
+    );
     choiceHandler = {
       completeMultiChoiceForm: vi.fn().mockResolvedValue(undefined),
+      answerWithText: (args: Parameters<ChoiceActionHandler['answerWithText']>[0]) => choice.answerWithText(args),
     };
 
     handler = new FormActionHandler(
@@ -144,6 +151,12 @@ describe('FormActionHandler', () => {
           question: '어떤 전략으로 진행할까요?',
           choices: [{ id: '1', label: '빠른 수정' }],
         },
+        // A second question still to answer: the form is redrawn, not completed.
+        {
+          id: 'q2',
+          question: '언제까지?',
+          choices: [{ id: '1', label: '오늘' }],
+        },
       ],
       selections: {},
       createdAt: Date.now(),
@@ -232,12 +245,55 @@ describe('FormActionHandler — P3 (PHASE>=3) classifyClick', () => {
       resolveMultiChoice: vi.fn().mockResolvedValue(true),
     };
     formStore = { get: vi.fn(), set: vi.fn(), delete: vi.fn() };
-    choiceHandler = { completeMultiChoiceForm: vi.fn().mockResolvedValue(undefined) };
+    const choice = new ChoiceActionHandler(
+      { slackApi, claudeHandler, messageHandler, threadPanel } as any,
+      formStore as any,
+    );
+    choiceHandler = {
+      completeMultiChoiceForm: vi.fn().mockResolvedValue(undefined),
+      answerWithText: (args: Parameters<ChoiceActionHandler['answerWithText']>[0]) => choice.answerWithText(args),
+    };
     handler = new FormActionHandler(
       { slackApi, claudeHandler, messageHandler, threadPanel } as any,
       formStore,
       choiceHandler as any,
     );
+  });
+
+  it('#1474 — a typed answer that completes the form is handed on before any Slack write', async () => {
+    const pendingForm = {
+      formId: 'form-1',
+      sessionKey: 'C123:thread-root',
+      channel: 'C123',
+      threadTs: 'thread-root',
+      messageTs: 'thread-form-message-ts',
+      questions: [{ id: 'q1', question: '어떤 전략으로 진행할까요?', choices: [{ id: '1', label: '빠른 수정' }] }],
+      selections: {},
+      createdAt: Date.now(),
+    };
+    formStore.get.mockReturnValue(pendingForm);
+    claudeHandler.getSessionByKey.mockReturnValue({ threadRootTs: 'thread-root', threadTs: 'thread-root' });
+
+    await handler.handleCustomInputSubmit(
+      { user: { id: 'U123' } },
+      {
+        private_metadata: JSON.stringify({
+          sessionKey: 'C123:thread-root',
+          question: '어떤 전략으로 진행할까요?',
+          channel: 'C123',
+          messageTs: 'panel-message-ts',
+          threadTs: 'thread-root',
+          type: 'multi',
+          formId: 'form-1',
+          questionId: 'q1',
+        }),
+        state: { values: { custom_input_block: { custom_input_text: { value: '직접 입력' } } } },
+      },
+    );
+
+    expect(choiceHandler.completeMultiChoiceForm).toHaveBeenCalledTimes(1);
+    // No intermediate redraw first: the answer is recorded and handed on (completeMultiChoiceForm) before any write.
+    expect(slackApi.updateMessage).not.toHaveBeenCalled();
   });
 
   it('handleCustomInputSingle inherits turnId into private_metadata', async () => {
@@ -317,15 +373,14 @@ describe('FormActionHandler — P3 (PHASE>=3) classifyClick', () => {
       state: { values: { custom_input_block: { custom_input_text: { value: 'hello' } } } },
     };
     await handler.handleCustomInputSubmit(body, view);
-    expect(threadPanel.resolveChoice).toHaveBeenCalledWith(
-      session,
-      sessionKey,
-      'C1',
-      expect.any(String),
-      expect.any(Array),
+    // #1474 — recorded (record and question off the session), handed on, drawn on the choice message.
+    expect(slackApi.updateMessage).toHaveBeenCalledWith('C1', 'msg-1', expect.any(String), expect.any(Array), []);
+    expect(messageHandler).toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'hello', questionAnswer: true }),
+      expect.any(Function),
     );
-    expect(messageHandler).toHaveBeenCalled();
     expect(session.actionPanel.pendingQuestion).toBeUndefined();
+    expect(session.actionPanel.pendingChoice).toBeUndefined();
   });
 
   it('multi custom-input P3 stale → marks message and no dispatch', async () => {

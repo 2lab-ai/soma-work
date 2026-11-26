@@ -794,25 +794,31 @@ describe('ChoiceActionHandler — P3 (PHASE>=3) classifyClick', () => {
   });
 
   it('matching pendingChoice + matching turnId → p3 path', async () => {
-    claudeHandler.getSessionByKey.mockReturnValue({
+    const session = {
       threadRootTs: 'thread-root',
       threadTs: 'thread-root',
       channelId: 'C1',
       actionPanel: {
-        pendingChoice: { turnId: 't1', kind: 'single', choiceTs: 'msg-1', formIds: [] },
-        choiceMessageTs: 'msg-1',
+        pendingChoice: { turnId: 't1', kind: 'single', choiceTs: 'msg-1', formIds: [] } as any,
+        choiceMessageTs: 'msg-1' as string | undefined,
+        waitingForChoice: true,
       },
-    });
+    };
+    claudeHandler.getSessionByKey.mockReturnValue(session);
     await handler.handleUserChoice(clickBody('t1', 'msg-1'));
-    expect(threadPanel.resolveChoice).toHaveBeenCalledWith(
-      expect.any(Object),
-      sessionKey,
+    // #1474 — the record is taken off the session before any Slack write; the choice message is drawn answered.
+    expect(session.actionPanel.pendingChoice).toBeUndefined();
+    expect(session.actionPanel.waitingForChoice).toBe(false);
+    expect(slackApi.updateMessage).toHaveBeenCalledWith(
       'C1',
+      'msg-1',
       expect.stringContaining('선택'),
       expect.any(Array),
+      [],
     );
+    expect(threadPanel.resolveChoice).not.toHaveBeenCalled();
     expect(claudeHandler.setActivityStateByKey).toHaveBeenCalledWith(sessionKey, 'working');
-    expect(messageHandler).toHaveBeenCalled();
+    expect(messageHandler).toHaveBeenCalledWith(expect.objectContaining({ questionAnswer: true }), expect.any(Function));
   });
 
   it('payload turnId + no pendingChoice → stale (not legacy)', async () => {

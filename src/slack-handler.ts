@@ -38,6 +38,7 @@ import type { SessionLinks } from 'somalib/model-commands/session-types';
 import { keysInText, WORK_KEYS_MAX } from 'somalib/work-queue/keys';
 import { getAdminUsers, isAdminUser } from './admin-utils';
 import { taskDirectoryFor } from './agent-runtime/execution-context';
+import { AnswerNotKeptError } from './slack/actions/answer-not-kept';
 import type { ContinuationHandler, TurnRunnerSurface } from './agent-session';
 import { isAwaitingUserChoice, TurnRunner, V1QueryAdapter } from './agent-session';
 import type { ClaudeHandler } from './claude-handler';
@@ -5321,6 +5322,15 @@ export class SlackHandler {
    * the queue untouched and the user gets an explicit failure instead of a
    * receipt for an item nobody stored (ssot.md:89).
    */
+  /**
+   * #1474 — the owner's answer to the model's question that the queue could not keep is a failure its sender must
+   * hear: the answer handler already took the question off the session, and gives it back when the hand-on throws.
+   * Any other message ends here as before — the thread was told it was not kept.
+   */
+  private refuseUnkeptAnswer(event: MessageEvent, reason: string): void {
+    if (event.questionAnswer === true) throw new AnswerNotKeptError(reason);
+  }
+
   private async enqueueFollowup(sessionKey: string, event: MessageEvent, say: any): Promise<void> {
     // #1466 (review on #1468) — behind a running turn: the follow-up queue's rows say what happens to it from here.
     noteInstructionStage(sessionKey, event.dashboardClientRef, 'followup');
@@ -5342,6 +5352,7 @@ export class SlackHandler {
           '_실행 중인 턴이 끝난 뒤 다시 보내주세요._',
         { threadTs },
       );
+      this.refuseUnkeptAnswer(event, 'queue_degraded');
       return;
     }
 
@@ -5363,6 +5374,7 @@ export class SlackHandler {
         `❌ 큐 저장에 실패해 이 메시지를 보관하지 못했습니다 — ${detail}\n_다시 보내주세요._`,
         { threadTs },
       );
+      this.refuseUnkeptAnswer(event, 'persist_failed');
       return;
     }
 
@@ -5380,6 +5392,7 @@ export class SlackHandler {
         `⚠️ 큐가 가득 찼습니다 (${result.pending}/${result.capacity}) — 이 메시지는 보관되지 않았습니다.`,
         { threadTs },
       );
+      this.refuseUnkeptAnswer(event, 'capacity');
       return;
     }
 
