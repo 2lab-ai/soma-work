@@ -9232,8 +9232,33 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(startWithContinuation.mock.calls[1][0]).toContain('머지하고 배포해');
     });
 
+    // #1474 round 5 (fable): a command typed while the question is open closes it (the person's word, #911) but is not
+    // marked as the answer — it still runs as the command it is.
+    it('T2 a command queued while the question is open closes it, and is not stored as an answer', async () => {
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const first = handler.handleMessage(message({ ts: '333.520', text: '작업해' }), say());
+      await tick();
+      registrySession.actionPanel = { waitingForChoice: true, pendingQuestion: singleQuestion() };
+
+      await handler.handleMessage(message({ ts: '333.521', text: '%model sonnet 계속해' }), say());
+
+      expect(registrySession.actionPanel.waitingForChoice).toBe(false);
+      expect(registrySession.actionPanel.pendingQuestion).toBeUndefined();
+      const stored = items().find((item: any) => item.message.ts === '333.521');
+      expect(stored).toBeDefined();
+      expect(stored.message.questionAnswer).toBeUndefined();
+
+      gate.resolve({ hasPendingChoice: true });
+      await first;
+    });
+
     // #1474 round 4 (astra): an answer is the person's words to the model — never a command, a directive or `!`.
-    it.each([['help'], ['!'], ['%model sonnet']])('T2 an answer reading %s is handed to the model, not routed', async (text) => {
+    it.each([
+      ['help'],
+      ['!'],
+      ['%model sonnet'],
+    ])('T2 an answer reading %s is handed to the model, not routed', async (text) => {
       registrySession.activityState = 'waiting';
       registrySession.actionPanel = { waitingForChoice: false };
 

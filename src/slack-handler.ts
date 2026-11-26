@@ -5392,14 +5392,13 @@ export class SlackHandler {
       });
     }
     this.reopenDrainAfterAnswer(sessionKey);
-    if (session) {
-      void this.threadPanel?.updatePanel?.(session, sessionKey)?.catch?.((error: unknown) =>
-        this.logger.debug('recordTypedAnswer: header redraw failed', {
-          sessionKey,
-          error: (error as Error)?.message ?? String(error),
-        }),
-      );
-    }
+    // The header drops the choice the same way a dispatched reply's does (`clearChoice`: its fields, a forced render).
+    void this.threadPanel?.clearChoice?.(sessionKey)?.catch?.((error: unknown) =>
+      this.logger.debug('recordTypedAnswer: header redraw failed', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      }),
+    );
   }
 
   private async enqueueFollowup(sessionKey: string, event: MessageEvent, say: any): Promise<void> {
@@ -5430,12 +5429,15 @@ export class SlackHandler {
     }
 
     // #1474 — the person's own word while the model's question is open is its answer (#911), taken when it is stored.
+    // Only plain words are marked as the answer (`questionAnswer`, dispatched as words): a command typed meanwhile
+    // (`new …`, `$skill`, `%model …`) still closes the question, and still runs as the command it is (round 5, fable).
     const answers = this.answersOpenQuestion(sessionKey, event);
+    const markAnswer = answers && this.isSteerableText(event);
     let result: ReturnType<FollowupQueue['enqueue']>;
     try {
       result = queue.enqueue(
         sessionKey,
-        answers ? { ...event, questionAnswer: true } : event,
+        markAnswer ? { ...event, questionAnswer: true } : event,
         this.captureFollowupContext(event),
       );
     } catch (error) {
