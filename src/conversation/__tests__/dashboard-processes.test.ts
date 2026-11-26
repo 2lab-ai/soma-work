@@ -478,6 +478,26 @@ describe('Dashboard — the 프로세스 tab and the card’s node badge', () =>
     expect(dashboard.procCardsToPush(pushed, lv(10.2))).toEqual([KEY]);
     dashboard.procCardsToPush(pushed, lv(98));
     expect(dashboard.procCardsToPush(pushed, lv(101))).toEqual([KEY]);
+    // The first stripe starts past one core — 100 and 101 share a bucket and the hot level: the stripe alone pushes,
+    // both ways.
+    dashboard.procCardsToPush(pushed, lv(100));
+    expect(dashboard.procCardsToPush(pushed, lv(101))).toEqual([KEY]);
+    expect(dashboard.procCardsToPush(pushed, lv(100))).toEqual([KEY]);
+    // Past 2, 4 and 8 cores, exactly: at the edge the step is still the lower one (200 is not past two cores).
+    for (const edge of [200, 400, 800]) {
+      dashboard.procCardsToPush(pushed, lv(edge));
+      expect(dashboard.procCardsToPush(pushed, lv(edge + 1)), String(edge + 1)).toEqual([KEY]);
+      expect(dashboard.procCardsToPush(pushed, lv(edge)), String(edge)).toEqual([KEY]);
+    }
+    // The card's edge stripes step past 2, 4 and 8 cores: each edge pushes inside one bucket (199 and 201 share one).
+    for (const [below, above] of [
+      [199, 201],
+      [399, 401],
+      [799, 801],
+    ]) {
+      dashboard.procCardsToPush(pushed, lv(below));
+      expect(dashboard.procCardsToPush(pushed, lv(above)), String(above)).toEqual([KEY]);
+    }
     // Every process gone: one more push so the chip disappears, then nothing.
     expect(dashboard.procCardsToPush(pushed, snapshot([]))).toEqual([KEY]);
     expect(dashboard.procCardsToPush(pushed, snapshot([]))).toEqual([]);

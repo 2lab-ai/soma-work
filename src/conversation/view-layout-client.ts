@@ -139,8 +139,13 @@ function faceOf(card, model, face, asks, effort, asked) {
   if (foot.length) out.metrics = foot;
   // Where the work runs and how hard (@2lab.ai/ui 0.46.0 card.node): one badge in the head, next to the owner — the
   // node's name, then this task's CPU and memory as two 10-step gauges. In the head, so a one-line card keeps it.
+  // With it, the task's own CPU (0.47.0 card.load): past one core the card's top and bottom edges carry red hazard
+  // stripes, a step heavier past 2, 4 and 8 cores.
   var node = card && nodeBadgeOf(card.procUsage);
-  if (node) out.node = node;
+  if (node) {
+    out.node = node;
+    out.load = Math.max(0, Number(card.procUsage.cpuPercent) || 0);
+  }
   return out;
 }
 // A node's name as the badge shows it: the worker's nickname as set (settings 작업 워커), else the host part of its id
