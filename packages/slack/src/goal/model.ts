@@ -169,8 +169,19 @@ export interface SessionGoal {
    * Every opening turn of this goal carries them (`admitGoalOpeningTurn`), so a queued goal keeps them until it starts.
    */
   openingFiles?: SessionGoalFile[];
-  /** `openingFiles` rode a turn of this goal already; the loop's continuations carry them only while unset. */
-  openingFilesSent?: boolean;
+  /**
+   * The skill part of an objective written with a `$skill` in the dashboard's goal composer (`goal … $skill`, split by
+   * `CommandRouter.splitGoalSkill`): the goal's first turn runs it as a command, so the skill is resolved then — when
+   * it starts at once, when it is promoted from the queue later, or when a paused goal is resumed.
+   */
+  openingPrompt?: string;
+  /**
+   * {@link openingFiles} / {@link openingPrompt} rode a turn of this goal already (its opening, or the first
+   * continuation when the loop itself started the goal — an eval verdict promoting it from the queue, a restart
+   * repairing a stranded queue). The loop's continuations carry them only while this is unset; an explicit opening
+   * (start, promote, resume) always does.
+   */
+  openingSent?: boolean;
   /**
    * The open task ids the session's task list had when this goal was paused —
    * its own work. While it stays in `goalPaused` they hold no other goal's

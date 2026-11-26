@@ -26,6 +26,16 @@ const PERMANENT_CODES = new Set<string>([
   'account_inactive',
 ]);
 
+/**
+ * Codes that refuse ONE thread, not the app: the status call cannot succeed
+ * there, while other threads still take it (on a busy host 34 of 788 calls
+ * succeeded in the same window that refused 754). Retried on every heartbeat,
+ * they spent about 30% of the host's serial Slack lane, and every session's
+ * rendering waited behind them. The thread stops trying until its next turn
+ * (`bumpEpoch`); the manager stays on for every other thread.
+ */
+const THREAD_REFUSED_CODES = new Set<string>(['not_authorized']);
+
 const TRANSIENT_WARN_THRESHOLD = 10;
 
 export interface AssistantStatusSlackApi {
@@ -70,6 +80,8 @@ export class AssistantStatusManager {
   private clearRetries = new Map<string, NodeJS.Timeout>();
   private bgBashCounter = new Map<string, number>();
   private transientFailuresSinceLastSuccess = new Map<string, number>();
+  /** Threads that refused the status call this turn ({@link THREAD_REFUSED_CODES}): nothing more is sent there. */
+  private refusedThreads = new Set<string>();
   /** Threads whose title has already been set — keeps setTitle once-per-thread. */
   private titledThreads = new Set<string>();
 
@@ -91,6 +103,7 @@ export class AssistantStatusManager {
       return;
     }
     if (!this.enabled) return;
+    if (this.refusedThreads.has(key)) return;
 
     // Publish intent before any network await. A completed write never owns
     // desired state, so it cannot resurrect a cleared or superseded turn.
@@ -136,6 +149,8 @@ export class AssistantStatusManager {
     this.cancelClearRetry(key);
     this.lastStatus.delete(key);
     this.closedEpochs.delete(key);
+    // A new turn may try a refusing thread once more.
+    this.refusedThreads.delete(key);
     const next = (this.epochCounter.get(key) ?? 0) + 1;
     this.epochCounter.set(key, next);
     return next;
@@ -218,6 +233,25 @@ export class AssistantStatusManager {
     return matched;
   }
 
+  /**
+   * This thread refused the status call ({@link THREAD_REFUSED_CODES}): stop its heartbeat and retries for the turn.
+   * Only the turn that sent the call learns it: a late answer to an earlier turn's call (the lane is serial and can
+   * run far behind) is dropped, so the new turn's own try still goes out.
+   */
+  private markThreadRefused(key: string, entry: LastStatusEntry, err: unknown): boolean {
+    const code = readErrorCode(err);
+    if (typeof code !== 'string' || !THREAD_REFUSED_CODES.has(code)) return false;
+    if ((this.epochCounter.get(key) ?? 0) !== entry.epoch) return true;
+    if (!this.refusedThreads.has(key)) {
+      this.refusedThreads.add(key);
+      this.logger.info('Status call refused for this thread — not retried until its next turn', { key, code });
+    }
+    this.cancelHeartbeat(key);
+    this.cancelClearRetry(key);
+    this.transientFailuresSinceLastSuccess.delete(key);
+    return true;
+  }
+
   private async heartbeatTick(key: string): Promise<void> {
     const entry = this.lastStatus.get(key);
     if (!entry || entry.descriptor === '') {
@@ -234,12 +268,15 @@ export class AssistantStatusManager {
     const send = async () => {
       if (!this.enabled || this.lastStatus.get(key) !== entry || (this.epochCounter.get(key) ?? 0) !== entry.epoch)
         return;
+      // Also a write queued behind the call that found the thread refusing.
+      if (this.refusedThreads.has(key)) return;
       try {
         const text = typeof entry.descriptor === 'function' ? entry.descriptor() : entry.descriptor;
         await this.slackApi.setAssistantStatus(entry.channelId, entry.threadTs, text);
         this.recordSetStatusSuccess(key);
       } catch (error) {
         // The best-effort auth clear runs inside this same serialized lane.
+        if (this.markThreadRefused(key, entry, error)) return;
         if (this.markDisabledIfScopeMissing(error)) {
           await this.bestEffortClearSlack(entry.channelId, entry.threadTs);
         } else if (entry.descriptor === '') {

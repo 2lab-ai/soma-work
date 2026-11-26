@@ -250,7 +250,7 @@ function tqSetAdminMode(on) {
 }
 var _tqLanes = null;       // GET /api/dashboard/work-queues (.prd/36 v2)
 ${WQ_REASON_JS}
-var TQ_END = { done: '완료', cancelled: '취소', released: '돌려놓음' };
+var TQ_END = { done: '완료', cancelled: '취소', released: '차례 끝남' };
 function tqClock(ms) {
   var d = new Date(ms);
   var p = function(n) { return (n < 10 ? '0' : '') + n; };
