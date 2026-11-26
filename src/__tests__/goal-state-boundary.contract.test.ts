@@ -169,7 +169,10 @@ describe('goal state boundary (.prd/40 §6)', () => {
     // Parentheses are counted on code only (string literals and line comments removed), and the count restarts at
     // every member boundary (review #1504).
     const codeOf = (line: string): string =>
-      line.replace(/'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`/g, "''").replace(/\/\/.*$/, '');
+      line
+        .replace(/'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`/g, "''")
+        .replace(/\/\*.*?\*\//g, '')
+        .replace(/\/\/.*$/, '');
     const saveSitesIn = (rows: Array<{ member: string; text: string }>): string[] => {
       const out = new Set<string>();
       let depth = 0;
@@ -210,6 +213,9 @@ describe('goal state boundary (.prd/40 §6)', () => {
         { member: 'commentParen', text: '    commitGoalChange(session, key, { drive }, { // 1) persistence ports' },
         { member: 'commentParen', text: '      saveSessions: () => this.deps.claudeHandler.saveSessions(),' },
         { member: 'commentParen', text: '    });' },
+        { member: 'blockCommentParen', text: '    commitGoalChange(session, key, { drive }, { /* 1) ports */' },
+        { member: 'blockCommentParen', text: '      saveSessions: () => this.deps.claudeHandler.saveSessions(),' },
+        { member: 'blockCommentParen', text: '    });' },
         { member: 'portElsewhere', text: '      saveSessions: () => this.deps.claudeHandler.saveSessions(),' },
         { member: 'direct', text: '      this.deps.claudeHandler.saveSessions();' },
       ]),
