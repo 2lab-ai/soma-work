@@ -483,6 +483,12 @@ describe('Dashboard — the 프로세스 tab and the card’s node badge', () =>
     dashboard.procCardsToPush(pushed, lv(100));
     expect(dashboard.procCardsToPush(pushed, lv(101))).toEqual([KEY]);
     expect(dashboard.procCardsToPush(pushed, lv(100))).toEqual([KEY]);
+    // Past 2, 4 and 8 cores, exactly: at the edge the step is still the lower one (200 is not past two cores).
+    for (const edge of [200, 400, 800]) {
+      dashboard.procCardsToPush(pushed, lv(edge));
+      expect(dashboard.procCardsToPush(pushed, lv(edge + 1)), String(edge + 1)).toEqual([KEY]);
+      expect(dashboard.procCardsToPush(pushed, lv(edge)), String(edge)).toEqual([KEY]);
+    }
     // The card's edge stripes step past 2, 4 and 8 cores: each edge pushes inside one bucket (199 and 201 share one).
     for (const [below, above] of [
       [199, 201],
