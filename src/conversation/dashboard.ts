@@ -13830,12 +13830,6 @@ function wireInbox(host) {
   // A 대기큐 entry's buttons: 먼저 진행 · 대기 취소.
   host.addEventListener('ui-action', function(e) {
     if (e.target !== host || !e.detail) return;
-    // A lane card in the 작업 큐 section: 먼저 진행 · 대기에서 빼기 (an admin's, work-queue-client.ts).
-    var wqAction = String(e.detail.actionId || '');
-    if (wqAction.indexOf('wq-') === 0) {
-      if (typeof wqCardAction === 'function') wqCardAction(String(e.detail.cardId), wqAction);
-      return;
-    }
     var item = typeof uqItemOf === 'function' ? uqItemOf(String(e.detail.cardId)) : null;
     if (!item) return;
     var act = String(e.detail.actionId || '');
@@ -18370,7 +18364,9 @@ function renderCardBody(s, col, spec, face) {
   const slackBtn = (dhShow('links') && s.slackThreadUrl)
     ? '<a class="ui-btn" href="' + safeHref(s.slackThreadUrl) + '" target="_blank" rel="noopener">Slack</a>'
     : '';
-  const actionsHtml = '<div class="card-actions-bar"><span class="card-actions">' + sessionActionHtml(s, col, !!spec && spec.star === false) + slackBtn + '</span></div>';
+  // A card that waits in a lane (the 작업 큐 section, work-queue-client.ts) leads with 먼저 진행 · 대기에서 빼기.
+  const laneBtns = typeof wqCardButtonsHtml === 'function' ? wqCardButtonsHtml(s.key) : '';
+  const actionsHtml = '<div class="card-actions-bar"><span class="card-actions">' + laneBtns + sessionActionHtml(s, col, !!spec && spec.star === false) + slackBtn + '</span></div>';
   const needsHtml = actionsHtml
     + permissionHtml
     + renderCardResume(s, col)

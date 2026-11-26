@@ -305,7 +305,7 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
     expect(wire.slice(wire.indexOf("'ui-detail'"), wire.indexOf("'ui-minimize'"))).toContain('openPanel(key);');
     // SSOT 2026-10-29 T1: the actions (Stop · Close · Trash) + Slack are the body's first row.
     expect(body).toContain(
-      `const actionsHtml = '<div class="card-actions-bar"><span class="card-actions">' + sessionActionHtml(s, col, !!spec && spec.star === false) + slackBtn + '</span></div>';`,
+      `const actionsHtml = '<div class="card-actions-bar"><span class="card-actions">' + laneBtns + sessionActionHtml(s, col, !!spec && spec.star === false) + slackBtn + '</span></div>';`,
     );
     // The actions lead what needs the user (needsHtml); the plan's parts (.prd/20) follow it with the rest.
     expect(body).toMatch(/const needsHtml = actionsHtml\s*\+ permissionHtml/);

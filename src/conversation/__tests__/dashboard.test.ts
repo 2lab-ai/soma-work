@@ -1349,15 +1349,15 @@ describe('Dashboard API', () => {
     // Count action closings — each doAction has 2 escaped quote pairs (key + action)
     const actionClosings = script.match(/\\',\\'/g);
     expect(actionClosings).not.toBeNull();
-    // 1 doAction builder + the intent of 전체 task (2), the goal line (2) and the artifacts link (2) —
-    // every argument of every builder closes in escaped quotes = 7 (D3: the turn's resummarize button went
+    // 1 doAction builder + the intent of 전체 task (2), the goal line (2), the artifacts link (2) and a lane card's
+    // wqCardAction (1, work-queue-client.ts) — every argument of every builder closes in escaped quotes = 8 (D3: the turn's resummarize button went
     // with the inline turn renderer; 지시와 답변 is <ui-conversation> data).
     // The answerChoice sites and the multi-question form build no inline JS
     // strings: the single choice is <ui-approval-card> (ui-answer) and the form
     // <ui-choice-form> (ui-submit, D3 E-15) — model-written question / label /
     // id travel as element data, because escJs() inside a double-quoted
     // onclick could not carry " or newlines safely (.prd/10 round-2 review).
-    expect(actionClosings!.length).toBe(7);
+    expect(actionClosings!.length).toBe(8);
     expect(script).not.toMatch(/answerChoice\(\\'/);
     expect(script).not.toMatch(/selectMc\(\\'/);
   });

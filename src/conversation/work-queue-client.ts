@@ -327,15 +327,9 @@ function wqLaneBlock(q, cards, now) {
     placeCard(s, 'working', null, true);
     if (entry) {
       carded[entry.id] = true;
-      _wqEntryByCard[s.key] = { id: entry.id, queue: q.id };
-      var can = wqActionsFor(entry, wqCanManage(), wqViewer());
-      var extra = [];
-      if (can.indexOf('first') >= 0) extra.push({ id: 'wq-first', label: '먼저 진행' });
-      if (can.indexOf('cancel') >= 0) extra.push({ id: 'wq-cancel', label: '대기에서 빼기' });
-      if (extra.length) {
-        var c = _cardData[s.key];
-        c.actions = (c.actions || []).concat(extra);
-      }
+      // What the reader may do to it: its open card draws the buttons (wqCardButtonsHtml) — a session card's body is
+      // the page's own, so the element's data actions never show on it.
+      _wqEntryByCard[s.key] = { id: entry.id, queue: q.id, can: wqActionsFor(entry, wqCanManage(), wqViewer()) };
     }
     keys.push(s.key);
   });
@@ -489,7 +483,19 @@ async function wqAct(entryId, action, entry) {
   loadWorkQueues();
 }
 
-// A lane card's own buttons (먼저 진행 · 대기에서 빼기), from wireInbox's ui-action.
+// A lane card's buttons on its open card (renderCardBody's actions bar, before 중지 · Slack): 먼저 진행 · 대기에서 빼기,
+// as the reader may (wqActionsFor at the last paint). Nothing for a card that does not wait in a lane.
+var WQ_CARD_BUTTONS = [['first', 'wq-first', '먼저 진행'], ['cancel', 'wq-cancel', '대기에서 빼기']];
+function wqCardButtonsHtml(key) {
+  var at = _wqEntryByCard[key];
+  if (!at || !at.can || !at.can.length) return '';
+  var k = escJs(key);
+  return WQ_CARD_BUTTONS.filter(function(b) { return at.can.indexOf(b[0]) >= 0; }).map(function(b) {
+    return '<button type="button" class="ui-btn" data-action="' + b[1] + '" onclick="event.stopPropagation();wqCardAction(\'' + k + '\',\'' + b[1] + '\')">' + esc(b[2]) + '</button>';
+  }).join('');
+}
+
+// A lane card's own buttons (먼저 진행 · 대기에서 빼기), pressed on its open card (wqCardButtonsHtml).
 function wqCardAction(cardId, actionId) {
   var at = _wqEntryByCard[cardId];
   if (!at) return;
