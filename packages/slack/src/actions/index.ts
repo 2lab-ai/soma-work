@@ -103,7 +103,9 @@ export interface ActionHandlerDelegates {
     ): Promise<void>;
     handleSubmitRecommendedFromDashboard(sessionKey: string, userId: string): Promise<void>;
     /** #1474 — a typed reply answered the session's question: its forms leave the store, remembered answered. */
-    takeAnsweredForms?(sessionKey: string): number;
+    takeAnsweredForms?(sessionKey: string, questionFormIds?: readonly string[]): number;
+    /** #1474 — was any of these forms of the session answered (taken by an answer)? */
+    formsAnswered?(sessionKey: string, formIds: readonly string[]): boolean;
   };
   formHandler: {
     handleCustomInputSingle(body: any, client: any): Promise<void>;
@@ -644,8 +646,13 @@ export class ActionHandlers {
   }
 
   /** #1474 — a typed reply answered the session's question: its forms are answered too (see `takeAnsweredForms`). */
-  takeAnsweredForms(sessionKey: string): number {
-    return this.delegates.choiceHandler.takeAnsweredForms?.(sessionKey) ?? 0;
+  takeAnsweredForms(sessionKey: string, questionFormIds?: readonly string[]): number {
+    return this.delegates.choiceHandler.takeAnsweredForms?.(sessionKey, questionFormIds) ?? 0;
+  }
+
+  /** #1474 — was any of these forms of the session answered (taken by an answer)? */
+  formsAnswered(sessionKey: string, formIds: readonly string[]): boolean {
+    return this.delegates.choiceHandler.formsAnswered?.(sessionKey, formIds) === true;
   }
 
   getPendingForm(formId: string): PendingChoiceFormData | undefined {

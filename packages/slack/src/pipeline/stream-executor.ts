@@ -7276,9 +7276,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     /** Host questions: re-checked after the post; false = do not open the session as waiting. */
     commitGuard?: () => boolean,
   ): Promise<boolean> {
+    /** #1474 — the question was answered while its forms were being posted (a typed reply took them). */
+    let answeredWhilePosting = false;
     try {
       if (question.type === 'user_choices') {
-        await this.renderMultiChoiceFromCommand(turnId, question, context);
+        answeredWhilePosting = (await this.renderMultiChoiceFromCommand(turnId, question, context)) === 'answered';
       } else {
         await this.renderSingleChoiceFromCommand(turnId, question, context);
       }
@@ -7291,6 +7293,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       });
     }
     if (commitGuard && !commitGuard()) return false;
+    // #1474 — answered while it was being posted (a typed reply answered the first chunk while the rest went up): the
+    // answer took its forms and closed it; it is not opened again as waiting — the turn would end on an answered
+    // question and the answer would wait behind it (round 14, astra). One chunk answered by a click leaves the choice
+    // open (its record only shrank): that question is still opened.
+    if (answeredWhilePosting && session.actionPanel?.waitingForChoice !== true) {
+      this.logger.info('A question was answered while its forms were posted — not opened again', {
+        sessionKey: context.sessionKey,
+      });
+      return false;
+    }
 
     // Store raw question data on session for dashboard access (before setActivityState triggers broadcast)
     if (session.actionPanel) {
@@ -7455,7 +7467,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     turnId: string | undefined,
     question: UserChoices,
     context: StreamContext,
-  ): Promise<void> {
+  ): Promise<'answered' | undefined> {
     const maxQuestionsPerForm = 6;
     const chunks: UserChoices[] = [];
     for (let index = 0; index < question.questions.length; index += maxQuestionsPerForm) {
@@ -7529,7 +7541,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             this.deps.actionHandlers.setPendingForm(fId, { ...pending, messageTs: result.allTs[i] });
           }
         }
-        return;
+        // #1474 — a form of this question answered meanwhile (a typed reply to the chunks already up took them, or a
+        // click): the question was answered while it was posted.
+        return this.deps.actionHandlers.formsAnswered?.(context.sessionKey, formIds) === true ? 'answered' : undefined;
       }
       if (result.reason === 'post-failed') {
         for (const fId of formIds) {

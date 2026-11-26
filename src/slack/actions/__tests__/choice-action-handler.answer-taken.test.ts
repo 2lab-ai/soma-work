@@ -393,6 +393,23 @@ describe('ChoiceActionHandler — recorded, handed on, then drawn (#1474)', () =
     expect(handler.isAnswered(KEY, 'form-new')).toBe(false);
   });
 
+  // #1474 round 14 (astra): a split form's ts are filled only after its last chunk is up — the open choice's own
+  // forms are taken by the answer, posted or not.
+  it('a typed answer takes the open choice’s own forms even before their ts are filled', () => {
+    const base = { sessionKey: KEY, channel: 'C1', threadTs: 'root', selections: {}, createdAt: Date.now() };
+    formStore.set('form-a', { ...base, formId: 'form-a', messageTs: '', questions: [] });
+    formStore.set('form-b', { ...base, formId: 'form-b', messageTs: '', questions: [] });
+    formStore.set('form-other', { ...base, formId: 'form-other', messageTs: '', questions: [] });
+
+    expect(handler.takeAnsweredForms(KEY, ['form-a', 'form-b'])).toBe(2);
+    expect(formStore.get('form-a')).toBeUndefined();
+    expect(formStore.get('form-b')).toBeUndefined();
+    expect(formStore.get('form-other')).toBeDefined();
+    // The renderer, when the posting ends, hears the question was answered meanwhile.
+    expect(handler.formsAnswered(KEY, ['form-a', 'form-b'])).toBe(true);
+    expect(handler.formsAnswered(KEY, ['form-other'])).toBe(false);
+  });
+
   it('a given-back form answer puts the form back in the store and its message gets its buttons back', async () => {
     formStore.set('form-1', {
       formId: 'form-1',

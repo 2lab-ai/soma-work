@@ -393,6 +393,31 @@ describe('end of turn after ASK_USER_QUESTION', () => {
     expect(result.turnCollector?.getResult().hasPendingChoice).toBe(false);
   });
 
+  // #1474 round 14 (astra): a typed reply answers the first chunk of a split form while the rest is still posted — it
+  // took the question's forms and closed it; the renderer does not open it again as waiting when the posting ends.
+  it('T2 — a question answered while its forms were posted is not opened again', async () => {
+    const session = createSession();
+    const deps = createDeps(session, askingStream());
+    deps.threadPanel.askUserForm = vi
+      .fn()
+      .mockImplementation(async (turnId: string, _chunks: any[], formIds: string[], question: any, _a: any, s: any) => {
+        s.actionPanel = s.actionPanel ?? {};
+        s.actionPanel.pendingChoice = { turnId, kind: 'multi', choiceTs: 'form_ts', formIds: [...formIds], question };
+        s.actionPanel.waitingForChoice = true;
+        // The typed answer lands while the last chunk goes up: it takes the forms and closes the question.
+        answerPath(s)();
+        return { ok: true, primaryTs: 'form_ts', allTs: ['form_ts'], formIds };
+      });
+    deps.actionHandlers.formsAnswered = vi.fn().mockReturnValue(true); // the answer took its forms
+
+    const result = await new StreamExecutor(deps).execute(params(session));
+
+    expect(session.actionPanel?.pendingQuestion).toBeUndefined();
+    expect(session.actionPanel?.waitingForChoice).toBe(false);
+    expect(states(deps)).not.toContain('waiting');
+    expect(result.turnCollector?.getResult().hasPendingChoice).toBe(false);
+  });
+
   it('T2 — an answer landing during the end-of-turn status write is not re-opened', async () => {
     const session = createSession();
     const deps = createDeps(session, askingStream(), answerPath(session), 'final-status');

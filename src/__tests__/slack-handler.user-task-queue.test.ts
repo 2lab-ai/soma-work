@@ -240,7 +240,7 @@ describe('SlackHandler — per-user task queue gate', () => {
     await handler.handleMessage(message('200.0', { ts: '200.03', text: '왼쪽으로 가자' }), vi.fn());
 
     // The question's forms are answered with it: a submit on one is no second answer (round 12, astra).
-    expect(takeForms).toHaveBeenCalledWith('C123:200.0');
+    expect(takeForms).toHaveBeenCalledWith('C123:200.0', expect.any(Array));
 
     expect(startWithContinuation).toHaveBeenCalledTimes(1);
     expect(ledger.entries).toHaveLength(1);

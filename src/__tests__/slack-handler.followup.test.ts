@@ -9302,7 +9302,10 @@ describe('SlackHandler — follow-up queue host', () => {
       const answering = handler.handleMessage(message({ ts: '333.540', text: '왼쪽으로' }), say());
       await vi.waitFor(() => expect(handlerAny.threadPanel.clearChoice).toHaveBeenCalled());
 
-      expect(takeForms).toHaveBeenCalledWith(SESSION_KEY); // while the redraw still waits
+      expect(takeForms).toHaveBeenCalledWith(SESSION_KEY, expect.any(Array)); // while the redraw still waits
+      // The whole question is off the session before the redraw: a dashboard answer finds nothing to claim (round 14).
+      expect(registrySession.actionPanel.pendingQuestion).toBeUndefined();
+      expect(claudeHandler.setActivityStateByKey).toHaveBeenCalledWith(SESSION_KEY, 'working');
       redraw.resolve();
       await answering;
     });

@@ -1588,11 +1588,15 @@ export class ChoiceActionHandler {
    * id to call it stale — is refused as answered, not handed on as a second answer (round 12, astra). Only the form
    * ids are marked: a form's message may be the thread header, which later questions reuse.
    */
-  takeAnsweredForms(sessionKey: string): number {
-    // Only forms already posted (`messageTs`): a newer question's form is stored before it is posted and before the
-    // session's panel turns to it — the reply could not have answered what nobody has seen (round 13, fable). The
-    // same rule as `invalidateOldForms`.
-    const forms = [...this.formStore.getFormsBySession(sessionKey).values()].filter((form) => !!form.messageTs);
+  takeAnsweredForms(sessionKey: string, questionFormIds: readonly string[] = []): number {
+    // The forms of the question the reply answered (`questionFormIds`: the open choice's own forms, posted or still
+    // posting — a split form's ts are filled only after its last chunk is up), and any form already posted
+    // (`messageTs`: a legacy form). Not a newer question's form stored before it is posted and before the panel
+    // turns to it — the reply could not have answered what nobody has seen (round 13/14, fable/astra). The same rule
+    // as `invalidateOldForms` for the rest.
+    const forms = [...this.formStore.getFormsBySession(sessionKey).values()].filter(
+      (form) => !!form.messageTs || questionFormIds.includes(form.formId),
+    );
     if (forms.length === 0) return 0;
     this.rememberAnswered(
       sessionKey,
@@ -1600,6 +1604,11 @@ export class ChoiceActionHandler {
     );
     for (const form of forms) this.formStore.delete(form.formId);
     return forms.length;
+  }
+
+  /** #1474 — was any of these forms of the session taken by an answer (the renderer asks after posting them)? */
+  formsAnswered(sessionKey: string, formIds: readonly string[]): boolean {
+    return this.wasAnswered(sessionKey, ...formIds);
   }
 
   /**

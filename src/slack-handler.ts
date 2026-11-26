@@ -3190,14 +3190,10 @@ export class SlackHandler {
       // Words answer a question; a file alone does not (round 6, grok — as `answersOpenQuestion`).
       const answersWithWords = userWord && !answerRecorded && effectiveText.trim().length > 0;
       const hasPendingChoice = sessionResult.session.actionPanel?.waitingForChoice === true;
-      // #1474 — the question's forms are answered with it, before any Slack write: while the panel's redraw waits in
-      // Slack's line, a submit on one is no second answer (round 12/13, astra).
+      // #1474 — the question closes with the answer before any Slack write: its forms (a submit on one is no second
+      // answer), its recorded question (a dashboard answer finds nothing to claim) and the session's state, all before
+      // the panel's redraw waits in Slack's line (round 12–14, astra/grok).
       if (hasPendingChoice && answersWithWords) this.takeAnsweredForms(sessionResult.sessionKey);
-      if (hasPendingChoice && answersWithWords) {
-        await this.threadPanel?.clearChoice(sessionResult.sessionKey);
-        // Treat direct user message as completing manual input from choice UI.
-        this.claudeHandler.setActivityStateByKey(sessionResult.sessionKey, 'working');
-      }
       // The user's own message answers the question the model asked.
       // Left recorded, the question outlived its answer: the next goal cap
       // decision made the card read NEEDS YOU and showed it again (SSOT
@@ -3207,6 +3203,13 @@ export class SlackHandler {
       // to the SDK as a local slash command) — `userWord` above.
       if (answersWithWords && sessionResult.session.actionPanel?.pendingQuestion) {
         sessionResult.session.actionPanel.pendingQuestion = undefined;
+      }
+      if (hasPendingChoice && answersWithWords) {
+        // Its record leaves the session at the call; only the redraw waits.
+        const clearing = this.threadPanel?.clearChoice(sessionResult.sessionKey);
+        // Treat direct user message as completing manual input from choice UI.
+        this.claudeHandler.setActivityStateByKey(sessionResult.sessionKey, 'working');
+        await clearing;
       }
       // #911 — and the drain the question paused reopens with it.
       if (userWord) {
@@ -5406,8 +5409,10 @@ export class SlackHandler {
 
   /** #1474 — a typed reply answered the session's question: its forms leave the store, remembered answered. */
   private takeAnsweredForms(sessionKey: string): void {
+    // The open choice's own forms (a split form still posting has no ts yet), read before its record is cleared.
+    const questionFormIds = this.claudeHandler.getSessionByKey?.(sessionKey)?.actionPanel?.pendingChoice?.formIds ?? [];
     try {
-      this.actionHandlers?.takeAnsweredForms?.(sessionKey);
+      this.actionHandlers?.takeAnsweredForms?.(sessionKey, questionFormIds);
     } catch (error) {
       this.logger.debug('takeAnsweredForms failed', { sessionKey, error: (error as Error)?.message ?? String(error) });
     }
@@ -5422,13 +5427,14 @@ export class SlackHandler {
     const session = this.claudeHandler.getSessionByKey?.(sessionKey);
     const panel = session?.actionPanel;
     if (!panel) return;
+    // The question's forms first — the open choice still names them (round 14, astra).
+    this.takeAnsweredForms(sessionKey);
     panel.waitingForChoice = false;
     panel.pendingQuestion = undefined;
     panel.pendingChoice = undefined;
     panel.choiceMessageTs = undefined;
     panel.choiceMessageLink = undefined;
     panel.choiceBlocks = undefined;
-    this.takeAnsweredForms(sessionKey);
     // As a dispatched reply's record does (`processMessage`): the session works on — the reply waits behind its turn.
     // A reply that waits in the person's task line instead (no turn runs in its thread) leaves the session idle.
     this.claudeHandler.setActivityStateByKey?.(sessionKey, activity);
