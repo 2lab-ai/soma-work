@@ -54,12 +54,15 @@ Status: in-progress · 작성 2026-11-26 · 현재 상태 = [38-goal-state-as-is
 RunPhase(key) = none | preparing | running | settling
   none       슬롯이 비었다
   preparing  디스패치가 받아들여져 슬롯을 잡았고, 턴이 아직 시작하지 않았다(반응 · 파일 · 라우팅 · 세션 초기화)
-  running    턴이 돈다(요청 컨트롤러가 있다)
-  settling   턴은 끝났고(턴 끝 훅이 돌았다) 실행이 아직 슬롯을 놓지 않았다(팔로업 정리 · 보고)
+  running    턴이 돈다: 요청 컨트롤러가 있거나, 이 프로세스의 턴 런타임이 working이라고 했다
+             (이어하기 · `/compact` 재생이 바로 뒤따르는 다리 사이도 여기다)
+  settling   이 실행의 턴 런타임이 idle · waiting으로 끝냈고, 실행이 아직 슬롯을 놓지 않았다(팔로업 정리 · 보고)
 
 turnHeld(key) = RunPhase ∈ { preparing, running } ∨ 요청 컨트롤러가 있다
 ```
 
+- 턴 런타임의 표시는 이 프로세스의 턴이 `activityState`를 바꿀 때(`setActivityState`) 메모리에만 남는다. 디스크에서 읽은 값과
+  호스트의 복구 코드가 직접 쓴 값은 표시가 아니다 — 그래서 재시작 직후에는 표시가 없고, 낡은 `working`이 게이트를 막지 않는다.
 - 슬롯(가장 이른 시계)과 컨트롤러를 함께 보되, 끝난 턴이 정리 중(`settling`)인 슬롯은 "턴이 돈다"로 세지 않는다. 턴 끝
   트리거는 바로 그 `settling` 동안 발화하므로(`handleAssistantTurnCompleteForGoal`), 이것을 세면 루프가 자기 턴 때문에 영영
   돌지 못한다. 지금 코드는 이 단계를 이름 없이 다룬다: 텍스트 없는 턴은 슬롯이 풀릴 때까지 구동을 미루고
