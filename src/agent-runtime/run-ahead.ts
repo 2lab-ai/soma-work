@@ -43,7 +43,8 @@ export function runAhead<T>(
   options: RunAheadOptions<T> = {},
 ): AsyncGenerator<T, void, unknown> {
   const buffered: Slot<T>[] = [];
-  let waiter: ((slot: Slot<T> | undefined) => void) | undefined;
+  /** Readers waiting for a value, in the order they asked (two `next()` calls in a row each get their own). */
+  const waiters: Array<(slot: Slot<T> | undefined) => void> = [];
   let started = false;
   /** The reader is done: what the loop still yields is dropped. */
   let stopped = false;
@@ -60,9 +61,8 @@ export function runAhead<T>(
   };
   const put = (slot: Slot<T>) => {
     if (stopped) return;
-    const w = waiter;
+    const w = waiters.shift();
     if (w) {
-      waiter = undefined;
       w(slot);
       return;
     }
@@ -88,13 +88,18 @@ export function runAhead<T>(
     }
   };
 
+  /** The loop is over for every reader: any other waiting `next()` answers `done`. */
+  const finish = () => {
+    stopped = true;
+    for (const w of waiters.splice(0)) w(undefined);
+  };
   const deliver = (slot: Slot<T> | undefined): IteratorResult<T, void> => {
     if (!slot || slot.kind === 'end') {
-      stopped = true;
+      finish();
       return { done: true, value: undefined };
     }
     if (slot.kind === 'error') {
-      stopped = true;
+      finish();
       throw slot.error;
     }
     observe(options.onTake, slot.value);
@@ -112,7 +117,7 @@ export function runAhead<T>(
       if (stopped) return { done: true, value: undefined };
       return deliver(
         await new Promise<Slot<T> | undefined>((resolve) => {
-          waiter = resolve;
+          waiters.push(resolve);
         }),
       );
     },
@@ -120,9 +125,7 @@ export function runAhead<T>(
       const wasStopped = stopped;
       stopped = true;
       buffered.length = 0;
-      const w = waiter;
-      waiter = undefined;
-      w?.(undefined);
+      for (const w of waiters.splice(0)) w(undefined);
       if (wasStopped || loopOver) return { done: true, value: undefined };
       if (!started) {
         // Never pulled: the loop has not started, and ending it runs nothing but its own `finally`.

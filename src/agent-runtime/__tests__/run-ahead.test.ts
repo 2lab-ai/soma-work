@@ -35,6 +35,22 @@ describe('runAhead — the loop does not wait for its reader', () => {
     expect(await it.next()).toEqual({ done: true, value: undefined });
   });
 
+  it('two next() calls in a row each get their own value, in order (round 1, astra)', async () => {
+    const gate = deferred();
+    async function* loop() {
+      await gate.promise;
+      yield 1;
+      yield 2;
+    }
+    const reader = runAhead(loop());
+    const a = reader.next();
+    const b = reader.next();
+    gate.resolve();
+    expect(await a).toEqual({ done: false, value: 1 });
+    expect(await b).toEqual({ done: false, value: 2 });
+    expect(await reader.next()).toEqual({ done: true, value: undefined });
+  });
+
   it('pulls nothing before the first next()', async () => {
     const started = vi.fn();
     async function* loop() {

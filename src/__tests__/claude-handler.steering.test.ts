@@ -764,6 +764,19 @@ describe('ClaudeHandler acts on a frame when it arrives, not when the consumer r
     expect(settled).toHaveBeenCalledTimes(1); // told once
   });
 
+  // #1473 round 1 (astra): a reader that stops while the turn is still being prepared (auth, options) starts no CLI.
+  it('starts no query when the consumer stops before the turn was prepared', async () => {
+    installScriptedCli();
+    const handler = newHandler();
+    const it = handler
+      .streamQuery('hello there', undefined, undefined, undefined, TEST_SLACK_CONTEXT, SESSION_KEY)
+      [Symbol.asyncIterator]();
+    const first = it.next(); // the loop starts preparing
+    await it.return(undefined);
+    expect((await first).done).toBe(true);
+    expect(queryMock).not.toHaveBeenCalled();
+  });
+
   // #1473 — a consumer that stops reading (the turn aborted, the renderer gone) does not leave the loop waiting on a
   // silent CLI: the run is abandoned — the input closes and the query ends — and the stop returns now.
   it('ends the loop at once when the consumer stops while the CLI is silent', async () => {

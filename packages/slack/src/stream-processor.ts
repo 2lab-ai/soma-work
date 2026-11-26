@@ -1549,6 +1549,9 @@ export class AgentStreamProcessor {
         sdkResultError: this._sdkResultError,
       };
     } catch (error: any) {
+      // #1473 — the turn's loop runs ahead of this reader: a reader that fails stops it (bounded), or the loop would
+      // keep reading the CLI into a buffer nobody draws.
+      await this.tryReturnIterator(iterator, 'error');
       this.settleNarration(context);
       this.emitAgentEvent(context, { kind: 'turn_end', ts: Date.now() });
       if (error.name === 'AbortError') {

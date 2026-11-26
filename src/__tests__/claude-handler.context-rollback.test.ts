@@ -28,7 +28,7 @@ vi.mock('../agent-runtime/claude-code/build-stream-options', () => ({
   })),
 }));
 
-import { decodeContextAnchor, encodeContextAnchor } from '@soma/slack/context-anchor';
+import { decodeContextAnchor, encodeContextAnchor, turnStartAnchor } from '@soma/slack/context-anchor';
 import { ClaudeHandler } from '../claude-handler';
 import type { McpManager } from '../mcp-manager';
 import { asSdkQuery } from '../test-utils/fake-sdk-query';
@@ -190,8 +190,37 @@ describe('ClaudeHandler — context rollback', () => {
     const handler = new ClaudeHandler({ getPluginManager: () => null } as unknown as McpManager);
     await drain(handler, session);
 
-    expect(session.compactionCount).toBe(0); // the reader here is not the executor: it counted nothing
+    // The loop owns the count too (a rollback compares an anchor's epoch with it): no reader counted anything here.
+    expect(session.compactionCount).toBe(1);
     expect(decodeContextAnchor(session.contextAnchor)).toMatchObject({ uuid: U(20), epoch: 1 });
+  });
+
+  // #1473 round 1 (astra): a work-log entry is made as its frame is drawn — it carries that frame's cut point, not the
+  // one the loop reached since.
+  it('the anchor a frame is drawn under is that frame’s, while the loop has moved past it', async () => {
+    const session: any = { sessionId: SID, compactionCount: 0, ownerId: 'U1', channelId: 'C1', threadTs: '1.1' };
+    installTurn((opening) => [
+      { type: 'system', subtype: 'init', session_id: SID, model: 'claude-test', tools: [] },
+      { type: 'assistant', uuid: U(30), message: { content: [{ type: 'text', text: 'first' }] } },
+      { type: 'assistant', uuid: U(31), message: { content: [{ type: 'text', text: 'second' }] } },
+      result(opening),
+    ]);
+    const handler = new ClaudeHandler({ getPluginManager: () => null } as unknown as McpManager);
+    const it = handler.streamQuery('hi', session, undefined, undefined, SLACK, 'C1:1.1')[Symbol.asyncIterator]();
+
+    await it.next(); // init
+    const first = await it.next(); // the first reply, being drawn
+    expect((first.value as { uuid?: string }).uuid).toBe(U(30));
+    await new Promise((resolve) => setTimeout(resolve, 0)); // the loop runs on to the end
+    expect(decodeContextAnchor(session.contextAnchor)?.uuid).toBe(U(31));
+    expect(decodeContextAnchor(turnStartAnchor(session))?.uuid).toBe(U(30));
+
+    for (let next = await it.next(); !next.done; next = await it.next()) {
+      // draw the rest
+    }
+    // Drawn to its end: the session's own anchor is the one again.
+    expect(session.renderedAnchor).toBeUndefined();
+    expect(decodeContextAnchor(turnStartAnchor(session))?.uuid).toBe(U(31));
   });
 
   it('a waiting rollback becomes resumeSessionAt once, and the anchor follows the new chain', async () => {

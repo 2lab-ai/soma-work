@@ -437,6 +437,50 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
     expect(cli.inputEnded).toBe(true);
   });
 
+  // #1473 round 1 (grok): a reader that stops (Stop, `Send now`) while the turn is held still lets the held turn end —
+  // its steers are settled, so the queue's turn-end sweep does not run the ones the model already answered again.
+  it('settles the steers of a held turn whose reader stops', async () => {
+    const cli = newFakeCli();
+    const pulledPastOpening = deferred();
+    const steerGate = deferred();
+    const quiet = deferred();
+    installScriptedQuery(cli, async function* (inputs) {
+      await readOpening(inputs, cli);
+      yield* openingTurnHead([agentTask(AGENT_ID)]);
+      yield openingResult(cli.opening?.uuid);
+      pulledPastOpening.resolve();
+      await steerGate.promise;
+      cli.received.push((await inputs.next()).value);
+      yield INIT;
+      yield assistantText('ACK');
+      yield successResult({
+        result: 'ACK',
+        num_turns: 1,
+        uuid: 'steer-result-uuid',
+        user_message_uuid: 'u-steer',
+        queued_turn_count: 0,
+      });
+      await quiet.promise; // the agent still runs; the CLI says nothing more
+    });
+    const handler = newHandler();
+    const settled = vi.fn();
+    handler.setSteerSignals({ read: vi.fn(), inputReopened: vi.fn(), settled });
+    const turn = startTurn(handler);
+    await turn.next();
+    await pulledPastOpening.promise;
+    await hostCaughtUp();
+    expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-steer', text: 'and also' })).toBe(true);
+    steerGate.resolve();
+    await hostCaughtUp();
+
+    const stopping = turn.return!(undefined);
+    await vi.waitFor(() => expect(settled).toHaveBeenCalledTimes(1));
+    expect(settled).toHaveBeenCalledWith(SESSION_KEY, expect.objectContaining({ consumed: ['u-steer'] }));
+
+    quiet.resolve();
+    await stopping;
+  });
+
   it('stops every live agent at the keepalive cap, ends the input, and ends the turn on the result that follows', async () => {
     vi.useFakeTimers();
     vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));

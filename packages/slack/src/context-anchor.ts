@@ -35,6 +35,11 @@ export interface ContextAnchor {
 export interface ContextAnchorSession {
   sessionId?: string;
   compactionCount?: number;
+  /**
+   * #1473 — the cut point as of the frame the renderer is drawing, while the turn's loop runs ahead of it (runtime
+   * only, never saved). Absent: no turn is being drawn behind its loop — `contextAnchor` is the anchor.
+   */
+  renderedAnchor?: { value: string | undefined };
   /** Latest safe chain point of the main agent, encoded. Persisted. */
   contextAnchor?: string;
   /** A rollback waiting for the next turn. Persisted. */
@@ -116,7 +121,9 @@ export function anchorRefusal(session: ContextAnchorSession, raw: string | undef
  * waiting for this turn wins: the turn will run from there.
  */
 export function turnStartAnchor(session: ContextAnchorSession): string | undefined {
-  return session.pendingRewind?.anchor ?? session.contextAnchor;
+  // #1473 — a work-log entry is made as its frame is drawn: it carries that frame's cut point, not the one the loop
+  // has reached since.
+  return session.pendingRewind?.anchor ?? (session.renderedAnchor ? session.renderedAnchor.value : session.contextAnchor);
 }
 
 // Outstanding main-agent tool calls per session (runtime only — a turn that

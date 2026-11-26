@@ -20,6 +20,7 @@ import {
 } from '@soma/common/rate-limit';
 import type { SafeguardFlagInfo } from '@soma/common/safeguard';
 import {
+  type ContextAnchorSession,
   type ContextRewindRecord,
   consumePendingRewind,
   resetChainTracking,
@@ -454,9 +455,16 @@ export const HOST_LAG_WATCH_MS = 60_000;
  * point has a reader.
  */
 interface RunHandle {
+  /** The reader stopped: set first (even before the query exists), so a query not yet started never starts. */
   abandoned: boolean;
   abandon?: () => void;
 }
+
+/**
+ * #1473 — the session's cut point as the loop left it after each frame, read when the renderer takes that frame: a
+ * work-log entry made while the frame is drawn carries its own cut point, not the one the loop reached since.
+ */
+const frameAnchors = new WeakMap<object, string | undefined>();
 
 /**
  * The keepalive cap's hard ceiling, as a multiple of `SOMA_BG_KEEPALIVE_MAX_MS`
@@ -1532,7 +1540,11 @@ export class ClaudeHandler implements TurnSteeringPort {
           if (message.type === 'result') renderWait.arrived();
         },
         onTake: (message) => {
+          const anchored = session as ContextAnchorSession | undefined;
+          if (anchored && frameAnchors.has(message)) anchored.renderedAnchor = { value: frameAnchors.get(message) };
           if (message.type !== 'result') return;
+          // The turn is drawn to its end: from here the session's own anchor is the one.
+          if (anchored) delete anchored.renderedAnchor;
           // One terminal result per run (the loop ends at it): one line per run, so a p95 can be read across runs.
           // The time the turn's end waited for the renderer — what decides whether settling leaves the render path
           // too (#1473 follow-up).
@@ -1543,7 +1555,11 @@ export class ClaudeHandler implements TurnSteeringPort {
           if (waitedMs >= HOST_LAG_WARN_MS) this.logger.warn('A turn result waited for the renderer', fields);
           else this.logger.info('A turn result reached the renderer', fields);
         },
-        onAbandon: () => run.abandon?.(),
+        onAbandon: () => {
+          run.abandoned = true;
+          if (session) delete (session as ContextAnchorSession).renderedAnchor;
+          run.abandon?.();
+        },
       },
     );
   }
@@ -1724,6 +1740,11 @@ export class ClaudeHandler implements TurnSteeringPort {
       // that answers this prompt, which is how that result is told apart from
       // one closing an orphan drain (#257).
       const openingUuid = randomUUID();
+      // #1473 — the reader stopped while the turn was being prepared (auth, options): no CLI is started for nobody.
+      if (run?.abandoned) {
+        this.logger.info('Turn abandoned before its query started — not started', { sessionKey });
+        return;
+      }
       const channel = new TurnInputChannel(buildInitialUserMessage(prompt, openingUuid));
       const activeQuery = query({ prompt: channel, options });
       // An incident attempt is never registered, whatever key reaches here: its
@@ -2161,8 +2182,9 @@ export class ClaudeHandler implements TurnSteeringPort {
         for await (const message of frames) {
           // #1473 — the renderer stopped and the query is being closed (`run.abandon`): nothing after this point has
           // a reader. Leaving the loop ends the frames (`queryFrames` → the query's own `return()`), as the
-          // renderer's own `return()` at a yield did before the loop ran ahead.
-          if (run?.abandoned) return;
+          // renderer's own `return()` at a yield did before the loop ran ahead. A held turn still ends below: its
+          // settlement is the follow-up queue's, reader or not (what it yields is dropped).
+          if (run?.abandoned) break;
           const raw = message as unknown as Record<string, unknown>;
           frameSeq += 1;
           // #1039 — the keepalive cap measures silence: any sign of the held
@@ -2264,9 +2286,21 @@ export class ClaudeHandler implements TurnSteeringPort {
           // (`session.compactionCount`, the executor's compact-boundary handler): the loop counts the boundaries it
           // has handled itself, so a cut point right after one is recorded in the new epoch. Every boundary frame
           // counts, as the renderer counts every one it maps (`sdk-message-to-event.ts` mapSystem).
-          if (raw.type === 'system' && raw.subtype === 'compact_boundary') anchorEpoch += 1;
+          if (raw.type === 'system' && raw.subtype === 'compact_boundary') {
+            anchorEpoch += 1;
+            // The session's count moves with the loop too: a rollback checks an anchor's epoch against it
+            // (`anchorRefusal`), and an anchor ahead of an hour-old count would read as compacted away. The frame
+            // carries the epoch, so the renderer that reaches it does not count it again (round 1, grok/astra).
+            if (session) session.compactionCount = Math.max(session.compactionCount ?? 0, anchorEpoch);
+            const meta = raw.compact_metadata;
+            if (meta && typeof meta === 'object') (meta as Record<string, unknown>).soma_compaction_epoch = anchorEpoch;
+            else raw.compact_metadata = { soma_compaction_epoch: anchorEpoch };
+          }
           // Context rollback (#743): remember the latest safe cut point.
-          if (session) trackChainPoint(session, raw, anchorEpoch);
+          if (session) {
+            trackChainPoint(session, raw, anchorEpoch);
+            frameAnchors.set(message, session.contextAnchor);
+          }
 
           // #966 — the host closed the input, so the CLI is exiting and stops the background tasks it
           // still runs. Those reports are the turn's end: mark them so the turn-end decision still
@@ -2472,7 +2506,6 @@ export class ClaudeHandler implements TurnSteeringPort {
           // #1472 — a release asked while this frame was still unhandled: the loop has handled it now.
           if (holdReleaseAsked) considerHoldRelease();
         }
-        if (run?.abandoned) return;
         // The stream ended with a result still held: the keepalive cap or its
         // backstop ended the CLI, the silence bound or the follow-up grace closed
         // the input, or the CLI exited on its own. The held result is still this

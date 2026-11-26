@@ -6053,7 +6053,14 @@ export class SlackHandler {
         // over. A `read` that moved nothing (the opening message) touches no file.
         if (settled.ok) await this.recordReadSteer(sessionKey, queueKey, uuid, args.turnEpoch);
       } else if (phase === 'completed' && settled.ok) await this.finishConsumedSteer(sessionKey, uuid);
-      else await this.cleanupSteerFiles(this.takeSteerFiles(uuid));
+      else {
+        // #1473 — the verdict now comes at loop time, right behind the `read` that may still be copying these files
+        // into the conversation (`recordReadSteer`): the copy finishes before the files go (round 1, astra).
+        const recording = this.followupReadSteers?.get(uuid)?.recording;
+        const files = this.takeSteerFiles(uuid);
+        await recording;
+        await this.cleanupSteerFiles(files);
+      }
       // NOT awaited: the executor awaits this hook inside its stream loop, so a
       // Slack round-trip here delays the answer the user is waiting for. The
       // queue mutation above is the part that must be finished before the turn
