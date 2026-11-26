@@ -8738,10 +8738,11 @@ export class SlackHandler {
    * judges when it settles — and it keeps its continuation, since the resume
    * replaces the cut turn. Must be called AFTER `notifyCrashRecovery`.
    *
-   * And except a session with a turn running now (`isRequestActive`) — one
-   * that started after boot, before this pass: its `working` is live. It is
-   * neither forced idle nor kicked, but a cut turn still gets its continuation
-   * back, since the running turn does not replace it.
+   * And except a session with a turn running now (`isRequestActive`, or its
+   * follow-up slot held) — one that started after boot, before this pass: its
+   * `working` is live. It is neither forced idle nor kicked, and its pending
+   * error retry is taken; a cut turn still gets its continuation back, since
+   * the running turn does not replace it.
    */
   resumeActiveGoals(): number {
     const handler = this.goalTurnSettledHandler;
@@ -8801,8 +8802,11 @@ export class SlackHandler {
       // A turn that started after boot (a person's message, a host turn) is running now: this pass runs about 25 s
       // after boot, behind crash recovery. Its `working` is live, not left by the old process — forcing it idle put
       // a running session in the done column for its whole turn (2026-11-26, 1795677176.047669). That turn carries
-      // the session like a restart resume: not forced idle, not kicked; the loop judges when it settles.
-      const liveTurn = !resumedByRestart && this.requestCoordinator.isRequestActive(sessionKey);
+      // the session like a restart resume: not forced idle, not kicked; the loop judges when it settles. The follow-up
+      // slot counts too: a dispatch holds it before its controller is set and between legs.
+      const liveTurn =
+        !resumedByRestart &&
+        (this.requestCoordinator.isRequestActive(sessionKey) || this.isFollowupSlotHeld(sessionKey));
       const panel = session.actionPanel;
       if (
         !resumedByRestart &&
@@ -8855,7 +8859,12 @@ export class SlackHandler {
         continue;
       }
       if (liveTurn) {
-        // Not the replacement of a cut turn, so a cut one still got its continuation back above.
+        // Not the replacement of a cut turn, so a cut one still got its continuation back above. It supersedes a
+        // pending error auto-retry, as a restart resume does: re-armed, that retry would run a second turn after it.
+        if (session.pendingRetryAt !== undefined) {
+          this.clearPendingErrorRetry(session);
+          retriesClaimed++;
+        }
         leftToLiveTurn++;
         this.logger.info('Goal loop left to the turn already running — it judges when that turn settles', {
           sessionKey,

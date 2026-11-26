@@ -107,6 +107,34 @@ describe('resumeActiveGoals (T1)', () => {
     expect(settled).not.toHaveBeenCalled();
   });
 
+  it('counts a dispatch holding the follow-up slot as a running turn, before or between its controllers', () => {
+    const running = activeGoalSession({ activityState: 'working' });
+    const sessions = new Map<string, ConversationSession>([['C1-T1', running]]);
+    const { handler } = createHandler(sessions);
+    const settled = vi.fn();
+    handler.setGoalTurnSettledHandler(settled);
+    (handler as any).followupDispatcher = { isBusy: (key: string) => key === 'C1-T1' };
+
+    expect(handler.resumeActiveGoals()).toBe(0);
+
+    expect(running.activityState).toBe('working');
+    expect(settled).not.toHaveBeenCalled();
+  });
+
+  it('takes the old process’s pending error retry from a session whose turn already runs', () => {
+    const running = activeGoalSession({ activityState: 'working', pendingRetryAt: Date.now() + 60_000 } as any);
+    const sessions = new Map<string, ConversationSession>([['C1-T1', running]]);
+    const { handler, claudeHandler } = createHandler(sessions);
+    handler.setGoalTurnSettledHandler(vi.fn());
+    (handler as any).requestCoordinator.setController('C1-T1', new AbortController());
+
+    handler.resumeActiveGoals();
+
+    // Re-armed by resumePendingErrorRetries, it would fire a second turn after the running one.
+    expect(running.pendingRetryAt).toBeUndefined();
+    expect(claudeHandler.saveSessions).toHaveBeenCalled();
+  });
+
   it('still gives back the continuation the restart cut when a later turn already runs', () => {
     const running = activeGoalSession({ activityState: 'working' });
     const goal = running.goal as NonNullable<ConversationSession['goal']>;
