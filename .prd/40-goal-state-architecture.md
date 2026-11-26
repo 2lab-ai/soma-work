@@ -104,7 +104,7 @@ applyVerdict(goal, verdict, { stallAllowed, reused }) → GoalChange    // conti
 ```
 
 - 판정 결과를 적용하기 직전과 이어하기를 넣기 직전에 같은 확인을 한다: 같은 goal · 에폭 ∧ ¬`turnHeld` ∧ ¬종료 중(D15, X6).
-  실패하면 버리고, goal이 아직 굴릴 상태면 `PendingDrive{kick}`.
+  실패하면 버리고, goal이 아직 굴릴 상태면 다시 판정하는 실행(직렬 실행에 줄 서는 킥).
 - 이어하기를 넣을 때 실행이 `settling`이면 `PendingDrive{inject}`로 미루고, 슬롯이 풀리면 같은 goal · 에폭 ∧ `running` ∧ ¬`turnHeld`일 때
   한 번만 넣는다(다시 판정하지 않는다). 그 사이 goal이 바뀌거나 사람의 턴 · 팔로업 · 종료가 오면 취소하고 `spent`면 돌려준다.
 - `judge`는 슬롯이 풀렸는데 팔로업이 남으면 소비하지 않고 `waitFor: followups`로 바뀐다. 판정 중에 온 킥은 직렬 실행이 받는다.
@@ -141,17 +141,17 @@ WU4가 디스크 모양을 바꾼다. 그 전까지(WU1–WU3)는 옛 필드를 
 | `evalBackoffUntil` · `evalDispatchRetryCount` · `evalRetryReason` | `phase: { kind: 'retrying', until, attempt, reason }` |
 | `capDmPendingAt` · `capDecisionId` · `capDmRef` | `phase: { kind: 'asking', ask: { kind: 'cap', roundId, openedAt, dmRef? } }`. id 없는 옛 라운드는 로드 때 id를 받는다 |
 | `stall` | `phase: { kind: 'asking', ask: { kind: 'stall', stall } }` |
-| (알림 · 메모리 집합뿐 — 옛 표현 없음) | `phase: { kind: 'stopped', why, at }` — 지문이 맞으면 보존(D17) |
+| (알림 · 메모리 집합뿐 — 옛 표현 없음) | `phase: { kind: 'stopped', why, at }` — 지문이 맞고 옛 필드가 비었으면 보존(D17) |
 | 위 아무것도 없음 | `phase: { kind: 'running' }` |
 | 슬롯의 `status:'complete'` | 슬롯에서 내리고 히스토리에만(D5). 같은 id가 히스토리에 이미 있으면 하나로 |
 | 슬롯의 `status:'paused'`(세 가지 필드 모양) | hold `{why}` 한 모양(D6): 재시도 · 질문 없음, `heldTaskIds` 있음 |
 
 - 이행은 `loadGoalState` 하나가 로드 · 되살리기 · 보관 읽기에서 모두 하고, 저장은 `saveGoalState` 하나가 한다.
-- 함께 쓰기(D17): PR7부터 PR10 직전까지 새 코드는 단계와 옛 필드를 함께 쓰고, 단계 옆에 옛 필드의 지문(`{epoch, updatedAt,
-  continuationCount}`)을 남긴다. 로드는 지문이 옛 필드와 같으면 단계를 믿고(옛 표현이 없는 `stopped` · hold `why`도 보존), 다르면 구버전이
-  바꾼 것이므로 옛 필드에서 단계를 다시 계산한다. id 없는 옛 cap 라운드는 id 없이 둔다(옛 DM 버튼이 답할 수 있게). 옛 필드 쓰기는 PR10에서 지운다.
-- 왕복 시험(A27, PR7 머지 조건): 신 → 신(무변경), 신 → 구(무변경) → 신, 신 → 구(goal 변경) → 신. fixture는 `stopped` · hold `why`,
-  어긋난 옛 필드, id 없는 cap 라운드와 옛 DM 버튼, 슬롯 · 히스토리 중복 완료.
+- 함께 쓰기(D17): PR7부터 PR10 직전까지 새 코드는 단계와 옛 필드를 함께 쓴다. 로드는 옛 표현이 있는 단계(`opening` · `retrying` ·
+  `asking` · `running`)를 항상 옛 필드에서 다시 계산하고, 옛 표현이 없는 `stopped` · hold `why`만 지문(`{epoch, updatedAt,
+  continuationCount}`)이 맞고 옛 필드가 "아무것도 없음"일 때 믿는다. id 없는 옛 cap 라운드는 id 없이 둔다. 옛 필드 쓰기는 PR10에서 지운다.
+- 왕복 시험(A27, PR7 머지 조건): 신 → 신(무변경), 신 → 구(무변경) → 신, 신 → 구(변경: `goal max` · 첫 턴 시작 · 재시도 무장) → 신.
+  fixture는 `stopped` · hold `why`, 어긋난 옛 필드, id 없는 cap 라운드와 옛 DM 버튼, 슬롯 · 히스토리 중복 완료.
 
 ## 4. 작업 단위와 PR
 

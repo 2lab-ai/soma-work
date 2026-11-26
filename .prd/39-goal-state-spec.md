@@ -165,7 +165,7 @@ AutoResume   = available | spent                                                
   사람의 말이 `available`로 되돌린다. `spent`에서 또 실패하면 goal 단계 `stopped(resume-failed)`가 되고 저장된다 — 재시작이 다시
   굴리지 않는다. `AutoResume`은 런타임이다(지금 `goalErrorResumeSpent`와 같이 재시작에서 초기화된다).
 - 판정 결과는 **적용 직전**에 다시 확인한다: 같은 goal · 같은 에폭 ∧ ¬`turnHeld`. 판정 중 턴이 시작됐으면 결과를 버리고 그 턴의
-  끝이 다시 판정한다. 판정 중 에폭이 움직였고(예: `goal max`) goal이 아직 `running`이면 결과를 버리고 `PendingDrive{kick}`을 남긴다 —
+  끝이 다시 판정한다. 판정 중 에폭이 움직였고(예: `goal max`) goal이 아직 `running`이면 결과를 버리고 다시 판정하는 실행(직렬 실행에 줄 서는 킥)을 남긴다 —
   에폭을 옮긴 쪽이 구동하지 않아도 goal이 멈추지 않는다(X5).
 - 이어하기는 `settling`인 슬롯에 넣지 않는다 — `PendingDrive{waitFor: slot-release}`로 미뤘다가 슬롯이 풀리면 넣는다(지금의
   "버리고 · 환급하고 · 다시 깨우기"를 대신한다).
@@ -235,9 +235,9 @@ RecoveryRecord = { raw: { activityState, wasWorkingAtShutdown, personStopped }, 
 | D12 | `goal resume`은 cap 또는 stall로 멈춘 goal과 `stopped` goal을 다시 굴린다(cap ✅와 같은 결과). `goal done`은 이미 완료된 goal을 건드리지 않는다. Slack 🗑️는 그 줄이 보였던 위치를 보낸다. 자동 goal은 대기열이나 선반에 goal이 있으면 시작하지 않는다 | X13 · X14 · X15 · X16 |
 | D13 | 복구 패스는 사람의 멈춤 이후 끊긴 goal을 `stopped(person-stopped)`로 두고, 첫 턴이 남은(`opening`) goal은 첫 턴에 맡긴다 | X18 · X19 |
 | D14 | 대시보드 칸은 S6의 순서로 정한다. goal은 기존 규칙이 DONE이라고 할 때만 다듬는다 | X17 · SSOT_1. 기존 칸 규칙과의 우선순위를 명시한다 |
-| D15 | 판정 결과는 적용 직전에 같은 goal · 에폭 ∧ ¬`turnHeld`를 다시 확인한다. 실패하면 버리고, goal이 아직 굴릴 상태면 `PendingDrive{kick}`을 남긴다 | 판정 중 턴이 시작되면 완료 · stall을 그 턴 아래에서 적용하던 경로(인벤토리 B 5.5 · 5.6)와 X5 |
+| D15 | 판정 결과는 적용 직전에 같은 goal · 에폭 ∧ ¬`turnHeld`를 다시 확인한다. 실패하면 버리고, goal이 아직 굴릴 상태면 다시 판정하는 실행(직렬 실행에 줄 서는 킥)을 남긴다 | 판정 중 턴이 시작되면 완료 · stall을 그 턴 아래에서 적용하던 경로(인벤토리 B 5.5 · 5.6)와 X5 |
 | D16 | 재개를 기다리는 세션(S5 `pending`)은 `driven`이다. 크론 · 사용자 작업 큐는 지금처럼 그 세션에 끼어들지 않는다 | 로드 때 표시를 정리해도 크론이 재개 직전 세션에 턴을 넣지 않게(지금은 저장된 `working`이 그 일을 했다) |
-| D17 | 저장 모양을 바꾸는 동안(PR7~PR10) 새 코드는 단계와 옛 필드를 함께 쓰고, 단계 옆에 옛 필드의 지문(`{epoch, updatedAt, continuationCount}`)을 남긴다. 로드: 지문이 옛 필드와 같으면 단계를 믿는다(옛 표현이 없는 `stopped` · hold `why`도 보존). 다르면 구버전이 goal을 바꾼 것이므로 옛 필드에서 단계를 다시 계산한다. id 없는 옛 cap 라운드는 id 없이 유지한다(옛 DM 버튼이 그대로 답할 수 있게). 옛 필드 쓰기는 PR10에서 지운다 | 구버전으로 되돌렸다 다시 올리는 배포에서 낡은 단계를 믿지 않고, 구버전이 표현 못 하는 상태는 지운다고 다시 돌지 않게 |
+| D17 | 저장 모양을 바꾸는 동안(PR7~PR10) 새 코드는 단계와 옛 필드를 함께 쓴다. 로드 규칙: 옛 표현이 있는 단계(`opening` · `retrying` · `asking` · `running`)는 **항상 옛 필드에서 다시 계산한다**(구버전의 변경은 그 필드에만 남는다 — 첫 턴 시작 · 재시도 무장 · cap 열기는 에폭 · `updatedAt` · 횟수를 바꾸지 않는다). 옛 표현이 없는 `stopped` · hold `why`만 단계 옆의 지문(`{epoch, updatedAt, continuationCount}`)이 옛 필드와 같고 옛 필드가 "아무것도 없음"일 때 믿는다. id 없는 옛 cap 라운드는 id 없이 유지한다(옛 DM 버튼이 답할 수 있게). 옛 필드 쓰기는 PR10에서 지운다 | 구버전으로 되돌렸다 다시 올리는 배포에서 낡은 단계를 믿지 않고, 구버전이 표현 못 하는 상태는 지운다고 다시 돌지 않게 |
 
 ## 6. 인수 시나리오
 
@@ -284,7 +284,7 @@ RecoveryRecord = { raw: { activityState, wasWorkingAtShutdown, personStopped }, 
 
 | ID | 실행 | 기대 |
 |---|---|---|
-| A27 | 세 왕복: 신 → 신(바뀐 것 없음), 신 → 구(바뀐 것 없음) → 신, 신 → 구(goal을 바꿈) → 신. fixture: `stopped` · hold `why`(옛 표현 없음), 어긋난 옛 필드, id 없는 cap 라운드와 그 옛 DM 버튼, 슬롯 · 히스토리 중복 완료 | 앞의 둘은 단계를 그대로 보존한다. 셋째는 구버전의 변경을 따른다(D17). id 없는 라운드는 옛 DM 버튼으로 답할 수 있다. 손실 0 |
+| A27 | 세 왕복: 신 → 신(바뀐 것 없음), 신 → 구(바뀐 것 없음) → 신, 신 → 구(goal을 바꿈) → 신. 셋째의 변경: `goal max`(에폭이 오름), 구버전에서 첫 턴이 모델에 닿음(`openingPending`만 지움), 구버전에서 판정 재시도 무장(재시도 필드만 씀). fixture: `stopped` · hold `why`(옛 표현 없음), 어긋난 옛 필드, id 없는 cap 라운드와 그 옛 DM 버튼, 슬롯 · 히스토리 중복 완료 | 앞의 둘은 단계를 그대로 보존한다. 셋째는 구버전의 변경을 따른다 — `opening`은 `running`이 되고 재시도는 `retrying`이 된다(D17). id 없는 라운드는 옛 DM 버튼으로 답할 수 있다. 손실 0 |
 
 ## 7. 범위 밖
 
