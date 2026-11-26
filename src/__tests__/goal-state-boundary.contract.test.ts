@@ -148,6 +148,31 @@ describe('goal state boundary (.prd/40 §6)', () => {
   });
 
   /**
+   * Rule 5 (PR5, the goal command and goal buttons first) — a goal change ends through `commitGoalChange`
+   * (`src/slack/goal-commit.ts`): epoch, prompt, save, dashboard, drive. The rows left save on their own and move with
+   * the surface PR (PR6) — the cap answer keeps its declared order (journal → save → DM rewrite, undo on failure).
+   */
+  it('rule 5: the goal command and goal buttons save only through goal-commit, except where listed', () => {
+    const files = ['src/slack/commands/goal-handler.ts', 'src/slack/actions/goal-action-handler.ts'];
+    const SAVE = /\.saveSessions(OrThrow)?\(|\.broadcastSessionUpdate\?*\.?\(/;
+    const ALLOWED: Record<string, string> = {
+      'src/slack/commands/goal-handler.ts#persistGoalChange': 'hands commitGoalChange its save and broadcast ports',
+      'src/slack/actions/goal-action-handler.ts#handleUpdateSubmit':
+        'hands commitGoalChange its save and broadcast ports',
+      'src/slack/actions/goal-action-handler.ts#answerCapDecision': 'the cap answer declares its own order (D9)',
+      'src/slack/actions/goal-action-handler.ts#handleDelete': 'goal-list delete — PR6 (surfaces)',
+      'src/slack/commands/goal-handler.ts#setGoal': 'goal <objective> and its opening admit — PR6',
+      'src/slack/commands/goal-handler.ts#completeGoal': 'goal done — PR6 (D12)',
+      'src/slack/commands/goal-handler.ts#pauseGoal': 'goal pause — PR6',
+      'src/slack/commands/goal-handler.ts#resumeGoal': 'goal resume — PR6 (D11)',
+    };
+    const found = [...sitesOf(SAVE, files)].sort();
+    const unlisted = found.filter((key) => !(key in ALLOWED));
+    const gone = Object.keys(ALLOWED).filter((key) => !found.includes(key));
+    expect({ unlisted, gone }).toEqual({ unlisted: [], gone: [] });
+  });
+
+  /**
    * Rule 6 (PR3) — `SessionGoal` is defined once, in `@soma/slack/goal/model`. `src/types.ts` and
    * `@soma/slack/session-goal` re-export it; the queue helpers' `SessionGoalState` is an alias, not a copy.
    */
