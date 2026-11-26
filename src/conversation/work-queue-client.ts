@@ -186,7 +186,7 @@ function wqClock(ms) {
   var hh = d.getHours(), mm = d.getMinutes();
   return (hh < 10 ? '0' : '') + hh + ':' + (mm < 10 ? '0' : '') + mm;
 }
-var WQ_END_LABEL = { done: '완료', cancelled: '취소', released: '돌려놓음', started: '시작', refused: '같은 작업이라 거절' };
+var WQ_END_LABEL = { done: '완료', cancelled: '취소', released: '차례 끝남', started: '시작', refused: '같은 작업이라 거절' };
 var WQ_END_GLYPH = { done: '✓', cancelled: '✕', released: '⏹', started: '▶', refused: '⛔' };
 
 // Pure: one history line — what it was, when it waited and ran, how it ended.
@@ -224,7 +224,7 @@ function wqEl(tag, cls, text) {
   return el;
 }
 // Pure: what the reader may do to a lane entry — an admin with admin mode: 먼저 진행 · 빼기 on a waiting entry,
-// 돌려놓기 on a running one; the entry's owner: 빼기 on their own waiting entry (the server checks the same).
+// 차례 끝내기 on a running one; the entry's owner: 빼기 on their own waiting entry (the server checks the same).
 function wqActionsFor(e, canManage, viewer) {
   if (canManage) return e.state === 'running' ? ['release'] : ['first', 'cancel'];
   if (viewer && e.state === 'waiting' && e.task && e.task.ownerId === viewer) return ['cancel'];
@@ -274,8 +274,7 @@ function wqEntryRow(q, e, now) {
   var can = q.kind === 'lane' ? wqActionsFor(e, wqCanManage(), wqViewer()) : [];
   if (can.length) {
     var acts = wqEl('span', 'wq-acts');
-    var labels = { release: '돌려놓기', first: '먼저 진행', cancel: '빼기' };
-    can.forEach(function(a) { acts.appendChild(wqButton(labels[a], function() { wqAct(e.id, a, e); })); });
+    can.forEach(function(a) { acts.appendChild(wqButton(WQ_ACT_LABEL[a], function() { wqAsk(e.id, a, e, q); })); });
     row.appendChild(acts);
   }
   return row;
@@ -644,9 +643,67 @@ function wqAfterBoard() {
   if (Date.now() - _wqLoadedAt > 3000) loadWorkQueues();
 }
 
+// What each hand is called — on the row, on the open card, in the question and in the toast. The name says what it
+// does (2026-11-26, owner: "작업 큐 돌려놓는게 뭐야? 물어보지도 않고 작업이 사라졌음").
+var WQ_ACT_LABEL = { release: '차례 끝내기', first: '먼저 진행', cancel: '대기에서 빼기' };
+// Pure: the question before a hand that takes work out of a lane — { html, confirm } — or null for one that does not
+// (먼저 진행 only reorders). It names the work and the lane, and says what follows: the entry leaves the lane, its
+// thread hears it, the session itself goes on, what starts next.
+function wqAskText(action, entry, q) {
+  var title = esc((entry && entry.task && entry.task.title) || (entry && entry.label) || (entry && entry.id) || '작업');
+  var lane = '<code>' + esc((q && q.id) || (entry && entry.queue) || '') + '</code>';
+  var next = q && q.waiting && q.waiting.length ? q.waiting[0] : null;
+  var nextTitle = next ? esc((next.task && next.task.title) || next.label || next.id) : '';
+  if (action === 'release') {
+    return {
+      confirm: WQ_ACT_LABEL.release,
+      html: '<p class="rb-lead">' + lane + '에서 진행 중인 「' + title + '」의 차례를 지금 끝낼까요?</p>'
+        + '<p class="rb-note">이 작업은 레인에서 빠지고, 그 스레드에 ⏹ 안내가 갑니다. 작업 세션은 멈추지 않고 레인 없이 계속합니다 — '
+        + '다시 줄을 서려면 그 스레드에서 큐에 다시 들어가야 합니다. '
+        + (next ? '대기 중인 다음 작업 「' + nextTitle + '」이 바로 시작합니다.' : '대기 중인 작업은 없습니다.') + '</p>',
+    };
+  }
+  if (action === 'cancel') {
+    return {
+      confirm: WQ_ACT_LABEL.cancel,
+      html: '<p class="rb-lead">「' + title + '」을 ' + lane + ' 대기에서 뺄까요?</p>'
+        + '<p class="rb-note">줄에서 빠지고, 차례가 와도 시작하지 않습니다. 다시 하려면 큐에 다시 들어가야 합니다.</p>',
+    };
+  }
+  return null;
+}
+var _wqAskPick = null; // { id, action, entry } — what the open question is for
+// A hand on an entry: one that takes work out of a lane asks first (wqAskText) — never without the answer.
+function wqAsk(entryId, action, entry, q) {
+  var ask = wqAskText(action, entry, q);
+  if (!ask) { wqAct(entryId, action, entry); return; }
+  var dlg = document.getElementById('wq-dialog');
+  var body = document.getElementById('wq-dialog-body');
+  var btn = document.getElementById('wq-dialog-confirm');
+  if (!dlg || !body || typeof dlg.show !== 'function') {
+    // The dialog element is not upgraded yet: ask once it is.
+    if (dlg && window.customElements) window.customElements.whenDefined('ui-dialog').then(function() { wqAsk(entryId, action, entry, q); });
+    return;
+  }
+  _wqAskPick = { id: entryId, action: action, entry: entry };
+  body.innerHTML = ask.html;
+  if (btn) btn.textContent = ask.confirm;
+  dlg.show();
+}
+function wqAskClose() {
+  _wqAskPick = null;
+  var dlg = document.getElementById('wq-dialog');
+  if (dlg && typeof dlg.hide === 'function') dlg.hide();
+}
+function wqAskConfirm() {
+  var pick = _wqAskPick;
+  wqAskClose();
+  if (pick) wqAct(pick.id, pick.action, pick.entry);
+}
+
 // An admin's hand on a lane entry (or its holder's 빼기): the server ends or moves it, then the section reloads.
 async function wqAct(entryId, action, entry) {
-  var label = action === 'first' ? '먼저 진행' : action === 'release' ? '돌려놓기' : '빼기';
+  var label = WQ_ACT_LABEL[action] || action;
   try {
     var res = await acPost('/api/dashboard/work-queues/' + encodeURIComponent(String(entryId)) + '/' + action, '{}');
     if (res.ok) {
@@ -664,7 +721,7 @@ async function wqAct(entryId, action, entry) {
 
 // A lane card's buttons on its open card (renderCardBody's actions bar, before 중지 · Slack): 먼저 진행 · 대기에서 빼기,
 // as the reader may (wqActionsFor at the last paint). Nothing for a card that does not wait in a lane.
-var WQ_CARD_BUTTONS = [['first', 'wq-first', '먼저 진행'], ['cancel', 'wq-cancel', '대기에서 빼기']];
+var WQ_CARD_BUTTONS = [['first', 'wq-first', WQ_ACT_LABEL.first], ['cancel', 'wq-cancel', WQ_ACT_LABEL.cancel]];
 function wqCardButtonsHtml(key) {
   var at = _wqEntryByCard[key];
   if (!at || !at.can || !at.can.length) return '';
@@ -678,7 +735,8 @@ function wqCardButtonsHtml(key) {
 function wqCardAction(cardId, actionId) {
   var at = _wqEntryByCard[cardId];
   if (!at) return;
-  wqAct(at.id, actionId === 'wq-first' ? 'first' : 'cancel', { task: { title: (_sessionCache[cardId] || {}).title } });
+  // 대기에서 빼기 asks first, as on the section's row.
+  wqAsk(at.id, actionId === 'wq-first' ? 'first' : 'cancel', { task: { title: (_sessionCache[cardId] || {}).title } }, at.queue ? { id: at.queue } : null);
 }
 
 // Open unless the reader folded it (saved per device): the cards that wait live here, so it never starts folded.

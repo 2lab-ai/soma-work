@@ -5219,7 +5219,7 @@ export async function registerDashboardRoutes(
   });
 
   // A lane entry managed from the 작업 큐 section: 빼기 (a waiting entry — its holder, or an admin with admin mode),
-  // 먼저 진행 and 돌려놓기 (a running entry; its thread hears ⏹ and the next is woken) — an admin with admin mode only.
+  // 먼저 진행 and 차례 끝내기 (a running entry; its thread hears ⏹ and the next is woken) — an admin with admin mode only.
   server.post<{ Params: { entryId: string; action: string } }>(
     '/api/dashboard/work-queues/:entryId/:action',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
@@ -8835,6 +8835,12 @@ ${WORK_QUEUE_CSS}
       <ui-dialog id="stop-goal-dialog" class="rollback-dialog stop-goal-dialog" heading="진행 중인 goal이 있어요" size="sm" lang="ko">
         <div id="stop-goal-body"></div>
         <div slot="footer" class="lc-actions"><button type="button" class="ui-btn" onclick="closeStopGoalDialog()">취소</button><button type="button" class="ui-btn is-danger" id="stop-goal-confirm" onclick="confirmStopGoal()">goal 일시정지하고 중지</button></div>
+      </ui-dialog>
+      <!-- 작업 큐 — 차례 끝내기 · 대기에서 빼기 ask first (2026-11-26, owner: "물어보지도 않고 작업이 사라졌음"): the work, its lane
+           and what follows (wqAsk → wqAskConfirm, work-queue-client.ts). 먼저 진행 removes nothing and does not ask. -->
+      <ui-dialog id="wq-dialog" class="rollback-dialog wq-dialog" heading="작업 큐" size="sm" lang="ko">
+        <div id="wq-dialog-body"></div>
+        <div slot="footer" class="lc-actions"><button type="button" class="ui-btn" onclick="wqAskClose()">취소</button><button type="button" class="ui-btn is-danger" id="wq-dialog-confirm" onclick="wqAskConfirm()">확인</button></div>
       </ui-dialog>
       <!-- CRON lane (SSOT 2026-10-23 T4/T5): @2lab.ai/ui <ui-agent-queue> with the lane only —
            one tile per cron job, four numbers, the next-fire queue and 24 hours of runs

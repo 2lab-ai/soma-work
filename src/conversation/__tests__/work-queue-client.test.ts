@@ -71,7 +71,7 @@ describe('wqSplitBoard — a card that waits in a lane moves to its lane', () =>
 describe('wqActionsFor — who may do what to a lane entry', () => {
   const { wqActionsFor } = load<any>(['wqActionsFor']);
   const e = (state: string, ownerId = 'U1') => ({ id: 'wq-1', state, task: { ownerId } });
-  it('an admin (admin mode): 먼저 진행 and 빼기 on a waiting entry, 돌려놓기 on a running one', () => {
+  it('an admin (admin mode): 먼저 진행 and 대기에서 빼기 on a waiting entry, 차례 끝내기 on a running one', () => {
     expect(wqActionsFor(e('waiting'), true, 'U9')).toEqual(['first', 'cancel']);
     expect(wqActionsFor(e('running'), true, 'U9')).toEqual(['release']);
   });
@@ -90,6 +90,7 @@ describe('wqCardButtonsHtml — the open card of a lane-waiting card', () => {
       `var _wqEntryByCard = map;
        function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
        function escJs(s) { return esc(s).replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'"); }
+       ${varSource('WQ_ACT_LABEL')}
        ${varSource('WQ_CARD_BUTTONS')}
        ${fnSource('wqCardButtonsHtml')}
        return wqCardButtonsHtml;`,
@@ -147,7 +148,7 @@ describe('the history — one at a time', () => {
 
   it('a history line says how it ended, when it ran, and why it was given back', () => {
     const t = wqRecordText({ ...rec('wq-2', 2 * HOUR, 3 * HOUR, 'released'), reason: 'admin:U9' });
-    expect(t).toMatchObject({ end: '돌려놓음', label: 'task wq-2', keys: ' · ABC-1', why: ' — 관리자' });
+    expect(t).toMatchObject({ end: '차례 끝남', label: 'task wq-2', keys: ' · ABC-1', why: ' — 관리자' });
     expect(t.when).toMatch(/→ .* \(1시간\)$/);
     expect(wqRecordText({ ...rec('r', undefined, 5 * HOUR, 'refused') }).end).toBe('같은 작업이라 거절');
     expect(wqRecordText({ ...rec('r', undefined, 5 * HOUR, 'refused'), reason: 'same-work' }).why).toBe(
@@ -218,7 +219,16 @@ describe('the section stays small: a block only where something runs or waits (2
     document.body.innerHTML =
       '<div id="wq-section"><div id="wq-head"><span id="wq-count"></span><span id="wq-pills"></span>' +
       '<button id="wq-fold"></button></div><div id="wq-tabs"></div>' +
-      '<div id="wq-lanes"></div><div id="wq-people"></div></div>';
+      '<div id="wq-lanes"></div><div id="wq-people"></div></div>' +
+      '<div id="wq-dialog"><div id="wq-dialog-body"></div><button id="wq-dialog-confirm"></button></div>';
+    const dialog = document.getElementById('wq-dialog');
+    dialog.open = false;
+    dialog.show = () => {
+      dialog.open = true;
+    };
+    dialog.hide = () => {
+      dialog.open = false;
+    };
     const posts: string[] = [];
     const stubs: Record<string, unknown> = {
       placeCard: () => undefined,
@@ -242,7 +252,7 @@ describe('the section stays small: a block only where something runs or waits (2
     };
     const names = Object.keys(stubs);
     const body = `${WORK_QUEUE_CLIENT_JS.replace(/\(function wqWire\(\) \{[\s\S]*\}\)\(\);\s*$/, '')}
-      return { paint: paintWorkQueues, set: function (d) { _wqData = d; } };`;
+      return { paint: paintWorkQueues, set: function (d) { _wqData = d; }, confirm: wqAskConfirm, close: wqAskClose };`;
     const api = new Function(...names, body)(...names.map((n) => stubs[n])) as any;
     api.set(data);
     return { document, posts, api };
@@ -318,6 +328,56 @@ describe('the section stays small: a block only where something runs or waits (2
     expect(posts).toEqual(['/api/dashboard/work-queues/lane/qa-x/forget']);
   });
 
+  it('ending a running turn or taking an entry out of the wait asks first and says what happens (2026-11-26, owner: "물어보지도 않고 작업이 사라졌음")', async () => {
+    const wait = { ...run, id: 'wq-2', state: 'waiting', position: 1, keys: ['ABC-2'], task: { title: 'next deploy' } };
+    const { document, api, posts } = mount(
+      { lanes: [lane('deploy-dev2', [run], [wait])], people: [], canManage: true },
+      true,
+    );
+    api.paint({}, []);
+    const buttons = () =>
+      [...document.querySelectorAll('#wq-lanes .wq-acts .wq-btn')].map((b: any) => b.textContent as string);
+    expect(buttons()).toEqual(['차례 끝내기', '먼저 진행', '대기에서 빼기']);
+    const press = (label: string) =>
+      ([...document.querySelectorAll('#wq-lanes .wq-acts .wq-btn')] as any[])
+        .find((b) => b.textContent === label)
+        .click();
+    const dialog = document.getElementById('wq-dialog');
+    const body = () => document.getElementById('wq-dialog-body').textContent as string;
+
+    // 차례 끝내기: nothing is sent until the question is answered; it names the work, the lane and what follows.
+    press('차례 끝내기');
+    expect(posts).toEqual([]);
+    expect(dialog.open).toBe(true);
+    expect(body()).toContain('deploy');
+    expect(body()).toContain('deploy-dev2');
+    expect(body()).toContain('레인에서 빠');
+    expect(body()).toContain('스레드');
+    expect(body()).toContain('세션은 멈추지 않');
+    expect(body()).toContain('next deploy');
+    expect(document.getElementById('wq-dialog-confirm').textContent).toBe('차례 끝내기');
+    api.confirm();
+    await Promise.resolve();
+    expect(dialog.open).toBe(false);
+    expect(posts).toEqual(['/api/dashboard/work-queues/wq-1/release']);
+
+    // 대기에서 빼기: asked too; 취소 sends nothing.
+    press('대기에서 빼기');
+    expect(dialog.open).toBe(true);
+    expect(body()).toContain('next deploy');
+    expect(body()).toContain('차례가 와도 시작하지 않');
+    expect(document.getElementById('wq-dialog-confirm').textContent).toBe('대기에서 빼기');
+    api.close();
+    api.confirm();
+    await Promise.resolve();
+    expect(posts).toEqual(['/api/dashboard/work-queues/wq-1/release']);
+
+    // 먼저 진행 removes nothing: it goes at once, as before.
+    press('먼저 진행');
+    await Promise.resolve();
+    expect(posts).toEqual(['/api/dashboard/work-queues/wq-1/release', '/api/dashboard/work-queues/wq-2/first']);
+  });
+
   it('a person is one tile: its list opens by itself while something of theirs waits', () => {
     const person = (id: string, waiting: unknown[]) => ({
       id: `user:${id}`,
@@ -382,6 +442,12 @@ describe('the page', () => {
     expect(bar).toContain('wqCardButtonsHtml(s.key)');
     expect(bar.indexOf('laneBtns + sessionActionHtml(')).toBeGreaterThan(0);
     expect(WORK_QUEUE_CLIENT_JS).toContain("'/api/dashboard/work-queues/'");
+  });
+
+  it('the page carries the question 차례 끝내기 · 대기에서 빼기 ask (one dialog, 취소 and the answer)', () => {
+    expect(DASHBOARD_TS).toContain('<ui-dialog id="wq-dialog"');
+    expect(DASHBOARD_TS).toContain('onclick="wqAskClose()">취소</button>');
+    expect(DASHBOARD_TS).toContain('id="wq-dialog-confirm" onclick="wqAskConfirm()"');
   });
 
   it('the script is plain ES5 with no template syntax (it reaches the browser byte for byte)', () => {

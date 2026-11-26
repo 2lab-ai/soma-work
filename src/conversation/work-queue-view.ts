@@ -63,7 +63,7 @@ export interface WqQueueOut {
 export interface WorkQueuesView {
   lanes: WqQueueOut[];
   people: WqQueueOut[];
-  /** The reader is an admin: the 먼저 진행 · 빼기 · 돌려놓기 controls (sent with admin mode on). */
+  /** The reader is an admin: the 먼저 진행 · 대기에서 빼기 · 차례 끝내기 controls (sent with admin mode on). */
   canManage: boolean;
 }
 
