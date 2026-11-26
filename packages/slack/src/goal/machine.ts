@@ -639,13 +639,26 @@ const captureGoal = (goal: SessionGoalState): GoalSnapshotEntry => ({
   fields: structuredClone({ ...goal }),
 });
 
-/** Put a goal object's fields back IN PLACE and return the same object. */
+/**
+ * Put a goal object's fields back IN PLACE and return the same object — except a question the change already retired
+ * (.prd/39 D10, X8): retiring it rewrote its DM as resolved and stopped its buttons, effects outside the session an
+ * undo cannot take back. Restored with the question's fields, the goal would wait on a question nobody can answer.
+ */
 function restoreGoal(entry: GoalSnapshotEntry): SessionGoalState {
   const target = entry.ref as unknown as Record<string, unknown>;
+  const live = entry.ref;
+  const capRetired = entry.fields.capDmPendingAt !== undefined && live.capDmPendingAt === undefined;
+  const stallRetired = entry.fields.stall !== undefined && live.stall === undefined;
   for (const key of Object.keys(target)) {
     if (!(key in entry.fields)) delete target[key];
   }
   Object.assign(target, entry.fields);
+  if (capRetired) {
+    delete target.capDmPendingAt;
+    delete target.capDecisionId;
+    delete target.capDmRef;
+  }
+  if (stallRetired) delete target.stall;
   return entry.ref;
 }
 
