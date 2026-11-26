@@ -24,18 +24,19 @@ export const SKILLS_TAB_HTML = `<div slot="skills" data-tab="skills" class="page
   <main>
     <p class="intro">스킬을 보고, 누가 실행할 수 있는지 정합니다. 내 스킬은 Slack에서 만든 개인 스킬, 환경 스킬은 이 호스트의 환경 플러그인 스킬, 시스템 스킬은 이 서버에 설치된 기본 스킬과 플러그인 스킬입니다.</p>
     <div id="sk-status" class="status" role="status" aria-live="polite"></div>
-    <section class="group" id="sk-detail"><div class="notice">불러오는 중…</div></section>
+    <div id="sk-detail"><div class="notice">불러오는 중…</div></div>
   </main>
 </div>`;
 
 export const SKILLS_TAB_CSS = `
 .sk-nav { display: flex; justify-content: space-between; gap: 8px; width: 100%; text-align: left; font: inherit; font-size: 13px; color: var(--text); background: none; border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
 .sk-nav[aria-current="true"] { background: var(--surface-raised); font-weight: 600; }
-#sk-detail { padding: 16px; }
-#sk-detail h2 { font-size: 15px; }
 #sk-detail h3 { font-size: 13px; font-weight: 650; margin-bottom: 8px; }
 #sk-detail .meta { font-size: 12px; color: var(--text-secondary); margin: 4px 0 12px; }
 .sk-box { border-top: 1px solid var(--border); padding: 12px 0; }
+.group-in > .sk-box:first-child { border-top: 0; padding-top: 0; }
+.group-in > .sk-box:last-child { padding-bottom: 0; }
+.group-in > .sk-group:first-child { margin-top: 0; }
 .sk-box .chips { margin-bottom: 8px; }
 .sk-box .line, .sk-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .sk-actions { margin-top: 8px; }
@@ -183,24 +184,24 @@ function skRow(section, id, source, label, extra, description) {
   return '<li><button type="button" class="sk-row" data-sec="' + section + '" data-id="' + escAttr(id) + '"' + (source ? ' data-src="' + escAttr(source) + '"' : '') + ' onclick="skOpenRow(this)">'
     + esc(label) + extra + (description ? '<span class="sk-desc">' + esc(description) + '</span>' : '') + '</button></li>';
 }
+// Every view is one card (groupCard): the list's or the skill's name and its line in the head, the rest in the body.
 function skMineList() {
-  var html = '<h2>내 스킬</h2>';
-  if (!_sk.mine) return html + '<p class="lock">Slack 계정으로 로그인해야 내 스킬을 볼 수 있습니다.</p>';
-  html += '<p class="meta">Slack에서 만든 내 스킬입니다. 스킬을 열어 SKILL.md를 고치고, 그 스킬을 실행할 수 있는 사람을 정합니다.</p>'
-    + '<div class="sk-box"><h3>내 모든 스킬을 실행할 수 있는 사람</h3>' + skGrantEditor('mine', null, _sk.mine.allowAll, true) + '</div>';
+  var desc = 'Slack에서 만든 내 스킬입니다. 스킬을 열어 SKILL.md를 고치고, 그 스킬을 실행할 수 있는 사람을 정합니다.';
+  if (!_sk.mine) return groupCard('내 스킬', '', '<p class="lock">Slack 계정으로 로그인해야 내 스킬을 볼 수 있습니다.</p>');
+  var html = '<div class="sk-box"><h3>내 모든 스킬을 실행할 수 있는 사람</h3>' + skGrantEditor('mine', null, _sk.mine.allowAll, true) + '</div>';
   var q = skFilterText();
   var rows = '';
   var list = _sk.mine.skills;
   for (var i = 0; i < list.length; i++) {
     if (skMatches(q, list[i].name + ' ' + list[i].description)) rows += skRow('mine', list[i].name, '', list[i].name, '', list[i].description);
   }
-  if (!list.length) return html + '<p class="lock">아직 내 스킬이 없습니다.</p>';
-  return html + (rows ? '<ul class="sk-rows">' + rows + '</ul>' : '<p class="lock">맞는 스킬이 없습니다.</p>');
+  if (!list.length) return groupCard('내 스킬', desc, html + '<p class="lock">아직 내 스킬이 없습니다.</p>');
+  return groupCard('내 스킬', desc, html + (rows ? '<ul class="sk-rows">' + rows + '</ul>' : '<p class="lock">맞는 스킬이 없습니다.</p>'));
 }
 function skEnvList() {
   var env = _sk.env;
-  var html = '<h2>환경 스킬</h2><p class="meta">이 호스트의 환경 플러그인 스킬입니다. 테스트 계정이나 대상 같은 호스트 환경 값이 들어 있어, 관리자가 허용한 사람만 실행하고 내용을 볼 수 있습니다.</p>'
-    + skEnvBanner();
+  var desc = '이 호스트의 환경 플러그인 스킬입니다. 테스트 계정이나 대상 같은 호스트 환경 값이 들어 있어, 관리자가 허용한 사람만 실행하고 내용을 볼 수 있습니다.';
+  var html = skEnvBanner();
   if (skIsAdmin()) html += '<div class="sk-box"><h3>모든 환경 스킬을 실행할 수 있는 사람</h3>' + skGrantEditor('env', null, env.allowAll || [], skCanEditEnv()) + '</div>';
   // env-access WU4: an environment held whole opens its skills and its servers' tools (ssh_exec, gh_pr too).
   var envs = (skIsAdmin() && env.environments) || [];
@@ -213,17 +214,18 @@ function skEnvList() {
       + '<p class="meta">' + (gone ? '설정에서 빠진 환경입니다. 다시 넣으면 이 허용이 되살아나니 필요 없으면 빼세요.' : esc(envs[e].skills.join(', '))) + '</p>'
       + editor + '</div>';
   }
-  if (!env.skills.length) return html + '<p class="lock">이 호스트에는 환경 스킬이 없습니다.</p>';
+  if (!env.skills.length) return groupCard('환경 스킬', desc, html + '<p class="lock">이 호스트에는 환경 스킬이 없습니다.</p>');
   var q = skFilterText();
   var rows = '';
   for (var i = 0; i < env.skills.length; i++) {
     var s = env.skills[i];
     if (skMatches(q, s.key + ' ' + (s.description || ''))) rows += skRow('env', s.key, '', s.key, '<span class="sk-badge">' + esc(skAccessLabel(s.access)) + '</span>', s.description);
   }
-  return html + (rows ? '<ul class="sk-rows">' + rows + '</ul>' : '<p class="lock">맞는 스킬이 없습니다.</p>');
+  return groupCard('환경 스킬', desc, html + (rows ? '<ul class="sk-rows">' + rows + '</ul>' : '<p class="lock">맞는 스킬이 없습니다.</p>'));
 }
 function skSystemList() {
-  var html = '<h2>시스템 스킬</h2><p class="meta">이 서버에 설치된 기본 스킬과 플러그인 스킬입니다. 누구나 쓸 수 있고, 여기서는 읽기만 합니다.</p>';
+  var desc = '이 서버에 설치된 기본 스킬과 플러그인 스킬입니다. 누구나 쓸 수 있고, 여기서는 읽기만 합니다.';
+  var html = '';
   var q = skFilterText();
   var groups = [];
   var bySource = {};
@@ -233,14 +235,14 @@ function skSystemList() {
     if (!bySource[s.source]) { bySource[s.source] = []; groups.push(s.source); }
     bySource[s.source].push(s);
   }
-  if (!groups.length) return html + '<p class="lock">' + (q ? '맞는 스킬이 없습니다.' : '설치된 시스템 스킬이 없습니다.') + '</p>';
+  if (!groups.length) return groupCard('시스템 스킬', desc, '<p class="lock">' + (q ? '맞는 스킬이 없습니다.' : '설치된 시스템 스킬이 없습니다.') + '</p>');
   for (var g = 0; g < groups.length; g++) {
     var list = bySource[groups[g]];
     html += '<h3 class="sk-group">' + esc(groups[g]) + ' <span class="lock">' + list.length + '</span></h3><ul class="sk-rows">';
     for (var j = 0; j < list.length; j++) html += skRow('system', list[j].name, list[j].source, list[j].name, '', list[j].description);
     html += '</ul>';
   }
-  return html;
+  return groupCard('시스템 스킬', desc, html);
 }
 function skFindMine(name) {
   var list = (_sk.mine && _sk.mine.skills) || [];
@@ -263,26 +265,27 @@ function skContent(save) {
     + '<div class="sk-actions"><button type="button" class="btn primary" onclick="' + (save === 'skSaveEnv' ? 'skSaveEnv' : 'skSaveMine') + '()">저장</button></div>';
 }
 function skBack(label) {
-  return '<p><button type="button" class="btn link" onclick="skBackToList()">' + esc(label) + '</button></p>';
+  return '<div class="group-lead"><button type="button" class="btn link" onclick="skBackToList()">' + esc(label) + '</button></div>';
 }
 function skMineDetail() {
   var s = skFindMine(_skOpen.id);
-  if (!s) return skBack('← 내 스킬') + '<p class="lock">이 스킬은 더 이상 없습니다.</p>';
+  if (!s) return groupCard(esc(_skOpen.id), '', '<p class="lock">이 스킬은 더 이상 없습니다.</p>', skBack('← 내 스킬'));
   var all = _sk.mine.allowAll;
   var names = [];
   for (var i = 0; i < all.length; i++) names.push(skUserName(all[i]));
-  return skBack('← 내 스킬') + '<h2>' + esc(s.name) + '</h2>' + (s.description ? '<div class="meta">' + esc(s.description) + '</div>' : '')
-    + '<div class="sk-box"><h3>이 스킬을 실행할 수 있는 사람</h3>' + skGrantEditor('mine', s.name, s.allowed, true)
+  return groupCard(esc(s.name), esc(s.description || ''), '<div class="sk-box"><h3>이 스킬을 실행할 수 있는 사람</h3>' + skGrantEditor('mine', s.name, s.allowed, true)
     + (names.length ? '<p class="lock">내 모든 스킬을 실행할 수 있는 사람도 실행합니다: ' + esc(names.join(', ')) + '</p>' : '') + '</div>'
     + '<div class="sk-box"><h3>SKILL.md</h3>'
     + ((_skDetail ? _skDetail.isSingleFile === false : !s.isSingleFile) ? '<p class="lock">이 스킬에는 SKILL.md 말고 다른 파일도 있습니다. 여기서는 SKILL.md만 고칩니다.</p>' : '')
-    + skContent('skSaveMine') + '</div>';
+    + skContent('skSaveMine') + '</div>', skBack('← 내 스킬'));
 }
 function skEnvDetail() {
   var s = skFindEnv(_skOpen.id);
-  if (!s) return skBack('← 환경 스킬') + '<p class="lock">이 스킬은 더 이상 없습니다.</p>';
-  var html = skBack('← 환경 스킬') + '<h2>' + esc(s.key) + '<span class="sk-badge">' + esc(skAccessLabel(s.access)) + '</span></h2>'
-    + (s.description ? '<div class="meta">' + esc(s.description) + '</div>' : '');
+  if (!s) return groupCard(esc(_skOpen.id), '', '<p class="lock">이 스킬은 더 이상 없습니다.</p>', skBack('← 환경 스킬'));
+  var title = esc(s.key) + '<span class="sk-badge">' + esc(skAccessLabel(s.access)) + '</span>';
+  var desc = esc(s.description || '');
+  var back = skBack('← 환경 스킬');
+  var html = '';
   if (skIsAdmin()) {
     var all = _sk.env.allowAll || [];
     var names = [];
@@ -291,20 +294,19 @@ function skEnvDetail() {
       + (names.length ? '<p class="lock">모든 환경 스킬을 실행할 수 있는 사람도 실행합니다: ' + esc(names.join(', ')) + '</p>' : '') + '</div>';
   }
   if (s.access === 'none') {
-    return html + '<div class="sk-banner" role="note"><span>이 스킬의 내용은 관리자가 허용한 사람만 볼 수 있습니다. 이 명령을 Slack에서 실행하면 관리자에게 승인 요청이 갑니다.</span><code>$' + esc(s.key) + '</code></div>';
+    return groupCard(title, desc, html + '<div class="sk-banner" role="note"><span>이 스킬의 내용은 관리자가 허용한 사람만 볼 수 있습니다. 이 명령을 Slack에서 실행하면 관리자에게 승인 요청이 갑니다.</span><code>$' + esc(s.key) + '</code></div>', back);
   }
   // 1.b — an admin edits it in admin mode. The edit is this host's file: it lasts until the plugin's repo gets a new
   // commit (or an admin forces an update), when the repo's copy replaces it — said before the editor, not after.
   var edit = skCanEditEnv();
-  return html + '<div class="sk-box"><h3>SKILL.md</h3>'
+  return groupCard(title, desc, html + '<div class="sk-box"><h3>SKILL.md</h3>'
     + (edit ? '<p class="lock">여기서 고치면 이 서버의 파일이 바로 바뀌고, 다음 실행부터 쓰입니다. 환경 플러그인 저장소에 새 커밋이 생기거나 관리자가 강제로 업데이트하면 저장소의 내용으로 덮어씁니다. 계속 쓰려면 저장소에도 반영하세요.</p>'
       : skIsAdmin() ? '<p class="lock">관리자 모드를 켜면 여기서 고칠 수 있습니다.</p>' : '')
-    + skContent(edit ? 'skSaveEnv' : '') + '</div>';
+    + skContent(edit ? 'skSaveEnv' : '') + '</div>', back);
 }
 function skSystemDetail() {
-  var html = skBack('← 시스템 스킬') + '<h2>' + esc(_skOpen.source + ':' + _skOpen.id) + '</h2>';
-  if (_skDetail && _skDetail.description) html += '<div class="meta">' + esc(_skDetail.description) + '</div>';
-  return html + '<div class="sk-box"><h3>SKILL.md</h3>' + skContent('') + '</div>';
+  var desc = _skDetail && _skDetail.description ? esc(_skDetail.description) : '';
+  return groupCard(esc(_skOpen.source + ':' + _skOpen.id), desc, '<div class="sk-box"><h3>SKILL.md</h3>' + skContent('') + '</div>', skBack('← 시스템 스킬'));
 }
 function renderSkills() {
   var el = document.getElementById('sk-detail');

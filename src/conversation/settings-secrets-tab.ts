@@ -16,16 +16,16 @@ export const SECRETS_TAB_HTML = `<div slot="secrets" data-tab="secrets" class="p
   <main>
     <p class="intro">이 호스트의 비밀 저장소입니다. 이름과 바꾼 시각, 설정에서 쓰는 곳만 보이고 값은 다시 볼 수 없습니다. 값은 넣을 때 한 번 보내고, 바꾸려면 새 값으로 덮어씁니다. 모델은 어떤 비밀도 읽지 못합니다 — 봇의 도구가 대신 씁니다.</p>
     <div id="sc-status" class="status" role="status" aria-live="polite"></div>
-    <section class="group" id="sc-body"><div class="notice">불러오는 중…</div></section>
+    <div id="sc-body"><div class="notice">불러오는 중…</div></div>
   </main>
 </div>`;
 
 export const SECRETS_TAB_CSS = `
-#sc-body { padding: 16px; }
-#sc-body h2 { font-size: 15px; }
 #sc-body h3 { font-size: 13px; font-weight: 650; margin-bottom: 8px; }
 #sc-body .meta { font-size: 12px; color: var(--text-secondary); margin: 4px 0 12px; }
 .sc-box { border-top: 1px solid var(--border); padding: 12px 0; }
+.group-in > .sc-box:first-child { border-top: 0; padding-top: 0; }
+.group-in > .sc-box:last-child { padding-bottom: 0; }
 .sc-rows { list-style: none; }
 .sc-row { display: flex; gap: 12px; align-items: flex-start; justify-content: space-between; padding: 10px 0; border-top: 1px solid var(--border); }
 .sc-row:first-child { border-top: 0; }
@@ -214,10 +214,11 @@ function renderSecrets() {
   for (var j = 0; j < _sc.missing.length; j++) {
     if (!q || _sc.missing[j].name.toLowerCase().indexOf(q) >= 0) missing += scMissingRow(_sc.missing[j], editable);
   }
-  var html = scBanner() + '<h2>비밀</h2><p class="meta">' + _sc.secrets.length + '개 — 값은 보이지 않습니다.</p>';
-  if (editable) html += scAddForm();
-  html += '<div class="sc-box">' + (rows ? '<ul class="sc-rows">' + rows + '</ul>' : '<p class="lock">' + (_sc.secrets.length ? '맞는 비밀이 없습니다.' : '아직 비밀이 없습니다.') + '</p>') + '</div>';
-  if (missing) html += '<div class="sc-box"><h3>없는 비밀</h3><ul class="sc-rows">' + missing + '</ul></div>';
+  // The admin-mode banner over the cards; each card says what it holds in its head (groupCard).
+  var list = (editable ? scAddForm() : '')
+    + '<div class="sc-box">' + (rows ? '<ul class="sc-rows">' + rows + '</ul>' : '<p class="lock">' + (_sc.secrets.length ? '맞는 비밀이 없습니다.' : '아직 비밀이 없습니다.') + '</p>') + '</div>';
+  var html = scBanner() + groupCard('비밀', _sc.secrets.length + '개 — 값은 보이지 않습니다.', list);
+  if (missing) html += groupCard('없는 비밀', '설정이 가리키지만 저장소에 없는 비밀입니다.', '<ul class="sc-rows">' + missing + '</ul>');
   el.innerHTML = html;
   for (var id in drafts) {
     var again = document.getElementById(id);

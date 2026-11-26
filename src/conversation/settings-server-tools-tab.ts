@@ -21,16 +21,13 @@ export const SERVER_TOOLS_TAB_HTML = `<div slot="server-tools" data-tab="server-
   <main>
     <p class="intro">server-tools의 모든 도구와 서버입니다. 관리자가 아닌 사람의 호출은 셋 중 하나가 열어 줍니다 — 그 서버의 환경 허락, 도구 수준 이상의 server-tools 허락(기간제), 또는 그 호출이 쓰는 비밀이 모두 허락됨(비밀 탭). 관리자 전용 도구는 환경 허락이나 비밀 허락으로만 열립니다. 모델은 어떤 비밀도 보지 못합니다.</p>
     <div id="st-status" class="status" role="status" aria-live="polite"></div>
-    <section class="group" id="st-body"><div class="notice">불러오는 중…</div></section>
+    <div id="st-body"><div class="notice">불러오는 중…</div></div>
   </main>
 </div>`;
 
 export const SERVER_TOOLS_TAB_CSS = `
-#st-body { padding: 16px; }
-#st-body h2 { font-size: 15px; }
 #st-body h3 { font-size: 13px; font-weight: 650; margin-bottom: 8px; }
 #st-body .meta { font-size: 12px; color: var(--text-secondary); margin: 4px 0 12px; }
-.st-box { border-top: 1px solid var(--border); padding: 12px 0; }
 .st-rows { list-style: none; }
 .st-row { display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 8px 0; border-top: 1px solid var(--border); }
 .st-row:first-child { border-top: 0; }
@@ -43,7 +40,7 @@ export const SERVER_TOOLS_TAB_CSS = `
 .st-chips { margin-top: 6px; }
 .st-chips .lbl { font-size: 12px; color: var(--text-secondary); }
 .st-chips .chip:not(:has(button)) { padding-right: 10px; }
-.st-card { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; }
+.st-card { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
 .st-cards { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
 .st-banner { font-size: 13px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); margin-bottom: 12px; display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
 .st-banner.is-warn { border-color: var(--tint-fail-fg); }
@@ -196,20 +193,21 @@ function renderServerTools() {
   for (var i = 0; i < _st.tools.length; i++) {
     if (!q || _st.tools[i].name.toLowerCase().indexOf(q) >= 0) tools += stToolRow(_st.tools[i], editable, mapPresent);
   }
-  html += '<h2>도구</h2><p class="meta">' + _st.tools.length + '개 — 수준은 config.json의 server-tools.permission에 저장됩니다.</p>'
-    + '<div class="st-box">' + (tools ? '<ul class="st-rows">' + tools + '</ul>' : '<p class="lock">맞는 도구가 없습니다.</p>') + '</div>';
+  // Three cards, each with its head (groupCard): the tools, the server-tools grants, the servers.
+  html += groupCard('도구', _st.tools.length + '개 — 수준은 config.json의 server-tools.permission에 저장됩니다.',
+    tools ? '<ul class="st-rows">' + tools + '</ul>' : '<p class="lock">맞는 도구가 없습니다.</p>');
   var grants = '';
   for (var j = 0; j < _st.toolGrants.length; j++) grants += stGrantRow(_st.toolGrants[j], editable);
-  html += '<div class="st-box"><h3>server-tools 허락 (기간제, 최대 4주)</h3>'
-    + (grants ? '<ul class="st-rows">' + grants + '</ul>' : '<p class="lock">허락받은 사람이 없습니다.</p>')
-    + (editable ? stGrantForm() : '') + '</div>';
+  html += groupCard('server-tools 허락', '기간제, 최대 4주 — ' + _st.toolGrants.length + '명',
+    (grants ? '<ul class="st-rows">' + grants + '</ul>' : '<p class="lock">허락받은 사람이 없습니다.</p>')
+    + (editable ? stGrantForm() : ''));
   var cards = '';
   for (var k = 0; k < _st.servers.length; k++) {
     var sv = _st.servers[k];
     var hit = !q || sv.name.toLowerCase().indexOf(q) >= 0 || (sv.tools || []).some(function (t) { return t.toLowerCase().indexOf(q) >= 0; });
     if (hit) cards += stServerCard(sv, editable);
   }
-  html += '<div class="st-box"><h3>서버 · 환경</h3>' + (cards ? '<div class="st-cards">' + cards + '</div>' : '<p class="lock">설정된 서버가 없습니다.</p>') + '</div>';
+  html += groupCard('서버 · 환경', _st.servers.length + '개 — 서버마다 절, 여기서 도는 도구, 쓰는 비밀', cards ? '<div class="st-cards">' + cards + '</div>' : '<p class="lock">설정된 서버가 없습니다.</p>');
   el.innerHTML = html;
 }
 async function stSetLevel(sel) {

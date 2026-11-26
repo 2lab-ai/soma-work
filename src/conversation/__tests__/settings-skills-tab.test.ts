@@ -25,6 +25,7 @@ function load<T>(fns: string[], inject: Record<string, unknown> = {}): T {
 
 const RENDER = [
   'esc',
+  'groupCard',
   'escAttr',
   'skIsAdmin',
   'skCanEditEnv',
@@ -109,7 +110,31 @@ describe('스킬 tab — the page', () => {
   });
 });
 
+// One card grammar (groupCard, settings-page.ts): every title is the head of a section.group, the body under it —
+// the 개인 설정 · 기억 · 받아쓰기 · 작업 큐 look. Returns the titles in order.
+function cardTitles(html: string): string[] {
+  const all = html.match(/<h2[ >]/g) ?? [];
+  const inHead = html.match(/<section class="group"><header>(?:<div class="group-lead">[\s\S]*?<\/div>)?<h2>/g) ?? [];
+  expect(inHead.length).toBe(all.length);
+  return [...html.matchAll(/<h2>([\s\S]*?)<\/h2>/g)].map((m) => m[1]);
+}
+
 describe('스킬 tab — 내 스킬', () => {
+  it('one card grammar: each view is one card — the list or the skill named in its head, a skill with its way back', () => {
+    expect(cardTitles(view({ sk: snapshot() }))).toEqual(['내 스킬']);
+    expect(cardTitles(view({ sk: snapshot(), section: 'system' }))).toEqual(['시스템 스킬']);
+    const open = view({
+      sk: snapshot(),
+      section: 'system',
+      open: { section: 'system', id: 'debug', source: 'stv' },
+      detail: { source: 'stv', name: 'debug', content: 'x', description: '버그' },
+    });
+    expect(cardTitles(open)).toEqual(['stv:debug']);
+    expect(open).toContain(
+      '<header><div class="group-lead"><button type="button" class="btn link" onclick="skBackToList()">← 시스템 스킬</button></div><h2>stv:debug</h2><p>버그</p></header>',
+    );
+  });
+
   it('lists my skills (escaped) and lets me say who runs all of them — never offering myself', () => {
     const html = view({ sk: snapshot() });
     expect(html).toContain('deploy');
