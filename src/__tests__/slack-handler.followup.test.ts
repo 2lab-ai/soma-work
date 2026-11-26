@@ -813,6 +813,41 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(startWithContinuation).toHaveBeenCalledTimes(2);
     });
 
+    // .prd/39 D8 · A28 — a person's stop of a goal turn is recorded (stopped(person-stopped)); a shutdown or a
+    // supersede only skip this drive — the restart or the new turn carries the goal on.
+    it.each([
+      ['user-stop', 'person-stopped'],
+      ['user-interrupted', 'person-stopped'],
+      ['shutdown', undefined],
+      ['supersede', undefined],
+    ])('a goal turn cut by %s leaves the goal %s', (reason, why) => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0, continuationCount: 1 };
+      handler.setGoalTurnSettledHandler(vi.fn());
+      handlerAny.followupSlotHeldGoalSessions = new Set([SESSION_KEY]);
+
+      handlerAny.releaseDeferredGoalDriver(SESSION_KEY, {
+        canDrain: true,
+        outcome: { result: 'interrupted', reason },
+      });
+
+      if (why) expect(registrySession.goal.phase).toMatchObject({ kind: 'stopped', why });
+      else expect(registrySession.goal.phase).toBeUndefined();
+    });
+
+    it("A7: the automatic resume failed again → stopped(resume-failed); a person's message opens it", async () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0, continuationCount: 1 };
+      handler.setGoalTurnSettledHandler(vi.fn());
+      handlerAny.followupSlotHeldGoalSessions = new Set([SESSION_KEY]);
+      handlerAny.goalErrorResumeSpent = new Set([SESSION_KEY]);
+
+      handlerAny.releaseDeferredGoalDriver(SESSION_KEY, { canDrain: true, outcome: { result: 'error' } });
+      expect(registrySession.goal.phase).toMatchObject({ kind: 'stopped', why: 'resume-failed' });
+
+      const { resetGoalContinuationOnUserMessage } = await import('../slack/goal-continuation');
+      resetGoalContinuationOnUserMessage(registrySession);
+      expect(registrySession.goal.phase).toBeUndefined();
+    });
+
     it('releases the held driver at an auto-compact stop boundary (drainable)', async () => {
       registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
       const goalDriver = vi.fn();

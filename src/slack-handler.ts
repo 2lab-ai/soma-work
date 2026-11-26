@@ -24,6 +24,7 @@ import {
 } from '@soma/slack/followup-queue';
 import { FOLLOWUP_RESTART_FREEZE_REASON, type FollowupQueueView } from '@soma/slack/followup-queue-blocks';
 import { FollowupQueueStore } from '@soma/slack/followup-queue-store';
+import { stopGoal } from '@soma/slack/goal/machine';
 import { slotGoalInFlight, slotHoldOf } from '@soma/slack/goal/read';
 import { OutputFlag } from '@soma/slack/output-flags';
 import { isLocalSlashCommand, shouldForwardAsLocalSlashCommand } from '@soma/slack/pipeline/local-slash-command';
@@ -7686,6 +7687,15 @@ export class SlackHandler {
     });
   }
 
+  /** .prd/39 D8 — record that the loop stops driving the session's active goal until a person opens it again. */
+  private stopLiveGoal(sessionKey: string, why: 'resume-failed' | 'person-stopped'): void {
+    const goal = this.claudeHandler?.getSessionByKey?.(sessionKey)?.goal;
+    if (goal?.status !== 'active') return;
+    stopGoal(goal, why);
+    this.claudeHandler.saveSessions?.();
+    this.claudeHandler.broadcastSessionUpdate?.();
+  }
+
   /** #948 — tell the thread why the goal stopped resuming, and how to go on. */
   private noticeGoalErrorResumeStopped(sessionKey: string): void {
     const session = this.claudeHandler?.getSessionByKey?.(sessionKey);
@@ -7730,7 +7740,14 @@ export class SlackHandler {
       if (this.shouldDeferGoalDriver(sessionKey)) {
         (this.followupDeferredGoalSessions ??= new Set<string>()).add(sessionKey);
       } else if (cut) {
-        this.logger.info('Goal driver not fired — the turn that left no text was cut by a stop', { sessionKey });
+        // .prd/39 D8 — a person's stop is the last word and is recorded: stopped(person-stopped), shown as a stop chip
+        // (not NEEDS YOU) and kept across a restart. A shutdown, a supersede or a session close only skip this drive.
+        const reason = report.outcome?.result === 'interrupted' ? report.outcome.reason : undefined;
+        if (reason === 'user-stop' || reason === 'user-interrupted') this.stopLiveGoal(sessionKey, 'person-stopped');
+        this.logger.info('Goal driver not fired — the turn that left no text was cut by a stop', {
+          sessionKey,
+          reason,
+        });
         return;
       } else if (failed && this.goalErrorResumeSpent?.has(sessionKey)) {
         // #948 — the automatic resume failed the same way. A turn that fails at
@@ -7738,6 +7755,7 @@ export class SlackHandler {
         // but the goal cap stops the next failure (dev 2026-11-05: 10 SIGKILLs
         // 9 s apart, three times). The error waits for a person.
         this.followupDeferredGoalSessions?.delete(sessionKey);
+        this.stopLiveGoal(sessionKey, 'resume-failed'); // .prd/39 D8 (X7) — recorded, kept across a restart
         this.logger.warn('Goal driver not fired — the automatic resume failed again; waiting for a person', {
           sessionKey,
           reason: (report.outcome as { reason?: string } | undefined)?.reason,

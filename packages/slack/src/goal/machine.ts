@@ -8,6 +8,7 @@ import {
   DEFAULT_GOAL_MAX_CONTINUATIONS,
   type GoalPhaseFingerprint,
   type GoalQueueSession,
+  type GoalStopWhy,
   MAX_GOAL_HISTORY,
   type SessionGoal,
   type SessionGoalFile,
@@ -747,4 +748,25 @@ export function settleCompletedSlot(session: GoalQueueSession): void {
   }
   session.goalHistory = history;
   session.goal = undefined;
+}
+
+/**
+ * .prd/39 S3 · D8 — the loop can no longer drive the goal: it is `stopped{why}` until a person opens it again (their
+ * message, `goal resume`). The judge's retry machinery ends with it. Persisting is the caller's.
+ */
+export function stopGoal(goal: SessionGoal, why: GoalStopWhy, at: number = Date.now()): void {
+  goal.phase = { kind: 'stopped', why, at };
+  goal.pendingEval = undefined;
+  goal.evalBackoffUntil = undefined;
+  goal.evalRetryReason = undefined;
+  goal.evalDispatchRetryCount = undefined;
+  goal.updatedAt = at;
+}
+
+/** A person opened a stopped goal again (S3): it runs. Returns whether it was stopped. */
+export function reopenStoppedGoal(goal: SessionGoal | undefined, at: number = Date.now()): boolean {
+  if (goal?.phase?.kind !== 'stopped') return false;
+  goal.phase = undefined;
+  goal.updatedAt = at;
+  return true;
 }

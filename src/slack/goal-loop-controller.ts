@@ -63,6 +63,7 @@ import { gateGoalVerdictOnTasks, goalTaskListLines, heldByWaitingGoals, taskGate
 
 export { GOAL_SUMMARY_PERSIST_MAX };
 
+import { stopGoal } from '@soma/slack/goal/machine';
 import { capAskOf } from '@soma/slack/goal/read';
 import { goalStallRollbackOffer, openGoalStall, trackGoalFirstFailure } from './goal-stall';
 import { advanceGoalQueue, formatGoalObjectiveForSlack } from './session-goal';
@@ -819,6 +820,19 @@ export class GoalLoopController {
           : `🔄 Goal not yet complete (eval-model verdict).\n*Reason:* ${verdict.reason}\n*Remaining:*\n${remaining}`,
     );
 
+    // .prd/39 A6 (X6) — the host began shutting down while the notice posted: inject nothing (the stopping host would
+    // refuse it and tell a person to resend what they never sent) and give the continuation back; the restart's
+    // recovery resumes the goal.
+    if (this.deps.isShuttingDown?.()) {
+      if (activeGoal.continuationCount > 0) {
+        activeGoal.continuationCount -= 1;
+        this.persist();
+      }
+      logger.info('Goal continuation not injected — the host is shutting down; the restart resumes the goal', {
+        sessionKey,
+      });
+      return;
+    }
     // Never supersede a turn that started during the eval. A live request
     // means a user (or already-running) turn owns the slot — defer; the
     // next turn-settled trigger re-runs the loop.
@@ -1135,11 +1149,11 @@ export class GoalLoopController {
         this.armEvalRetry(sessionKey, snapshot, delayMs, cause);
         return;
       }
-      // Budget exhausted — reset the streak so a user nudge starts a fresh
-      // budget instead of landing straight back on the terminal notice.
-      live.evalDispatchRetryCount = undefined;
-      live.evalRetryReason = undefined;
+      // Budget exhausted (.prd/39 D8, X7): the goal is stopped(judge-failed) — the loop stops driving it, the card
+      // asks, a restart keeps it; a person's message or `goal resume` opens it with a fresh retry budget.
+      stopGoal(live, 'judge-failed', this.now());
       this.persist();
+      this.deps.registry.broadcastSessionUpdate?.();
     }
 
     void this.postLooseNotice(
@@ -1261,6 +1275,13 @@ export class GoalLoopController {
       .catch(async (err: unknown) => {
         const injectErr = err instanceof Error ? err.message : String(err);
         this.deps.logger.error('Goal continuation injection failed — loop stalled', { sessionKey, error: injectErr });
+        // .prd/39 D8 (X7) — recorded, not only announced: stopped(start-failed) until a person opens it again.
+        const live = this.deps.registry.getSessionByKey(sessionKey)?.goal;
+        if (live && live.goalId === activeGoal.goalId && live.status === 'active') {
+          stopGoal(live, 'start-failed', this.now());
+          this.persist();
+          this.deps.registry.broadcastSessionUpdate?.();
+        }
         try {
           await this.postLooseNotice(
             session,

@@ -1463,3 +1463,75 @@ describe('GoalLoopController — a commit during a judge re-judges exactly once 
     expect(injected).toHaveLength(1);
   });
 });
+
+/**
+ * .prd/39 D8 · A7 (X7) — a goal the loop can no longer drive is recorded as `stopped{why}`, not left `running` with
+ * only a notice: the gate stops driving it, the card can ask, and a restart keeps it. A6 (X6) — a host that starts
+ * shutting down while the continuation notice posts injects nothing and gives the continuation back.
+ */
+describe('GoalLoopController — stopped is recorded (.prd/39 D8, A6 · A7)', () => {
+  it('A7: the judge retries ran out → stopped(judge-failed); the next kick does not judge', async () => {
+    let dispatched = 0;
+    const h = makeHarness({
+      dispatcher: async () => {
+        dispatched += 1;
+        throw new Error(POOL_RATE_LIMIT_ERR);
+      },
+      goal: { evalDispatchRetryCount: GOAL_EVAL_DISPATCH_MAX_RETRIES },
+    });
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(h.goal.phase).toMatchObject({ kind: 'stopped', why: 'judge-failed' });
+
+    h.controller.onTurnSettled(SESSION_KEY, { cause: 'kick' });
+    await h.controller.settled(SESSION_KEY);
+    expect(dispatched).toBe(1);
+  });
+
+  it('A7: the continuation could not start → stopped(start-failed)', async () => {
+    const goal = makeGoal({ continuationCount: 1 });
+    const session = makeSession(goal);
+    const controller = new GoalLoopController({
+      registry: { getSessionByKey: () => session, saveSessions: () => {} },
+      requestCoordinator: { isRequestActive: () => false },
+      turnHeld: () => false,
+      dispatcher: async () => JSON.stringify({ completed: false, reason: 'not yet', remaining: ['x'] }),
+      injectContinuation: async () => {
+        throw new Error('dispatch refused');
+      },
+      postNotice: async () => undefined,
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      fallbackModel: () => ({ model: 'claude-sonnet-4' }),
+    });
+    controller.onTurnSettled(SESSION_KEY);
+    await controller.settled(SESSION_KEY);
+    await vi.waitFor(() => expect(goal.phase).toMatchObject({ kind: 'stopped', why: 'start-failed' }));
+  });
+
+  it('A6: shutdown starts while the continuation notice posts → nothing injected, the continuation given back', async () => {
+    const goal = makeGoal({ continuationCount: 2 });
+    const session = makeSession(goal);
+    let shuttingDown = false;
+    const injected: unknown[] = [];
+    const controller = new GoalLoopController({
+      registry: { getSessionByKey: () => session, saveSessions: () => {} },
+      requestCoordinator: { isRequestActive: () => false },
+      turnHeld: () => false,
+      dispatcher: async () => JSON.stringify({ completed: false, reason: 'not yet', remaining: ['x'] }),
+      injectContinuation: async (event) => {
+        injected.push(event);
+      },
+      postNotice: async () => {
+        shuttingDown = true; // the shutdown begins while the notice is in flight
+        return undefined;
+      },
+      isShuttingDown: () => shuttingDown,
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      fallbackModel: () => ({ model: 'claude-sonnet-4' }),
+    });
+    controller.onTurnSettled(SESSION_KEY);
+    await controller.settled(SESSION_KEY);
+    expect(injected).toEqual([]);
+    expect(goal.continuationCount).toBe(2);
+  });
+});
