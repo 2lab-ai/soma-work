@@ -1150,10 +1150,38 @@ function applyTenantReadBoundary(
   if (input.workingDirectory && throughLink(input.workingDirectory, process.platform)) {
     throw new Error(`The session folder is reached through a link; not starting: ${input.workingDirectory}`);
   }
+  // A session folder that could not be made leaves the CLI in the daemon's directory, which the file tools would
+  // then treat as the working directory: the session does not start.
+  if (input.workingDirectory && options.cwd !== input.workingDirectory) {
+    throw new Error(`The session folder could not be made; not starting: ${input.workingDirectory}`);
+  }
+  // The user's root, also a working directory of the file tools, is kept only where it really is.
+  if (options.additionalDirectories) {
+    const linked = options.additionalDirectories.filter((dir) => throughLink(dir, process.platform));
+    if (linked.length > 0) {
+      logger.warn('Working directories reached through a link are left out', { user: input.user, dirs: linked });
+      options.additionalDirectories = options.additionalDirectories.filter((dir) => !linked.includes(dir));
+    }
+  }
   const sandbox = options.sandbox as NonNullable<Options['sandbox']>;
   const filesystem = sandbox.filesystem ?? {};
   sandbox.filesystem = filesystem;
   const home = os.homedir();
+
+  // The CLI's temp directory (cwd tracking, background output, TMPDIR of its commands) is otherwise one directory
+  // shared by every user's session, under the closed temp root. Its own directory under a parent only the bot
+  // writes, so the session cannot swap it. Made once the user's root exists (the host makes it with the first
+  // session folder).
+  const claudeTmpDir = fs.existsSync(input.userRoot) ? ensureClaudeTmpDir(input.user) : undefined;
+  if (claudeTmpDir) {
+    if (!options.env) options.env = {};
+    options.env.CLAUDE_CODE_TMPDIR = claudeTmpDir;
+    filesystem.allowWrite = [...(filesystem.allowWrite ?? []), claudeTmpDir];
+  } else if (fs.existsSync(input.userRoot)) {
+    logger.warn("The session's temp directory could not be made: its shell keeps the CLI's default", {
+      user: input.user,
+    });
+  }
   // Made before the lists are built: a missing directory is not opened, and thread files land here mid-turn.
   const uploads = userUploadsDir(DATA_DIR, input.user);
   if (uploads) {
@@ -1187,16 +1215,16 @@ function applyTenantReadBoundary(
   filesystem.denyRead = [...(filesystem.denyRead ?? []), ...boundary.denyRead];
   filesystem.allowRead = [...(filesystem.allowRead ?? []), ...boundary.allowRead];
 
-  // The CLI's temp directory (cwd tracking, background output, TMPDIR of its commands) is otherwise one
-  // shared directory under the closed temp root.
-  const claudeTmpDir = ensureClaudeTmpDir(input.userRoot);
-  if (claudeTmpDir) {
-    if (!options.env) options.env = {};
-    options.env.CLAUDE_CODE_TMPDIR = claudeTmpDir;
-  } else {
-    logger.warn("The session's temp directory could not be made: its shell keeps the CLI's default", {
-      user: input.user,
-    });
+  // A shared thread's session folder lies in the owner's root: the speaker may still attach what it made there.
+  const slackMcp = options.mcpServers?.['slack-mcp'] as { env?: Record<string, string> } | undefined;
+  if (input.workingDirectory && slackMcp?.env?.SOMA_UPLOAD_ROOTS) {
+    try {
+      const roots = JSON.parse(slackMcp.env.SOMA_UPLOAD_ROOTS) as string[];
+      if (!roots.includes(input.workingDirectory)) roots.push(input.workingDirectory);
+      slackMcp.env.SOMA_UPLOAD_ROOTS = JSON.stringify(roots);
+    } catch {
+      // Left as built: the server then closes uploads rather than opening them.
+    }
   }
 
   const base = options.settings && typeof options.settings === 'object' ? options.settings : {};

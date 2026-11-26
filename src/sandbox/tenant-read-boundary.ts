@@ -112,8 +112,12 @@ export function userUploadsDir(dataDir: string, userId: string | undefined): str
   return path.join(dataDir, userId, 'uploads');
 }
 
-/** The CLI's temp directory inside the user's root: private, and readable by that user's shell only. */
-export const CLAUDE_TMP_DIR_NAME = '.claude-tmp';
+/**
+ * The parent of every non-admin session's CLI temp directory (`CLAUDE_CODE_TMPDIR`): made and kept by the bot,
+ * writable by no session, so a session can write inside its own directory but never replace that directory. Short,
+ * because the CLI puts sockets in it.
+ */
+export const CLAUDE_TMP_ROOT = '/tmp/.soma-ct';
 
 export interface TenantReadBoundaryInput {
   platform: NodeJS.Platform;
@@ -251,56 +255,51 @@ export function tenantReadBoundary(input: TenantReadBoundaryInput): TenantReadBo
       .filter(present)
       .flatMap(spellings)
       .filter((p) => !reopens(p)),
-    // Already checked against the speaker's grants; the policy's environment-skill step still runs.
-    ...input.grantedSkillDirs.filter(present).flatMap(spellings),
+    // Already checked against the speaker's grants; the policy's environment-skill step still runs. A skill
+    // directory that is a link (to anywhere) is not opened.
+    ...input.grantedSkillDirs
+      .filter(present)
+      .filter((p) => !throughLink(p, input.platform, fsx))
+      .flatMap(spellings),
   ]).filter((p) => path.isAbsolute(p) && p !== path.parse(p).root);
 
   return { denyRead, allowRead, exemptPaths, redirected };
 }
 
 /**
- * The CLI's temp directory for a non-admin session: `/tmp/{userId}/.claude-tmp`, a private directory
- * of the bot's user. The session's shell may write the user's root, so whatever stands there is
- * checked without following links: the directory is opened with `O_NOFOLLOW`, its owner checked and
- * its mode set through that handle. Anything else standing there (a link, a file) is moved aside and a
- * new directory made. Returns undefined when the user's root is not there yet, or no private directory
- * can be had — the CLI then keeps its default, whose temp root the shell cannot read.
+ * The CLI's temp directory for a non-admin session: `{root}/{userId}` under the bot's own parent
+ * (`CLAUDE_TMP_ROOT`). The parent and the directory are each a real directory of the bot's user with mode
+ * 0700, checked without following links (`O_NOFOLLOW`, owner and mode through the handle). The session gets
+ * write access to its directory only, so it cannot rename or replace it. Returns undefined when no such
+ * directory can be had (another OS user holds the parent, a link stands there) — the CLI then keeps its
+ * default, whose temp root the session's shell cannot read: the shell fails closed.
  */
-export function ensureClaudeTmpDir(userRoot: string, now: () => number = Date.now): string | undefined {
-  const dir = path.join(userRoot, CLAUDE_TMP_DIR_NAME);
-  try {
-    if (!fs.statSync(userRoot).isDirectory()) return undefined;
-  } catch {
-    return undefined;
-  }
-  const own = (): boolean => {
-    let fd: number | undefined;
+export function ensureClaudeTmpDir(userId: string, root: string = CLAUDE_TMP_ROOT): string | undefined {
+  if (!userId || userId.includes('/') || userId.includes('\\') || userId.includes('..')) return undefined;
+  const dir = path.join(root, userId);
+  for (const d of [root, dir]) {
     try {
-      fd = fs.openSync(dir, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
-      const stat = fs.fstatSync(fd);
-      if (!stat.isDirectory() || (typeof process.getuid === 'function' && stat.uid !== process.getuid())) return false;
-      fs.fchmodSync(fd, 0o700);
-      return true;
-    } catch {
-      return false;
-    } finally {
-      if (fd !== undefined) fs.closeSync(fd);
+      fs.mkdirSync(d, { mode: 0o700 });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') return undefined;
     }
-  };
-  if (own()) return dir;
-  try {
-    if (fs.existsSync(dir) || isLink(dir)) fs.renameSync(dir, `${dir}.moved-${now()}`);
-    fs.mkdirSync(dir, { mode: 0o700 });
-  } catch {
-    return undefined;
+    if (!privateDirectory(d)) return undefined;
   }
-  return own() ? dir : undefined;
+  return dir;
 }
 
-function isLink(p: string): boolean {
+/** `d` is a real directory (not a link) of this process's user; its mode is set to 0700 through the handle. */
+function privateDirectory(d: string): boolean {
+  let fd: number | undefined;
   try {
-    return fs.lstatSync(p).isSymbolicLink();
+    fd = fs.openSync(d, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
+    const stat = fs.fstatSync(fd);
+    if (!stat.isDirectory() || (typeof process.getuid === 'function' && stat.uid !== process.getuid())) return false;
+    fs.fchmodSync(fd, 0o700);
+    return true;
   } catch {
     return false;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
   }
 }

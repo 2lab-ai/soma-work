@@ -25,6 +25,7 @@ import type { McpConfig, SlackContext } from '../../mcp-config-builder';
 import { credentialPaths } from '../../sandbox/admin-sandbox-profile';
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
 import { LAUNCH_SCRIPT } from '../../sandbox/mcp-launch-dir';
+import { CLAUDE_TMP_ROOT } from '../../sandbox/tenant-read-boundary';
 import type { ConversationSession } from '../../types';
 import { addThreadGrant, ENV_SKILL_GRANT_OWNER, grantEnvironment } from '../../user-skill-grants-store';
 import { type BuildStreamOptionsDeps, buildStreamOptions } from '../claude-code/build-stream-options';
@@ -410,8 +411,10 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
         '/srv/soma/plugins/.backups/acme-env',
       ];
       expect(denyRead?.slice(0, onPurpose.length)).toEqual(onPurpose);
-      // The write mount is kept.
-      expect((options.sandbox as { filesystem?: { allowWrite?: string[] } }).filesystem?.allowWrite?.length).toBe(1);
+      // The write mount is kept (beside it at most the CLI temp directory, once the user's root exists).
+      const allowWrite = (options.sandbox as { filesystem?: { allowWrite?: string[] } }).filesystem?.allowWrite ?? [];
+      expect(allowWrite[0]).toContain(SAFE_USER);
+      expect(allowWrite.slice(1).every((p) => p.startsWith(`${CLAUDE_TMP_ROOT}/`))).toBe(true);
     });
 
     it('on a host without environment plugins, the denies set on purpose are the secret store and the credential files', async () => {
@@ -927,19 +930,68 @@ describe('sandbox: admin profile and write protection (env-access WU2, #1210)', 
       }
     });
 
-    it("the CLI's temp directory moves into the user's root when it exists", async () => {
+    it("the CLI's temp directory is the user's own, under a parent only the bot writes", async () => {
       // A user whose root exists: the host makes /tmp/{userId} with the first session folder.
       const user = `U0RDTMP${process.pid}`;
       const root = path.join('/tmp', user);
+      const tmp = path.join(CLAUDE_TMP_ROOT, user);
       fs.mkdirSync(root, { recursive: true });
       try {
         const { options } = await withSettings(false, () => build(user));
-        expect(options.env?.CLAUDE_CODE_TMPDIR).toBe(path.join(root, '.claude-tmp'));
-        expect(fs.statSync(path.join(root, '.claude-tmp')).mode & 0o777).toBe(0o700);
-        expect((options.sandbox as ReadSandbox).filesystem?.allowRead).toContain(fs.realpathSync(root));
+        expect(options.env?.CLAUDE_CODE_TMPDIR).toBe(tmp);
+        expect(fs.statSync(tmp).mode & 0o777).toBe(0o700);
+        const filesystem = (options.sandbox as ReadSandbox & { filesystem?: { allowWrite?: string[] } }).filesystem;
+        // The session writes inside it, reads it, but cannot write its parent (so cannot swap it).
+        expect(filesystem?.allowWrite).toContain(tmp);
+        expect(filesystem?.allowWrite).not.toContain(CLAUDE_TMP_ROOT);
+        expect(filesystem?.allowRead).toContain(fs.realpathSync(tmp));
+        expect(filesystem?.allowRead).toContain(fs.realpathSync(root));
       } finally {
         fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(tmp, { recursive: true, force: true });
       }
+    });
+
+    it('a session folder that could not be made does not start (the CLI would run in the daemon directory)', async () => {
+      const blocker = path.join(WORK_DIR, `not-a-dir-${process.pid}`);
+      fs.writeFileSync(blocker, 'x');
+      try {
+        await expect(
+          withSettings(false, () =>
+            buildStreamOptions(
+              {
+                queryEnv: {},
+                slackContext: makeSlackContext({ user: SAFE_USER }),
+                workingDirectory: path.join(blocker, 'session'),
+              },
+              makeDeps(),
+            ),
+          ),
+        ).rejects.toThrow(/could not be made/);
+      } finally {
+        fs.rmSync(blocker, { force: true });
+      }
+    });
+
+    it('in a shared thread the speaker may attach files from the session folder it works in', async () => {
+      const deps = makeDeps({
+        mcpConfigBuilder: {
+          buildConfig: vi.fn(async () =>
+            makeMcpConfig({
+              mcpServers: {
+                'slack-mcp': {
+                  type: 'stdio',
+                  command: 'slack-mcp',
+                  env: { SOMA_UPLOAD_ROOTS: JSON.stringify([path.join('/tmp', SAFE_USER)]) },
+                },
+              },
+            }),
+          ),
+        },
+      });
+      const { options } = await withSettings(false, () => build(SAFE_USER, deps));
+      const env = (options.mcpServers?.['slack-mcp'] as { env?: Record<string, string> }).env;
+      expect(JSON.parse(env?.SOMA_UPLOAD_ROOTS ?? '[]')).toEqual([path.join('/tmp', SAFE_USER), WORK_DIR]);
     });
 
     it("no temp directory is made while the user's root is not there", async () => {
@@ -1085,7 +1137,11 @@ describe('sandbox: admin profile and write protection (env-access WU2, #1210)', 
     };
     expect(sandbox.enableWeakerNetworkIsolation).toBeUndefined();
     expect(sandbox.network?.allowLocalBinding).toBeUndefined();
-    expect(sandbox.filesystem?.allowWrite).toEqual([path.join('/tmp', SAFE_USER)]);
+    // The user's root, and at most the CLI temp directory once that root exists.
+    expect(sandbox.filesystem?.allowWrite?.[0]).toBe(path.join('/tmp', SAFE_USER));
+    expect((sandbox.filesystem?.allowWrite ?? []).slice(1).every((p) => p.startsWith(`${CLAUDE_TMP_ROOT}/`))).toBe(
+      true,
+    );
     const settings = options.settings as { permissions?: { allow?: string[] } };
     expect(settings.permissions?.allow ?? []).not.toContain('WebFetch(domain:*)');
   });

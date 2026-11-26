@@ -104,8 +104,17 @@ describe("validateFilePath — a non-admin's own root", () => {
     await fs.rm(base, { recursive: true, force: true });
   });
 
-  it('accepts a file in the own root', async () => {
-    await expect(validateFilePath(path.join(own, 'mine.png'), [own])).resolves.toMatchObject({ size: 3 });
+  it('accepts a file in the own root, and hands back a snapshot of it, not the path the session can swap', async () => {
+    const checked = await validateFilePath(path.join(own, 'mine.png'), [own]);
+    expect(checked.size).toBe(3);
+    expect(checked.resolvedPath).not.toBe(path.join(own, 'mine.png'));
+    expect(path.basename(checked.resolvedPath)).toBe('mine.png');
+    // Swapping the checked path afterwards changes nothing that is uploaded.
+    await fs.rm(path.join(own, 'mine.png'));
+    await fs.symlink(path.join(other, 'theirs.png'), path.join(own, 'mine.png'));
+    expect(await fs.readFile(checked.resolvedPath, 'utf8')).toBe('png');
+    await checked.cleanup?.();
+    await expect(fs.stat(checked.resolvedPath)).rejects.toThrow();
   });
 
   it("refuses another user's file, by its path or through a linked parent directory", async () => {

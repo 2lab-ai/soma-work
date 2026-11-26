@@ -3,7 +3,6 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import {
-  CLAUDE_TMP_DIR_NAME,
   ensureClaudeTmpDir,
   type TenantReadBoundaryInput,
   tenantReadBoundary,
@@ -135,6 +134,15 @@ describe('tenantReadBoundary', () => {
     expect(allowRead).toContain(userRoot);
   });
 
+  it('a granted skill directory that is a link is not opened', () => {
+    const linkedSkill = path.join(envPlugin, 'skills', 'linked');
+    fs.symlinkSync(dataDir, linkedSkill);
+    const { exemptPaths } = tenantReadBoundary(input({ grantedSkillDirs: [grantedSkill, linkedSkill] }));
+    expect(exemptPaths).toContain(grantedSkill);
+    expect(exemptPaths).not.toContain(linkedSkill);
+    expect(exemptPaths).not.toContain(dataDir);
+  });
+
   it('a grant root the session may write is readable by the shell and the file tools', () => {
     const { allowRead, exemptPaths } = tenantReadBoundary(input({ writeRoots: [session, userRoot, grantRoot] }));
     expect(allowRead).toContain(grantRoot);
@@ -218,36 +226,39 @@ describe('throughLink', () => {
 });
 
 describe('ensureClaudeTmpDir', () => {
-  it("makes a private directory in the user's root", () => {
-    const root = mk('ct/a');
-    const dir = ensureClaudeTmpDir(root);
-    expect(dir).toBe(path.join(root, CLAUDE_TMP_DIR_NAME));
+  it('makes a private directory per user under a private parent the bot owns', () => {
+    const root = path.join(ROOT, 'ct-a');
+    const dir = ensureClaudeTmpDir('U1', root);
+    expect(dir).toBe(path.join(root, 'U1'));
+    expect(fs.statSync(root).mode & 0o777).toBe(0o700);
     expect(fs.statSync(dir as string).mode & 0o777).toBe(0o700);
+    // Again: the same directory, still private.
+    expect(ensureClaudeTmpDir('U1', root)).toBe(dir);
   });
 
-  it('moves aside a link the session planted and makes a real directory, leaving the target alone', () => {
-    const root = mk('ct/b');
-    const target = mk('ct/b-target');
+  it('refuses a link standing in place of the directory or the parent, and never follows it', () => {
+    const target = mk('ct-b-target');
     fs.chmodSync(target, 0o755);
-    fs.symlinkSync(target, path.join(root, CLAUDE_TMP_DIR_NAME));
-    const dir = ensureClaudeTmpDir(root, () => 42) as string;
-    expect(fs.lstatSync(dir).isDirectory()).toBe(true);
-    expect(fs.lstatSync(dir).isSymbolicLink()).toBe(false);
-    expect(fs.lstatSync(`${dir}.moved-42`).isSymbolicLink()).toBe(true);
+    const root = mk('ct-b');
+    fs.symlinkSync(target, path.join(root, 'U1'));
+    expect(ensureClaudeTmpDir('U1', root)).toBeUndefined();
+    const linkedRoot = path.join(ROOT, 'ct-b-linked');
+    fs.symlinkSync(target, linkedRoot);
+    expect(ensureClaudeTmpDir('U2', linkedRoot)).toBeUndefined();
     // The link was never followed: its target keeps its mode.
     expect(fs.statSync(target).mode & 0o777).toBe(0o755);
   });
 
   it('tightens the mode of a directory already there', () => {
-    const root = mk('ct/c');
-    fs.mkdirSync(path.join(root, CLAUDE_TMP_DIR_NAME), { mode: 0o755 });
-    fs.chmodSync(path.join(root, CLAUDE_TMP_DIR_NAME), 0o755);
-    const dir = ensureClaudeTmpDir(root) as string;
+    const root = mk('ct-c');
+    fs.mkdirSync(path.join(root, 'U1'), { mode: 0o755 });
+    fs.chmodSync(path.join(root, 'U1'), 0o755);
+    const dir = ensureClaudeTmpDir('U1', root) as string;
     expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
   });
 
-  it("does nothing while the user's root is not there", () => {
-    expect(ensureClaudeTmpDir(path.join(ROOT, 'ct', 'missing'))).toBeUndefined();
-    expect(fs.existsSync(path.join(ROOT, 'ct', 'missing'))).toBe(false);
+  it('refuses a user id that is not one path segment', () => {
+    expect(ensureClaudeTmpDir('../x', path.join(ROOT, 'ct-d'))).toBeUndefined();
+    expect(ensureClaudeTmpDir('', path.join(ROOT, 'ct-d'))).toBeUndefined();
   });
 });
