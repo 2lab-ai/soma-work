@@ -487,13 +487,13 @@ describe('ChoiceActionHandler — recorded, handed on, then drawn (#1474)', () =
       message: { ts: 'ts-a' },
     });
 
-    await handler.handleMultiChoiceFromDashboard(
-      KEY,
-      { qa: { choiceId: '1', label: 'A' }, qb: { choiceId: '1', label: 'B' } },
-      'U1',
-    );
+    // The dashboard sends what is still open: chunk B alone is enough, and chunk A is not sent to the model again.
+    await handler.handleMultiChoiceFromDashboard(KEY, { qb: { choiceId: '1', label: 'B' } }, 'U1');
 
     expect(messageHandler).toHaveBeenCalledTimes(2);
+    const second = String(messageHandler.mock.calls[1][0].text);
+    expect(second).toContain('B?');
+    expect(second).not.toContain('A?');
     expect(session.actionPanel.pendingQuestion).toBeUndefined();
   });
 

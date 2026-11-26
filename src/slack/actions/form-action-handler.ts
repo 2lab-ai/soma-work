@@ -114,6 +114,17 @@ export class FormActionHandler {
         userId,
       });
 
+      // #1474 — a card or form already answered refuses the typed answer first, whoever sends it (round 4, fable).
+      if (
+        await this.choiceHandler.refuseAnswered(
+          sessionKey,
+          channel,
+          userId,
+          ...(type === 'multi' ? [formId, messageTs] : [messageTs]),
+        )
+      )
+        return;
+
       // #767 — a typed answer from someone who is not the owner (nor approved) is an instruction:
       // checked before the question is touched. A single question's answer goes to the message
       // gate (it holds it, the question stays open); a form's is refused (the owner submits it).
@@ -245,6 +256,12 @@ export class FormActionHandler {
     const pendingForm = this.formStore.get(formId);
     if (!pendingForm) {
       this.logger.warn('Pending form not found for custom input', { formId });
+      // #1474 — told, not dropped in silence (a restart or an expiry took the form) (round 4, grok).
+      if (channel && userId) {
+        await this.ctx.slackApi
+          .postEphemeral(channel, userId, '❌ 폼을 찾을 수 없습니다. 시간이 만료되었을 수 있습니다.')
+          .catch(() => undefined);
+      }
       return;
     }
 
@@ -334,6 +351,9 @@ export class FormActionHandler {
         }
       }
 
+      // #1474 — answered while the edits above waited (the dashboard, another chunk): attaching the form would raise
+      // the answered question's open bit again (round 4, astra).
+      if (!this.formStore.get(formId) || this.choiceHandler.isAnswered(sessionKey, formId)) return;
       await this.ctx.threadPanel?.attachChoice(sessionKey, updatedPayload, pendingForm.messageTs);
     }
   }

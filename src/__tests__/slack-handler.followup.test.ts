@@ -9209,6 +9209,41 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(registrySession.actionPanel.pendingQuestion).toEqual(singleQuestion());
     });
 
+    // #1474 round 4 (astra): the person's typed reply to a question the running turn asked is its answer, taken when
+    // stored — the turn does not end waiting on it, and the reply runs next instead of waiting behind its own question.
+    it('T2 a typed reply queued behind the turn that asked answers it when stored: the reply runs when the turn ends', async () => {
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const first = handler.handleMessage(message({ ts: '333.500', text: '작업해' }), say());
+      await tick();
+      // The running turn asks (the question card is up) and keeps working.
+      registrySession.activityState = 'waiting';
+      registrySession.actionPanel = { waitingForChoice: true, pendingQuestion: singleQuestion() };
+
+      await handler.handleMessage(message({ ts: '333.501', text: '머지하고 배포해' }), say());
+
+      expect(registrySession.actionPanel.waitingForChoice).toBe(false);
+      expect(registrySession.actionPanel.pendingQuestion).toBeUndefined();
+      expect(items().find((item: any) => item.message.ts === '333.501')?.message.questionAnswer).toBe(true);
+
+      gate.resolve({ hasPendingChoice: true }); // the turn's own snapshot: it asked
+      await first;
+      await vi.waitFor(() => expect(startWithContinuation).toHaveBeenCalledTimes(2));
+      expect(startWithContinuation.mock.calls[1][0]).toContain('머지하고 배포해');
+    });
+
+    // #1474 round 4 (astra): an answer is the person's words to the model — never a command, a directive or `!`.
+    it.each([['help'], ['!'], ['%model sonnet']])('T2 an answer reading %s is handed to the model, not routed', async (text) => {
+      registrySession.activityState = 'waiting';
+      registrySession.actionPanel = { waitingForChoice: false };
+
+      await handler.handleMessage(message({ ts: '333.510', text, questionAnswer: true } as any), say());
+
+      expect(routeCommand).not.toHaveBeenCalled();
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      expect(startWithContinuation.mock.calls[0][0]).toContain(text);
+    });
+
     // #1474 round 2 (astra/fable): the answer handler recorded the answer — one chunk of a form leaves the others open.
     it('T2 an answer the answer handler recorded closes nothing more: the form’s other chunks stay open', async () => {
       const remaining = { kind: 'multi', turnId: 'turn-1', formIds: ['form-b'] };

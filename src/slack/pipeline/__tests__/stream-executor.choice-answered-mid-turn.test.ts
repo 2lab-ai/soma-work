@@ -288,6 +288,73 @@ const states = (deps: any) =>
     .filter((c: any[]) => c[0] === CHANNEL && c[1] === THREAD_TS)
     .map((c: any[]) => c[2]);
 
+/** A turn that asks nothing: what a split form's answered chunk (or a host turn) starts. */
+function quietStream() {
+  return async function* () {
+    yield { type: 'assistant', message: { content: [{ type: 'text', text: 'working on chunk A' }] } };
+    yield { type: 'result', subtype: 'success', total_cost_usd: 0, usage: {} };
+  };
+}
+
+/** The rest of a split form after chunk A was answered: the question open, its P3 record holding chunk B. */
+function sessionWithChunkLeft(): any {
+  const session = createSession();
+  session.actionPanel = {
+    waitingForChoice: true,
+    pendingQuestion: { type: 'user_choices', questions: [{ id: 'qb', question: 'B?', choices: [] }] },
+    pendingChoice: { turnId: 'turn-ask', kind: 'multi', choiceTs: 'form_ts', formIds: ['form-b'] },
+  };
+  return session;
+}
+
+describe('#1474 — a question still open when a turn starts, which the turn does not ask', () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('stays open across the turn, and the turn ends waiting on it (round 4, astra)', async () => {
+    const session = sessionWithChunkLeft();
+    const deps = createDeps(session, quietStream());
+
+    const result = await new StreamExecutor(deps).execute(params(session));
+
+    expect(session.actionPanel.waitingForChoice).toBe(true);
+    expect(states(deps).at(-1)).toBe('waiting');
+    expect(result.turnCollector?.getResult().hasPendingChoice).toBe(true);
+  });
+
+  it('answered while the turn runs: the turn ends idle', async () => {
+    const session = sessionWithChunkLeft();
+    const deps = createDeps(session, quietStream());
+    deps.claudeHandler.streamAgentEvents.mockImplementation(() =>
+      runAgentStreamFromSdk(
+        (async function* () {
+          yield { type: 'assistant', message: { content: [{ type: 'text', text: 'working' }] } };
+          answerPath(session)(); // chunk B answered (the dashboard) mid-turn
+          yield { type: 'result', subtype: 'success', total_cost_usd: 0, usage: {} };
+        })() as any,
+        { calculateTokenCost: () => 0 },
+      ),
+    );
+
+    const result = await new StreamExecutor(deps).execute(params(session));
+
+    expect(session.actionPanel.waitingForChoice).toBe(false);
+    expect(states(deps).at(-1)).toBe('idle');
+    expect(result.turnCollector?.getResult().hasPendingChoice).toBe(false);
+  });
+
+  it('a bit up with no P3 record (a legacy question) is not carried: the turn starts it closed, as before', async () => {
+    const session = sessionWithChunkLeft();
+    session.actionPanel.pendingChoice = undefined;
+    const deps = createDeps(session, quietStream());
+
+    await new StreamExecutor(deps).execute(params(session));
+
+    expect(states(deps).at(-1)).toBe('idle');
+  });
+});
+
 describe('end of turn after ASK_USER_QUESTION', () => {
   afterEach(() => {
     vi.clearAllMocks();

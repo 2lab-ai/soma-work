@@ -96,6 +96,15 @@ export function isAnswerableFromDashboard(
 }
 
 /**
+ * #1474 — nothing on the session waits for an answer: no recorded question, no open bit, no choice record. The record
+ * is saved with the session, so this holds across a restart (the remembered answered cards do not).
+ */
+function nothingOpen(session: ConversationSession): boolean {
+  const panel = session.actionPanel;
+  return !panel?.pendingQuestion && panel?.waitingForChoice !== true && !panel?.pendingChoice;
+}
+
+/**
  * #1070 — an admin answering a question the model asked for admins (`audience: 'admins'`): the answer is the
  * admin's to give, so it is not held for the session owner.
  */
@@ -221,18 +230,9 @@ export class ChoiceActionHandler {
       // #1474 — a legacy card (no turn on its buttons) answers the question open on the session, or nothing: with no
       // question, bit or record left, the question it asked was answered (the record survives a restart; the
       // remembered cards do not) — a click now would be a second answer (round 3, astra).
-      const panel = session?.actionPanel;
-      if (
-        session &&
-        branch === 'legacy' &&
-        !panel?.pendingQuestion &&
-        panel?.waitingForChoice !== true &&
-        !panel?.pendingChoice
-      ) {
+      if (session && branch === 'legacy' && nothingOpen(session)) {
         this.logger.info('Legacy choice click refused — no question is open on the session', { sessionKey });
-        if (channel && userId) {
-          await this.ctx.slackApi.postEphemeral(channel, userId, NO_OPEN_QUESTION_TEXT).catch(() => undefined);
-        }
+        await this.tellNothingOpen(channel, userId);
         return;
       }
 
@@ -554,6 +554,8 @@ export class ChoiceActionHandler {
 
     const targetMessageTs = this.resolveChoiceSyncMessageTs(pendingForm.sessionKey, messageTs, pendingForm.messageTs);
     for (const targetTs of targetMessageTs) {
+      // #1474 — answered while an earlier edit waited: the rest would draw the answered form open again (round 4, grok).
+      if (!this.formStore.get(pendingForm.formId) || this.wasAnswered(pendingForm.sessionKey, pendingForm.formId)) return;
       try {
         await this.ctx.slackApi.updateMessage(
           channel,
@@ -1034,8 +1036,9 @@ export class ChoiceActionHandler {
       throw new Error('Session has no pending multi-choice question');
     }
 
-    // Validate all questions are answered
-    const questions = pendingQ.questions;
+    // #1474 — a split form some chunks of which were answered from Slack: only the chunks still open are the question
+    // now. Those answered are not asked, checked or sent again (round 4, astra).
+    const questions = this.openQuestionsOf(session, pendingQ.questions);
     for (const q of questions) {
       const sel = selections[q.id];
       if (!sel || !sel.choiceId || !sel.label) {
@@ -1134,6 +1137,23 @@ export class ChoiceActionHandler {
   }
 
   /**
+   * #1474 — the questions of a multi-choice still to answer: with a P3 record of a split form, those of the chunks it
+   * still holds (their forms); otherwise all of them.
+   */
+  private openQuestionsOf<Q extends { id: string }>(session: ConversationSession, questions: Q[]): Q[] {
+    const record = session.actionPanel?.pendingChoice;
+    if (record?.kind !== 'multi') return questions;
+    const open = new Set<string>();
+    for (const formId of record.formIds) {
+      const form = this.formStore.get(formId);
+      if (!form) return questions; // a form we cannot read: ask everything, as before
+      for (const q of form.questions) open.add(q.id);
+    }
+    const left = questions.filter((q) => open.has(q.id));
+    return left.length > 0 ? left : questions;
+  }
+
+  /**
    * Take a dashboard answer: the session moves to `working` before the
    * handler's first await, so a second submission of the same question —
    * a double click, or the card and the recommended button together — finds
@@ -1203,6 +1223,12 @@ export class ChoiceActionHandler {
           .updateMessage(channel, targetTs, args.completedText, args.completedBlocks, [])
           .catch((error: unknown) => this.logger.warn('Failed to update choice message', { targetTs, error }));
       }
+      return;
+    }
+    // #1474 — as a legacy button: a typed answer with no question open on the session answers nothing (round 4, fable).
+    if (nothingOpen(session)) {
+      this.logger.info('Typed answer refused — no question is open on the session', { sessionKey });
+      await this.tellNothingOpen(channel, userId);
       return;
     }
     const hold = this.holdAnswer(sessionKey, session);
@@ -1539,9 +1565,19 @@ export class ChoiceActionHandler {
     return true;
   }
 
+  private async tellNothingOpen(channel: string | undefined, userId: string | undefined): Promise<void> {
+    if (!channel || !userId) return;
+    await this.ctx.slackApi.postEphemeral(channel, userId, NO_OPEN_QUESTION_TEXT).catch(() => undefined);
+  }
+
   private async tellAnswered(channel: string | undefined, userId: string | undefined): Promise<void> {
     if (!channel || !userId) return;
     await this.ctx.slackApi.postEphemeral(channel, userId, ANSWER_TAKEN_TEXT).catch(() => undefined);
+  }
+
+  /** #1474 — is any of these cards or forms of the session already answered? (`FormActionHandler` asks too.) */
+  isAnswered(sessionKey: string, ...marks: (string | undefined)[]): boolean {
+    return this.wasAnswered(sessionKey, ...marks);
   }
 
   private wasAnswered(sessionKey: string, ...marks: (string | undefined)[]): boolean {

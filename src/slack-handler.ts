@@ -373,7 +373,9 @@ const FOLLOWUP_RESTART_SWEEP_DELAYS_MS: readonly number[] = [150_000, 10 * 60_00
  * an inline `%` directive, or the `!` abort/steer marker again.
  */
 function isVerbatimPrompt(event: MessageEvent): boolean {
-  return event.routeContext?.verbatimPrompt === true;
+  // #1474 — so is an answer to the model's question (a choice, a typed direct input): the person's words to the model,
+  // never `help`, a `%` directive or the `!` stop (round 4, astra).
+  return event.routeContext?.verbatimPrompt === true || event.questionAnswer === true;
 }
 
 /**
@@ -5351,6 +5353,55 @@ export class SlackHandler {
     throw new AnswerNotKeptError(reason);
   }
 
+  /**
+   * #1474 — is this queued message the person's answer to the question open on the session? The person's own word
+   * reaching the session answers it (#911, `userWord` in `processMessage`); queued behind the turn that asked, it used to
+   * answer it only when dispatched — and the turn, ending meanwhile on the still-open question, halted the line it
+   * waited in (`awaiting user choice`), with the answer stuck behind its own question (round 4, astra). So it is
+   * recorded when it is stored, as every other answer is. Not a host turn, not `/compact`, not an answer the answer
+   * handler already recorded.
+   */
+  private answersOpenQuestion(sessionKey: string, event: MessageEvent): boolean {
+    if (event.questionAnswer === true || event.synthetic || event.routeContext?.hostTurn === true) return false;
+    if (shouldForwardAsLocalSlashCommand((event.text ?? '').trim(), false)) return false;
+    const panel = this.claudeHandler.getSessionByKey?.(sessionKey)?.actionPanel;
+    return panel?.waitingForChoice === true || panel?.pendingQuestion !== undefined;
+  }
+
+  /**
+   * #1474 — the record of a typed answer, synchronously with its store: the question leaves the session (open bit,
+   * recorded question, choice record), so the turn that asked does not end waiting on it, and a drain its end halted
+   * opens again. The thread header is redrawn on its own.
+   */
+  private recordTypedAnswer(sessionKey: string): void {
+    const session = this.claudeHandler.getSessionByKey?.(sessionKey);
+    const panel = session?.actionPanel;
+    if (!panel) return;
+    panel.waitingForChoice = false;
+    panel.pendingQuestion = undefined;
+    panel.pendingChoice = undefined;
+    panel.choiceMessageTs = undefined;
+    panel.choiceMessageLink = undefined;
+    panel.choiceBlocks = undefined;
+    try {
+      this.claudeHandler.getSessionRegistry?.()?.persistAndBroadcast?.(sessionKey);
+    } catch (error) {
+      this.logger.debug('recordTypedAnswer: persistAndBroadcast failed', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
+    this.reopenDrainAfterAnswer(sessionKey);
+    if (session) {
+      void this.threadPanel?.updatePanel?.(session, sessionKey)?.catch?.((error: unknown) =>
+        this.logger.debug('recordTypedAnswer: header redraw failed', {
+          sessionKey,
+          error: (error as Error)?.message ?? String(error),
+        }),
+      );
+    }
+  }
+
   private async enqueueFollowup(sessionKey: string, event: MessageEvent, say: any): Promise<void> {
     // #1466 (review on #1468) — behind a running turn: the follow-up queue's rows say what happens to it from here.
     noteInstructionStage(sessionKey, event.dashboardClientRef, 'followup');
@@ -5378,9 +5429,15 @@ export class SlackHandler {
       return;
     }
 
+    // #1474 — the person's own word while the model's question is open is its answer (#911), taken when it is stored.
+    const answers = this.answersOpenQuestion(sessionKey, event);
     let result: ReturnType<FollowupQueue['enqueue']>;
     try {
-      result = queue.enqueue(sessionKey, event, this.captureFollowupContext(event));
+      result = queue.enqueue(
+        sessionKey,
+        answers ? { ...event, questionAnswer: true } : event,
+        this.captureFollowupContext(event),
+      );
     } catch (error) {
       const detail = (error as Error)?.message ?? String(error);
       this.logger.error('Follow-up enqueue failed — message NOT stored', { sessionKey, error: detail });
@@ -5429,6 +5486,7 @@ export class SlackHandler {
     }
     // Stored: the message will run behind the turn in flight (#853 — a host waiting on it hears so).
     this.noteTurnAccepted(event.channel, event.ts);
+    if (answers) this.recordTypedAnswer(sessionKey);
 
     // #1474 — from here an answer to the model's question is kept: it is in the queue. A failure on the way (a Slack
     // paint, a notice) is not the answer's, and must not read as an answer the queue did not keep — its handler would
@@ -5981,6 +6039,8 @@ export class SlackHandler {
    * without a command router keeps its pre-steering behavior.
    */
   private isSteerableText(event: MessageEvent): boolean {
+    // #1474 — an answer to the model's question is plain words for the turn that asked it (never a command).
+    if (event.questionAnswer === true) return true;
     // A goal's opening turn is its own turn: pushed into the running turn, the
     // new goal's first instruction would be answered as part of whatever that
     // turn was doing. Verbatim objectives AND the non-verbatim `$skill` opening

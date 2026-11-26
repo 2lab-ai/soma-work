@@ -93,6 +93,7 @@ describe('FormActionHandler', () => {
       threadTs: 'thread-root',
       actionPanel: {
         choiceMessageTs: 'thread-choice-message-ts',
+        waitingForChoice: true,
       },
     });
 
@@ -262,6 +263,39 @@ describe('FormActionHandler — P3 (PHASE>=3) classifyClick', () => {
       { slackApi, claudeHandler, messageHandler, threadPanel } as any,
       formStore,
       choiceHandler as any,
+    );
+  });
+
+  // #1474 round 4 (fable): as a legacy button, a typed answer with nothing open on the session answers nothing.
+  it('a typed answer on a legacy card with no question open on the session is told so, and not sent', async () => {
+    claudeHandler.getSessionByKey.mockReturnValue({
+      channelId: 'C1',
+      threadRootTs: 'tr',
+      threadTs: 'tr',
+      actionPanel: {},
+    });
+
+    await handler.handleCustomInputSubmit(
+      { user: { id: 'U1' } },
+      {
+        private_metadata: JSON.stringify({
+          sessionKey,
+          question: 'Q',
+          channel: 'C1',
+          messageTs: 'msg-old',
+          threadTs: 'tr',
+          type: 'single',
+        }),
+        state: { values: { custom_input_block: { custom_input_text: { value: 'hello' } } } },
+      },
+    );
+
+    expect(messageHandler).not.toHaveBeenCalled();
+    expect(slackApi.updateMessage).not.toHaveBeenCalled();
+    expect(slackApi.postEphemeral).toHaveBeenCalledWith(
+      'C1',
+      'U1',
+      expect.stringContaining('더 이상 열려 있지 않습니다'),
     );
   });
 

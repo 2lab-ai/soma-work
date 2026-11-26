@@ -1496,6 +1496,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
      * failed to post, a plain-text fallback went out) is still unanswered.
      */
     let choiceRegistered = false;
+    /**
+     * #1474 — a question open on the session (its bit up, its P3 record held) when this turn started, which this turn
+     * did not ask: the rest of a split form whose answered chunk started this turn, or a host turn's (#854). It stays
+     * open across the turn, and the turn ends waiting on it unless it is answered meanwhile.
+     */
+    let carriedChoice = false;
     let toolContinuation: Continuation | undefined;
     const requestStartedAt = new Date();
     const contextUsagePercentBefore = this.getCurrentContextUsagePercent(session.usage);
@@ -1702,6 +1708,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         });
       }
       this.setActivity(session, sessionKey, channel, threadTs, 'working');
+      carriedChoice = session.actionPanel?.waitingForChoice === true && session.actionPanel?.pendingChoice !== undefined;
       // Epoch-scoped like every other status write on this turn (#688): a
       // superseded turn's late working-state write must not overwrite the
       // newer turn's status.
@@ -1711,7 +1718,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         {
           agentPhase: '생각 중',
           activeTool: undefined,
-          waitingForChoice: false,
+          // #1474 — a carried question keeps its bit (round 4, astra): only this turn's own question starts closed.
+          waitingForChoice: carriedChoice ? undefined : false,
         },
         turnEpochToken,
       );
@@ -3216,7 +3224,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // the asked-this-turn behaviour.
       const askedChoice = Boolean(streamResult.hasUserChoice || toolChoicePending);
       const choiceStillOpen = () =>
-        askedChoice && !(choiceRegistered && session.actionPanel?.waitingForChoice === false);
+        (askedChoice && !(choiceRegistered && session.actionPanel?.waitingForChoice === false)) ||
+        (carriedChoice && session.actionPanel?.waitingForChoice === true);
       let hasPendingChoice = choiceStillOpen();
       const finalStatus = hasSdkError ? 'error' : hasPendingChoice ? 'waiting' : 'completed';
       if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
@@ -3247,7 +3256,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             // A registered open choice already has its bit up. Re-writing `true`
             // here would re-open an answer that lands during this write, so
             // only an unregistered choice (or a cleared one) is written.
-            waitingForChoice: hasPendingChoice && choiceRegistered ? undefined : hasPendingChoice,
+            waitingForChoice: hasPendingChoice && (choiceRegistered || carriedChoice) ? undefined : hasPendingChoice,
           },
           turnEpochToken,
         );
