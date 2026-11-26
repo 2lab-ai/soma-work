@@ -334,6 +334,35 @@ describe('ChoiceActionHandler — recorded, handed on, then drawn (#1474)', () =
     expect(messageHandler).toHaveBeenLastCalledWith(expect.objectContaining({ text: '2' }), expect.any(Function));
   });
 
+  // #1474 round 12 (astra): a typed reply answered the question (it waits in the person's line, or in the thread's
+  // follow-up queue): a legacy form of that question — no turn id to call it stale — is no second answer.
+  it('after a typed answer takes the question’s forms, a submit on a legacy form is refused as answered', async () => {
+    formStore.set('form-1', {
+      formId: 'form-1',
+      sessionKey: KEY,
+      channel: 'C1',
+      threadTs: 'root',
+      messageTs: 'form-ts',
+      questions: [{ id: 'q1', question: '어느 쪽?', choices: [{ id: 'R', label: '오른쪽' }] }],
+      selections: { q1: { choiceId: 'R', label: '오른쪽' } },
+      createdAt: Date.now(),
+    });
+    session.actionPanel = { waitingForChoice: false }; // the typed answer closed the question
+
+    expect(handler.takeAnsweredForms(KEY)).toBe(1);
+    expect(formStore.get('form-1')).toBeUndefined();
+
+    await handler.handleFormSubmit({
+      actions: [{ value: JSON.stringify({ formId: 'form-1', sessionKey: KEY }) }],
+      user: { id: 'U1' },
+      channel: { id: 'C1' },
+      message: { ts: 'form-ts' },
+    });
+
+    expect(messageHandler).not.toHaveBeenCalled();
+    expect(slackApi.postEphemeral).toHaveBeenCalledWith('C1', 'U1', expect.stringContaining('이미 답변을 받았습니다'));
+  });
+
   it('a given-back form answer puts the form back in the store and its message gets its buttons back', async () => {
     formStore.set('form-1', {
       formId: 'form-1',

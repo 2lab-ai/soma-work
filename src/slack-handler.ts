@@ -3205,6 +3205,8 @@ export class SlackHandler {
       if (answersWithWords && sessionResult.session.actionPanel?.pendingQuestion) {
         sessionResult.session.actionPanel.pendingQuestion = undefined;
       }
+      // #1474 — and the question's forms are answered with it: a submit on one is no second answer.
+      if (answersWithWords && hasPendingChoice) this.takeAnsweredForms(sessionResult.sessionKey);
       // #911 — and the drain the question paused reopens with it.
       if (userWord) {
         this.reopenDrainAfterAnswer(sessionResult.sessionKey);
@@ -5401,6 +5403,15 @@ export class SlackHandler {
     }
   }
 
+  /** #1474 — a typed reply answered the session's question: its forms leave the store, remembered answered. */
+  private takeAnsweredForms(sessionKey: string): void {
+    try {
+      this.actionHandlers?.takeAnsweredForms?.(sessionKey);
+    } catch (error) {
+      this.logger.debug('takeAnsweredForms failed', { sessionKey, error: (error as Error)?.message ?? String(error) });
+    }
+  }
+
   /**
    * #1474 — the record of a typed answer, synchronously with its store: the question leaves the session (open bit,
    * recorded question, choice record), so the turn that asked does not end waiting on it, and a drain its end halted
@@ -5416,6 +5427,7 @@ export class SlackHandler {
     panel.choiceMessageTs = undefined;
     panel.choiceMessageLink = undefined;
     panel.choiceBlocks = undefined;
+    this.takeAnsweredForms(sessionKey);
     // As a dispatched reply's record does (`processMessage`): the session works on — the reply waits behind its turn.
     // A reply that waits in the person's task line instead (no turn runs in its thread) leaves the session idle.
     this.claudeHandler.setActivityStateByKey?.(sessionKey, activity);

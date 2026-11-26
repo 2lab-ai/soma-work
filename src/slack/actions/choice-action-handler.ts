@@ -1583,6 +1583,23 @@ export class ChoiceActionHandler {
   }
 
   /**
+   * #1474 — a typed reply answered the session's question (`SlackHandler.recordTypedAnswer`, or its dispatch): the
+   * question's forms leave the store and are remembered answered, so a submit on one — a legacy form carries no turn
+   * id to call it stale — is refused as answered, not handed on as a second answer (round 12, astra). Only the form
+   * ids are marked: a form's message may be the thread header, which later questions reuse.
+   */
+  takeAnsweredForms(sessionKey: string): number {
+    const forms = [...this.formStore.getFormsBySession(sessionKey).values()];
+    if (forms.length === 0) return 0;
+    this.rememberAnswered(
+      sessionKey,
+      forms.map((form) => form.formId),
+    );
+    for (const form of forms) this.formStore.delete(form.formId);
+    return forms.length;
+  }
+
+  /**
    * #1474 — is any of these cards or forms of the session already answered, or is nothing open on the session any
    * more (a typed reply answered it)? (`FormActionHandler` asks too.)
    */

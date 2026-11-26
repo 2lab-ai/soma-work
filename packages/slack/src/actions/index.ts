@@ -102,6 +102,8 @@ export interface ActionHandlerDelegates {
       userId: string,
     ): Promise<void>;
     handleSubmitRecommendedFromDashboard(sessionKey: string, userId: string): Promise<void>;
+    /** #1474 — a typed reply answered the session's question: its forms leave the store, remembered answered. */
+    takeAnsweredForms?(sessionKey: string): number;
   };
   formHandler: {
     handleCustomInputSingle(body: any, client: any): Promise<void>;
@@ -639,6 +641,11 @@ export class ActionHandlers {
 
   async handleDashboardSubmitRecommended(sessionKey: string, userId: string): Promise<void> {
     return this.delegates.choiceHandler.handleSubmitRecommendedFromDashboard(sessionKey, userId);
+  }
+
+  /** #1474 — a typed reply answered the session's question: its forms are answered too (see `takeAnsweredForms`). */
+  takeAnsweredForms(sessionKey: string): number {
+    return this.delegates.choiceHandler.takeAnsweredForms?.(sessionKey) ?? 0;
   }
 
   getPendingForm(formId: string): PendingChoiceFormData | undefined {
