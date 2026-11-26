@@ -182,7 +182,8 @@ describe('goal state boundary (.prd/40 §6)', () => {
         const code = codeOf(text);
         const at = code.search(/\bcommitGoalChange\(/);
         const inCommit = depth > 0 || at >= 0;
-        if (SAVE_CALL.test(code) && !(PORT.test(code) && inCommit)) out.add(member);
+        // The save itself is matched on the raw line: a call inside a template interpolation still saves.
+        if (SAVE_CALL.test(text) && !(PORT.test(text) && inCommit)) out.add(member);
         const counted = depth > 0 ? code : at >= 0 ? code.slice(at) : '';
         for (const ch of counted) depth += ch === '(' ? 1 : ch === ')' ? -1 : 0;
         if (depth < 0) depth = 0;
@@ -200,6 +201,11 @@ describe('goal state boundary (.prd/40 §6)', () => {
         { member: 'commitThenHelper', text: '    });' },
         // A parenthesis in a string or a comment is not syntax: the call still closes, the next member starts at zero.
         { member: 'literalParen', text: "    commitGoalChange(session, 'goal(', { drive }, { kick });" },
+        { member: 'literalParen', text: '    otherHelper({' },
+        { member: 'literalParen', text: '      saveSessions: () => this.deps.claudeHandler.saveSessions(),' },
+        { member: 'literalParen', text: '    });' },
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: the scanned source line, not a template here
+        { member: 'templateSave', text: '    const label = `saved: ${this.deps.claudeHandler.saveSessions()}`;' },
         { member: 'afterLiteral', text: '      saveSessions: () => this.deps.claudeHandler.saveSessions(),' },
         { member: 'commentParen', text: '    commitGoalChange(session, key, { drive }, { // 1) persistence ports' },
         { member: 'commentParen', text: '      saveSessions: () => this.deps.claudeHandler.saveSessions(),' },
@@ -207,7 +213,7 @@ describe('goal state boundary (.prd/40 §6)', () => {
         { member: 'portElsewhere', text: '      saveSessions: () => this.deps.claudeHandler.saveSessions(),' },
         { member: 'direct', text: '      this.deps.claudeHandler.saveSessions();' },
       ]),
-    ).toEqual(['commitThenHelper', 'afterLiteral', 'portElsewhere', 'direct']);
+    ).toEqual(['commitThenHelper', 'literalParen', 'templateSave', 'afterLiteral', 'portElsewhere', 'direct']);
     const sitesIn = (fileList: string[]): Set<string> =>
       new Set(fileList.flatMap((file) => saveSitesIn(membersOf(file)).map((member) => `${file}#${member}`)));
     const ALLOWED: Record<string, string> = {
