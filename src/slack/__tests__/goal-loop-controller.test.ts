@@ -88,7 +88,6 @@ function makeHarness(opts: {
   const controller = new GoalLoopController({
     registry: {
       getSessionByKey: () => session,
-      getActivityStateByKey: () => 'idle',
       saveSessions: () => {
         saves += 1;
       },
@@ -96,6 +95,7 @@ function makeHarness(opts: {
     requestCoordinator: {
       isRequestActive: () => requestActive,
     },
+    turnHeld: () => requestActive,
     dispatcher,
     injectContinuation: async (event) => {
       injected.push(event);
@@ -811,7 +811,6 @@ describe('GoalLoopController — dashboard visibility of loop steps', () => {
     const controller = new GoalLoopController({
       registry: {
         getSessionByKey: () => session,
-        getActivityStateByKey: () => 'idle',
         saveSessions: () => undefined,
         broadcastSessionUpdate: () => {
           pushes.push({
@@ -822,6 +821,7 @@ describe('GoalLoopController — dashboard visibility of loop steps', () => {
         },
       },
       requestCoordinator: { isRequestActive: () => false },
+      turnHeld: () => false,
       dispatcher,
       injectContinuation: async () => undefined,
       postNotice: async () => undefined,
@@ -1100,8 +1100,9 @@ describe('GoalLoopController — a pause that lands while the continuation notic
     const injected: SyntheticMessageEvent[] = [];
     const notices: string[] = [];
     const controller = new GoalLoopController({
-      registry: { getSessionByKey: () => session, getActivityStateByKey: () => 'idle', saveSessions: () => {} },
+      registry: { getSessionByKey: () => session, saveSessions: () => {} },
       requestCoordinator: { isRequestActive: () => false },
+      turnHeld: () => false,
       dispatcher: async () => JSON.stringify(verdict),
       injectContinuation: async (event) => {
         injected.push(event);
@@ -1292,7 +1293,7 @@ describe('GoalLoopController — the loop gate reads turnHeld and the owner ques
       requestCoordinator: { isRequestActive: () => false },
       turnHeld: () => opts.turnHeld === true,
       holdForTurn: (key: string, cause: string) => held.push([key, cause]),
-      dispatcher: async (args) => {
+      dispatcher: async (args: { userPrompt: string }) => {
         dispatched.push(args.userPrompt);
         return JSON.stringify({ completed: false, reason: 'not yet', remaining: ['x'] });
       },

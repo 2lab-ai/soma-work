@@ -65,6 +65,7 @@ export { GOAL_SUMMARY_PERSIST_MAX };
 
 import { goalStallRollbackOffer, openGoalStall, trackGoalFirstFailure } from './goal-stall';
 import { advanceGoalQueue, formatGoalObjectiveForSlack } from './session-goal';
+import { SessionOccupancy } from './session-occupancy';
 import { announceSessionNotice, recordSessionNotice } from './session-notice';
 
 /** Default ceiling for a single completion eval before it is aborted. */
@@ -119,7 +120,6 @@ export interface GoalLoopLogger {
 /** Session-registry surface the controller needs. */
 export interface GoalLoopRegistry {
   getSessionByKey(sessionKey: string): ConversationSession | undefined;
-  getActivityStateByKey(sessionKey: string): string | undefined;
   saveSessions(): void;
   /**
    * Push the dashboard board. Called after every loop-state change (eval
@@ -146,6 +146,18 @@ export interface GoalLoopRequestCoordinator {
 export interface GoalLoopControllerDeps {
   registry: GoalLoopRegistry;
   requestCoordinator: GoalLoopRequestCoordinator;
+  /**
+   * .prd/39 S1 · D1 — is a turn held here (`SessionOccupancy.turnHeld`): a run preparing or running. The loop gate
+   * reads this, not the display word `activityState`.
+   */
+  turnHeld: (sessionKey: string) => boolean;
+  /**
+   * The gate found the turn held: the drive waits for that turn. The host keeps it for the run's slot release (a
+   * turn that ends with text drives at its end and takes this over), so a run that never starts a turn — a command
+   * answered without one, a preparation a person stopped — still releases the drive. A turn held outside a slot
+   * drives at its own end.
+   */
+  holdForTurn?: (sessionKey: string, cause: GoalLoopTrigger) => void;
   /** Runs the eval dispatch (production: `ClaudeHandler.dispatchOneShot`). */
   dispatcher: GoalEvalDispatcher;
   /**
@@ -369,21 +381,24 @@ export class GoalLoopController {
 
   /** One eval (+ maybe one continuation) for a settled session. */
   private async runOnce(sessionKey: string, cause: GoalLoopTrigger = 'turn'): Promise<void> {
-    const { registry, requestCoordinator, logger } = this.deps;
+    const { registry, logger } = this.deps;
     const session = registry.getSessionByKey(sessionKey);
     const goal = session?.goal;
     if (this.deps.isShuttingDown?.()) {
       logger.info('Goal loop run skipped — the host is shutting down; the restart resumes the goal', { sessionKey });
       return;
     }
-    if (
-      !session ||
-      !shouldRunGoalIdleDriver({
-        goal,
-        requestActive: requestCoordinator.isRequestActive(sessionKey),
-        activityState: registry.getActivityStateByKey(sessionKey),
-      })
-    ) {
+    if (!session) return;
+    const turnHeld = this.deps.turnHeld(sessionKey);
+    if (!shouldRunGoalIdleDriver({ goal, turnHeld, ownerQuestionOpen: SessionOccupancy.ownerQuestionOpen(session) })) {
+      // Held only by the turn: that turn (or its run's release) drives the loop again — never a judge beside it.
+      if (turnHeld && shouldRunGoalIdleDriver({ goal, turnHeld: false, ownerQuestionOpen: false })) {
+        logger.info('Goal loop run held — a turn is starting or running; it drives the loop when it ends', {
+          sessionKey,
+          cause,
+        });
+        this.deps.holdForTurn?.(sessionKey, cause);
+      }
       return;
     }
     const activeGoal = session.goal!;

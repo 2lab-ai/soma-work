@@ -7260,6 +7260,18 @@ export class SlackHandler {
    * (the stop would read as not having worked). Set directly, as `handBackFailedRestartResume` does — the idle
    * transition's hooks (the goal loop, queued cron fires) would start work the person just stopped.
    */
+  /**
+   * .prd/39 S5 — restart recovery hands a session back to idle: the restart pass and the failed-resume hand-off.
+   * Written directly, without the idle transition's hooks (the goal loop's post-drain hook, queued cron fires): the
+   * caller decides what drives the session next (one kick, or nothing for a person's stop). Returns whether the
+   * display changed. The loop gate never reads it (D1).
+   */
+  private releaseRecovered(session: ConversationSession): boolean {
+    if ((session.activityState ?? 'idle') === 'idle') return false;
+    session.activityState = 'idle';
+    return true;
+  }
+
   private releaseStoppedPreparation(sessionKey: string, session: ConversationSession): void {
     // Only a stale `working`: a session waiting on its owner's answer keeps waiting (its NEEDS YOU).
     if (this.requestCoordinator.isRequestActive(sessionKey) || session.activityState !== 'working') return;
@@ -8707,11 +8719,12 @@ export class SlackHandler {
       });
       return;
     }
-    if (this.requestCoordinator.isRequestActive(sessionKey) || this.goalLoopActing?.(sessionKey) === true) return;
+    // .prd/39 A2 — a run in any phase (a person's message holds the slot before its controller exists) or the loop
+    // acting drives the session: nothing to hand back, and nothing to write over it.
+    if (this.occupancy.driven(sessionKey)) return;
     // No turn runs for it: a stale `working` must not stay (#989 review — a session without a goal
     // has no loop to free it, and is left for its user's next message).
-    const wasBusy = live.activityState !== 'idle';
-    if (wasBusy) live.activityState = 'idle';
+    const wasBusy = this.releaseRecovered(live);
     if (live.goal?.status !== 'active') {
       if (wasBusy) {
         this.claudeHandler.saveSessions();
@@ -8829,13 +8842,10 @@ export class SlackHandler {
       // a running session in the done column for its whole turn (2026-11-26, 1795677176.047669). That turn carries
       // the session like a restart resume: not forced idle, not kicked; the loop judges when it settles. The follow-up
       // slot counts too: a dispatch holds it before its controller is set and between legs.
-      const liveTurn = !resumedByRestart && this.occupancy.runPhase(sessionKey) !== 'none';
-      const panel = session.actionPanel;
-      if (
-        !resumedByRestart &&
-        session.activityState === 'waiting' &&
-        (panel?.waitingForChoice === true || panel?.pendingQuestion)
-      ) {
+      // .prd/39 A3 — the loop acting (judging, or injecting its continuation) drives the session too: a second kick
+      // beside it posted "no change" and marked a follow-up resume the loop never made.
+      const liveTurn = !resumedByRestart && this.occupancy.driven(sessionKey);
+      if (!resumedByRestart && SessionOccupancy.ownerQuestionOpen(session)) {
         // Waiting on its user's answer is not a stale turn: no turn has to run
         // for the question to stay open. The answer runs as the user's turn and
         // its idle settle drives the loop. Forcing idle here ran the loop over
@@ -8844,12 +8854,9 @@ export class SlackHandler {
         this.logger.info('Goal resume held after restart — the session is waiting on its question', { sessionKey });
         continue;
       }
-      if (!resumedByRestart && !liveTurn && session.activityState !== 'idle') {
-        // Recovery: treat a stale persisted working state (or a waiting one
-        // with no question left) as idle.
-        session.activityState = 'idle';
-        forcedIdle++;
-      }
+      // Recovery: a stale persisted working state (or a waiting one with no question left) reads idle. The loop gate
+      // does not read it (.prd/39 D1) — this is the card's word only.
+      if (!resumedByRestart && !liveTurn && this.releaseRecovered(session)) forcedIdle++;
       // A turn the restart cut short never finished, so it does not spend the
       // continuation budget — otherwise every deploy costs each running goal
       // one of its turns, and a goal cut on its last one resumes straight into
@@ -9210,6 +9217,24 @@ export class SlackHandler {
    * no request running and no follow-up dispatch slot held, under the thread's key or the key a bot-thread
    * migration moved its slot to — the same fence `handleMessage` applies to a synthetic event.
    */
+  /** .prd/39 S1 · D1 — the goal loop gate's question: is a turn preparing or running here. */
+  isTurnHeld(sessionKey: string): boolean {
+    return this.occupancy.turnHeld(sessionKey);
+  }
+
+  /**
+   * The goal loop gate found the turn held (.prd/39 S4 — a judge that waits for the slot release). A run holding the
+   * slot drives the loop at its release: its turn end with text takes this over at once
+   * (`handleAssistantTurnCompleteForGoal`), and a run that never starts a turn — a command answered without one, a
+   * preparation a person stopped — still releases it. A kick stays a kick. A turn held outside a slot drives the loop
+   * at its own end.
+   */
+  holdGoalDriverForTurn(sessionKey: string, cause: 'turn' | 'kick'): void {
+    if (!this.occupancy.slotHeld(sessionKey)) return;
+    (this.followupSlotHeldGoalSessions ??= new Set<string>()).add(sessionKey);
+    if (cause === 'kick') (this.goalDriverKickOnRelease ??= new Set<string>()).add(sessionKey);
+  }
+
   isHostTurnFree(channel: string, threadTs?: string): boolean {
     const sessionKey = this.resolveFollowupSessionKey({ channel, thread_ts: threadTs, ts: threadTs } as MessageEvent);
     if (!sessionKey) return false;

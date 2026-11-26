@@ -158,7 +158,7 @@ describe('shouldRunGoalIdleDriver — a stalled goal waits for the user', () => 
     const goal = makeGoal({
       stall: { stallId: 's1', stalledAt: 1, reason: 'r', actions: ['a', 'b', 'c'], confidence: 0.99 },
     });
-    expect(shouldRunGoalIdleDriver({ goal, requestActive: false, activityState: 'idle' })).toBe(false);
+    expect(shouldRunGoalIdleDriver({ goal, turnHeld: false, ownerQuestionOpen: false })).toBe(false);
   });
 });
 
@@ -206,10 +206,10 @@ function makeHarness(
   const controller = new GoalLoopController({
     registry: {
       getSessionByKey: () => session,
-      getActivityStateByKey: () => 'idle',
       saveSessions: () => undefined,
     },
     requestCoordinator: { isRequestActive: () => false },
+    turnHeld: () => false,
     dispatcher: async ({ userPrompt }) => {
       prompts.push(userPrompt);
       if (failures++ < (opts.failFirst ?? 0)) throw new Error('eval transport down');

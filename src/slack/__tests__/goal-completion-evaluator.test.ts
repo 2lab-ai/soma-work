@@ -296,65 +296,29 @@ describe('decideGoalEvalOutcome', () => {
  */
 describe('shouldRunGoalIdleDriver', () => {
   const activeGoal = (over: Partial<SessionGoal> = {}): SessionGoal => makeGoal({ status: 'active', ...over });
+  const free = { turnHeld: false, ownerQuestionOpen: false };
 
-  it('runs when goal active, no pending eval, no active request, idle', () => {
-    expect(
-      shouldRunGoalIdleDriver({
-        goal: activeGoal({ pendingEval: undefined }),
-        requestActive: false,
-        activityState: 'idle',
-      }),
-    ).toBe(true);
+  it('runs when the goal is active, no eval is in flight, no turn is held and no owner question is open', () => {
+    expect(shouldRunGoalIdleDriver({ goal: activeGoal({ pendingEval: undefined }), ...free })).toBe(true);
   });
 
-  it('does NOT run while a request is active (live work turn — never supersede)', () => {
-    expect(
-      shouldRunGoalIdleDriver({
-        goal: activeGoal({ pendingEval: undefined }),
-        requestActive: true,
-        activityState: 'idle',
-      }),
-    ).toBe(false);
+  it('does NOT run while a turn is held — preparing or running (never judge beside it, never supersede it)', () => {
+    expect(shouldRunGoalIdleDriver({ goal: activeGoal(), turnHeld: true, ownerQuestionOpen: false })).toBe(false);
   });
 
-  it('does NOT run when activity state is not idle (working/waiting)', () => {
-    expect(
-      shouldRunGoalIdleDriver({
-        goal: activeGoal({ pendingEval: undefined }),
-        requestActive: false,
-        activityState: 'working',
-      }),
-    ).toBe(false);
-    expect(
-      shouldRunGoalIdleDriver({
-        goal: activeGoal({ pendingEval: undefined }),
-        requestActive: false,
-        activityState: 'waiting',
-      }),
-    ).toBe(false);
+  it('does NOT run while the owner is being asked (their answer runs as a turn that drives the loop)', () => {
+    expect(shouldRunGoalIdleDriver({ goal: activeGoal(), turnHeld: false, ownerQuestionOpen: true })).toBe(false);
   });
 
   it('does NOT run when an eval is already in flight (pendingEval set)', () => {
     expect(
-      shouldRunGoalIdleDriver({
-        goal: activeGoal({ pendingEval: { requestedAt: 1, turnId: 't' } }),
-        requestActive: false,
-        activityState: 'idle',
-      }),
+      shouldRunGoalIdleDriver({ goal: activeGoal({ pendingEval: { requestedAt: 1, turnId: 't' } }), ...free }),
     ).toBe(false);
   });
 
   it('does NOT run when no goal / goal not active', () => {
-    expect(shouldRunGoalIdleDriver({ goal: undefined, requestActive: false, activityState: 'idle' })).toBe(false);
-    expect(
-      shouldRunGoalIdleDriver({ goal: activeGoal({ status: 'paused' }), requestActive: false, activityState: 'idle' }),
-    ).toBe(false);
-    expect(
-      shouldRunGoalIdleDriver({
-        goal: activeGoal({ status: 'complete' }),
-        requestActive: false,
-        activityState: 'idle',
-      }),
-    ).toBe(false);
+    expect(shouldRunGoalIdleDriver({ goal: undefined, ...free })).toBe(false);
+    expect(shouldRunGoalIdleDriver({ goal: activeGoal({ status: 'paused' }), ...free })).toBe(false);
+    expect(shouldRunGoalIdleDriver({ goal: activeGoal({ status: 'complete' }), ...free })).toBe(false);
   });
 });

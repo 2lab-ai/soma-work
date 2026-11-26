@@ -48,13 +48,13 @@ function makeHarness(
   const controller = new GoalLoopController({
     registry: {
       getSessionByKey: () => session,
-      getActivityStateByKey: () => 'idle',
       saveSessions: vi.fn(),
       broadcastSessionUpdate: () => {
         broadcasts.push(goal.capDmPendingAt);
       },
     },
     requestCoordinator: { isRequestActive: () => false },
+    turnHeld: () => false,
     dispatcher: async () => JSON.stringify({ completed: false, reason: 'still going', remaining: ['do X'] }),
     injectContinuation: async () => undefined,
     postNotice: async (_c, _t, text) => {

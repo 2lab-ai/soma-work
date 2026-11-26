@@ -71,6 +71,7 @@ import { type ArchivedSession, getArchiveStore, type SessionLifecycleOutcome } f
 import { buildLegacySessionKey, buildWorkSessionKey, normalizeSessionKey } from './session-identity';
 import { getSessionLifecyclePolicy, idleSinceMs, isSessionLifecyclePolicyDegraded } from './session-lifecycle-policy';
 import { DEFAULT_AUTO_HANDOFF_BUDGET } from './slack/handoff-budget';
+import { SessionOccupancy } from './slack/session-occupancy';
 import {
   creditActiveGoalMs,
   migrateLegacyGoal,
@@ -627,6 +628,15 @@ export interface IncidentResultOwed {
   channelId: string;
   threadTs?: string;
   attemptId: string;
+}
+
+/**
+ * .prd/39 S5 — the display word a loaded session starts with, read off its recovery record: the run the boot
+ * resumes is working, an open question is waiting, anything else is idle. The disk's own word stays in the record.
+ */
+export function loadedActivityState(record: { resumePending: boolean; questionOpen: boolean }): ActivityState {
+  if (record.resumePending) return 'working';
+  return record.questionOpen ? 'waiting' : 'idle';
 }
 
 /**
@@ -4754,6 +4764,7 @@ export class SessionRegistry {
           }
         }
 
+        let resumeOnBoot = false;
         // Decide whether to enqueue this session for restart/crash recovery.
         //
         // Priority 1 — graceful-shutdown marker (`shutdownNotificationSent`).
@@ -4781,7 +4792,7 @@ export class SessionRegistry {
             sessionKey: derivedKey,
             title: serialized.title,
             workflow: serialized.workflow,
-            shouldAutoResume: !sleptOnLoad && serialized.wasWorkingAtShutdown === true && !personStopped,
+            shouldAutoResume: (resumeOnBoot = !sleptOnLoad && serialized.wasWorkingAtShutdown === true && !personStopped),
             ...(stoppedAgents.length > 0 ? { stoppedAgents } : {}),
           });
         } else if (!sleptOnLoad && serialized.activityState && serialized.activityState !== 'idle') {
@@ -4794,10 +4805,18 @@ export class SessionRegistry {
             sessionKey: derivedKey,
             title: serialized.title,
             workflow: serialized.workflow,
-            shouldAutoResume: serialized.activityState === 'working' && !stoppedByPerson,
+            shouldAutoResume: (resumeOnBoot = serialized.activityState === 'working' && !stoppedByPerson),
             ...(stoppedAgents.length > 0 ? { stoppedAgents } : {}),
           });
         }
+        // .prd/39 S5 · D3 · D16 — the recovery record above keeps the disk's word; the display comes from the record.
+        // A session the boot resumes reads working (cron and the user-task queue stay off it until its resume turn
+        // takes over); a session whose question is open reads waiting; every other one reads idle. Crash recovery
+        // resumes neither an incident thread nor a safeguards-halted one. No goal or loop code reads this word.
+        session.activityState = loadedActivityState({
+          resumePending: resumeOnBoot && !session.incidentRequest && !session.safeguardHalt,
+          questionOpen: SessionOccupancy.ownerQuestionOpen(session),
+        });
       }
 
       this.logger.info(`Loaded ${loaded} sessions from file (${sessionsArray.length - loaded} expired)`);

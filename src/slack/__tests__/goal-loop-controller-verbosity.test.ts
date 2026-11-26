@@ -62,8 +62,9 @@ function makeHarness(opts: {
   const injected: SyntheticMessageEvent[] = [];
 
   const deps: GoalLoopControllerDeps = {
-    registry: { getSessionByKey: () => session, getActivityStateByKey: () => 'idle', saveSessions: vi.fn() },
+    registry: { getSessionByKey: () => session, saveSessions: vi.fn() },
     requestCoordinator: { isRequestActive: () => false },
+    turnHeld: () => false,
     dispatcher: async () => JSON.stringify(opts.verdict),
     injectContinuation: async (event) => {
       injected.push(event);
