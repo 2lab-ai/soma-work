@@ -3190,6 +3190,9 @@ export class SlackHandler {
       // Words answer a question; a file alone does not (round 6, grok — as `answersOpenQuestion`).
       const answersWithWords = userWord && !answerRecorded && effectiveText.trim().length > 0;
       const hasPendingChoice = sessionResult.session.actionPanel?.waitingForChoice === true;
+      // #1474 — the question's forms are answered with it, before any Slack write: while the panel's redraw waits in
+      // Slack's line, a submit on one is no second answer (round 12/13, astra).
+      if (hasPendingChoice && answersWithWords) this.takeAnsweredForms(sessionResult.sessionKey);
       if (hasPendingChoice && answersWithWords) {
         await this.threadPanel?.clearChoice(sessionResult.sessionKey);
         // Treat direct user message as completing manual input from choice UI.
@@ -3205,8 +3208,6 @@ export class SlackHandler {
       if (answersWithWords && sessionResult.session.actionPanel?.pendingQuestion) {
         sessionResult.session.actionPanel.pendingQuestion = undefined;
       }
-      // #1474 — and the question's forms are answered with it: a submit on one is no second answer.
-      if (answersWithWords && hasPendingChoice) this.takeAnsweredForms(sessionResult.sessionKey);
       // #911 — and the drain the question paused reopens with it.
       if (userWord) {
         this.reopenDrainAfterAnswer(sessionResult.sessionKey);

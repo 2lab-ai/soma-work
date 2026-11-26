@@ -9290,6 +9290,23 @@ describe('SlackHandler — follow-up queue host', () => {
       await first;
     });
 
+    // #1474 round 13 (astra): a typed reply dispatched at once answers the question — its forms are taken before the
+    // panel's redraw waits in Slack's line, so a submit on one meanwhile is no second answer.
+    it('T2 a dispatched typed answer takes the question’s forms before its Slack redraw', async () => {
+      registrySession.activityState = 'waiting';
+      registrySession.actionPanel = { waitingForChoice: true, pendingQuestion: singleQuestion() };
+      const redraw = deferred<void>();
+      handlerAny.threadPanel.clearChoice = vi.fn(() => redraw.promise);
+      const takeForms = vi.spyOn(handlerAny.actionHandlers, 'takeAnsweredForms');
+
+      const answering = handler.handleMessage(message({ ts: '333.540', text: '왼쪽으로' }), say());
+      await vi.waitFor(() => expect(handlerAny.threadPanel.clearChoice).toHaveBeenCalled());
+
+      expect(takeForms).toHaveBeenCalledWith(SESSION_KEY); // while the redraw still waits
+      redraw.resolve();
+      await answering;
+    });
+
     // #1474 round 6 (grok): a file alone does not answer the question — the person's words do.
     it('T2 a message with only a file leaves the open question open', async () => {
       registrySession.activityState = 'waiting';

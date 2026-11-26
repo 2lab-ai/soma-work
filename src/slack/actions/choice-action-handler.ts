@@ -1589,7 +1589,10 @@ export class ChoiceActionHandler {
    * ids are marked: a form's message may be the thread header, which later questions reuse.
    */
   takeAnsweredForms(sessionKey: string): number {
-    const forms = [...this.formStore.getFormsBySession(sessionKey).values()];
+    // Only forms already posted (`messageTs`): a newer question's form is stored before it is posted and before the
+    // session's panel turns to it — the reply could not have answered what nobody has seen (round 13, fable). The
+    // same rule as `invalidateOldForms`.
+    const forms = [...this.formStore.getFormsBySession(sessionKey).values()].filter((form) => !!form.messageTs);
     if (forms.length === 0) return 0;
     this.rememberAnswered(
       sessionKey,

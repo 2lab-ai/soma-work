@@ -363,6 +363,36 @@ describe('ChoiceActionHandler — recorded, handed on, then drawn (#1474)', () =
     expect(slackApi.postEphemeral).toHaveBeenCalledWith('C1', 'U1', expect.stringContaining('이미 답변을 받았습니다'));
   });
 
+  // #1474 round 13 (fable): a newer question's form is stored before it is posted — a typed reply to the question
+  // before it does not take it.
+  it('a typed answer leaves a form not yet posted (a newer question’s) in the store, not answered', () => {
+    formStore.set('form-old', {
+      formId: 'form-old',
+      sessionKey: KEY,
+      channel: 'C1',
+      threadTs: 'root',
+      messageTs: 'old-ts',
+      questions: [{ id: 'q1', question: '어느 쪽?', choices: [{ id: 'R', label: '오른쪽' }] }],
+      selections: {},
+      createdAt: Date.now(),
+    });
+    formStore.set('form-new', {
+      formId: 'form-new',
+      sessionKey: KEY,
+      channel: 'C1',
+      threadTs: 'root',
+      messageTs: '',
+      questions: [{ id: 'q2', question: '다음은?', choices: [{ id: 'A', label: 'A' }] }],
+      selections: {},
+      createdAt: Date.now(),
+    });
+
+    expect(handler.takeAnsweredForms(KEY)).toBe(1);
+    expect(formStore.get('form-old')).toBeUndefined();
+    expect(formStore.get('form-new')).toBeDefined();
+    expect(handler.isAnswered(KEY, 'form-new')).toBe(false);
+  });
+
   it('a given-back form answer puts the form back in the store and its message gets its buttons back', async () => {
     formStore.set('form-1', {
       formId: 'form-1',
