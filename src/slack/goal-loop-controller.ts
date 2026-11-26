@@ -1216,10 +1216,13 @@ export class GoalLoopController {
     }
     const now = this.now();
     // A goal the loop starts itself (an eval verdict promoted it from the queue, a restart repaired a stranded queue)
-    // has had no opening: its files (the dashboard goal composer's) ride this first continuation, once.
-    const files = !activeGoal.openingFilesSent && activeGoal.openingFiles?.length ? activeGoal.openingFiles : undefined;
-    if (files) {
-      activeGoal.openingFilesSent = true;
+    // has had no opening: what the dashboard goal composer gave it rides this first continuation, once — its files,
+    // and its `$skill` part (the router fires a skill token anywhere in the turn's words).
+    const first = !activeGoal.openingSent;
+    const files = first && activeGoal.openingFiles?.length ? activeGoal.openingFiles : undefined;
+    const skill = first && activeGoal.openingPrompt ? activeGoal.openingPrompt : undefined;
+    if (files || skill) {
+      activeGoal.openingSent = true;
       this.persist();
     }
     const syntheticEvent: SyntheticMessageEvent = {
@@ -1227,7 +1230,7 @@ export class GoalLoopController {
       channel: session.channelId,
       thread_ts: session.threadTs,
       ts: `${now / 1000}`,
-      text: `${GOAL_CONTINUATION_TEXT_PREFIX} ${buildGoalContinuationPrompt(activeGoal, opts)}`,
+      text: `${GOAL_CONTINUATION_TEXT_PREFIX} ${buildGoalContinuationPrompt(activeGoal, opts)}${skill ? `\n\n${skill}` : ''}`,
       synthetic: true,
       skipDispatch: true,
       ...(files ? { files } : {}),

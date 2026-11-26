@@ -8,7 +8,7 @@ argument-hint: <report-input.json> shots=<dir> [title=<text>]
 
 Turn QA results into one HTML file that lets a reviewer re-run every case from the right pane alone. Evidence is embedded (base64 screenshots, raw responses), so the file still works when every server link is dead. The HTML is the only artifact: no PNG preview is rendered or uploaded, because a second file for the same report doubles its entry in the thread and in the dashboard's 산출물 (SSOT 2026-11-09).
 
-Files: [`template.html`](./template.html) holds the layout. The left pane has title, request, KPIs, one row per key, body mentions and excluded PRs; the right pane (sticky) shows the selected key's case blocks. [`scripts/build.mjs`](./scripts/build.mjs) fills the template, and [`scripts/mask.mjs`](./scripts/mask.mjs) is the shared secret masker. Do not run the `local:html` design pipeline (ui-ux, design, Lottie) on it — this is an evidence document and the template is its contract.
+Files: [`template.html`](./template.html) holds the layout. The left pane opens with the summary (`#exec`) — a verdict band, one conclusion sentence (`meta.headline`, or one built from the counts), big numbers, an outcome bar, open preconditions drawn as bars by kind, one case bar per QA'd issue, and what a person must do — so the first screen alone tells a reader most of the result; a long precondition table (over 6 rows) is folded under it. Then preconditions, request, KPIs, one row per key, body mentions and excluded PRs; the right pane (sticky) shows the selected key's case blocks. [`scripts/build.mjs`](./scripts/build.mjs) fills the template, and [`scripts/mask.mjs`](./scripts/mask.mjs) is the shared secret masker. Do not run the `local:html` design pipeline (ui-ux, design, Lottie) on it — this is an evidence document and the template is its contract.
 
 ## Input
 
@@ -18,7 +18,8 @@ Files: [`template.html`](./template.html) holds the layout. The left pane has ti
 { "meta": { "title": "…", "ssot": "<requester's instruction, verbatim>", "repo": "acme/app", "target": "<branch>",
             "range": "<before7>..<after7>", "status": "QA complete | deployed, QA incomplete: <reason>",
             "versionStart": "…", "versionEnd": "…", "generatedAt": "<ISO time>",
-            "notes": ["provenance rule used", "negative-proof notes"], "repoAbbr": { "acme/app": "app" } },
+            "notes": ["provenance rule used", "negative-proof notes"], "repoAbbr": { "acme/app": "app" },
+            "lang": "en | ko", "headline": "<optional conclusion, 1–2 sentences>" },
   "issues": [ "<qa-issue JSON, exactly as returned>" ],
   "links": { "PROJ-123": { "issue": "https://tracker.example.com/browse/PROJ-123",
                            "prs": [{ "repo": "acme/app", "number": 42, "url": "optional" }],
@@ -32,6 +33,7 @@ Files: [`template.html`](./template.html) holds the layout. The left pane has ti
   "excludedPrs": [{ "repo": "acme/app", "number": 44, "reason": "deploy head" }] }
 ```
 
+- `meta.title` is plain words a person reads (what and when); the commit range, version and time already show in the provenance line under it. `meta.lang` `ko` renders the reader-facing words (summary, status tags, table headers, hints) in Korean; evidence text stays as recorded; absent = English. `meta.headline` replaces the built conclusion sentence — write it only from the counts and reasons in this input. Provenance (range, time, commits, verdict lines, request, notes, case ids) carries `data-raw`, and so does the evidence pane, so a first-screen checker reads only the summary words.
 - `issues[]` is read field by field from the `qa-issue` return schema: `verdict`, `reason`, `qaLevel`, `env.{profile,versionStart,versionEnd}`, `deployConfirm.{version,state,provenance}`, `statusTransition`, `trackerComment`, `dmSent`, and per case `id`, `type`, `desc`, `severity`, `status`, `auth.accountRef`, `steps`, `expected`, `actual`, `evidence.reqResp.{method,url,reqBody,status,respRaw}` (one call or an array of calls), and `evidence.shot` (a file path). Pass the JSON through unchanged and never edit a verdict or a case.
 - Row status: `outcomes` is the caller's closeout (deploy-qa writes it for every key). When a key has an outcome, its row status, colour and every count use that outcome and its reason; the raw qa-issue `verdict` and `reason` are shown only as detail.
 - Without an outcome (standalone), the status is derived from the qa-issue JSON:

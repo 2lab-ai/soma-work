@@ -45,6 +45,19 @@ describe('migrateLegacyGoal', () => {
     expect(migrateLegacyGoal(goal)?.status).toBe('paused');
   });
 
+  it('maps #1467’s `openingFilesSent` to `openingSent` (files that already went never go again), without mutating', () => {
+    const goal = { ...makeGoal(), openingFilesSent: true } as SessionGoal & { openingFilesSent?: boolean };
+    const migrated = migrateLegacyGoal(goal) as SessionGoal & { openingFilesSent?: boolean };
+    expect(migrated.openingSent).toBe(true);
+    expect('openingFilesSent' in migrated).toBe(false);
+    expect(goal.openingFilesSent).toBe(true);
+    // A goal saved with both keeps the new field's value.
+    const both = { ...makeGoal({ openingSent: false }), openingFilesSent: true } as SessionGoal;
+    expect(migrateLegacyGoal(both)?.openingSent).toBe(false);
+    // None: nothing added.
+    expect('openingSent' in (migrateLegacyGoal(makeGoal()) as object)).toBe(false);
+  });
+
   it('backfills a stable goalId when missing', () => {
     const goal = { ...makeGoal({ createdAt: 42 }), goalId: undefined } as unknown as SessionGoal;
     const migrated = migrateLegacyGoal(goal);

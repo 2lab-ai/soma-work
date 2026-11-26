@@ -108,7 +108,7 @@ v1의 틱(3 s) · 깨우기 · 정리(15 s) · `statusFor` · `awaitsHost` · `w
 
 - `pinned` 의존(설정의 고정 레인), `views(pinned?)` → `LineQueueView[]`.
 - `manage(id, 'cancel' | 'first' | 'release', by)` → `{ok} | {ok: false, code: UNKNOWN_ENTRY | NOT_WAITING | NOT_RUNNING}`.
-  `cancel`/`release`는 `endEntry(actor: 'admin', reason: 'admin:<by>')`, `release`면 주인 스레드에 `⏹ … (관리자가 돌려놓음)`, 그
+  `cancel`/`release`는 `endEntry(actor: 'admin', reason: 'admin:<by>')`, `release`면 주인 스레드에 `⏹ … (관리자가 차례를 끝냄)`, 그
   뒤 깨우기 · `whenFree` 정리. `first`는 `putFirst`.
 
 ## 6. 사람마다의 줄

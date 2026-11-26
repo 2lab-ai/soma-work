@@ -250,17 +250,37 @@ describe('GoalLoopController', () => {
     expect(h.session.goal?.goalId).toBe('goal-2');
     expect(h.injected).toHaveLength(1);
     expect(h.injected[0].files).toEqual([file]);
-    expect(h.session.goal?.openingFilesSent).toBe(true);
+    expect(h.session.goal?.openingSent).toBe(true);
 
     // Its next continuation (not done yet) carries no files again.
     const again = makeHarness({
       verdict: { completed: false, reason: 'more', remaining: ['x'] },
-      goal: { openingFiles: [file], openingFilesSent: true },
+      goal: { openingFiles: [file], openingSent: true },
     });
     again.controller.onTurnSettled(SESSION_KEY);
     await again.controller.settled(SESSION_KEY);
     expect(again.injected).toHaveLength(1);
     expect(again.injected[0].files).toBeUndefined();
+  });
+
+  it('a promoted goal with a `$skill` from the goal composer: its first continuation carries the skill part, once', async () => {
+    const h = makeHarness({ verdict: { completed: true, reason: 'all done', remaining: [] } });
+    h.session.goalQueue = [
+      makeGoal({ goalId: 'goal-3', objective: '릴리즈 노트', status: 'queued', openingPrompt: '$local:z 릴리즈 노트' }),
+    ];
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(h.injected).toHaveLength(1);
+    expect(h.injected[0].text.startsWith('[goal-continuation]')).toBe(true);
+    expect(h.injected[0].text.endsWith('\n\n$local:z 릴리즈 노트')).toBe(true);
+    expect(h.session.goal?.openingSent).toBe(true);
+    const again = makeHarness({
+      verdict: { completed: false, reason: 'more', remaining: ['x'] },
+      goal: { openingPrompt: '$local:z 릴리즈 노트', openingSent: true },
+    });
+    again.controller.onTurnSettled(SESSION_KEY);
+    await again.controller.settled(SESSION_KEY);
+    expect(again.injected[0].text).not.toContain('$local:z');
   });
 
   it('completed=false under cap → bumps counter, posts 🔄, injects one continuation', async () => {
