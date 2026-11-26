@@ -4590,11 +4590,15 @@ export class SlackHandler {
     // The files the goal was added with (the dashboard's goal composer) ride every opening of THAT goal — started at
     // once, promoted from the queue or resumed — unless the message that set it carries its own.
     const liveGoal = this.claudeHandler.getSessionByKey?.(sessionKey)?.goal;
-    const goalFiles =
-      liveGoal?.goalId === opening.goalId && liveGoal.openingFiles?.length ? liveGoal.openingFiles : undefined;
+    const sameGoal = liveGoal?.goalId === opening.goalId ? liveGoal : undefined;
+    const goalFiles = sameGoal?.openingFiles?.length ? sameGoal.openingFiles : undefined;
     const files = anchor.files?.length ? anchor.files : goalFiles;
+    // The skill a goal composer objective carried (`$skill`): its opening runs it as a command — unless the command
+    // that set the goal split its own.
+    const prompt = opening.prompt ?? sameGoal?.openingPrompt;
     // The loop's continuations need not carry them again (the snapshot a refused admission restores undoes this).
-    if (goalFiles && liveGoal) liveGoal.openingFilesSent = true;
+    if (sameGoal && (goalFiles || (opening.prompt === undefined && sameGoal.openingPrompt)))
+      sameGoal.openingSent = true;
     const openingEvent = {
       type: 'message',
       channel: anchor.channel,
@@ -4603,12 +4607,12 @@ export class SlackHandler {
       user: anchor.user,
       // The objective verbatim — or, for a `goal … $skill` split, the `$skill`
       // part, routed as a command when it runs so the skill is resolved then.
-      text: opening.prompt ?? opening.objective,
+      text: prompt ?? opening.objective,
       ...(anchor.team ? { team: anchor.team } : {}),
       ...(files?.length ? { files } : {}),
       ...(anchor.dashboardClientRef ? { dashboardClientRef: anchor.dashboardClientRef } : {}),
       routeContext:
-        opening.prompt === undefined
+        prompt === undefined
           ? { verbatimPrompt: true, goalOpeningId: opening.goalId }
           : { goalOpeningId: opening.goalId },
     } as MessageEvent;
@@ -9756,7 +9760,12 @@ export class SlackHandler {
     if (!channel || !threadTs) throw new HostGoalActionError(409, 'Session has no Slack thread');
 
     if (request.action === 'add') {
-      const objective = request.objective.trim();
+      const written = request.objective.trim();
+      // A `$skill` in the goal composer's words works as in `goal <objective> $skill`: the goal is the words before it
+      // (all of them when the skill comes first), and the goal's first turn runs the skill part as a command.
+      const split = this.commandRouter?.splitGoalSkill?.(written, actor) ?? null;
+      const objective = split?.goalText ? split.goalText : written;
+      const openingPrompt = split?.skillText || undefined;
       const invalid = validateSessionGoalObjective(objective);
       if (invalid) throw new HostGoalActionError(400, invalid);
       // Whether the goal will START or QUEUE is only known after the anchor
@@ -9814,6 +9823,7 @@ export class SlackHandler {
       );
       // On the goal itself: its opening turn carries them whenever it runs (`admitGoalOpeningTurnOrThrow`).
       if (openingFiles?.length) result.goal.openingFiles = openingFiles;
+      if (openingPrompt) result.goal.openingPrompt = openingPrompt;
       if (!result.activated) {
         // Behind the goal in flight: no opening turn, no epoch bump (the
         // running goal's in-flight eval stays valid, M1).

@@ -436,6 +436,16 @@ export class CommandRouter {
   }
 
   /**
+   * A goal objective written in the dashboard's goal composer, split the way
+   * `goal <objective> $skill` is: the goal (before the first `$skill` token
+   * that resolves) and the skill part, which the goal's opening turn runs as a
+   * command so the skill is resolved then. `null` when no token resolves. Pure.
+   */
+  splitGoalSkill(objective: string, user?: string): { goalText: string; skillText: string } | null {
+    return this.findGoalSkillSplit(objective, user);
+  }
+
+  /**
    * Does this text route to a goal command at all — including the
    * `goal … $skill` split? Pure. The host uses it to dedupe a redelivered
    * Slack event for anything that changes the goal list, whichever path
