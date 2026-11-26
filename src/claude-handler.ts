@@ -41,6 +41,7 @@ import { pumpFrames } from './agent-runtime/frame-pump';
 import { permissionAdviceBoard, resolvePermissionAdvice } from './agent-runtime/policy/permission-advice';
 import type { SafetyClassifier } from './agent-runtime/policy/safety-classifier';
 import { buildSafetyClassifier } from './agent-runtime/policy/safety-classifier-factory';
+import { ResultTransit } from './agent-runtime/result-transit';
 import { readUuidList, STEER_SETTLEMENT_SUBTYPE } from './agent-runtime/steer-settlement';
 import {
   buildInitialUserMessage,
@@ -436,6 +437,13 @@ export const NON_TURN_RESULT_IDLE_MS = 60_000;
  * the grace, the input closes as it did before.
  */
 export const BG_FOLLOWUP_GRACE_MS = 5_000;
+
+/**
+ * #1471 — while a turn result still waits for the host's frame loop, how often
+ * the log says how far behind the host is. A result handled late is logged when
+ * it is handled; this covers the stretch before that, which reached an hour.
+ */
+export const HOST_LAG_WATCH_MS = 60_000;
 
 /**
  * The keepalive cap's hard ceiling, as a multiple of `SOMA_BG_KEEPALIVE_MAX_MS`
@@ -1635,10 +1643,27 @@ export class ClaudeHandler implements TurnSteeringPort {
       //     host is about to cut;
       //   - the CLI handing a steered message to the model: its row is closed
       //     now, not when the consumer gets there.
+      // #1471 — how long each `result` waits for the loop below: the host's lag behind the CLI, in the log.
+      const resultTransit = new ResultTransit();
+      // Armed only while a result waits for the loop: says how far behind the host is before it catches up.
+      let hostLagWatch: NodeJS.Timeout | undefined;
+      const armHostLagWatch = () => {
+        if (hostLagWatch) return;
+        hostLagWatch = setTimeout(() => {
+          hostLagWatch = undefined;
+          const behind = resultTransit.behind();
+          if (behind)
+            this.logger.warn('The host is behind its Claude Code process', { ...behind, sessionKey: steerKey });
+          if (resultTransit.inTransit > 0) armHostLagWatch();
+        }, HOST_LAG_WATCH_MS);
+        hostLagWatch.unref?.();
+      };
       const frames = pumpFrames(queryFrames(activeQuery), (frame) => {
         const raw = frame as unknown as Record<string, unknown>;
         if (raw.type === 'result') {
           channel.holdPushes();
+          resultTransit.arrived();
+          armHostLagWatch();
           return;
         }
         if (!steerKey || raw.type !== 'command_lifecycle' || raw.state !== 'started') return;
@@ -2054,6 +2079,13 @@ export class ClaudeHandler implements TurnSteeringPort {
             // while another result is already in transit (the refusal is
             // kept, and the microtask of that result's processing says it).
             channel.releasePushes();
+            const lag = resultTransit.handled();
+            if (lag) this.logger.warn('A turn result waited for the host', { ...lag, sessionKey: steerKey });
+            // Caught up: nothing waits, so the watch goes (it never holds a timer the turn does not need).
+            if (resultTransit.inTransit === 0 && hostLagWatch) {
+              clearTimeout(hostLagWatch);
+              hostLagWatch = undefined;
+            }
             if (steerKey) {
               queueMicrotask(() => {
                 if (!channel.takeReopened()) return;
@@ -2247,6 +2279,11 @@ export class ClaudeHandler implements TurnSteeringPort {
         }
         disarmNonTurnResultTimer();
         disarmKeepaliveTimers();
+        if (hostLagWatch) clearTimeout(hostLagWatch);
+        // #1471 — every result of the run, fast ones too: the p95 that decides whether turn control leaves the
+        // render path sooner (#1473) is read from these lines, not from the warnings alone.
+        const transit = resultTransit.summary();
+        if (transit) this.logger.info('Turn results handled by the host', { ...transit, sessionKey: steerKey });
         channel.close();
         if (steerKey && this.activeQueries.get(steerKey)?.query === activeQuery) {
           this.activeQueries.delete(steerKey);

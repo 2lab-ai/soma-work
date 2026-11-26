@@ -61,6 +61,7 @@ import {
   BG_FOLLOWUP_GRACE_MS,
   BG_KEEPALIVE_HARD_CEILING_FACTOR,
   ClaudeHandler,
+  HOST_LAG_WATCH_MS,
   KEEPALIVE_BACKSTOP_IDLE_MS,
   KEEPALIVE_REPORT_TURN_MAX_MS,
   NON_TURN_RESULT_IDLE_MS,
@@ -2928,6 +2929,89 @@ describe('ClaudeHandler keepalive cap measures silence, not age (#1039)', () => 
       expect(resultsOf(frames)).toHaveLength(1);
     } finally {
       warn.mockRestore();
+    }
+  });
+});
+
+/**
+ * #1471 — how far the host runs behind its CLI, in the log. A turn result waits
+ * from the moment the read-ahead sees it until the frame loop handles it; for
+ * that whole gap a steer is refused. On a busy host the gap reached an hour and
+ * nothing said so.
+ */
+describe('ClaudeHandler — a turn result that waits for the host is logged (#1471)', () => {
+  const BEHIND_LOG = 'The host is behind its Claude Code process';
+  const WAITED_LOG = 'A turn result waited for the host';
+
+  beforeEach(() => {
+    queryMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function scriptOneTurn(cli: FakeCli, resultSent: Deferred): void {
+    installScriptedQuery(cli, async function* (inputs) {
+      await readOpening(inputs, cli);
+      yield INIT;
+      yield successResult({ result: 'DONE', num_turns: 1, uuid: 'done-uuid', user_message_uuid: cli.opening?.uuid });
+      resultSent.resolve();
+      await watchInputEnd(inputs, cli);
+    });
+  }
+
+  it('says the host is behind while the result waits, then how long it waited', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const resultSent = deferred();
+      scriptOneTurn(cli, resultSent);
+      const turn = startTurn(newHandler());
+
+      // The consumer takes one frame and then renders slowly; the CLI has already sent its result.
+      await turn.next();
+      await resultSent.promise;
+      await vi.advanceTimersByTimeAsync(HOST_LAG_WATCH_MS + 1_000);
+
+      const behind = callsOf(warn, BEHIND_LOG);
+      expect(behind).toHaveLength(1);
+      expect(behind[0][1]).toMatchObject({ stillInTransit: 1, sessionKey: SESSION_KEY });
+
+      const frames = await collect(turn);
+      expect(resultsOf(frames)).toHaveLength(1);
+      const waited = callsOf(warn, WAITED_LOG);
+      expect(waited).toHaveLength(1);
+      const lag = waited[0][1] as { waitedMs: number; stillInTransit: number };
+      expect(lag.waitedMs).toBeGreaterThanOrEqual(HOST_LAG_WATCH_MS);
+      expect(lag.stillInTransit).toBe(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a result the host handles at once warns nothing, leaves no watch behind, and is still counted', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const resultSent = deferred();
+      scriptOneTurn(cli, resultSent);
+
+      const frames = await collect(startTurn(newHandler()));
+      await vi.advanceTimersByTimeAsync(HOST_LAG_WATCH_MS * 2);
+
+      expect(resultsOf(frames)).toHaveLength(1);
+      expect(callsOf(warn, BEHIND_LOG)).toHaveLength(0);
+      expect(callsOf(warn, WAITED_LOG)).toHaveLength(0);
+      const counted = callsOf(info, 'Turn results handled by the host');
+      expect(counted).toHaveLength(1);
+      expect(counted[0][1]).toMatchObject({ count: 1, sessionKey: SESSION_KEY });
+    } finally {
+      warn.mockRestore();
+      info.mockRestore();
     }
   });
 });
