@@ -59,12 +59,18 @@ src/slack/                                ← 호스트. 상태를 돌리고 효
 ### session-occupancy (S1)
 
 ```ts
+type RunPhase = 'none' | 'preparing' | 'running' | 'settling';
 interface SessionOccupancy {
-  turnHeld(key: string): boolean;                 // 슬롯(이동된 슬롯 포함) ∨ 요청 컨트롤러
+  runPhase(key: string): RunPhase;                // 슬롯(이동된 슬롯 포함) + 실행의 턴 시작 · 끝 표시
+  turnHeld(key: string): boolean;                 // runPhase ∈ {preparing, running} ∨ 요청 컨트롤러
   ownerQuestionOpen(session): boolean;            // actionPanel.waitingForChoice ∨ pendingQuestion
-  driven(key: string): boolean;                   // turnHeld ∨ loop.stateOf(key).kind !== 'idle'
+  driven(key: string): boolean;                   // runPhase ≠ none ∨ loop.stateOf(key).kind !== 'idle'
+  // 표시 입력(호스트가 부른다): turnBegan(key, turnEpoch) · turnEnded(key, turnEpoch) — 실행의 턴 세대로 묶는다
 }
 ```
+
+실행 단계는 디스패처의 슬롯(있다/없다)과 실행 세대(`liveTurnEpoch`)에, 호스트의 턴 시작 · 끝 훅이 남기는 표시를 더해 계산한다.
+표시는 세대로 묶여 있어 다음 실행이 같은 세션의 슬롯을 잡으면 저절로 무효가 된다.
 
 부르는 곳: 루프 게이트, 복구 패스 · 인계, 후속 질문, 사용자 작업 큐, 대시보드 "턴이 도는가", 디스패치 펜스. "턴이 도는가"를
 다른 신호로 답하는 코드는 계약 테스트가 막는다(§6).
@@ -144,11 +150,11 @@ WU4가 디스크 모양을 바꾼다. 그 전까지(WU1–WU3)는 옛 필드를 
 
 | WU | 이름 | 범위 | 시나리오 | 위험 · 대응 |
 |---|---|---|---|---|
-| WU1 | 턴 점유 한 곳 | `session-occupancy.ts`; 루프 게이트에서 `activityState` 제거(+ 주인 질문 · `turnHeld`); 로드가 레코드를 만든 뒤 `activityState` 정리(D3); 강제 `idle` 쓰기 4곳 삭제; 슬롯 검사 사본 · `isHostTurnFree` · 복구/인계/멈춤 정리의 신호를 `turnHeld`/`driven`으로 | A1 · A2 · A3(구동 부분) | 게이트 입력이 바뀐다 → 기존 게이트 테스트를 표로 옮겨 같은 결과 확인 |
+| WU1 | 턴 점유 한 곳 | `session-occupancy.ts`(실행 단계 `RunPhase` + 턴 시작 · 끝 표시); 루프 게이트에서 `activityState` 제거(+ 주인 질문 · `turnHeld`); 로드가 레코드를 만든 뒤 `activityState` 정리(D3); 강제 `idle` 쓰기 4곳 삭제; 슬롯 검사 사본 · `isHostTurnFree` · 복구/인계/멈춤 정리의 신호를 `turnHeld`/`driven`으로 | A1 · A2 · A3(구동 부분) | 게이트 입력이 바뀐다 → 기존 게이트 테스트를 표로 옮겨 같은 결과 확인 |
 | WU2 | goal 모델 한 곳 + 단계 읽기 | `goal/model.ts`(타입 이동, 사본 제거) · `goal/phase.ts`(`phaseOf`, 옛 필드에서 계산) · `goal/invariants.ts`; cap 질문 판정 7곳 · stall 판정 · 한도 소진 추론을 `phaseOf`로; 게이트가 단계 `running`만 통과 | A4 · A16(읽기) · A20 일부 | 타입 이동으로 import가 많이 바뀐다 → 옛 경로 재export로 한 번에 깨지지 않게 |
 | WU3 | 전이 한 곳 + 커밋 한 길 | `goal/machine.ts`로 전이 이동 · 직접 쓰기 제거(명령 · 버튼 · 수정 모달 · 열기 취소 · 리셋 · 되살리기 · 스레드 이동); `goal-commit.ts`; `bumpEpoch` 하나; 되돌리기 하나; 표면 수정 D11 · D12 | A5 · A8 · A9 · A10–A16 · A21 | 가장 크다 → machine 이동(동작 그대로)과 표면 수정(동작 변경)을 커밋으로 나누고 리뷰도 그 단위로 |
 | WU4 | 저장 모양 바꾸기 | `phase` 저장 · 완료 goal 슬롯에서 내림(D5) · hold 한 모양(D6) · `pendingEval` 저장 중단 · `loadGoalState` 이행 · 옛 필드 함께 쓰기(되돌리기 대비) | A20(이행 표) · 불변식 I1–I3 | 디스크 모양 → 실제 `sessions.json` 사본으로 로드 · 저장 · 다시 로드를 시험(이행 손실 0) |
-| WU5 | 루프 구동기 명시 | `loop-decision.ts` 순수 결정 · `LoopState` · 주입 직전 재확인 · `stopped` 단계 · 타이머 취소 · reuse를 eval 횟수에서 제외 | A6 · A7 · A17(루프 부분) · A20 | 루프 시간 순서 → 가짜 시계 · 가짜 디스패처로 표 테스트 |
+| WU5 | 루프 구동기 명시 | `loop-decision.ts` 순수 결정 · `LoopState` · 주입 직전 재확인 · 정리 중인 실행이 끝난 뒤에 주입(버리기 · 환급 · 다시 깨우기 집합 `followupSlotHeldGoalSessions` · `goalDriverKickOnRelease` 제거) · `stopped` 단계 · 타이머 취소 · reuse를 eval 횟수에서 제외 | A6 · A7 · A17(루프 부분) · A20 | 루프 시간 순서 → 가짜 시계 · 가짜 디스패처로 표 테스트 |
 | WU6 | 재시작 복구 명시 | `restart-recovery.ts` · 레코드 · 패스 · 인계 한 결정 함수 · 사람의 멈춤 · `opening` · 크래시 알림 실패에도 패스 | A2 · A3 · A18 · A19 | 부팅 순서 → index.ts 부팅 단계를 그대로 재현하는 테스트 |
 | WU7 | 투영 · 문서 · 실측 | `goal/view.ts` · 대시보드 칸 규칙(D14) · Slack `goal` 블록 · `docs/goal-command/spec.md` 상태도 · 38–40 shipped · dev 배포 실측 | A17 · A22 | 화면 → 대시보드 클라이언트 하네스 테스트 + 실측 스크린샷 |
 

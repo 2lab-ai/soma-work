@@ -48,13 +48,22 @@ Status: in-progress · 작성 2026-11-26 · 현재 상태 = [38-goal-state-as-is
 
 ### S1 — 턴 점유 (런타임, 저장 안 함)
 
-"이 세션에서 지금 턴이 도는가"의 답은 하나다.
+"이 세션에서 지금 턴이 도는가"의 답은 하나다. 디스패처의 실행(run) 하나가 턴 하나를 나르고, 그 실행에는 단계가 있다.
 
 ```
-turnHeld(key) = 팔로업 슬롯이 잡혔다(이동된 슬롯 포함) ∨ 요청 컨트롤러가 있다
+RunPhase(key) = none | preparing | running | settling
+  none       슬롯이 비었다
+  preparing  디스패치가 받아들여져 슬롯을 잡았고, 턴이 아직 시작하지 않았다(반응 · 파일 · 라우팅 · 세션 초기화)
+  running    턴이 돈다(요청 컨트롤러가 있다)
+  settling   턴은 끝났고(턴 끝 훅이 돌았다) 실행이 아직 슬롯을 놓지 않았다(팔로업 정리 · 보고)
+
+turnHeld(key) = RunPhase ∈ { preparing, running } ∨ 요청 컨트롤러가 있다
 ```
 
-- 가장 이른 시계(슬롯)와 컨트롤러를 함께 본다. 슬롯은 디스패치가 받아들여진 순간 잡히고, 컨트롤러는 세션 초기화 뒤에 생긴다.
+- 슬롯(가장 이른 시계)과 컨트롤러를 함께 보되, 끝난 턴이 정리 중(`settling`)인 슬롯은 "턴이 돈다"로 세지 않는다. 턴 끝
+  트리거는 바로 그 `settling` 동안 발화하므로(`handleAssistantTurnCompleteForGoal`), 이것을 세면 루프가 자기 턴 때문에 영영
+  돌지 못한다. 지금 코드는 이 단계를 이름 없이 다룬다: 텍스트 없는 턴은 슬롯이 풀릴 때까지 구동을 미루고
+  (`followupSlotHeldGoalSessions`), 그 사이 넣은 이어하기는 펜스에서 버려졌다가 다시 깨운다(`goalDriverKickOnRelease`).
 - `activityState`는 **표시용**이다. 게이트로 읽지 않는다. 턴 런타임만 쓰고, 재시작 로드 때 한 번 정리한다(D3).
 - "주인 질문이 열렸나"는 별도 질문이다: `ownerQuestionOpen(session)` = 행동 패널이 선택을 기다림 ∨ 질문이 걸려 있음.
 
@@ -115,7 +124,9 @@ LoopState = idle | queued{ runs } | judging{ goalId, epoch } | injecting{ goalId
 ```
 
 - `injecting`은 이어하기가 받아들여져 슬롯을 잡을 때까지만이다. 슬롯을 잡으면 S1의 턴이 된다(지금처럼 턴이 끝날 때까지 끌지 않는다).
-- "루프가 곧 움직인다" = `loopState ≠ idle`. "세션이 구동되고 있다" = `driven(key) = turnHeld(key) ∨ loopState ≠ idle`.
+- "루프가 곧 움직인다" = `loopState ≠ idle`. "세션이 구동되고 있다" = `driven(key) = RunPhase ≠ none ∨ loopState ≠ idle`
+  — 정리 중인 실행도 구동으로 센다(그 턴의 끝이 이미 루프를 깨웠거나 슬롯이 풀릴 때 깨운다).
+- 이어하기는 `settling`인 슬롯에 넣지 않는다 — 그 실행이 끝나기를 기다렸다가 넣는다(지금의 "버리고 · 환급하고 · 다시 깨우기"를 대신한다).
 - 재시도 타이머는 goal·에폭에 묶이고 goal이 바뀌면 취소된다.
 
 ### S5 — 재시작 복구 (부팅마다)
@@ -145,7 +156,7 @@ RecoveryRecord(세션) = { cut: boolean, resume: none | pending | started | fail
 
 | ID | 결정 | 이유 |
 |---|---|---|
-| D1 | "턴이 도는가"는 `turnHeld`(슬롯 ∨ 컨트롤러) 하나로 답한다. `activityState`는 게이트에서 빠진다 | 시계 셋 중 가장 이른 것과 이미 쓰이는 것을 합친 것. X1 · X2 · PR #1458 계열 |
+| D1 | "턴이 도는가"는 `turnHeld`(실행 단계 `preparing`·`running` ∨ 컨트롤러) 하나로, "세션이 구동되는가"는 `driven` 하나로 답한다. `activityState`는 게이트에서 빠진다 | 가장 이른 시계(슬롯)를 보되 끝난 턴의 정리(`settling`)는 빼야 턴 끝 트리거가 산다. X1 · X2 · PR #1458 계열 |
 | D2 | 루프 게이트 = 활성 goal ∧ 단계 `running` ∧ ¬`turnHeld` ∧ ¬주인 질문 ∧ ¬호스트 대기(자동 압축 예외 유지) ∧ ¬중단 잠금 ∧ ¬종료 중 | 게이트가 cap 질문을 모르던 X4를 단계가 막는다 |
 | D3 | 로드는 복구 레코드를 만든 **뒤** `activityState`를 정리한다: `working` → `idle`, 질문이 실제로 열린 `waiting`만 남긴다 | 재시작 때 훅을 건너뛰는 강제 `idle` 쓰기 4곳이 필요 없어진다 |
 | D4 | "판정 중"(`pendingEval`)은 저장하지 않는다 — S4의 런타임 상태다 | 로드마다 지워지던 필드. 소유자 확인이 10곳에 흩어져 있었다 |
