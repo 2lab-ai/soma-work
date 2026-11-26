@@ -116,7 +116,7 @@ GoalPhase =
       why = 'judge-failed'     판정 호출 재시도 소진
           | 'start-failed'     이어하기가 시작하지 못함
           | 'resume-failed'    자동 재개가 같은 실패를 반복(#948)
-          | 'person-stopped'   사람이 턴을 멈췄다(`!` · 대시보드 중지에서 goal을 멈추지 않은 경우) — 사람의 말이 마지막 말
+          | 'person-stopped'   사람이 턴을 멈췄다(`user-stop` · `user-interrupted`) — 사람의 말이 마지막 말
 ```
 
 ```
@@ -127,7 +127,9 @@ GoalPhase =
           판정: 같은 실패 ──▶ asking(stall)         ▼
           판정: 다음 이어하기가 필요한데 한도 소진 ──▶ asking(cap)     stopped(judge-failed)
           이어하기 시작 실패 ──▶ stopped(start-failed)     자동 재개 반복 실패 ──▶ stopped(resume-failed)
-          사람의 멈춤 ──▶ stopped(person-stopped)
+          사람의 멈춤(user-stop · user-interrupted) ──▶ stopped(person-stopped)
+ (종료 중단 `shutdown`은 단계를 바꾸지 않는다 — 재시작 복구가 끊긴 턴으로 이어받는다. 턴 교체 `supersede`도 바꾸지 않는다 — 새 턴의
+  끝이 구동한다. 세션 닫기 `session-close`는 세션이 끝나므로 구동할 것이 없다. 이 셋은 "이번 구동만 건너뜀"이다.)
  stopped ──사람의 말 · goal resume──▶ running
 ```
 
@@ -142,16 +144,26 @@ GoalPhase =
 
 ```
 LoopState    = idle | queued{ runs } | judging{ goalId, epoch } | injecting{ goalId, epoch, token }
-PendingDrive = none | { cause: 'turn' | 'kick', waitFor: 'slot-release' | 'followups' }
+PendingDrive = none
+             | judge  { cause: 'turn' | 'kick', waitFor: 'slot-release' | 'followups' }    다시 판정할 일
+             | inject { goalId, epoch, spent, waitFor: 'slot-release' }                   판정이 끝나 넣기만 남은 이어하기
+AutoResume   = available | spent                                                           실패한 턴의 자동 재개 1회
 ```
 
 - `injecting`은 이어하기가 받아들여져 슬롯을 잡을 때까지만이다. 슬롯을 잡으면 S1의 턴이 된다.
-- **미뤄 둔 다음 일(PendingDrive)** 은 "턴은 끝났는데 루프를 언제 깨울지"다. 지금 이름 없는 집합 넷이 나눠 갖고 있다:
-  팔로업이 자동 goal보다 먼저(`followupDeferredGoalSessions` → `waitFor: followups`), 텍스트 없는 턴은 슬롯이 풀린 뒤
-  (`followupSlotHeldGoalSessions` → `waitFor: slot-release`), 펜스에서 버려진 이어하기의 재구동(`goalDriverKickOnRelease` →
-  `cause: kick`). 미뤄 둔 일은 세션마다 하나이고, 그 조건이 풀리는 순간 정확히 한 번 소비된다(I6).
-- 자동 재개 반복 실패(`goalErrorResumeSpent`)는 구동기 상태가 아니라 goal 단계 `stopped(resume-failed)`다 — 저장되므로 재시작이 다시
-  굴리지 않는다. 사람의 멈춤이 마지막 말이 되는 경우(`GOAL_LAST_WORD_ABORT_REASONS`)도 `stopped(person-stopped)`다.
+- **미뤄 둔 다음 일(PendingDrive)** 은 "턴은 끝났는데 루프를 언제 깨울지"다. 지금 이름 없는 집합 셋이 나눠 갖고 있다:
+  팔로업이 자동 goal보다 먼저(`followupDeferredGoalSessions` → `judge{waitFor: followups}`), 텍스트 없는 턴은 슬롯이 풀린 뒤
+  (`followupSlotHeldGoalSessions` → `judge{waitFor: slot-release}`), 펜스에서 버려진 이어하기의 재구동(`goalDriverKickOnRelease` →
+  `judge{cause: kick}`, PR8 뒤에는 `inject`). 세션마다 최대 하나다(I6).
+  - `judge`: 조건이 풀리면 루프 실행 하나를 넣고 소비된다. 슬롯이 풀렸는데 팔로업이 남아 있으면 소비하지 않고 `waitFor: followups`로
+    바뀐다 — 사람의 팔로업이 자동 goal보다 먼저다.
+  - `inject`: 슬롯이 풀리면 같은 goal · 에폭 ∧ 단계 `running` ∧ ¬`turnHeld`일 때 한 번만 넣는다(다시 판정하지 않는다). 그 사이 goal이
+    바뀌거나, 사람의 턴 · 팔로업이 오거나, 종료가 시작되면 취소하고 `spent`면 횟수를 돌려준다 — 그 턴의 끝이 다시 구동한다.
+  - 판정 중에 온 킥(`goal max` 등)은 루프의 직렬 실행이 받는다: 지금 판정 뒤에 다시 판정하는 실행이 하나 줄 선다. 턴이 돌고 있으면
+    그 턴의 끝이 구동하므로 따로 남기지 않는다.
+- **자동 재개(AutoResume)**: 실패로 끝난 턴(`error` · `stall-timeout`)은 한 번 자동 재개된다(`available → spent`). 텍스트를 남긴 턴이나
+  사람의 말이 `available`로 되돌린다. `spent`에서 또 실패하면 goal 단계 `stopped(resume-failed)`가 되고 저장된다 — 재시작이 다시
+  굴리지 않는다. `AutoResume`은 런타임이다(지금 `goalErrorResumeSpent`와 같이 재시작에서 초기화된다).
 - 판정 결과는 **적용 직전**에 다시 확인한다: 같은 goal · 같은 에폭 ∧ ¬`turnHeld`. 판정 중 턴이 시작됐으면 결과를 버리고 그 턴의
   끝이 다시 판정한다. 판정 중 에폭이 움직였고(예: `goal max`) goal이 아직 `running`이면 결과를 버리고 `PendingDrive{kick}`을 남긴다 —
   에폭을 옮긴 쪽이 구동하지 않아도 goal이 멈추지 않는다(X5).
@@ -171,7 +183,7 @@ RecoveryRecord = { raw: { activityState, wasWorkingAtShutdown, personStopped }, 
   저장된 `working`이 그대로 복구 입력이다.
 - 그 뒤 표시용 `activityState`를 레코드에서 정한다: 재개를 기다리는(`resume: pending`) 세션은 `working`(재개 중), 질문이 실제로
   열린 세션은 `waiting`, 나머지는 `idle`. 재개가 시작되면 턴 런타임이 이어받고, 재개가 실패 · 거절되면 복구가 `releaseRecovered`
-  하나로 `idle`을 쓴다(훅 없이 — 사람이 멈춘 일을 크론이 깨우지 않게). 호스트의 강제 `idle` 직접 쓰기 4곳은 이 하나로 바뀐다.
+  하나로 `idle`을 쓴다(훅 없이 — 사람이 멈춘 일을 크론이 깨우지 않게). 재시작 게이트용 강제 `idle` 직접 쓰기 2곳(재시작 패스 · 인계)이 이 하나로 바뀐다. 멈춘 준비의 정리와 `/new` 리셋의 `idle`은 이름 있는 전이로 따로 남는다(훅을 건너뛰는 이유가 다르다).
 - 재개를 기다리는 동안 그 세션은 `driven`이다: 크론 · 사용자 작업 큐 · 루프 킥이 그 세션에 끼어들지 않는다(지금도 저장된
   `working`이 크론을 막는다 — 그 효과를 이름 있는 상태로 유지한다).
 - 복구 결정 `decideRecovery(record, goal, driven)`의 출력은 지금 패스가 하는 일 전부다: 끊긴 이어하기 환급 · 텍스트 없이 판정된 가짜
@@ -188,9 +200,9 @@ RecoveryRecord = { raw: { activityState, wasWorkingAtShutdown, personStopped }, 
 
 1. 기존 규칙: 에픽 상태 → 사용자 작업 큐 대기 → 수면 · 종료 → 열린 질문 · 권한 · 승인(응답 필요) → 레인 대기(작업 큐 칸)
 2. `turnHeld` 또는 재개 대기(S5 `pending`) → 진행 중
-3. 슬롯의 active goal이 `asking` 또는 `stopped` → 응답 필요(+ 이유: cap · stall · 판정 실패 · 시작 실패 · 재개 실패 · 사람의 멈춤)
+3. 슬롯의 active goal이 `asking` 또는 `stopped`(판정 실패 · 시작 실패 · 재개 실패) → 응답 필요(+ 이유). `stopped(person-stopped)`는 5로 간다
 4. 슬롯의 active goal이 `opening` · `retrying` · `running`이고 `driven`(판정 · 주입 · 미뤄 둔 다음 일 포함) → 진행 중
-5. 그 밖 → 한가함. hold는 일시정지 칩.
+5. 그 밖 → 한가함. hold는 일시정지 칩, `stopped(person-stopped)`는 멈춤 칩.
 
 ## 4. 불변식
 
@@ -202,7 +214,7 @@ RecoveryRecord = { raw: { activityState, wasWorkingAtShutdown, personStopped }, 
 - I3 — `asking(cap)`이면 `continuationCount ≥ maxContinuations`이다(한 방향. 역은 성립하지 않는다).
 - I4 — goal의 뜻(목표 · 한도 · 위치 · 단계)을 바꾸는 전이는 에폭을 올리고, 에폭을 올리는 길은 하나다(재시도 창도 같이 정리).
 - I5 — 슬롯의 `active` goal이 `running`이면 세션은 `driven`이거나, 그 상태를 만든 전이가 루프를 깨운다(구동 의무). 대기열 머리를 승격한 전이는 그 goal의 첫 턴을 받아들이거나 루프를 깨운다.
-- I6 — 미뤄 둔 다음 일은 세션마다 최대 하나이고, 조건이 풀리면 정확히 한 번 소비된다.
+- I6 — 미뤄 둔 다음 일은 세션마다 최대 하나이고, 조건이 풀리면 정확히 한 번 소비된다. 슬롯이 풀렸는데 팔로업이 남으면 `judge`는 팔로업을 기다리게 바뀌고, `inject`는 취소 · 환급된다.
 - I7 — 루프는 `turnHeld`인 동안 판정을 시작하지 않고, 판정 결과를 적용하지 않고, 이어하기를 넣지 않는다.
 
 ## 5. 결정
@@ -216,7 +228,7 @@ RecoveryRecord = { raw: { activityState, wasWorkingAtShutdown, personStopped }, 
 | D5 | 완료된 goal은 슬롯에서 내려가 히스토리에만 있다. 표면("최근 완료")은 **같은 PR**에서 히스토리를 읽게 바뀐다 | 이중 저장(X13)과 이중 집계를 없앤다 |
 | D6 | "슬롯의 paused"는 **hold** `{why}` 하나의 뜻이고 만드는 길도 하나(`holdCurrentGoal`)다. 첫 턴 취소는 `hold(opening-cancelled)` → 삭제의 두 단계를 유지한다: 다음 goal의 첫 턴 승인이 실패하거나 중간에 죽어도 취소된 goal은 hold로 남아 다시 돌지 않는다 | 만드는 곳마다 필드가 달랐다(38 §2.3). 취소 안전장치는 지금 계약을 그대로 이름 붙인 것 |
 | D7 | 한도 소진 = `asking(cap)`(S3 규칙). `goal max n`: `asking(cap)`이고 n > 카운터면 질문을 닫고(DM 재작성) `running` + 구동; `running`이고 n ≤ 카운터면 `running` 그대로 — 다음 판정이 이어하기를 원할 때 묻는다 | X5 · X16. #581에서 시도했다 되돌린 명시 상태를 단계로 다시 둔다 |
-| D8 | 재시도 소진 · 이어하기 시작 실패 · 자동 재개 반복 실패 · 사람의 멈춤은 `stopped{why}`로 저장하고 카드에 이유와 함께 보인다. 사람의 말 · `goal resume`이 다시 연다 | X7 · X18. 지금은 알림이나 메모리 집합만 남고 goal은 active였다 |
+| D8 | 재시도 소진 · 이어하기 시작 실패 · 자동 재개 반복 실패 · 사람의 멈춤(`user-stop` · `user-interrupted`만)은 `stopped{why}`로 저장한다. 앞의 셋은 카드에 응답 필요 + 이유로, 사람의 멈춤은 한가함 + 멈춤 칩으로 보인다(사람이 스스로 멈춘 일로 응답 필요를 띄우지 않는다). 사람의 말 · `goal resume`이 다시 연다. 종료 · 턴 교체 · 세션 닫기 중단은 단계를 바꾸지 않는다 | X7 · X18. 지금은 알림이나 메모리 집합만 남고 goal은 active였다 |
 | D9 | goal을 바꾸는 표면은 모두 `commitGoalChange` 하나로 끝난다: 에폭 · 프롬프트 무효화 · 저장 · 대시보드 방송 · 효과 · 구동 의무. 단 cap 답처럼 저장 전에 지켜야 할 순서가 있는 전이는 그 순서를 전이가 선언한다(저널 → 결정 저장 → DM 재작성, 저장 실패면 질문 복원) | 같은 일을 하는 사본 4개(38 인벤토리 D)를 합친다. X5 · X9. cap 답의 2단계 약속은 일반 순서로 바꾸지 않는다 |
 | D10 | 되돌리기(스냅샷 복원)는 은퇴한 질문을 되살리지 않는다 — 모든 되돌리기가 같은 함수를 쓴다 | X8. 지금은 일시정지 되돌리기만 그렇다 |
 | D11 | `/new` · `/renew`는 슬롯 · 대기열 · 선반을 비운다(히스토리는 남긴다). 보관은 대기열도 담는다. 봇 스레드 이동은 대기열 · 선반 · 히스토리를 옮기고, 열린 질문은 닫고 에폭을 올린다 | X10 · X11 · X12 |
@@ -225,7 +237,7 @@ RecoveryRecord = { raw: { activityState, wasWorkingAtShutdown, personStopped }, 
 | D14 | 대시보드 칸은 S6의 순서로 정한다. goal은 기존 규칙이 DONE이라고 할 때만 다듬는다 | X17 · SSOT_1. 기존 칸 규칙과의 우선순위를 명시한다 |
 | D15 | 판정 결과는 적용 직전에 같은 goal · 에폭 ∧ ¬`turnHeld`를 다시 확인한다. 실패하면 버리고, goal이 아직 굴릴 상태면 `PendingDrive{kick}`을 남긴다 | 판정 중 턴이 시작되면 완료 · stall을 그 턴 아래에서 적용하던 경로(인벤토리 B 5.5 · 5.6)와 X5 |
 | D16 | 재개를 기다리는 세션(S5 `pending`)은 `driven`이다. 크론 · 사용자 작업 큐는 지금처럼 그 세션에 끼어들지 않는다 | 로드 때 표시를 정리해도 크론이 재개 직전 세션에 턴을 넣지 않게(지금은 저장된 `working`이 그 일을 했다) |
-| D17 | 저장 모양을 바꾸는 동안(WU4~WU7) 새 코드는 단계와 옛 필드를 함께 쓴다. 로드는 옛 필드가 단계와 어긋나면 **옛 필드를 따른다**(옛 코드는 옛 필드만 고치므로). 옛 필드 쓰기는 WU7에서 지운다 | 구버전으로 되돌렸다 다시 올리는 배포에서 낡은 단계를 믿지 않게 |
+| D17 | 저장 모양을 바꾸는 동안(PR7~PR10) 새 코드는 단계와 옛 필드를 함께 쓰고, 단계 옆에 옛 필드의 지문(`{epoch, updatedAt, continuationCount}`)을 남긴다. 로드: 지문이 옛 필드와 같으면 단계를 믿는다(옛 표현이 없는 `stopped` · hold `why`도 보존). 다르면 구버전이 goal을 바꾼 것이므로 옛 필드에서 단계를 다시 계산한다. id 없는 옛 cap 라운드는 id 없이 유지한다(옛 DM 버튼이 그대로 답할 수 있게). 옛 필드 쓰기는 PR10에서 지운다 | 구버전으로 되돌렸다 다시 올리는 배포에서 낡은 단계를 믿지 않고, 구버전이 표현 못 하는 상태는 지운다고 다시 돌지 않게 |
 
 ## 6. 인수 시나리오
 
@@ -235,7 +247,7 @@ RecoveryRecord = { raw: { activityState, wasWorkingAtShutdown, personStopped }, 
 
 | ID | 실행 | 기대 |
 |---|---|---|
-| A23 | 텍스트를 남긴 goal 턴이 끝난다(실행이 아직 슬롯을 쥔 채 턴 끝 트리거 발화) | 루프가 판정하고, 이어하기가 실행이 끝난 뒤 한 번 들어간다 |
+| A23 | 텍스트를 남긴 goal 턴이 끝난다(실행이 아직 슬롯을 쥔 채 턴 끝 트리거 발화) | 루프가 `settling`에서 판정을 시작한다(PR2 머지 조건). 이어하기가 실행이 끝난 뒤 한 번 들어간다(PR8 머지 조건 — 그 전까지는 지금처럼 펜스에서 버려졌다가 다시 깨운다) |
 | A24 | 텍스트 없는 goal 턴이 끝난다 | 판정 없이 지난 공백을 다시 쓰고, 실행이 끝난 뒤 이어하기가 한 번 들어간다 |
 | A25 | 이어하기 · `/compact` 재생이 뒤따르는 다리 사이 | 루프가 다리 사이에서 판정하지 않고, 마지막 다리의 끝에서 한 번 판정한다 |
 | A26 | 팔로업이 줄에 있는 채 goal 턴이 끝난다 | 팔로업이 먼저 돌고, 줄이 빈 뒤 루프가 한 번 돈다 |
@@ -250,7 +262,7 @@ RecoveryRecord = { raw: { activityState, wasWorkingAtShutdown, personStopped }, 
 | A4 | `asking(cap)` goal에 킥 · 재시작 패스가 온다 | 판정 · 알림을 다시 하지 않는다. DM이 아직 전달되지 않은 라운드면 같은 라운드의 DM만 다시 보낸다 | X4 |
 | A5 | 10/10 cap 질문이 열린 goal에 `goal max 20` · 판정 중에 `goal max 20` | 질문이 닫히고(DM 재작성) 루프가 다시 돈다 · 폐기된 판정 뒤 루프가 다시 돈다 | X5 |
 | A6 | 이어하기 알림을 올리는 사이 종료가 시작된다 | 이어하기를 넣지 않고 횟수를 돌려준다. "다시 보내주세요"가 없다 | X6 |
-| A7 | 판정 호출 3번 연속 일시 실패 · 이어하기 시작 실패 · 자동 재개 반복 실패 | 단계 `stopped(why)`, 카드 응답 필요 + 이유. 재시작 뒤에도 그대로. 사람의 말이 다시 연다 | X7 |
+| A7 | 판정 호출이 최초 + 재시도 3회 모두 일시 실패 · 이어하기 시작 실패 · 실패한 턴의 자동 재개 뒤 또 실패 | 단계 `stopped(why)`, 카드 응답 필요 + 이유. 재시작 뒤에도 그대로. 사람의 말이 다시 연다. 첫 실패의 자동 재개는 그대로 한 번 돈다 | X7 |
 | A8 | cap 질문이 열린 goal을 지우고, 승격 goal의 첫 턴 승인이 거절된다 | 되돌린 goal에 cap 질문이 없다 | X8 |
 | A9 | 재시도 대기 중 목표를 수정 · cap에 답한다 | 재시도 창이 사라지고 루프가 바로 판정할 수 있다 | X9 |
 | A10 | goal A + 대기 B에서 `/new` 후 재시작 | B가 승격되지 않는다(대기열이 비었다) | X10 |
@@ -265,13 +277,14 @@ RecoveryRecord = { raw: { activityState, wasWorkingAtShutdown, personStopped }, 
 | A19 | 첫 턴이 대기 중인 goal이 있는 채로 재시작 | 루프가 첫 턴 전에 이어하기를 넣지 않는다 | X19 |
 | A20 | 모든 전이 표(S2 · S3 · S4 · S5 · S6)를 표 테스트로 돈다 — 완료 · 삭제 · 일시정지의 대기열 승격, `retrying`의 재시작 재무장 포함 | 표의 다음 상태와 같고, 매 전이 뒤 불변식 통과 | G1–G3 |
 | A21 | 계약 테스트: 단계 · status · 위치 · 에폭 필드를 전이 모듈 밖에서 쓰는 코드, 그 필드를 `phaseOf` · `placeOf` 밖에서 제어 흐름으로 읽는 코드, `activityState`를 조건으로 읽는 goal · 루프 · 복구 코드 | 0건 | G2 |
+| A28 | goal 턴이 종료(`shutdown`)로 끊긴 뒤 재시작한다 · 턴 교체(`supersede`)로 끊긴다 | 재시작이 이어받아 다시 돈다 · 새 턴의 끝이 구동한다. 어느 쪽도 `stopped`가 아니다 | F1(R2) |
 | A22 | 실측: 소유자 dev에 배포 → 대시보드에서 goal을 만들고 한도 1로 이어하기까지 돌린 뒤 재시작 | 재시작 중 카드가 진행 중에 있고, 끝나면 cap 질문이 한 번만 뜨며, `goal max`를 올리면 다시 돈다 | SSOT_1 · G4 |
 
 이행(WU4의 머지 조건)
 
 | ID | 실행 | 기대 |
 |---|---|---|
-| A27 | 구버전 → 신버전 저장 → 구버전으로 되돌려 goal을 바꿈 → 신버전 다시 로드. fixture: 어긋난 옛 필드, id 없는 cap 라운드, 슬롯 · 히스토리 중복 완료, `stopped`의 옛 표현(알림만) | 신버전이 구버전의 마지막 변경을 따른다(D17), 손실 0 |
+| A27 | 세 왕복: 신 → 신(바뀐 것 없음), 신 → 구(바뀐 것 없음) → 신, 신 → 구(goal을 바꿈) → 신. fixture: `stopped` · hold `why`(옛 표현 없음), 어긋난 옛 필드, id 없는 cap 라운드와 그 옛 DM 버튼, 슬롯 · 히스토리 중복 완료 | 앞의 둘은 단계를 그대로 보존한다. 셋째는 구버전의 변경을 따른다(D17). id 없는 라운드는 옛 DM 버튼으로 답할 수 있다. 손실 0 |
 
 ## 7. 범위 밖
 
