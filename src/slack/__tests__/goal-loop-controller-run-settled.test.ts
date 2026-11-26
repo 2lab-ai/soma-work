@@ -41,8 +41,9 @@ function harness(
   } as unknown as ConversationSession;
   const settled: Array<[string, { continued: boolean; queued: boolean }]> = [];
   const controller = new GoalLoopController({
-    registry: { getSessionByKey: () => session, getActivityStateByKey: () => 'idle', saveSessions: () => undefined },
+    registry: { getSessionByKey: () => session, saveSessions: () => undefined },
     requestCoordinator: { isRequestActive: () => false },
+    turnHeld: () => false,
     dispatcher: async () => JSON.stringify(verdict ?? { completed: false, reason: 'r', remaining: ['x'] }),
     injectContinuation,
     postNotice: async () => undefined,

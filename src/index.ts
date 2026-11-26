@@ -2551,7 +2551,6 @@ async function start() {
       const goalLoopController = new GoalLoopController({
         registry: {
           getSessionByKey: (key) => registry.getSessionByKey(key),
-          getActivityStateByKey: (key) => registry.getActivityStateByKey(key),
           saveSessions: () => registry.saveSessions(),
           // Loop steps happen while the session is idle — push each one so the
           // dashboard card leaves DONE while an eval runs or a retry waits.
@@ -2563,6 +2562,9 @@ async function start() {
           isRequestActive: (key) => requestCoordinator.isRequestActive(key),
           abortSession: (key, reason) => requestCoordinator.abortSession(key, reason),
         },
+        // .prd/39 D1 · D2 — the loop gate asks the turn occupancy; a drive held by a run's turn waits for its release.
+        turnHeld: (key) => slackHandler.isTurnHeld(key),
+        holdForTurn: (key, cause) => slackHandler.holdGoalDriverForTurn(key, cause),
         // The eval carries the session user's llmux key (`tenantUserId`), like the turns it judges.
         dispatcher: ({ systemPrompt, userPrompt, model, effort, abortController, cwd, tenantUserId }) =>
           claudeHandler.dispatchOneShot(userPrompt, systemPrompt, model, abortController, undefined, cwd, effort, {

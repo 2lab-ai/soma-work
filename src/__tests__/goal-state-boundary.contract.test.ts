@@ -56,7 +56,8 @@ describe('goal state boundary (.prd/40 §6)', () => {
   /**
    * Rule 2 (PR1) — "is a turn running here" is answered by `src/slack/session-occupancy.ts`. The dispatcher slot
    * (`isBusy`, `liveTurnEpoch`) and the request controller (`isRequestActive`) are asked directly only where listed.
-   * PR2 swaps the goal loop gate onto `turnHeld`; PR8 (loop driver) and PR9 (restart recovery) take their rows out.
+   * PR2 moved the goal loop gate and the restart hand-off onto the occupancy; PR8 (loop driver) and PR9 (restart
+   * recovery) take the remaining goal rows out.
    */
   it('rule 2: the slot and the request controller are asked directly only where listed', () => {
     const DIRECT_ASK = /\.isBusy\(|isRequestActive\(|liveTurnEpoch\(/;
@@ -87,10 +88,8 @@ describe('goal state boundary (.prd/40 §6)', () => {
         'D3 keeps it: a stopped preparation puts back working only with no request',
       // Goal loop and restart recovery — removed by the PR named.
       'src/slack-handler.ts#drainIdleRestartRequeued': 'restart requeue drain — PR9 (restart recovery)',
-      'src/slack-handler.ts#handBackFailedRestartResume': 'restart hand-off — PR9 (restart recovery, D3)',
       'src/slack-handler.ts#askGoalStallQuestion': 'stall question round — PR8 (loop driver)',
       'src/slack/goal-loop-controller.ts#isRequestActive': 'the controller port declaration — PR8 (loop driver)',
-      'src/slack/goal-loop-controller.ts#runOnce': 'the loop gate — PR2 (turnHeld + owner question)',
       'src/slack/goal-loop-controller.ts#handleVerdict': 'verdict re-check before inject — PR8 (loop driver, D15)',
       'src/slack/goal-loop-controller.ts#handleEvalDispatchFailure':
         'safeguard stop of a turn started during the eval — PR8',
@@ -112,5 +111,34 @@ describe('goal state boundary (.prd/40 §6)', () => {
     expect(body('isHostTurnFree')).toContain('this.occupancy.runPhase(');
     expect(body('isFollowupSlotHeld')).toContain('this.occupancy.slotHeld(');
     expect(body('isFollowupTurnBusy')).toContain('this.occupancy.slotHeld(');
+  });
+
+  /**
+   * Rule 1 (PR2) — `activityState` is the card's word. No goal, loop or recovery code takes it as a condition
+   * (.prd/39 D1); the loop gate reads `turnHeld` and the owner question. The rows left are not a goal question.
+   */
+  it('rule 1: activityState is read as a condition only where listed', () => {
+    const READ = /\bactivityState\b|getActivityStateByKey/;
+    const ALLOWED: Record<string, string> = {
+      'src/slack-handler.ts#redeliverRestartCutFollowups':
+        "the recovery record's own disk value, for a record from before shouldAutoResume",
+      'src/slack-handler.ts#notifyCrashRecovery':
+        "the recovery record's disk value: the legacy auto-resume fallback and the notice text",
+      'src/slack-handler.ts#applySafeguardGate': 'a halted host turn puts back the working it set — not goal state',
+      'src/slack-handler.ts#releaseRecovered': 'writes the display idle — reads it only to report a change',
+      'src/slack-handler.ts#releaseStoppedPreparation':
+        'D3 keeps it: a stopped preparation puts back its own working, an asking session keeps waiting',
+    };
+    const found = [...sitesOf(READ, goalScopeFiles())].sort();
+    const unlisted = found.filter((key) => !(key in ALLOWED));
+    const gone = Object.keys(ALLOWED).filter((key) => !found.includes(key));
+    expect({ unlisted, gone }).toEqual({ unlisted: [], gone: [] });
+  });
+
+  it('rule 1: the loop gate takes turnHeld and the owner question', () => {
+    const evaluator = fs.readFileSync(path.join(ROOT, 'src/slack/goal-completion-evaluator.ts'), 'utf8');
+    const gate = evaluator.slice(evaluator.indexOf('export interface GoalIdleDriverState'));
+    expect(gate).toContain('turnHeld: boolean;');
+    expect(gate).toContain('ownerQuestionOpen: boolean;');
   });
 });

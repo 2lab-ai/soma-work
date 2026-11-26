@@ -88,7 +88,6 @@ function makeHarness(opts: {
   const controller = new GoalLoopController({
     registry: {
       getSessionByKey: () => session,
-      getActivityStateByKey: () => 'idle',
       saveSessions: () => {
         saves += 1;
       },
@@ -96,6 +95,7 @@ function makeHarness(opts: {
     requestCoordinator: {
       isRequestActive: () => requestActive,
     },
+    turnHeld: () => requestActive,
     dispatcher,
     injectContinuation: async (event) => {
       injected.push(event);
@@ -831,7 +831,6 @@ describe('GoalLoopController — dashboard visibility of loop steps', () => {
     const controller = new GoalLoopController({
       registry: {
         getSessionByKey: () => session,
-        getActivityStateByKey: () => 'idle',
         saveSessions: () => undefined,
         broadcastSessionUpdate: () => {
           pushes.push({
@@ -842,6 +841,7 @@ describe('GoalLoopController — dashboard visibility of loop steps', () => {
         },
       },
       requestCoordinator: { isRequestActive: () => false },
+      turnHeld: () => false,
       dispatcher,
       injectContinuation: async () => undefined,
       postNotice: async () => undefined,
@@ -1120,8 +1120,9 @@ describe('GoalLoopController — a pause that lands while the continuation notic
     const injected: SyntheticMessageEvent[] = [];
     const notices: string[] = [];
     const controller = new GoalLoopController({
-      registry: { getSessionByKey: () => session, getActivityStateByKey: () => 'idle', saveSessions: () => {} },
+      registry: { getSessionByKey: () => session, saveSessions: () => {} },
       requestCoordinator: { isRequestActive: () => false },
+      turnHeld: () => false,
       dispatcher: async () => JSON.stringify(verdict),
       injectContinuation: async (event) => {
         injected.push(event);
@@ -1287,5 +1288,64 @@ describe('GoalLoopController — environment work the host runs (env run queue)'
     await h.controller.settled(SESSION_KEY);
     expect(dispatched).toBe(0);
     expect(h.injected).toHaveLength(0);
+  });
+});
+
+/**
+ * .prd/39 D1 · D2 — the loop gate asks the turn occupancy, not the display word. A turn is held while its run is
+ * preparing or running (the slot, the controller, the turn runtime's own report); the owner question is the action
+ * panel's. `activityState` read from disk or written by the host does not open or close the gate.
+ */
+describe('GoalLoopController — the loop gate reads turnHeld and the owner question (.prd/39 D1 · D2)', () => {
+  function rig(opts: { turnHeld?: boolean; activityState?: string; panel?: Record<string, unknown> } = {}) {
+    const goal = makeGoal();
+    const session = makeSession(goal);
+    if (opts.panel) (session as any).actionPanel = opts.panel;
+    const dispatched: string[] = [];
+    const held: Array<[string, string]> = [];
+    const controller = new GoalLoopController({
+      registry: {
+        getSessionByKey: () => session,
+        // What the old gate read. The new gate does not — a stale value here proves nothing either way.
+        getActivityStateByKey: () => opts.activityState ?? 'idle',
+        saveSessions: () => {},
+      } as any,
+      requestCoordinator: { isRequestActive: () => false },
+      turnHeld: () => opts.turnHeld === true,
+      holdForTurn: (key: string, cause: string) => held.push([key, cause]),
+      dispatcher: async (args: { userPrompt: string }) => {
+        dispatched.push(args.userPrompt);
+        return JSON.stringify({ completed: false, reason: 'not yet', remaining: ['x'] });
+      },
+      injectContinuation: async () => undefined,
+      postNotice: async () => undefined,
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      fallbackModel: () => ({ model: 'claude-sonnet-4' }),
+    } as any);
+    return { controller, dispatched, held, goal };
+  }
+
+  it('A1: a run holds the slot before its controller exists (preparing) — no judge; the drive waits for that turn', async () => {
+    const r = rig({ turnHeld: true });
+    r.controller.onTurnSettled(SESSION_KEY, { cause: 'kick' });
+    await r.controller.settled(SESSION_KEY);
+    expect(r.dispatched).toHaveLength(0);
+    expect(r.held).toEqual([[SESSION_KEY, 'kick']]);
+  });
+
+  it('a stale working (loaded from disk, no run, no report) does not hold the gate', async () => {
+    const r = rig({ turnHeld: false, activityState: 'working' });
+    r.controller.onTurnSettled(SESSION_KEY);
+    await r.controller.settled(SESSION_KEY);
+    expect(r.dispatched).toHaveLength(1);
+    expect(r.held).toEqual([]);
+  });
+
+  it('an open owner question holds the gate whatever the display word says', async () => {
+    const r = rig({ turnHeld: false, activityState: 'idle', panel: { waitingForChoice: true } });
+    r.controller.onTurnSettled(SESSION_KEY);
+    await r.controller.settled(SESSION_KEY);
+    expect(r.dispatched).toHaveLength(0);
+    expect(r.held).toEqual([]);
   });
 });

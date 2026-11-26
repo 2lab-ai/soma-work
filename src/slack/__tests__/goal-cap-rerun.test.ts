@@ -145,10 +145,10 @@ describe('SSOT 2026-10-30 — the 10/10 goal runs again after user input', () =>
     const controller = new GoalLoopController({
       registry: {
         getSessionByKey: () => session,
-        getActivityStateByKey: () => 'idle',
         saveSessions: vi.fn(),
       },
       requestCoordinator: { isRequestActive: () => false },
+      turnHeld: () => false,
       dispatcher: async () => JSON.stringify({ completed: false, reason: 'still going', remaining: ['do X'] }),
       injectContinuation: async (event) => {
         injected.push(event);
