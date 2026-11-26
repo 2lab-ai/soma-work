@@ -478,6 +478,11 @@ describe('Dashboard — the 프로세스 tab and the card’s node badge', () =>
     expect(dashboard.procCardsToPush(pushed, lv(10.2))).toEqual([KEY]);
     dashboard.procCardsToPush(pushed, lv(98));
     expect(dashboard.procCardsToPush(pushed, lv(101))).toEqual([KEY]);
+    // The first stripe starts past one core — 100 and 101 share a bucket and the hot level: the stripe alone pushes,
+    // both ways.
+    dashboard.procCardsToPush(pushed, lv(100));
+    expect(dashboard.procCardsToPush(pushed, lv(101))).toEqual([KEY]);
+    expect(dashboard.procCardsToPush(pushed, lv(100))).toEqual([KEY]);
     // The card's edge stripes step past 2, 4 and 8 cores: each edge pushes inside one bucket (199 and 201 share one).
     for (const [below, above] of [
       [199, 201],

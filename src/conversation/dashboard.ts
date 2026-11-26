@@ -7869,6 +7869,7 @@ html[data-pdragging], html[data-pdragging] * { cursor: grabbing !important; user
 @media (forced-colors: active) {
   .pp-cpu, .pp-mem { forced-color-adjust: none; --pp-c: CanvasText; background: Canvas; color: CanvasText; box-shadow: inset 0 0 0 1px CanvasText; }
   .pp-cpu .pp-v, .pp-cpu.is-idle .pp-v, .pp-cpu.is-busy .pp-v, .pp-cpu.is-hot .pp-v, .pp-mem .pp-v { color: CanvasText; }
+  .pp-cpu.is-busy, .pp-cpu.is-hot { --pp-c: CanvasText; }
   .pp-cpu.is-hot .pp-cores { background: CanvasText; color: Canvas; }
 }
 /* The detail (a snapshot): sections of term · value, the command line in mono and wrapping. */

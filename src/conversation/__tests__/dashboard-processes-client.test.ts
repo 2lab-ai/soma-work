@@ -605,6 +605,8 @@ describe('P6 — the tree: guides, folds, CPU levels, where · what', () => {
     expect(rule).toContain('.pp-cpu, .pp-mem { forced-color-adjust: none;');
     expect(rule).toContain('box-shadow: inset 0 0 0 1px CanvasText;');
     expect(rule).toContain('--pp-c: CanvasText;');
+    // As specific as the busy and hot rules (a class pair), so their colour does not win there — the hatch included.
+    expect(rule).toContain('.pp-cpu.is-busy, .pp-cpu.is-hot { --pp-c: CanvasText; }');
   });
 });
 
