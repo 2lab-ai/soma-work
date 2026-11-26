@@ -171,9 +171,14 @@ describe('the app bar drops its links under 640px (the dock has them)', () => {
     m.paintAppBar();
     return el.data;
   }
-  it('no links (so no 메뉴) on a phone, all three from 640px', () => {
+  it('no links (so no 메뉴) on a phone, all four from 640px (the dock leaves 대시보드 out: 보드 is this page)', () => {
     expect(bar(true).nav).toEqual([]);
-    expect(bar(false).nav.map((l) => (l as { id: string }).id)).toEqual(['conversations', 'settings', 'memory']);
+    expect(bar(false).nav.map((l) => (l as { id: string }).id)).toEqual([
+      'dashboard',
+      'conversations',
+      'settings',
+      'memory',
+    ]);
   });
   it('the bar is painted again when the breakpoint flips', () => {
     expect(TEMPLATE).toContain(

@@ -165,7 +165,7 @@ describe('paintAppBar — the data the page hands the bar', () => {
     return { bar, document };
   }
 
-  it('brand (the h1), the three page links (routes unchanged, titled), the toolbar width, the status, the theme; no account before /auth/me', () => {
+  it('brand (the h1), the four page links of every page (this one current, routes unchanged, titled), the toolbar width, the status, the theme; no account before /auth/me', () => {
     const h = harness('light');
     const { paintAppBar } = load<{ paintAppBar(): void }>(
       ['paintAppBar'],
@@ -182,7 +182,16 @@ describe('paintAppBar — the data the page hands the bar', () => {
     const d = h.bar.data as BarData;
     expect(d.brand).toEqual({ label: 'soma-work', mark: true, heading: true });
     // Each link says what its page is for (the old nav's titles): its hover title and the folded menu row's line.
+    // The same four links as the settings and conversation pages (app-bar-nav.test.ts), 대시보드 current here.
     expect(d.nav).toEqual([
+      {
+        id: 'dashboard',
+        label: '대시보드',
+        href: '/dashboard',
+        icon: 'board',
+        title: '에이전트 인박스 — 작업 카드 보드',
+        current: true,
+      },
       { id: 'conversations', label: '대화', href: '/conversations', icon: 'chat', title: '지난 대화를 모두 봅니다' },
       {
         id: 'settings',
