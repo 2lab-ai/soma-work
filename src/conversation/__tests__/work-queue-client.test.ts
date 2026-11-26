@@ -130,9 +130,9 @@ describe('wqCardButtonsHtml — the open card of a lane-waiting card', () => {
 });
 
 describe('the history — one at a time', () => {
-  const { wqStripBars, wqRecordText } = load<any>(
-    ['wqStripBars', 'wqRecordText', 'wqReason', 'wqDur', 'wqClock'],
-    ['WQ_DAY_MS', 'WQ_END_LABEL', 'WQ_END_GLYPH'],
+  const { wqRecordText } = load<any>(
+    ['wqRecordText', 'wqReason', 'wqDur', 'wqClock'],
+    ['WQ_END_LABEL', 'WQ_END_GLYPH'],
   );
   const now = 100 * HOUR;
   const rec = (id: string, startedAt: number | undefined, endedAt: number, end = 'done') => ({
@@ -143,40 +143,6 @@ describe('the history — one at a time', () => {
     ...(startedAt !== undefined ? { startedAt } : {}),
     endedAt,
     task: { title: `task ${id}` },
-  });
-
-  it('the strip draws each run of the last 24 hours and the running one — bars that never overlap', () => {
-    const q = {
-      recent: [
-        rec('wq-3', now - 3 * HOUR, now - 2 * HOUR),
-        rec('wq-2', now - 6 * HOUR, now - 4 * HOUR, 'released'),
-        rec('wq-1', now - 30 * HOUR, now - 29 * HOUR),
-        rec('wq-x', undefined, now - HOUR, 'cancelled'),
-      ],
-      running: [{ id: 'wq-4', startedAt: now - HOUR, task: { title: 'now' } }],
-    };
-    const bars = wqStripBars(q, now);
-    expect(bars.map((b: any) => [b.id, b.kind])).toEqual([
-      ['wq-2', 'released'],
-      ['wq-3', 'done'],
-      ['wq-4', 'run'],
-    ]);
-    const spans = bars.map((b: any) => [b.left, b.left + b.width]).sort((a: number[], b: number[]) => a[0] - b[0]);
-    for (let i = 1; i < spans.length; i++) expect(spans[i][0]).toBeGreaterThanOrEqual(spans[i - 1][1] - 0.01);
-    expect(bars[2].left + bars[2].width).toBeCloseTo(100, 1);
-  });
-
-  it('short runs back to back keep their bars apart (the minimum width never runs into the next run)', () => {
-    const q = {
-      recent: [
-        rec('b', now - 2 * HOUR + 60_000, now - 2 * HOUR + 120_000),
-        rec('a', now - 2 * HOUR, now - 2 * HOUR + 60_000),
-      ],
-      running: [],
-    };
-    const bars = wqStripBars(q, now).sort((x: any, y: any) => x.left - y.left);
-    expect(bars).toHaveLength(2);
-    expect(bars[0].left + bars[0].width).toBeLessThanOrEqual(bars[1].left + 1e-9);
   });
 
   it('a history line says how it ended, when it ran, and why it was given back', () => {
@@ -225,10 +191,33 @@ describe('the section stays small: a block only where something runs or waits (2
     );
   });
 
+  it("a lane's badge says the work it serialises; its ticks read in the order it ran, the running one last", () => {
+    const { wqLaneKind, wqTicks } = load<any>(
+      ['wqLaneKind', 'wqTicks', 'wqRecordText', 'wqReason', 'wqDur', 'wqClock'],
+      ['WQ_TICK', 'WQ_END_LABEL', 'WQ_END_GLYPH'],
+    );
+    expect([wqLaneKind('qa-dev2'), wqLaneKind('deploy-stage0'), wqLaneKind('build-x')]).toEqual(['QA', '배포', '레인']);
+    const r = (id: string, end: string) => ({
+      id,
+      end,
+      keys: [],
+      enteredAt: 0,
+      startedAt: 0,
+      endedAt: 1,
+      task: { title: id },
+    });
+    const ticks = wqTicks({
+      recent: [r('b', 'released'), r('a', 'done')],
+      running: [{ id: 'c', task: { title: 'c' } }],
+    });
+    expect(ticks.map((t: any) => t.kind)).toEqual(['ok', 'none', 'run']);
+  });
+
   function mount(data: unknown, admin = false) {
     const { document } = globalThis as unknown as { document: any };
     document.body.innerHTML =
-      '<div id="wq-section"><span id="wq-sum"></span><button id="wq-fold"></button><div id="wq-tabs"></div>' +
+      '<div id="wq-section"><div id="wq-head"><span id="wq-count"></span><span id="wq-pills"></span>' +
+      '<button id="wq-fold"></button></div><div id="wq-tabs"></div>' +
       '<div id="wq-lanes"></div><div id="wq-people"></div></div>';
     const posts: string[] = [];
     const stubs: Record<string, unknown> = {
@@ -286,22 +275,33 @@ describe('the section stays small: a block only where something runs or waits (2
     task: { title: 'old' },
   };
 
-  it('a busy lane is a block with its history folded; idle lanes are one line of chips', () => {
+  it('a busy lane is a tile with its history behind 내역 n; idle lanes are one line of chips; the head counts', () => {
     const { document, api } = mount({
       lanes: [lane('deploy-dev2', [run], [], [done]), lane('qa-dev2', [], [], [done]), lane('qa-x')],
       people: [],
       canManage: false,
     });
     api.paint({}, []);
-    const blocks = [...document.querySelectorAll('#wq-lanes .wq-q')].map((b: any) => b.getAttribute('data-q'));
-    expect(blocks).toEqual(['deploy-dev2']);
-    const fold = document.querySelector('#wq-lanes .wq-q details.wq-more');
-    expect(fold.open).toBe(false);
-    expect(fold.querySelector('summary').textContent).toBe('최근 내역 1');
+    const tiles = [...document.querySelectorAll('#wq-lanes .wq-group')].map((b: any) => [
+      b.getAttribute('data-q'),
+      b.className,
+    ]);
+    expect(tiles).toEqual([['deploy-dev2', 'wq-group wq-q is-running']]);
+    const tile = document.querySelector('#wq-lanes .wq-group');
+    expect(tile.querySelector('.wq-badge').textContent).toBe('배포');
+    expect([...tile.querySelectorAll('.wq-tick')].map((t: any) => t.className)).toEqual(['wq-tick', 'wq-tick is-run']);
+    const hist = tile.querySelector('.wq-btn');
+    expect([hist.textContent, hist.getAttribute('aria-expanded')]).toEqual(['내역 1', 'false']);
+    expect(tile.querySelector('.wq-hist')).toBeNull();
+    hist.click();
+    expect(document.querySelector('#wq-lanes .wq-group .wq-hist')).not.toBeNull();
     const chips = [...document.querySelectorAll('#wq-lanes .wq-idle .wq-chip-name')].map((a: any) => a.textContent);
     expect(chips).toEqual(['qa-dev2', 'qa-x']);
     expect(document.querySelector('#wq-lanes .wq-chip-x')).toBeNull();
-    expect(document.querySelectorAll('#wq-lanes .wq-strip')).toHaveLength(1);
+    expect(document.getElementById('wq-count').textContent).toBe('3');
+    expect([...document.querySelectorAll('#wq-pills .wq-pill')].map((x: any) => x.textContent)).toEqual([
+      '\u25CF 진행 1',
+    ]);
   });
 
   it('an admin (admin mode) forgets an idle lane with two presses', async () => {
@@ -318,7 +318,7 @@ describe('the section stays small: a block only where something runs or waits (2
     expect(posts).toEqual(['/api/dashboard/work-queues/lane/qa-x/forget']);
   });
 
-  it('a person is one line until tapped, and opens by itself while something of theirs waits', () => {
+  it('a person is one tile: its list opens by itself while something of theirs waits', () => {
     const person = (id: string, waiting: unknown[]) => ({
       id: `user:${id}`,
       kind: 'person',
@@ -331,15 +331,18 @@ describe('the section stays small: a block only where something runs or waits (2
     const wait = { id: 'utq_1', state: 'waiting', position: 1, keys: [], enteredAt: 0, task: { title: 'x' } };
     const { document, api } = mount({ lanes: [], people: [person('U1', []), person('U2', [wait])], canManage: false });
     api.paint({}, []);
-    const folds = [...document.querySelectorAll('#wq-people details.wq-person')].map((d: any) => [
+    const tiles = [...document.querySelectorAll('#wq-people .wq-person')].map((d: any) => [
       d.getAttribute('data-q'),
-      d.open,
+      d.querySelector('.wq-btn').getAttribute('aria-expanded'),
     ]);
-    expect(folds).toEqual([
-      ['user:U1', false],
-      ['user:U2', true],
+    expect(tiles).toEqual([
+      ['user:U1', 'false'],
+      ['user:U2', 'true'],
     ]);
-    expect(document.querySelector('#wq-people summary').textContent).toContain('진행 1 · 대기 0 · 한 번에 제한 없음');
+    expect(document.querySelector('#wq-people .wq-status').textContent).toBe(
+      '\u25CF 진행 1 · \u25B2 대기 0 · 한 번에 제한 없음',
+    );
+    expect(document.querySelector('#wq-people .wq-badge').textContent).toBe('개인');
   });
 });
 
