@@ -292,6 +292,7 @@ export function advanceGoalQueue(
  */
 function rebaseGoalAsActive(goal: SessionGoalState, priorEpoch: number | undefined): void {
   goal.status = 'active';
+  goal.holdWhy = undefined; // D6 — no longer held
   goal.continuationCount = 0;
   goal.epoch = Math.max(goal.epoch ?? 0, priorEpoch ?? 0) + 1;
   goal.updatedAt = Date.now();
@@ -502,6 +503,7 @@ export function pauseCurrentGoalHoldingQueue(
   if (!session.goalQueue?.length) return { paused: pauseCurrentGoal(session, opts).paused, inPlace: false };
   endGoalCapDecision(current);
   current.status = 'paused';
+  current.holdWhy = 'dashboard-stop'; // D6 — held in place: the queue waits behind it
   dropScheduledEval(current);
   bumpEpoch(current);
   current.updatedAt = Date.now();
