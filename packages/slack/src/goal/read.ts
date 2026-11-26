@@ -1,7 +1,8 @@
 /**
  * .prd/39 S2 · S3 · 40 §2 — the one place that reads a goal's place and phase. Control flow asks `phaseOf` and
  * `placeOf`; it does not test the fields they are computed from (`capDmPendingAt`, `stall`, `openingPending`,
- * `evalBackoffUntil`, `status`). Until the stored shape carries `phase` (PR7), both are computed from those fields.
+ * `evalBackoffUntil`, `status`). Both are computed from those fields; the stored `phase` speaks only for `stopped`,
+ * which has no legacy form (D17).
  */
 import type { GoalStopWhy, SessionGoal, SessionGoalStall, StoredGoalPhase } from './model';
 
@@ -102,9 +103,9 @@ export interface GoalPlaces {
 }
 
 /**
- * Where `goal` sits in `session` (S2), by identity first and then by `goalId`. The slot holds one goal: `active`,
- * a hold (`paused` in the slot — a cap stop, a dashboard stop with a queue, a cancelled opening) or, until PR7 takes
- * completed goals out of the slot, `complete`.
+ * Where `goal` sits in `session` (S2), by identity first and then by `goalId`. The slot holds one goal: `active`, a
+ * hold (`paused` in the slot — a cap stop, a dashboard stop with a queue, a cancelled opening) or, only in a record
+ * written before D5 until its load moves it to the history, `complete`.
  */
 export function placeOf(session: GoalPlaces, goal: SessionGoal): GoalPlace | undefined {
   const same = (g: SessionGoal | undefined) => !!g && (g === goal || g.goalId === goal.goalId);
