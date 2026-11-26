@@ -197,6 +197,7 @@ import {
   type TaskViewer,
   type VisibleCard,
 } from './task-visibility';
+import { CARD_ALERT_ICON_PATH, cardAlertIcon, cardAlertIconUrl } from './card-alert-icon';
 import { CODE_CHANGES_CSS, CODE_CHANGES_JS } from './code-changes-client';
 import { ensureTitleSub, regenerateTitleSub, type TitleSubResult } from './title-sub';
 import {
@@ -6799,6 +6800,20 @@ export async function registerDashboardRoutes(
     },
   );
 
+  // ── The hot card's alert (@2lab.ai/ui 0.51.0 data.alertIcon) ──
+  // Slack's :alert: siren, drawn in the head of a task card past one core. A public image, no session data — no
+  // auth, like the library's files. Asked for by its content hash (`?v=`, cardAlertIconUrl): kept a year.
+  server.get<{ Querystring: { v?: string } }>(CARD_ALERT_ICON_PATH, async (request, reply) => {
+    const found = cardAlertIcon();
+    if (!found) return reply.code(404).send();
+    const versioned = String(request.query?.v ?? '') === found.v;
+    return reply
+      .header('Cache-Control', versioned ? 'public, max-age=31536000, immutable' : 'public, max-age=3600')
+      .header('X-Content-Type-Options', 'nosniff')
+      .type('image/gif')
+      .send(found.body);
+  });
+
   // ── HTML Dashboard ──
 
   // The page is ~0.8 MB of inline HTML/CSS/JS: compressed when the browser
@@ -6914,6 +6929,8 @@ export function renderDashboardPage(userId?: string): string {
   const initSelfInstance = _selfInstanceEnv ? JSON.stringify(_selfInstanceEnv.instanceName) : 'null';
   // Build skew — the build this page's script comes from (onServerBuild compares every hello and poll with it).
   const initBuild = JSON.stringify(dashboardBuildId()).replace(/</g, '\\u003c');
+  // The hot card's alert image (card-alert-icon.ts): a same-origin path, or '' — the card then shows 🚨.
+  const initCardAlertIcon = JSON.stringify(cardAlertIconUrl()).replace(/</g, '\\u003c');
   // ui.dashboardheader — normalized card-header composition (config.json#ui
   // via @soma/slack/surface-config; docs/ui-surfaces.md). `<` is escaped so
   // an operator-supplied label cannot break out of the <script> block.
@@ -9188,6 +9205,9 @@ const INIT_USER = ${initUser};
 // The build this script came from (dashboardBuildId): a socket hello or a board poll naming another build means
 // the server was redeployed under this tab — onServerBuild reloads it (build skew).
 const PAGE_BUILD = ${initBuild};
+// A task card past one core shows this image before its node pill (@2lab.ai/ui 0.51.0 data.alertIcon): Slack's
+// :alert: siren. '' leaves the library's 🚨.
+const CARD_ALERT_ICON = ${initCardAlertIcon};
 // The page chrome's words, in one place and one language (the library's STRINGS pattern, lang="ko"):
 // sentence case, "…" not "...", the library's short status vocabulary.
 var STRINGS = {
@@ -13535,6 +13555,8 @@ function inboxPaint(host) {
   host.data = {
     columns: columns, load: p.load, announce: p.announce, expanded: open, strings: BOARD_STRINGS, openLabel: false,
     controls: 'window', minimized: cardMinSeeds(p.cols), current: boardCurrentKey(),
+    // A card past one core shows Slack's :alert: siren before its node pill (@2lab.ai/ui 0.51.0); '' leaves 🚨.
+    alertIcon: typeof CARD_ALERT_ICON === 'string' ? CARD_ALERT_ICON : '',
   };
   boardFoldDeck(host);
   if (typeof syncCardFinish === 'function') syncCardFinish();
