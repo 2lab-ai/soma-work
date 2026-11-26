@@ -1,7 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { UserTaskEntry } from '../ledger';
-import { queueActionValue, USER_TASK_QUEUE_BYPASS_ACTION_ID, USER_TASK_QUEUE_CANCEL_ACTION_ID } from '../slack-notice';
-import { createUserTaskSlackNotifier, handleUserTaskQueueAction, registerUserTaskQueueActions } from '../slack-surface';
+import {
+  queueActionValue,
+  USER_TASK_QUEUE_BYPASS_ACTION_ID,
+  USER_TASK_QUEUE_CANCEL_ACTION_ID,
+  USER_TASK_QUEUE_SAME_WORK_ACTION_ID,
+} from '../slack-notice';
+import {
+  createUserTaskSlackNotifier,
+  handleSameWorkAction,
+  handleUserTaskQueueAction,
+  registerUserTaskQueueActions,
+} from '../slack-surface';
 
 const flush = async () => {
   for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
@@ -161,7 +171,11 @@ describe('the queued notice buttons', () => {
   });
 
   it('먼저 진행 → bypass as the clicker; 대기 취소 → cancel', async () => {
-    const queue = { bypass: vi.fn(() => ({ ok: true as const })), cancel: vi.fn(() => ({ ok: true as const })) };
+    const queue = {
+      bypass: vi.fn(() => ({ ok: true as const })),
+      cancel: vi.fn(() => ({ ok: true as const })),
+      startSameWork: vi.fn(() => ({ ok: true as const })),
+    };
     const deps = { queue: () => queue, isAdmin: () => false, slackApi: { postEphemeral: vi.fn() } };
     await handleUserTaskQueueAction('bypass', body(USER_TASK_QUEUE_BYPASS_ACTION_ID), deps);
     await handleUserTaskQueueAction('cancel', body(USER_TASK_QUEUE_CANCEL_ACTION_ID), deps);
@@ -183,14 +197,101 @@ describe('the queued notice buttons', () => {
   it('registers both buttons and acks them', async () => {
     const handlers = new Map<string, (args: any) => Promise<void>>();
     const app = { action: (id: string, fn: any) => handlers.set(id, fn) } as any;
-    const queue = { bypass: vi.fn(() => ({ ok: true as const })), cancel: vi.fn(() => ({ ok: true as const })) };
+    const queue = {
+      bypass: vi.fn(() => ({ ok: true as const })),
+      cancel: vi.fn(() => ({ ok: true as const })),
+      startSameWork: vi.fn(() => ({ ok: true as const })),
+    };
     registerUserTaskQueueActions(app, { queue: () => queue, isAdmin: () => true, slackApi: {} });
     expect([...handlers.keys()].sort()).toEqual(
-      [USER_TASK_QUEUE_BYPASS_ACTION_ID, USER_TASK_QUEUE_CANCEL_ACTION_ID].sort(),
+      [USER_TASK_QUEUE_BYPASS_ACTION_ID, USER_TASK_QUEUE_CANCEL_ACTION_ID, USER_TASK_QUEUE_SAME_WORK_ACTION_ID].sort(),
     );
     const ack = vi.fn();
     await handlers.get(USER_TASK_QUEUE_BYPASS_ACTION_ID)?.({ ack, body: body(USER_TASK_QUEUE_BYPASS_ACTION_ID) });
     expect(ack).toHaveBeenCalled();
     expect(queue.bypass).toHaveBeenCalledWith('e1', 'U1', { admin: true });
+  });
+});
+
+describe('the same-work notice (.prd/36 v2 D12)', () => {
+  it('names each key and the thread that has it, with one 그래도 시작 button', async () => {
+    const slackApi = api();
+    const notifier = createUserTaskSlackNotifier({
+      slackApi,
+      queue: () => undefined,
+      titleOf: (_c, ts) => (ts === '1.0' ? 'ABC-1 구현' : undefined),
+    });
+    notifier.refused?.(
+      { userId: 'U1', sessionKey: 'C1:2.0', channel: 'C1', threadTs: '2.0' },
+      [{ key: 'ABC-1', entry: 'run:C1:1.0', state: 'running', holder: { user: 'U1', channel: 'C1', threadTs: '1.0' } }],
+      'tok1',
+    );
+    await flush();
+    const [channel, text, opts] = slackApi.postMessage.mock.calls[0];
+    expect([channel, opts.threadTs]).toEqual(['C1', '2.0']);
+    expect(text).toContain('같은 작업');
+    const blocks = JSON.stringify(opts.blocks);
+    expect(blocks).toContain('<https://slack/C1/1.0|ABC-1 구현>');
+    expect(blocks).toContain(USER_TASK_QUEUE_SAME_WORK_ACTION_ID);
+    expect(blocks).toContain(queueActionValue('tok1'));
+  });
+
+  it('a private task elsewhere is not named', async () => {
+    const slackApi = api();
+    const notifier = createUserTaskSlackNotifier({
+      slackApi,
+      queue: () => undefined,
+      isPrivateChannel: (c) => c === 'D9',
+      titleOf: () => 'secret title',
+    });
+    notifier.refused?.(
+      { userId: 'U1', sessionKey: 'C1:2.0', channel: 'C1', threadTs: '2.0' },
+      [{ key: 'ABC-1', entry: 'run:D9:1.0', state: 'running', holder: { user: 'U1', channel: 'D9', threadTs: '1.0' } }],
+      'tok1',
+    );
+    await flush();
+    const blocks = JSON.stringify(slackApi.postMessage.mock.calls[0][2].blocks);
+    expect(blocks).not.toContain('secret title');
+    expect(blocks).not.toContain('https://slack/D9');
+  });
+
+  it('many claimed keys stay inside Slack’s section limit, and the button is always there', async () => {
+    const slackApi = api();
+    const notifier = createUserTaskSlackNotifier({ slackApi, queue: () => undefined, titleOf: () => 'x'.repeat(200) });
+    const claims = Array.from({ length: 50 }, (_, i) => ({
+      key: `ABC-${i + 1}`,
+      entry: `run:C1:${i}.0`,
+      state: 'running' as const,
+      holder: { user: 'U1', channel: 'C1', threadTs: `${i}.0` },
+    }));
+    notifier.refused?.({ userId: 'U1', sessionKey: 'C1:2.0', channel: 'C1', threadTs: '2.0' }, claims, 'tok1');
+    await flush();
+    const blocks = slackApi.postMessage.mock.calls[0][2].blocks as any[];
+    for (const b of blocks) if (b.type === 'section') expect(b.text.text.length).toBeLessThanOrEqual(3000);
+    expect(JSON.stringify(blocks)).toContain(USER_TASK_QUEUE_SAME_WORK_ACTION_ID);
+    expect(blocks.length).toBeLessThanOrEqual(50);
+  });
+
+  it('그래도 시작 sends it on as the clicker; a refusal is told only to the clicker', async () => {
+    const body = (user: string) => ({
+      user: { id: user },
+      channel: { id: 'C1' },
+      message: { thread_ts: '2.0' },
+      actions: [{ action_id: USER_TASK_QUEUE_SAME_WORK_ACTION_ID, value: queueActionValue('tok1') }],
+    });
+    const startSameWork = vi
+      .fn()
+      .mockReturnValueOnce({ ok: true })
+      .mockReturnValueOnce({ ok: false, reason: 'forbidden' });
+    const postEphemeral = vi.fn().mockResolvedValue({});
+    const deps = {
+      queue: () => ({ bypass: vi.fn(), cancel: vi.fn(), startSameWork }) as any,
+      isAdmin: () => false,
+      slackApi: { postEphemeral },
+    };
+    expect(await handleSameWorkAction(body('U1'), deps)).toBe(true);
+    expect(startSameWork).toHaveBeenCalledWith('tok1', 'U1', { admin: false });
+    expect(await handleSameWorkAction(body('U2'), deps)).toBe(false);
+    expect(postEphemeral).toHaveBeenCalledWith('C1', 'U2', expect.stringContaining('관리자'), '2.0');
   });
 });

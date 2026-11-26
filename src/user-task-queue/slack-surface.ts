@@ -12,11 +12,13 @@ import {
   buildCancelledNotice,
   buildDeferredNotice,
   buildQueuedNotice,
+  buildSameWorkNotice,
   buildStartedNotice,
   type NoticeTask,
   parseQueueActionValue,
   USER_TASK_QUEUE_BYPASS_ACTION_ID,
   USER_TASK_QUEUE_CANCEL_ACTION_ID,
+  USER_TASK_QUEUE_SAME_WORK_ACTION_ID,
 } from './slack-notice';
 import type {
   QueueActionRefusal,
@@ -43,6 +45,8 @@ export interface UserTaskSlackNotifierDeps {
   queue: () => Pick<UserTaskQueue, 'setNotice' | 'viewFor' | 'entry'> | undefined;
   /** A private channel (a DM, a private channel): its tasks are named in no other thread. */
   isPrivateChannel?(channel: string): boolean;
+  /** A thread's task title (its session's), for naming who has a key. */
+  titleOf?(channel: string, threadTs: string): string | undefined;
   logger?: Logger;
 }
 
@@ -173,6 +177,23 @@ export function createUserTaskSlackNotifier(deps: UserTaskSlackNotifierDeps): Us
       }
       rewrite(entry, () => buildCancelledNotice(why), 'cancelled notice');
     },
+    refused(thread, claims, token) {
+      void (async () => {
+        const named = await Promise.all(
+          claims.map(async (c) => ({
+            key: c.key,
+            state: c.state,
+            task: hidden(c.holder.channel, thread.channel)
+              ? { title: PRIVATE_TASK_TITLE }
+              : {
+                  title: deps.titleOf?.(c.holder.channel, c.holder.threadTs) ?? '다른 작업',
+                  link: await link(c.holder.channel, c.holder.threadTs),
+                },
+          })),
+        );
+        await post(thread.channel, thread.threadTs, buildSameWorkNotice(named, token), 'same-work notice');
+      })().catch(fail('same-work notice'));
+    },
     deferred(victim, first) {
       // Named in the first one's notice (its rewrite waits for this); the first one named in the stopped thread —
       // neither leaks a private task.
@@ -196,7 +217,7 @@ const REFUSAL_TEXT: Record<QueueActionRefusal, string> = {
 };
 
 export interface UserTaskQueueActionDeps {
-  queue: () => Pick<UserTaskQueue, 'bypass' | 'cancel'> | undefined;
+  queue: () => Pick<UserTaskQueue, 'bypass' | 'cancel' | 'startSameWork'> | undefined;
   isAdmin: (userId: string) => boolean;
   slackApi: Pick<UserTaskSlackApi, 'postEphemeral'>;
   logger?: Logger;
@@ -229,8 +250,41 @@ export async function handleUserTaskQueueAction(
   return result;
 }
 
+/** 그래도 시작 on a same-work notice: the request is sent on once (its sender, or an admin). */
+export async function handleSameWorkAction(body: any, deps: UserTaskQueueActionDeps): Promise<boolean> {
+  const token = parseQueueActionValue(body?.actions?.[0]?.value);
+  const clicker: string | undefined = body?.user?.id;
+  const queue = deps.queue();
+  if (!token || !clicker || !queue) return false;
+  const result = queue.startSameWork(token, clicker, { admin: deps.isAdmin(clicker) });
+  if (result.ok) return true;
+  const channel = body?.channel?.id ?? body?.container?.channel_id;
+  const threadTs = body?.message?.thread_ts ?? body?.container?.thread_ts;
+  if (channel) {
+    const text =
+      result.reason === 'forbidden'
+        ? '이 요청을 보낸 사람(또는 관리자)만 누를 수 있습니다.'
+        : '이미 보냈거나 30분이 지나 만료됐습니다 — 요청을 다시 보내세요.';
+    try {
+      await deps.slackApi.postEphemeral?.(channel, clicker, text, threadTs);
+    } catch {
+      // A courtesy: the click did nothing either way.
+    }
+  }
+  return false;
+}
+
 export function registerUserTaskQueueActions(app: App, deps: UserTaskQueueActionDeps): void {
   const logger = deps.logger ?? new Logger('UserTaskQueueActions');
+  app.action(USER_TASK_QUEUE_SAME_WORK_ACTION_ID, async ({ ack, body }) => {
+    await ack();
+    try {
+      const ok = await handleSameWorkAction(body, deps);
+      logger.info('User task queue: 그래도 시작', { ok });
+    } catch (error) {
+      logger.warn('User task queue: 그래도 시작 failed', { error: (error as Error)?.message ?? String(error) });
+    }
+  });
   for (const [actionId, kind] of [
     [USER_TASK_QUEUE_BYPASS_ACTION_ID, 'bypass'],
     [USER_TASK_QUEUE_CANCEL_ACTION_ID, 'cancel'],

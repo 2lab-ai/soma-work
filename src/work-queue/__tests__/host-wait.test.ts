@@ -15,15 +15,15 @@ function fakeHost(byThread: Record<string, WorkQueueThreadStatus>) {
 }
 
 const queued: WorkQueueThreadStatus = {
-  queue: 'qa:dev2',
+  queue: 'qa-dev2',
   entry: 'wq-2',
-  state: 'queued',
+  state: 'waiting',
   position: 1,
   keys: ['ABC-2'],
   since: 10,
 };
 const running: WorkQueueThreadStatus = {
-  queue: 'qa:dev2',
+  queue: 'qa-dev2',
   entry: 'wq-1',
   state: 'running',
   position: 0,
@@ -34,13 +34,13 @@ const running: WorkQueueThreadStatus = {
 describe('hostWaitFor', () => {
   it('a waiting entry reads queued, with its queue and place', () => {
     const deps = { host: fakeHost({ 'C1/1.1': queued }), handoffs: new EnvHandoffRuns() };
-    expect(hostWaitFor('C1', '1.1', deps)).toEqual({ kind: 'queued', queue: 'qa:dev2', position: 1, since: 10 });
+    expect(hostWaitFor('C1', '1.1', deps)).toEqual({ kind: 'queued', queue: 'qa-dev2', position: 1, since: 10 });
     expect(waitsOnHost('C1', '1.1', deps)).toBe(true);
   });
 
   it('a running entry reads running but is not a wait (the thread is the one to act)', () => {
     const deps = { host: fakeHost({ 'C1/1.1': running }), handoffs: new EnvHandoffRuns() };
-    expect(hostWaitFor('C1', '1.1', deps)).toEqual({ kind: 'running', queue: 'qa:dev2', since: 20 });
+    expect(hostWaitFor('C1', '1.1', deps)).toEqual({ kind: 'running', queue: 'qa-dev2', since: 20 });
     expect(waitsOnHost('C1', '1.1', deps)).toBe(false);
   });
 
@@ -50,7 +50,7 @@ describe('hostWaitFor', () => {
     const deps = { host: fakeHost({ 'C1/9.9': queued }), handoffs };
     expect(hostWaitFor('C1', '1.1', deps)).toEqual({ kind: 'env', owner: 'env:acme-dev2', since: 30 });
     run.opened('C1', '9.9');
-    expect(hostWaitFor('C1', '1.1', deps)).toEqual({ kind: 'queued', queue: 'qa:dev2', position: 1, since: 10 });
+    expect(hostWaitFor('C1', '1.1', deps)).toEqual({ kind: 'queued', queue: 'qa-dev2', position: 1, since: 10 });
     expect(waitsOnHost('C1', '1.1', deps)).toBe(true);
   });
 

@@ -6,11 +6,14 @@
  * - started  — the same message rewritten when its turn came (no buttons left).
  * - cancelled — the same message rewritten when it left the line.
  * - deferred — posted in the thread that was stopped so another could go first.
+ * - same work — posted in a thread whose request names only work that already runs or waits elsewhere: nothing
+ *              started; who has each key; 그래도 시작 sends it on once.
  */
 import { escapeSlackMrkdwn } from '../slack/mrkdwn-escape';
 
 export const USER_TASK_QUEUE_BYPASS_ACTION_ID = 'user_task_queue_bypass';
 export const USER_TASK_QUEUE_CANCEL_ACTION_ID = 'user_task_queue_cancel';
+export const USER_TASK_QUEUE_SAME_WORK_ACTION_ID = 'user_task_queue_same_work';
 
 const VALUE_PREFIX = 'utq:';
 
@@ -160,6 +163,65 @@ export function buildDeferredNotice(first: NoticeTask): SlackNotice {
     blocks: [
       section(`⏸ *이 작업을 잠시 멈췄습니다* — ${taskRef(first)} 작업을 먼저 진행합니다.`),
       context('그 작업이 끝나면 이 작업을 멈춘 지점부터 자동으로 이어서 합니다. 대시보드 *대기큐*에서 볼 수 있습니다.'),
+    ],
+  };
+}
+
+/** A same-work notice's key lines go in sections of at most this many characters (Slack's limit is 3,000). */
+const SAME_WORK_SECTION_CHARS = 2800;
+/** … and at most this many such sections (a message holds 50 blocks). */
+const SAME_WORK_SECTIONS = 6;
+
+/** One key of a refused request and the task that has it. */
+export interface SameWorkClaim {
+  key: string;
+  state: 'running' | 'waiting';
+  task: NoticeTask;
+}
+
+/** The request names only work that already runs or waits in another thread of the person: nothing started. */
+export function buildSameWorkNotice(claims: SameWorkClaim[], token: string): SlackNotice {
+  const all = claims.map(
+    (c) => `• \`${escapeSlackMrkdwn(c.key)}\` — ${c.state === 'running' ? '진행 중' : '대기 중'}: ${taskRef(c.task)}`,
+  );
+  // Slack's section text holds 3,000 characters and a message 50 blocks: the lines go in sections of up to
+  // SAME_WORK_SECTION_CHARS, at most SAME_WORK_SECTIONS of them, and what is left is counted — the button always fits.
+  const sections: string[] = [];
+  let current = '';
+  let shown = 0;
+  for (const line of all) {
+    const piece = line.length > SAME_WORK_SECTION_CHARS ? `${line.slice(0, SAME_WORK_SECTION_CHARS - 1)}…` : line;
+    if (current && current.length + 1 + piece.length > SAME_WORK_SECTION_CHARS) {
+      if (sections.length + 1 >= SAME_WORK_SECTIONS) break;
+      sections.push(current);
+      current = '';
+    }
+    current = current ? `${current}\n${piece}` : piece;
+    shown++;
+  }
+  if (current) sections.push(current);
+  const text = '⛔ 같은 작업이 이미 진행 중이거나 대기 중이라 시작하지 않았습니다.';
+  return {
+    text,
+    blocks: [
+      section(
+        '⛔ *같은 작업이라 시작하지 않았습니다* — 이 요청의 작업 키가 모두 다른 스레드에서 진행 중이거나 대기 중입니다.',
+      ),
+      ...sections.map((t) => section(t)),
+      ...(shown < all.length ? [context(`외 ${all.length - shown}개 키도 이미 진행 중이거나 대기 중입니다.`)] : []),
+      section('같은 지시를 두 번 보낸 것이 아니라면 `그래도 시작`을 누르세요 — 이 요청을 그대로 다시 보냅니다(한 번).'),
+      {
+        type: 'actions',
+        elements: [
+          {
+            type: 'button',
+            action_id: USER_TASK_QUEUE_SAME_WORK_ACTION_ID,
+            text: { type: 'plain_text', text: '그래도 시작', emoji: true },
+            value: queueActionValue(token),
+          },
+        ],
+      },
+      context('30분 안에 누르면 됩니다. 작업 키 = 요청에 적힌 Jira 키 · GitHub 이슈/PR.'),
     ],
   };
 }

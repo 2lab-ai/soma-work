@@ -30,6 +30,8 @@ import { buildSafeguardRefusalBlocks, decideSafeguardGate, safeguardRefusalNotic
 import { markPersonStop } from '@soma/slack/session-manager';
 import { sayPostSwitches } from '@soma/slack/stream-processor';
 import { HandoffAbortError, isZHandoffWorkflow } from 'somalib/model-commands/handoff-parser';
+import type { SessionLinks } from 'somalib/model-commands/session-types';
+import { keysInText, WORK_KEYS_MAX } from 'somalib/work-queue/keys';
 import { getAdminUsers, isAdminUser } from './admin-utils';
 import { taskDirectoryFor } from './agent-runtime/execution-context';
 import type { ContinuationHandler, TurnRunnerSurface } from './agent-session';
@@ -176,6 +178,10 @@ import type { ConversationSession, SessionGoal, SessionGoalStall, SessionInciden
 import { userSettingsStore } from './user-settings-store';
 import type { GateInput, RunningTask, UserTaskGatePort } from './user-task-queue/user-task-queue';
 import { hostWaitFor, waitsOnHost } from './work-queue/host-wait';
+
+/** Threads whose request keys the per-user queue remembers (`SlackHandler.userTaskKeys`). */
+const USER_TASK_KEYS_THREADS_MAX = 2000;
+
 import { WorkingDirectoryManager } from './working-directory-manager';
 
 interface SlackPermalinkTarget {
@@ -2164,6 +2170,12 @@ export class SlackHandler {
     }
     if (userTask === 'queued') {
       // Durably stored, like a follow-up behind a busy slot: a host waiting for the receipt hears it now.
+      this.noteTurnAccepted(event.channel, event.ts);
+      return;
+    }
+    if (userTask === 'same-work') {
+      // .prd/36 v2 D12 — every key it names already runs or waits in another thread of the person: nothing starts,
+      // the thread was told who has it (그래도 시작 sends it on once).
       this.noteTurnAccepted(event.channel, event.ts);
       return;
     }
@@ -9294,7 +9306,7 @@ export class SlackHandler {
     event: MessageEvent,
     sessionKey: string,
     admitted: boolean,
-  ): 'run' | 'queued' | 'drop' | 'duplicate' {
+  ): 'run' | 'queued' | 'drop' | 'duplicate' | 'same-work' {
     const queue = this.userTaskQueue;
     if (!queue) return 'run';
     const userId = this.userTaskOwnerOf(sessionKey, event);
@@ -9317,7 +9329,16 @@ export class SlackHandler {
         admitted,
         // pr-watch reserved this event's slot as it sent it (`reserveHostTurn`): it runs on that reservation.
         hostReserved: route?.userTaskReady === true,
+        sameWorkOk: route?.userTaskSameWorkOk === true,
       });
+      if (result.action === 'same-work') {
+        this.logger.info('User task queue: the same work is already running or waiting — not started', {
+          sessionKey,
+          userId,
+          keys: result.keys,
+          holders: result.claims.map((c) => c.entry),
+        });
+      }
       if (result.action === 'queued') {
         this.logger.info('User task queue: message waits for the person to have a free slot', {
           sessionKey,
@@ -9337,9 +9358,40 @@ export class SlackHandler {
     }
   }
 
+  /**
+   * The work keys each thread's latest keyed request named (`keysInText`), by session key — a running task's keys with
+   * its card's issue and PR links (`runningTasksOf`). In memory: after a restart a task keeps the keys of its card links.
+   */
+  private readonly userTaskKeys = new Map<string, string[]>();
+
+  private noteUserTaskKeys(sessionKey: string, text: string | undefined): void {
+    const found = keysInText(text);
+    if (found.length === 0) return;
+    // The request that opens a new turn names what the task works on now: it replaces the thread's earlier keys (a
+    // thread that once did ABC-1 and now does ABC-2 is not doing ABC-1 — review 2026-11-26). A turn whose request names
+    // no key keeps them.
+    this.userTaskKeys.delete(sessionKey);
+    this.userTaskKeys.set(sessionKey, found.slice(0, WORK_KEYS_MAX));
+    // Bounded: the oldest threads' keys go first.
+    while (this.userTaskKeys.size > USER_TASK_KEYS_THREADS_MAX) {
+      const oldest = this.userTaskKeys.keys().next().value;
+      if (oldest === undefined) break;
+      this.userTaskKeys.delete(oldest);
+    }
+  }
+
+  /** A task's registered work keys: what its requests named, and its card's issue and PR. */
+  private userTaskKeysOf(sessionKey: string, session: { links?: SessionLinks } | undefined): string[] {
+    const fromLinks = [session?.links?.issue, session?.links?.pr].flatMap((l) =>
+      l ? keysInText(`${l.url} ${l.label ?? ''}`) : [],
+    );
+    return [...new Set([...(this.userTaskKeys.get(sessionKey) ?? []), ...fromLinks])];
+  }
+
   private noteUserTaskSlot(sessionKey: string, event: MessageEvent): void {
     const userId = this.userTaskOwnerOf(sessionKey, event);
     if (!userId) return;
+    if (!event.synthetic) this.noteUserTaskKeys(sessionKey, event.text);
     this.userTaskSlots.set(sessionKey, {
       userId,
       channel: event.channel,
@@ -9369,11 +9421,9 @@ export class SlackHandler {
     };
     const seen = new Set<string>();
     const slotOf = (key: string) => this.followupMigration?.byCanonical.get(key) ?? key;
-    const titleOf = (key: string) => {
-      const s =
-        typeof this.claudeHandler?.getSessionByKey === 'function' ? this.claudeHandler.getSessionByKey(key) : undefined;
-      return s?.title || undefined;
-    };
+    const sessionOf = (key: string) =>
+      typeof this.claudeHandler?.getSessionByKey === 'function' ? this.claudeHandler.getSessionByKey(key) : undefined;
+    const titleOf = (key: string) => sessionOf(key)?.title || undefined;
     for (const [key, slot] of this.userTaskSlots) {
       if (!this.isFollowupTurnBusy(key)) {
         this.userTaskSlots.delete(key);
@@ -9396,6 +9446,12 @@ export class SlackHandler {
         threadTs,
         title: titleOf(canonical) ?? titleOf(key),
         startedAt: slot.startedAt,
+        keys: [
+          ...new Set([
+            ...this.userTaskKeysOf(key, sessionOf(key)),
+            ...(canonical !== key ? this.userTaskKeysOf(canonical, sessionOf(canonical)) : []),
+          ]),
+        ],
         ...guardOf(channel, threadTs),
       });
     }
@@ -9413,6 +9469,7 @@ export class SlackHandler {
         threadTs: s.threadTs || '',
         title: s.title || undefined,
         startedAt: Number(s.activityStateChangedAt) || undefined,
+        keys: this.userTaskKeysOf(key, s),
         ...guardOf(s.channelId, s.threadTs),
       });
     }

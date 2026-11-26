@@ -45,7 +45,7 @@ import type { AgentTreeEvent } from '@soma/slack/agent-tree';
 import type { LiveUsageCall } from '@soma/slack/live-usage';
 import * as path from 'path';
 import { CronStorage } from 'somalib/cron/cron-storage';
-import { parseWorkQueuesConfig } from 'somalib/work-queue/config';
+import { readPinnedQueuesFromConfigFile } from 'somalib/work-queue/config';
 import { WORK_QUEUE_FILE, WorkQueueStore, workQueueStoreAvailable } from 'somalib/work-queue/store';
 import {
   initA2tService,
@@ -701,13 +701,10 @@ async function start() {
     if (appConfig.ui) {
       timing(`UI surface config applied (${Object.keys(uiConfigResult.config).length} surfaces overridden)`);
     }
-    // Work queues (.prd/36): `config.json#workQueues` (lane → environments). The work-queue MCP re-reads it on every
-    // call, so this only reports what the file says now.
-    const workQueueConfig = parseWorkQueuesConfig(appConfig.workQueues);
-    for (const warning of workQueueConfig.warnings) {
-      logger.warn(`config.json#workQueues: ${warning}`);
-    }
-    timing(`Work queues: ${workQueueConfig.queues.map((q) => q.id).join(', ') || 'none'}`);
+    // Work queues (.prd/36 v2): a lane exists from its first entry; `config.json#workQueues` only pins lanes to list
+    // while empty. The MCP and the host re-read it when the file changes, so this only reports what it says now.
+    const pinnedLanes = readPinnedQueuesFromConfigFile(CONFIG_FILE, (message) => logger.warn(message));
+    timing(`Work queues pinned: ${pinnedLanes().join(', ') || 'none'}`);
 
     // The one injection point for the dashboard deep link: the thread header
     // `dashboardLink` field and the user-started thread link both resolve
@@ -2424,6 +2421,7 @@ async function start() {
             .getSlackApi()
             .postMessage(holder.channel, text, { threadTs: holder.threadTs })
             .catch(() => undefined),
+        pinned: pinnedLanes,
       });
       setActiveWorkQueueHost(workQueueHost);
       workQueueHost.start();
@@ -2451,6 +2449,8 @@ async function start() {
         isShuttingDown: () => slackHandler.isShuttingDown(),
         // A DM or a private channel: its task is named in no other thread (the dashboard's #1315 rule).
         isPrivateChannel: (channel) => isPrivateTask(channel),
+        // The same-work notice names the task that has a key (its session's title).
+        titleOf: (channel, threadTs) => claudeHandler.getSessionRegistry().getSession(channel, threadTs)?.title,
       });
       slackHandler.setUserTaskQueue(userTaskHost.queue, () => userTaskHost.scheduleRelease());
       setActiveUserTaskQueue({

@@ -266,6 +266,11 @@ export interface MessageEvent {
      * outlive its own staleness checks (a merged PR, a closed session).
      */
     userTaskReady?: boolean;
+    /**
+     * Set only by the host when the person pressed 그래도 시작 on a request the per-user queue refused as the same work
+     * (`UserTaskQueue.startSameWork`): it is gated like any request, minus the same-work check.
+     */
+    userTaskSameWorkOk?: boolean;
   };
   files?: Array<{
     id: string;

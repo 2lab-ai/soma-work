@@ -1,24 +1,24 @@
 #!/usr/bin/env node
 
 /**
- * work-queue MCP server (.prd/36 §4.1, .prd/37 §3) — the one way a model lines up for a lane.
+ * work-queue MCP server (.prd/36 v2 §4.1, .prd/37 §3) — the one way a model lines up for a lane.
  *
- * A queue is `<lane>:<env>` (`deploy:dev2`, `qa:stage0`), configured in `config.json#workQueues`. The server knows
- * nothing about what a lane means: deploy and QA use the same four tools. It changes the shared ledger
- * (`DATA_DIR/work-queues.sqlite3`, `@soma/process-shared/work-queue`) in one SQLite transaction and answers on the
- * spot — a conflict comes back in the same call, so the model never waits to learn it. The host reads the same
- * ledger: it wakes the thread whose turn came and gives back a turn its thread stopped working on.
+ * A lane is named by the work that uses it (`qa-dev2`, `deploy-stage0`) and exists from its first entry: nothing is
+ * configured first (`config.json#workQueues` only pins lanes so they show while empty). The server knows nothing about
+ * what a lane means: deploy and QA use the same tools. `queue_try` takes a free lane or says what is ahead without
+ * lining up; `queue_enter` lines up and the host wakes the thread when its turn comes. Every change is one SQLite
+ * transaction on the shared ledger (`DATA_DIR/work-queues.sqlite3`, `@soma/process-shared/work-queue`) and is
+ * answered on the spot — a conflict comes back in the same call, so the model never waits to learn it.
  *
  * The thread (holder) comes from `SOMA_WORK_QUEUE_CONTEXT`, which the host writes when it starts this process — the
  * model cannot name another thread.
  */
 
-import fs from 'node:fs';
 import path from 'node:path';
 import type { ToolDefinition, ToolResult } from '@soma/process-shared/mcp/base-mcp-server.js';
 import { BaseMcpServer } from '@soma/process-shared/mcp/base-mcp-server.js';
 import { StderrLogger } from '@soma/process-shared/stderr-logger.js';
-import { parseWorkQueuesConfig, type WorkQueueDef } from '@soma/process-shared/work-queue/config.js';
+import { normalizeQueueName, readPinnedQueuesFromConfigFile } from '@soma/process-shared/work-queue/config.js';
 import {
   briefOf,
   endEntry,
@@ -35,6 +35,16 @@ const logger = new StderrLogger('WorkQueueMCP');
 const NOT_A_PERSON =
   'Never poll the queue, sleep, arm a cron or ask the user about the wait — waiting in line is not a question.';
 
+const KEYS_RULE =
+  'Name the work by keys — Jira keys (ABC-1234) or GitHub keys (owner/repo#123; issues and PRs share the form): the ' +
+  'PRs a deploy ships, the issues a QA run checks. A key that already runs or waits in that lane refuses the whole ' +
+  'entry (CONFLICT, naming who has it and which keys are free): someone else does that work — drop those keys and ' +
+  'call again with the free ones; if none is free the work is not needed: say so and stop.';
+
+const LANE_NAME =
+  'The lane, named by the work and its environment, e.g. "qa-dev2", "deploy-stage0" (lower case, - . _). Use the ' +
+  'name others use (queue_list) — a new name makes a new lane.';
+
 type WorkQueueToolDefinition = ToolDefinition & {
   inputSchema: {
     type: 'object';
@@ -44,43 +54,46 @@ type WorkQueueToolDefinition = ToolDefinition & {
   };
 };
 
+const ENTER_PROPS = {
+  queue: { type: 'string', description: LANE_NAME },
+  keys: {
+    type: 'array',
+    items: { type: 'string' },
+    description: 'The work this entry is for: Jira keys or GitHub owner/repo#number. At least one.',
+  },
+  note: { type: 'string', description: 'One line for people reading the queue (what runs).' },
+};
+
 export const WORK_QUEUE_TOOLS: WorkQueueToolDefinition[] = [
   {
     name: 'queue_list',
     description:
-      'Show the work queues of this host (`<lane>:<env>`, e.g. deploy:dev2, qa:stage0): per queue the entry that runs, ' +
-      'the entries that wait (in order) and what recently ended — each with its keys and the thread that holds it — ' +
-      'plus the entries this thread holds.',
+      'Show the lanes of this host (e.g. qa-dev2, deploy-stage0): per lane the entry that runs, the entries that wait ' +
+      '(in order) and what recently left — each with its keys and the thread that holds it — plus the entries this ' +
+      'thread holds.',
     inputSchema: {
       type: 'object',
-      properties: { queue: { type: 'string', description: 'One queue only (e.g. "qa:dev2").' } },
+      properties: { queue: { type: 'string', description: 'One lane only (e.g. "qa-dev2").' } },
       additionalProperties: false,
     },
   },
   {
+    name: 'queue_try',
+    description:
+      'Take a lane only if it is free, without lining up: "running" = it is yours now, do the work and call ' +
+      'queue_done when it ends; "busy" = nothing was added — the answer says what runs and waits ahead, so you can ' +
+      'decide: do other work first, or queue_enter to wait for your turn. Use it where a lock or "is the lane free?" ' +
+      `check would go. ${KEYS_RULE}`,
+    inputSchema: { type: 'object', properties: ENTER_PROPS, required: ['queue', 'keys'], additionalProperties: false },
+  },
+  {
     name: 'queue_enter',
     description:
-      'Line up for a lane before doing its work (a deploy, a QA run): one entry runs per queue at a time. Name the work ' +
-      'by keys — Jira keys (ABC-1234) or GitHub keys (owner/repo#123; issues and PRs share the form): the PRs a deploy ' +
-      'ships, the issues a QA run checks. If any key already runs or waits in that queue the whole entry is refused ' +
-      '(CONFLICT) with who holds it: someone else does that work — drop those keys and enter again with the rest; if ' +
-      'none is left the work is not needed, say so and stop. "running" = start now and call queue_done when the work ' +
-      'ends. "queued" = end your turn now; the host wakes this thread when its turn comes. ' +
-      NOT_A_PERSON,
-    inputSchema: {
-      type: 'object',
-      properties: {
-        queue: { type: 'string', description: 'The queue, `<lane>:<env>` (see queue_list), e.g. "qa:dev2".' },
-        keys: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'The work this entry is for: Jira keys or GitHub owner/repo#number. At least one.',
-        },
-        note: { type: 'string', description: 'One line for people reading the queue (what runs).' },
-      },
-      required: ['queue', 'keys'],
-      additionalProperties: false,
-    },
+      'Line up for a lane before doing its work (a deploy, a QA run): one entry runs per lane at a time, the rest wait ' +
+      'in order. "running" = start now and call queue_done when the work ends. "queued" = end your turn now; the host ' +
+      'wakes this thread when its turn comes and you carry on then. This replaces any lock a skill tells you to take ' +
+      `for the lane: a lane that is busy is a wait, never a reason to stop or to ask. ${KEYS_RULE} ${NOT_A_PERSON}`,
+    inputSchema: { type: 'object', properties: ENTER_PROPS, required: ['queue', 'keys'], additionalProperties: false },
   },
   {
     name: 'queue_done',
@@ -113,7 +126,8 @@ export const WORK_QUEUE_TOOLS: WorkQueueToolDefinition[] = [
 
 export interface WorkQueueToolsDeps {
   store: Pick<WorkQueueStore, 'read' | 'mutate'>;
-  queues: () => readonly WorkQueueDef[];
+  /** The lanes `config.json` pins (listed even while empty). Never throws: an unreadable config pins nothing. */
+  pinned: () => readonly string[];
   /** The calling thread; undefined when the host gave none. */
   context: WorkQueueHolder | undefined;
   now: () => number;
@@ -134,42 +148,74 @@ export function createWorkQueueTools(deps: WorkQueueToolsDeps): {
   const entryArg = (args: Record<string, unknown>): string | undefined =>
     typeof args.entry === 'string' && /^wq-\d+$/.test(args.entry.trim()) ? args.entry.trim() : undefined;
 
-  const list = (args: Record<string, unknown>, queues: readonly WorkQueueDef[]): WorkQueueAnswer => {
-    const only = typeof args.queue === 'string' && args.queue.trim() ? args.queue.trim() : undefined;
-    const shown = only ? queues.filter((q) => q.id === only) : queues;
-    if (only && shown.length === 0) {
-      return fail('UNKNOWN_QUEUE', `No queue "${only}" on this host.`, undefined, { queues: queues.map((q) => q.id) });
+  const pinnedSafe = (): readonly string[] => {
+    try {
+      return deps.pinned();
+    } catch {
+      return [];
     }
+  };
+
+  const list = (args: Record<string, unknown>): WorkQueueAnswer => {
     const ledger = deps.store.read();
+    const all = queueViews(ledger, pinnedSafe(), 5);
+    const only = typeof args.queue === 'string' && args.queue.trim() ? normalizeQueueName(args.queue) : undefined;
+    const shown = only ? all.filter((q) => q.id === only) : all;
     const mine = deps.context
       ? entriesOfHolder(ledger, deps.context).map((e) => ({ ...briefOf(e), position: queuePosition(ledger, e) }))
       : [];
-    return { ok: true, queues: queueViews(ledger, shown), mine };
+    return { ok: true, queues: shown, mine };
   };
 
-  const enter = (args: Record<string, unknown>, queues: readonly WorkQueueDef[], holder: WorkQueueHolder) => {
+  const enter = (args: Record<string, unknown>, holder: WorkQueueHolder, mode: 'wait' | 'try') => {
     if (typeof args.queue !== 'string' || !args.queue.trim()) {
-      return fail('INVALID_ARGS', '`queue` is required (e.g. "qa:dev2").');
+      return fail('INVALID_ARGS', '`queue` is required (e.g. "qa-dev2").');
     }
     const result = deps.store.mutate((ledger) =>
-      enterQueue(ledger, { queue: args.queue as string, keys: args.keys, holder, note: args.note }, queues, deps.now()),
+      enterQueue(ledger, { queue: args.queue as string, keys: args.keys, holder, note: args.note, mode }, deps.now()),
     );
     if (!result.ok) {
       const next =
         result.code === 'CONFLICT'
-          ? 'Those keys are already handled in this queue — drop them and call queue_enter again with the rest; if none is left, the work is not needed: say so and stop.'
+          ? result.free.length > 0
+            ? `Those keys are already handled in this lane — call ${mode === 'try' ? 'queue_try' : 'queue_enter'} again with only: ${result.free.join(', ')}.`
+            : 'Every key is already handled in this lane by someone else — the work is not needed: say so and stop.'
           : result.code === 'ALREADY_IN_QUEUE'
             ? 'Use the entry this thread already holds, or queue_cancel it first.'
             : 'Fix the call and try again.';
       return { ...result, next };
     }
-    const { entry, position, ahead } = result;
+    if (result.status === 'busy') {
+      const { queue, position, ahead } = result;
+      return {
+        ok: true,
+        status: 'busy',
+        queue,
+        position,
+        ahead,
+        next:
+          `${queue} is in use (${ahead.length} ahead) and nothing was added. Do other work first, or queue_enter to ` +
+          `wait for your turn (the host wakes this thread). ${NOT_A_PERSON}`,
+      };
+    }
+    const { entry, position, ahead, created } = result;
+    const fresh = created
+      ? ` ${entry.queue} is a new lane (nobody used that name before) — if others use another name for the same lane, queue_cancel and enter that one.`
+      : '';
     const next =
       entry.state === 'running'
-        ? `Start the work now. When it ends call queue_done {"entry": "${entry.id}"}.`
+        ? `Start the work now. When it ends call queue_done {"entry": "${entry.id}"}.${fresh}`
         : `End your turn now: ${position === 1 ? 'one entry runs' : `${ahead.length} entries run or wait`} before it. ` +
-          `The host wakes this thread when ${entry.id} runs; then do the work and call queue_done. ${NOT_A_PERSON}`;
-    return { ok: true, status: entry.state, entry: briefOf(entry), position, ahead, next };
+          `The host wakes this thread when ${entry.id} runs; then do the work and call queue_done. ${NOT_A_PERSON}${fresh}`;
+    return {
+      ok: true,
+      status: entry.state === 'running' ? 'running' : 'queued',
+      entry: briefOf(entry),
+      position,
+      ahead,
+      ...(created ? { created: true } : {}),
+      next,
+    };
   };
 
   const end = (
@@ -194,11 +240,7 @@ export function createWorkQueueTools(deps: WorkQueueToolsDeps): {
     if (!result.ok) return { ...result };
     return {
       ok: true,
-      ended: {
-        ...briefOf(result.ended),
-        end: result.ended.end,
-        ...(result.ended.reason ? { reason: result.ended.reason } : {}),
-      },
+      ended: result.ended,
       ...(result.granted ? { next_entry: briefOf(result.granted) } : {}),
     };
   };
@@ -212,73 +254,16 @@ export function createWorkQueueTools(deps: WorkQueueToolsDeps): {
           'Go on without a line: this host keeps no work queue.',
         );
       }
-      let queues: readonly WorkQueueDef[];
-      try {
-        queues = deps.queues();
-      } catch (error) {
-        return fail(
-          'CONFIG_UNREADABLE',
-          `The host's queue configuration cannot be read now: ${(error as Error)?.message ?? String(error)}.`,
-          'Call again in a moment; until it answers, do not start the lane work.',
-        );
-      }
-      if (queues.length === 0) {
-        return fail(
-          'NO_QUEUES',
-          'This host has no work queues (config.json workQueues).',
-          'Go on without a line: this host does not queue lanes.',
-        );
-      }
-      if (name === 'queue_list') return list(args, queues);
+      if (name === 'queue_list') return list(args);
       const holder = deps.context;
       if (!holder?.channel || !holder.threadTs) {
         return fail('NO_THREAD', 'This session has no thread to hold an entry.');
       }
-      if (name === 'queue_enter') return enter(args, queues, holder);
+      if (name === 'queue_enter') return enter(args, holder, 'wait');
+      if (name === 'queue_try') return enter(args, holder, 'try');
       if (name === 'queue_done' || name === 'queue_cancel') return end(name, args, holder);
       throw new Error(`Unknown tool: ${name}`);
     },
-  };
-}
-
-/**
- * `config.json#workQueues`, re-read when the file changes (no restart needed to add a queue). A config that cannot be
- * read or parsed — or whose `workQueues` holds no valid queue — keeps the last good queues and is tried again on the
- * next call (never cached as "no queues": that
- * would tell a model to go on without a line while another thread holds the lane); with no good read yet it throws,
- * which the tools answer as `CONFIG_UNREADABLE`. A missing file is no queues.
- */
-export function readWorkQueuesFromConfigFile(configFile: string | undefined): () => readonly WorkQueueDef[] {
-  let good: { mtimeMs: number; queues: WorkQueueDef[] } | undefined;
-  return () => {
-    if (!configFile) return [];
-    let mtimeMs: number;
-    try {
-      mtimeMs = fs.statSync(configFile).mtimeMs;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
-      if (good) return good.queues;
-      throw new Error(`config.json cannot be read: ${(error as Error)?.message}`);
-    }
-    if (good?.mtimeMs === mtimeMs) return good.queues;
-    try {
-      const raw: unknown = JSON.parse(fs.readFileSync(configFile, 'utf8'));
-      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-        throw new Error('the config root is not an object');
-      }
-      const parsed = parseWorkQueuesConfig((raw as Record<string, unknown>).workQueues);
-      for (const warning of parsed.warnings) logger.warn(`config.json ${warning}`);
-      // A key whose every definition is invalid is a broken config, not a host without queues.
-      if (parsed.queues.length === 0 && parsed.warnings.length > 0) {
-        throw new Error(`workQueues has no valid queue (${parsed.warnings.join('; ')})`);
-      }
-      good = { mtimeMs, queues: parsed.queues };
-      return parsed.queues;
-    } catch (error) {
-      logger.warn('config.json unreadable — keeping the last good work queues', { error: (error as Error)?.message });
-      if (good) return good.queues;
-      throw new Error(`config.json cannot be read: ${(error as Error)?.message}`);
-    }
   };
 }
 
@@ -302,7 +287,7 @@ class WorkQueueMcpServer extends BaseMcpServer {
     const dataDir = process.env.SOMA_DATA_DIR || path.join(process.cwd(), 'data');
     this.tools = createWorkQueueTools({
       store: new WorkQueueStore(path.join(dataDir, WORK_QUEUE_FILE)),
-      queues: readWorkQueuesFromConfigFile(process.env.SOMA_CONFIG_FILE),
+      pinned: readPinnedQueuesFromConfigFile(process.env.SOMA_CONFIG_FILE, (message) => logger.warn(message)),
       context: parseContext(process.env.SOMA_WORK_QUEUE_CONTEXT),
       now: () => Date.now(),
       available: workQueueStoreAvailable,

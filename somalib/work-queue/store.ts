@@ -6,8 +6,8 @@
  *   `ledger.ts`), write it back with the revision + 1, commit. SQLite's file locks serialize writers across processes
  *   and the OS releases them when a process dies, so there is no lock file to go stale, nothing to take over, and a
  *   crash mid-change rolls back. A writer that finds the database busy waits up to `busyTimeoutMs`.
- * - `read()`: the committed ledger (WAL: readers never wait for a writer). No row yet = empty ledger. A stored ledger
- *   of the wrong shape throws — never an empty ledger (rules/config.md 4: an empty read would let every waiting entry
+ * - `read()`: the committed ledger (WAL: readers never wait for a writer). No row yet = empty ledger. A v1 ledger reads
+ *   as v2 (`parseWorkQueueLedger`). A stored ledger of the wrong shape throws — never an empty ledger (rules/config.md 4: an empty read would let every waiting entry
  *   vanish).
  * - `stamp()`: the revision, which moves on every commit — the host re-reads only when it changed.
  *
@@ -17,7 +17,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
-import { emptyLedger, isWorkQueueLedger, type WorkQueueLedger } from './ledger';
+import { emptyLedger, parseWorkQueueLedger, type WorkQueueLedger } from './ledger';
 
 export const WORK_QUEUE_FILE = 'work-queues.sqlite3';
 
@@ -118,10 +118,12 @@ export class WorkQueueStore {
     } catch {
       value = undefined;
     }
-    if (!isWorkQueueLedger(value)) {
+    try {
+      // A v1 ledger (.prd/36 v1) reads as v2; the next change writes it back as v2.
+      return parseWorkQueueLedger(value);
+    } catch {
       throw new Error(`work-queues: ${this.filePath} holds a ledger of the wrong shape — not reading it as empty`);
     }
-    return value;
   }
 
   private open(): DatabaseSync {

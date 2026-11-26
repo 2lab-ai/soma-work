@@ -1,20 +1,18 @@
 /**
- * The work-queue MCP server (.prd/36 §4.1, .prd/37 §3): four tools over the shared ledger, answered on the spot.
+ * The work-queue MCP server (.prd/36 v2 §4.1, .prd/37 §3): five tools over the shared ledger, answered on the spot.
+ * Lanes need no configuration; the config only pins lanes to list while empty.
  */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { readPinnedQueuesFromConfigFile } from '@soma/process-shared/work-queue/config.js';
 import { MemoryWorkQueueStore } from '@soma/process-shared/work-queue/memory-store.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createWorkQueueTools, readWorkQueuesFromConfigFile, WORK_QUEUE_TOOLS } from './work-queue-mcp-server';
+import { createWorkQueueTools, WORK_QUEUE_TOOLS } from './work-queue-mcp-server';
 
 let dir: string;
 // The tools run on the in-process store (same contract as the SQLite one), so they are checked on every runtime.
 let store: MemoryWorkQueueStore;
-const QUEUES = [
-  { id: 'qa:dev2', lane: 'qa', env: 'dev2' },
-  { id: 'deploy:dev2', lane: 'deploy', env: 'dev2' },
-];
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'work-queue-mcp-'));
@@ -22,56 +20,91 @@ beforeEach(() => {
 });
 afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
-function tools(threadTs: string, queues = QUEUES, now = 1_000) {
+function tools(threadTs: string, pinned: string[] = [], now = 1_000) {
   return createWorkQueueTools({
     store,
-    queues: () => queues,
+    pinned: () => pinned,
     context: { user: `U-${threadTs}`, channel: 'C1', threadTs },
     now: () => now,
   });
 }
 
 describe('work-queue MCP tools', () => {
-  it('defines queue_list, queue_enter, queue_done, queue_cancel', () => {
-    expect(WORK_QUEUE_TOOLS.map((t) => t.name)).toEqual(['queue_list', 'queue_enter', 'queue_done', 'queue_cancel']);
+  it('defines queue_list, queue_try, queue_enter, queue_done, queue_cancel', () => {
+    expect(WORK_QUEUE_TOOLS.map((t) => t.name)).toEqual([
+      'queue_list',
+      'queue_try',
+      'queue_enter',
+      'queue_done',
+      'queue_cancel',
+    ]);
     const enter = WORK_QUEUE_TOOLS.find((t) => t.name === 'queue_enter');
     expect(enter?.inputSchema.required).toEqual(['queue', 'keys']);
     expect(enter?.description).toMatch(/cron/i);
     expect(enter?.description).toMatch(/Jira/);
+    // A skill's own lock for the lane is replaced by the line: busy is a wait, never a stop or a question.
+    expect(enter?.description).toMatch(/lock/i);
   });
 
-  it('enter on an empty queue runs now and says to start', () => {
-    const r = tools('1.1').call('queue_enter', { queue: 'qa:dev2', keys: ['abc-1'] });
+  it('a lane needs no configuration: the first enter makes it and runs now', () => {
+    const r = tools('1.1').call('queue_enter', { queue: 'qa-dev2', keys: ['abc-1'] });
     expect(r).toMatchObject({
       ok: true,
       status: 'running',
-      entry: { id: 'wq-1', keys: ['ABC-1'], holder: { channel: 'C1', threadTs: '1.1' } },
+      created: true,
+      entry: { id: 'wq-1', queue: 'qa-dev2', keys: ['ABC-1'], holder: { channel: 'C1', threadTs: '1.1' } },
     });
     expect(r.next).toMatch(/queue_done/);
+    expect(r.next).toMatch(/new lane/);
+  });
+
+  it('the v1 name `qa:dev2` is the same lane as `qa-dev2`', () => {
+    tools('1.1').call('queue_enter', { queue: 'qa:dev2', keys: ['ABC-1'] });
+    expect(tools('2.2').call('queue_enter', { queue: 'qa-dev2', keys: ['ABC-2'] })).toMatchObject({
+      status: 'queued',
+      position: 1,
+    });
   });
 
   it('enter behind a running entry waits and says to end the turn — no polling, no cron, no question', () => {
-    tools('1.1').call('queue_enter', { queue: 'qa:dev2', keys: ['ABC-1'] });
-    const r = tools('2.2').call('queue_enter', { queue: 'qa:dev2', keys: ['ABC-2'] });
+    tools('1.1').call('queue_enter', { queue: 'qa-dev2', keys: ['ABC-1'] });
+    const r = tools('2.2').call('queue_enter', { queue: 'qa-dev2', keys: ['ABC-2'] });
     expect(r).toMatchObject({ ok: true, status: 'queued', position: 1, ahead: [{ id: 'wq-1', state: 'running' }] });
+    expect(r.created).toBeUndefined();
     expect(r.next).toMatch(/end (this|your) turn/i);
     expect(r.next).toMatch(/cron/i);
   });
 
-  it('a conflict names the taken keys and tells the model to drop them and enter again', () => {
-    tools('1.1').call('queue_enter', { queue: 'qa:dev2', keys: ['ABC-1'] });
-    const r = tools('2.2').call('queue_enter', { queue: 'qa:dev2', keys: ['ABC-1', 'ABC-2'] });
+  it('try takes a free lane, and on a busy one adds nothing and says what is ahead', () => {
+    expect(tools('1.1').call('queue_try', { queue: 'qa-dev2', keys: ['ABC-1'] })).toMatchObject({
+      ok: true,
+      status: 'running',
+      entry: { id: 'wq-1' },
+    });
+    const busy = tools('2.2').call('queue_try', { queue: 'qa-dev2', keys: ['ABC-2'] });
+    expect(busy).toMatchObject({ ok: true, status: 'busy', queue: 'qa-dev2', position: 1, ahead: [{ id: 'wq-1' }] });
+    expect(busy.next).toMatch(/queue_enter/);
+    expect(store.read().entries).toHaveLength(1);
+  });
+
+  it('a conflict names the claimed keys and the free ones to enter again with; none free → not needed', () => {
+    tools('1.1').call('queue_enter', { queue: 'qa-dev2', keys: ['ABC-1'] });
+    const r = tools('2.2').call('queue_enter', { queue: 'qa-dev2', keys: ['ABC-1', 'ABC-2'] });
     expect(r).toMatchObject({
       ok: false,
       code: 'CONFLICT',
+      free: ['ABC-2'],
       conflicts: [{ key: 'ABC-1', entry: 'wq-1', state: 'running' }],
     });
-    expect(r.next).toMatch(/drop/i);
+    expect(r.next).toMatch(/ABC-2/);
+    const all = tools('3.3').call('queue_enter', { queue: 'qa-dev2', keys: ['ABC-1'] });
+    expect(all).toMatchObject({ ok: false, code: 'CONFLICT', free: [] });
+    expect(all.next).toMatch(/not needed/);
   });
 
   it('done hands over to the next entry and names it; only the holder thread may end its entry', () => {
-    tools('1.1').call('queue_enter', { queue: 'qa:dev2', keys: ['ABC-1'] });
-    tools('2.2').call('queue_enter', { queue: 'qa:dev2', keys: ['ABC-2'] });
+    tools('1.1').call('queue_enter', { queue: 'qa-dev2', keys: ['ABC-1'] });
+    tools('2.2').call('queue_enter', { queue: 'qa-dev2', keys: ['ABC-2'] });
     expect(tools('2.2').call('queue_done', { entry: 'wq-1' })).toMatchObject({ ok: false, code: 'NOT_HOLDER' });
     const r = tools('1.1').call('queue_done', { entry: 'wq-1' });
     expect(r).toMatchObject({
@@ -83,153 +116,86 @@ describe('work-queue MCP tools', () => {
   });
 
   it('cancel leaves the line (or gives the turn back) with a reason', () => {
-    tools('1.1').call('queue_enter', { queue: 'qa:dev2', keys: ['ABC-1'] });
-    tools('2.2').call('queue_enter', { queue: 'qa:dev2', keys: ['ABC-2'] });
+    tools('1.1').call('queue_enter', { queue: 'qa-dev2', keys: ['ABC-1'] });
+    tools('2.2').call('queue_enter', { queue: 'qa-dev2', keys: ['ABC-2'] });
     expect(tools('2.2').call('queue_cancel', { entry: 'wq-2', reason: 'not needed' })).toMatchObject({
       ok: true,
       ended: { id: 'wq-2', end: 'cancelled', reason: 'not needed' },
     });
   });
 
-  it('list shows every configured queue with what runs, waits and recently ended, and marks this thread', () => {
-    tools('1.1').call('queue_enter', { queue: 'qa:dev2', keys: ['ABC-1'] });
-    tools('2.2').call('queue_enter', { queue: 'qa:dev2', keys: ['ABC-2'] });
-    const r = tools('2.2').call('queue_list', {});
-    expect(r).toMatchObject({
-      ok: true,
-      queues: [
-        { queue: 'qa:dev2', running: { id: 'wq-1' }, queued: [{ id: 'wq-2' }] },
-        { queue: 'deploy:dev2', queued: [] },
-      ],
-      mine: [{ id: 'wq-2', position: 1 }],
-    });
-    expect(tools('2.2').call('queue_list', { queue: 'deploy:dev2' })).toMatchObject({
-      queues: [{ queue: 'deploy:dev2' }],
-    });
-  });
-
-  it('list shows what recently ended, newest first, with its outcome and reason', () => {
-    tools('1.1').call('queue_enter', { queue: 'qa:dev2', keys: ['ABC-1'] });
-    tools('1.1').call('queue_done', { entry: 'wq-1' });
-    tools('2.2').call('queue_enter', { queue: 'qa:dev2', keys: ['ABC-2'] });
-    tools('2.2').call('queue_cancel', { entry: 'wq-2', reason: 'not needed' });
-    tools('3.3').call('queue_enter', { queue: 'deploy:dev2', keys: ['2lab-ai/soma-work#9'] });
+  it('list shows pinned lanes (even empty) and every lane in use, with what runs, waits and left; marks this thread', () => {
+    tools('1.1').call('queue_enter', { queue: 'qa-dev2', keys: ['ABC-1'] });
+    tools('2.2').call('queue_enter', { queue: 'qa-dev2', keys: ['ABC-2'] });
+    tools('3.3').call('queue_enter', { queue: 'build-x', keys: ['ABC-3'] });
     tools('3.3').call('queue_done', { entry: 'wq-3' });
-    const r = tools('9.9').call('queue_list', {}) as any;
-    expect(r.queues[0].recent.map((e: any) => [e.id, e.end, e.reason])).toEqual([
-      ['wq-2', 'cancelled', 'not needed'],
-      ['wq-1', 'done', undefined],
+    const r = tools('2.2', ['deploy-dev2']).call('queue_list', {}) as any;
+    expect(r.queues.map((q: any) => [q.id, q.running.map((e: any) => e.id), q.waiting.map((e: any) => e.id)])).toEqual([
+      ['deploy-dev2', [], []],
+      ['build-x', [], []],
+      ['qa-dev2', ['wq-1'], ['wq-2']],
     ]);
     expect(r.queues[1].recent.map((e: any) => [e.id, e.end])).toEqual([['wq-3', 'done']]);
+    expect(r.mine).toEqual([expect.objectContaining({ id: 'wq-2', position: 1 })]);
+    expect(tools('2.2').call('queue_list', { queue: 'QA:dev2' })).toMatchObject({ queues: [{ id: 'qa-dev2' }] });
   });
 
-  it('a host with no queues says so on every tool — work goes on without a line', () => {
-    const r = tools('1.1', []).call('queue_enter', { queue: 'qa:dev2', keys: ['ABC-1'] });
-    expect(r).toMatchObject({ ok: false, code: 'NO_QUEUES' });
-    expect(r.next).toMatch(/without/i);
-    expect(tools('1.1', []).call('queue_list', {})).toMatchObject({ ok: false, code: 'NO_QUEUES' });
-  });
-
-  it('bad arguments are refused before the ledger is touched', () => {
-    expect(tools('1.1').call('queue_done', {})).toMatchObject({ ok: false, code: 'INVALID_ARGS' });
-    expect(tools('1.1').call('queue_enter', { keys: ['ABC-1'] })).toMatchObject({ ok: false, code: 'INVALID_ARGS' });
-    expect(store.stamp()).toBeUndefined();
-  });
-
-  it('a runtime that cannot keep the ledger says so on every tool — the queue is off there', () => {
-    const t = createWorkQueueTools({
-      store,
-      queues: () => QUEUES,
-      context: { user: 'U1', channel: 'C1', threadTs: '1.1' },
-      now: () => 1,
-      available: () => false,
-    });
-    const r = t.call('queue_enter', { queue: 'qa:dev2', keys: ['ABC-1'] });
-    expect(r).toMatchObject({ ok: false, code: 'QUEUE_UNAVAILABLE' });
-    expect(t.call('queue_list', {})).toMatchObject({ ok: false, code: 'QUEUE_UNAVAILABLE' });
-    expect(store.stamp()).toBeUndefined();
-  });
-
-  it('a call from no thread is refused (the host gives every session its thread)', () => {
-    const t = createWorkQueueTools({ store, queues: () => QUEUES, context: undefined, now: () => 1 });
-    expect(t.call('queue_enter', { queue: 'qa:dev2', keys: ['ABC-1'] })).toMatchObject({
+  it('a thread-less session can list but not enter', () => {
+    const t = createWorkQueueTools({ store, pinned: () => [], context: undefined, now: () => 1 });
+    expect(t.call('queue_list', {})).toMatchObject({ ok: true });
+    expect(t.call('queue_enter', { queue: 'qa-dev2', keys: ['ABC-1'] })).toMatchObject({
       ok: false,
       code: 'NO_THREAD',
     });
   });
-});
 
-describe('readWorkQueuesFromConfigFile', () => {
-  it('reads workQueues from config.json and re-reads it when the file changes', () => {
-    const file = path.join(dir, 'config.json');
-    fs.writeFileSync(file, JSON.stringify({ workQueues: { deploy: ['dev'] } }));
-    const read = readWorkQueuesFromConfigFile(file);
-    expect(read().map((q) => q.id)).toEqual(['deploy:dev']);
-    fs.writeFileSync(file, JSON.stringify({ workQueues: { deploy: ['dev'], qa: ['dev'] } }));
-    const later = new Date(Date.now() + 5_000);
-    fs.utimesSync(file, later, later);
-    expect(read().map((q) => q.id)).toEqual(['deploy:dev', 'qa:dev']);
-  });
-
-  it('a missing config is no queues', () => {
-    expect(readWorkQueuesFromConfigFile(path.join(dir, 'none.json'))()).toEqual([]);
-  });
-
-  it('an unreadable config keeps the last good queues; with none it throws (never "no queues")', () => {
-    const file = path.join(dir, 'config.json');
-    fs.writeFileSync(file, JSON.stringify({ workQueues: { deploy: ['dev'] } }));
-    const read = readWorkQueuesFromConfigFile(file);
-    expect(read().map((q) => q.id)).toEqual(['deploy:dev']);
-    fs.writeFileSync(file, '{ torn');
-    const later = new Date(Date.now() + 5_000);
-    fs.utimesSync(file, later, later);
-    expect(read().map((q) => q.id)).toEqual(['deploy:dev']);
-    // Fixed again without a new mtime: read again, not cached as broken.
-    fs.writeFileSync(file, JSON.stringify({ workQueues: { qa: ['dev'] } }));
-    fs.utimesSync(file, later, later);
-    expect(read().map((q) => q.id)).toEqual(['qa:dev']);
-    const broken = path.join(dir, 'broken.json');
-    fs.writeFileSync(broken, '{');
-    expect(() => readWorkQueuesFromConfigFile(broken)()).toThrow(/config/i);
-  });
-
-  it('a workQueues key with no valid queue is not "no queues": it keeps the last good queues or throws', () => {
-    const file = path.join(dir, 'config.json');
-    fs.writeFileSync(file, JSON.stringify({ workQueues: { deploy: ['dev'] } }));
-    const read = readWorkQueuesFromConfigFile(file);
-    expect(read().map((q) => q.id)).toEqual(['deploy:dev']);
-    fs.writeFileSync(file, JSON.stringify({ workQueues: 'deploy' }));
-    const later = new Date(Date.now() + 5_000);
-    fs.utimesSync(file, later, later);
-    expect(read().map((q) => q.id)).toEqual(['deploy:dev']);
-    const bad = path.join(dir, 'bad.json');
-    fs.writeFileSync(bad, JSON.stringify({ workQueues: { deploy: 'dev2' } }));
-    expect(() => readWorkQueuesFromConfigFile(bad)()).toThrow(/workQueues/);
-    // A config root that is not an object (null, an array) is broken, not "no workQueues key".
-    const rootless = path.join(dir, 'rootless.json');
-    fs.writeFileSync(rootless, 'null');
-    expect(() => readWorkQueuesFromConfigFile(rootless)()).toThrow(/config/i);
-    // The #726 opt-out `[]` still reads as no queues (no error).
-    const optOut = path.join(dir, 'opt-out.json');
-    fs.writeFileSync(optOut, JSON.stringify({ workQueues: [] }));
-    expect(readWorkQueuesFromConfigFile(optOut)()).toEqual([]);
-    // An explicit empty map is a host that queues nothing — that is not an error.
-    const none = path.join(dir, 'none-on-purpose.json');
-    fs.writeFileSync(none, JSON.stringify({ workQueues: {} }));
-    expect(readWorkQueuesFromConfigFile(none)()).toEqual([]);
-  });
-
-  it('a config that cannot be read answers CONFIG_UNREADABLE — retry, never go on without a line', () => {
+  it('a runtime without node:sqlite says so and the model goes on without a line', () => {
     const t = createWorkQueueTools({
       store,
-      queues: () => {
-        throw new Error('config.json unreadable');
-      },
-      context: { user: 'U1', channel: 'C1', threadTs: '1.1' },
+      pinned: () => [],
+      context: { user: 'U', channel: 'C', threadTs: '1' },
       now: () => 1,
+      available: () => false,
     });
-    const r = t.call('queue_enter', { queue: 'qa:dev2', keys: ['ABC-1'] });
-    expect(r).toMatchObject({ ok: false, code: 'CONFIG_UNREADABLE' });
-    expect(r.next).not.toMatch(/without a line/i);
+    expect(t.call('queue_enter', { queue: 'qa-dev2', keys: ['ABC-1'] })).toMatchObject({
+      ok: false,
+      code: 'QUEUE_UNAVAILABLE',
+    });
+  });
+
+  it('a bad lane name or bad keys are refused with what to fix', () => {
+    expect(tools('1.1').call('queue_enter', { queue: 'qa dev2', keys: ['ABC-1'] })).toMatchObject({
+      ok: false,
+      code: 'INVALID_QUEUE',
+    });
+    expect(tools('1.1').call('queue_enter', { queue: 'qa-dev2', keys: ['nope'] })).toMatchObject({
+      ok: false,
+      code: 'INVALID_KEYS',
+    });
+    expect(tools('1.1').call('queue_done', { entry: 'x' })).toMatchObject({ ok: false, code: 'INVALID_ARGS' });
+  });
+});
+
+describe('readPinnedQueuesFromConfigFile', () => {
+  it('pins `config.json#workQueues` and re-reads it when the file changes', () => {
+    const file = path.join(dir, 'config.json');
+    fs.writeFileSync(file, JSON.stringify({ workQueues: { qa: ['dev2'] } }));
+    const pinned = readPinnedQueuesFromConfigFile(file);
+    expect(pinned()).toEqual(['qa-dev2']);
+    fs.writeFileSync(file, JSON.stringify({ workQueues: { qa: ['dev2'], deploy: ['dev2'] } }));
+    fs.utimesSync(file, new Date(), new Date(Date.now() + 5_000));
+    expect(pinned()).toEqual(['qa-dev2', 'deploy-dev2']);
+  });
+
+  it('a missing or broken config pins nothing (or keeps the last good list) — lanes work either way', () => {
+    expect(readPinnedQueuesFromConfigFile(path.join(dir, 'none.json'))()).toEqual([]);
+    expect(readPinnedQueuesFromConfigFile(undefined)()).toEqual([]);
+    const file = path.join(dir, 'config.json');
+    fs.writeFileSync(file, JSON.stringify({ workQueues: { qa: ['dev2'] } }));
+    const pinned = readPinnedQueuesFromConfigFile(file);
+    expect(pinned()).toEqual(['qa-dev2']);
+    fs.writeFileSync(file, '{ broken');
+    fs.utimesSync(file, new Date(), new Date(Date.now() + 5_000));
+    expect(pinned()).toEqual(['qa-dev2']);
   });
 });
