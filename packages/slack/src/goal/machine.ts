@@ -268,8 +268,9 @@ export function advanceGoalQueue(
 
   const next = session.goalQueue && session.goalQueue.length > 0 ? session.goalQueue.shift() : undefined;
   if (!next) {
-    if (opts.clearCurrent) session.goal = undefined;
-    else session.goal = finished; // keep the completed goal visible in status
+    // .prd/39 D5 · I1 — a completed goal leaves the slot: the history holds it (and the surfaces read it there).
+    void opts;
+    session.goal = undefined;
     session.goalLastTurnText = undefined;
     session.systemPrompt = undefined;
     return undefined;
@@ -674,4 +675,30 @@ export function restoreGoalState(session: GoalQueueSession, snapshot: GoalStateS
   // The cached prompt was built against the restored goal; keeping it is safe
   // because the snapshot is the same state the cache was built for.
   session.systemPrompt = snapshot.systemPrompt;
+}
+
+/**
+ * .prd/39 D4 — the goal as stored: without the judge's lease (`pendingEval`). A judge lives only in the process that
+ * runs it (S4); the load used to drop the field, now it is never written.
+ */
+export function storedGoal<T extends { pendingEval?: unknown } | undefined>(goal: T): T {
+  if (!goal || goal.pendingEval === undefined) return goal;
+  const { pendingEval: _lease, ...rest } = goal as { pendingEval?: unknown } & Record<string, unknown>;
+  return rest as T;
+}
+
+/**
+ * .prd/39 D5 · I1 — a completed goal does not stay in the slot. A record written before D5 (or by an older version)
+ * moves to the history on load and revive; when the history already holds the same goal, it stays one record.
+ */
+export function settleCompletedSlot(session: GoalQueueSession): void {
+  const goal = session.goal;
+  if (!goal || goal.status !== 'complete') return;
+  const history = session.goalHistory ?? [];
+  if (!history.some((g) => g.goalId === goal.goalId)) {
+    history.push(goal);
+    if (history.length > MAX_GOAL_HISTORY) history.splice(0, history.length - MAX_GOAL_HISTORY);
+  }
+  session.goalHistory = history;
+  session.goal = undefined;
 }

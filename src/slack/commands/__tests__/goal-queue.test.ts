@@ -121,13 +121,16 @@ describe('session-goal queue helpers', () => {
     expect(session.goalHistory?.[0].objective).toBe('first goal');
   });
 
-  it('advanceGoalQueue keeps the completed goal visible when the queue is empty', () => {
+  // .prd/39 D5 · I1 — a completed goal leaves the slot and lives in the history only. Kept in the slot it was stored
+  // twice (in memory the same object, after a restart two copies) and `goal done` rewrote the record (X13).
+  it('advanceGoalQueue moves the completed goal to the history when the queue is empty — the slot is empty', () => {
     const finished = createActiveSessionGoal('only goal', 'U1');
     finished.status = 'complete';
     const session = makeSession({ goal: finished });
     const next = advanceGoalQueue(session);
     expect(next).toBeUndefined();
-    expect(session.goalHistory).toHaveLength(1);
+    expect(session.goal).toBeUndefined();
+    expect(session.goalHistory).toEqual([finished]);
   });
 
   // ── S1: deleteGoalById (Delete button) ────────────────────────────────

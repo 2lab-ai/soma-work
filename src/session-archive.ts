@@ -10,6 +10,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { storedGoal } from '@soma/slack/goal/machine';
 import { sumLiveUsage } from '@soma/slack/live-usage';
 import { findTranscriptPath } from '@soma/slack/pipeline/transcript-sanitizer';
 import type { TaskUsage } from '@soma/slack/session-usage-math';
@@ -252,7 +253,7 @@ function sessionToArchive(
     busyMs: session.activeAccumulatedMs,
     compactionCount: session.compactionCount,
     summaryTitle: session.summaryTitle,
-    goal: session.goal ? JSON.parse(JSON.stringify(session.goal)) : undefined,
+    goal: session.goal ? JSON.parse(JSON.stringify(storedGoal(session.goal))) : undefined,
     goalHistory: session.goalHistory ? JSON.parse(JSON.stringify(session.goalHistory)) : undefined,
     goalPaused: session.goalPaused?.length ? JSON.parse(JSON.stringify(session.goalPaused)) : undefined,
     goalQueue: session.goalQueue?.length ? JSON.parse(JSON.stringify(session.goalQueue)) : undefined,

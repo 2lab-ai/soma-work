@@ -14,7 +14,7 @@ import {
   sanitizePendingRewind,
   sanitizeRewindRedo,
 } from '@soma/slack/context-anchor';
-import { bumpEpoch } from '@soma/slack/goal/machine';
+import { bumpEpoch, settleCompletedSlot, storedGoal } from '@soma/slack/goal/machine';
 import { LOG_VERBOSITY_MASK_VERSION, upgradeLegacyVerbosityMask } from '@soma/slack/output-flags';
 import { endGoalCapDecision } from '@soma/slack/session-goal';
 import { canonicalLinkUrl } from '@soma/slack/session-link-capture';
@@ -2174,6 +2174,7 @@ export class SessionRegistry {
       pendingUserText: null,
       pendingEventContext: null,
     };
+    settleCompletedSlot(session); // .prd/39 D5 — a completed goal lives in the history only
     this.putSession(key, session);
     this.logger.info('Archived session restored from the dashboard', {
       sessionKey: key,
@@ -4004,7 +4005,7 @@ export class SessionRegistry {
             // User SSOT instructions (persisted)
             instructions: session.instructions,
             // Host-managed session goal (persisted)
-            goal: session.goal,
+            goal: storedGoal(session.goal), // .prd/39 D4 — never the judge's lease
             // Multi-goal queue + completed history (persisted so the queue
             // survives a restart — T1/T2).
             goalQueue: session.goalQueue,
@@ -4753,6 +4754,7 @@ export class SessionRegistry {
         const restored = this.restoredTaskId(serialized.taskId, this.sessions.get(derivedKey));
         session.taskId = restored.taskId;
         if (restored.minted) mintedTaskIdCount++;
+        settleCompletedSlot(session); // .prd/39 D5 — a completed goal lives in the history only
         this.putSession(derivedKey, session);
         loaded++;
 

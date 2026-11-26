@@ -264,12 +264,15 @@ describe('GoalHandler', () => {
     session.goal!.pendingEval = { requestedAt: 1, turnId: 'T1' };
     session.goal!.lastEvalReason = 'stale eval gap';
     await handler.execute(makeCtx({ text: 'goal done' }));
-    expect(session.goal?.status).toBe('complete');
-    expect(session.goal?.completedAt).toBe(Date.now());
-    expect(session.goal?.completedBy).toBe('U123');
-    expect(session.goal?.completedVia).toBe('user');
-    expect(session.goal?.pendingEval).toBeUndefined();
-    expect(session.goal?.lastEvalReason).toBeUndefined();
+    // .prd/39 D5 — the completed goal left the slot; the history holds its record.
+    expect(session.goal).toBeUndefined();
+    const done = session.goalHistory?.[(session.goalHistory?.length ?? 0) - 1];
+    expect(done?.status).toBe('complete');
+    expect(done?.completedAt).toBe(Date.now());
+    expect(done?.completedBy).toBe('U123');
+    expect(done?.completedVia).toBe('user');
+    expect(done?.pendingEval).toBeUndefined();
+    expect(done?.lastEvalReason).toBeUndefined();
     expect(session.systemPrompt).toBeUndefined();
 
     session.systemPrompt = 'cached prompt';
