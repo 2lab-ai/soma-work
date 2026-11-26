@@ -301,6 +301,19 @@ interface PRCacheEntry {
  */
 const RENDER_DEBOUNCE_MS = Number(process.env.SLACK_RENDER_DEBOUNCE_MS) || 3000;
 
+/**
+ * How long an edit that ONLY moves the header's ages (the `마지막 활동` and
+ * `응답 신호` date tokens) waits after the last edit. Slack draws a token's
+ * `{ago}` when the thread is viewed, so such an edit tells the reader little —
+ * yet every progress signal of a working turn made one: 1,345 of 2,575 Slack
+ * calls in a 23-minute window on a busy host, through the one serial lane every
+ * session's rendering waits behind. Any other change is drawn at once.
+ */
+const AGE_ONLY_EDIT_MIN_MS = 60_000;
+
+/** A Slack date token: `<!date^EPOCH^{ago}|fallback>`. */
+const DATE_TOKEN = /<!date\^(\d+)\^\{ago\}\|[^>]*>/g;
+
 /** PR status cache TTL (ms). */
 const PR_CACHE_TTL_MS = 60_000;
 
@@ -406,6 +419,10 @@ interface SessionRenderState {
   reanchorTimer: ReturnType<typeof setTimeout> | null;
   /** When the last re-anchor was attempted (rate-limit floor). */
   lastReanchorAt: number;
+  /** The last drawn blocks with the progress/liveness ages taken out ({@link AGE_ONLY_EDIT_MIN_MS}). */
+  drawnWithoutAges: string | null;
+  /** The held age-only edit, made a minute after the last edit. */
+  ageEditTimer: ReturnType<typeof setTimeout> | null;
   /**
    * True while THIS surface is posting its own panel. Its own message reaches
    * the listener like any other thread post, and re-anchoring on it would make
@@ -466,6 +483,8 @@ export class ThreadSurface {
         reanchorTimer: null,
         lastReanchorAt: 0,
         selfPosting: false,
+        drawnWithoutAges: null,
+        ageEditTimer: null,
       };
       this.sessions.set(sessionKey, state);
     }
@@ -896,6 +915,9 @@ export class ThreadSurface {
       if (rs.reanchorTimer) {
         clearTimeout(rs.reanchorTimer);
       }
+      if (rs.ageEditTimer) {
+        clearTimeout(rs.ageEditTimer);
+      }
       rs.pendingSession = null;
       rs.lastSession = null;
       rs.prCache = null;
@@ -1108,6 +1130,30 @@ export class ThreadSurface {
     return a > b;
   }
 
+  /**
+   * The rendered blocks with the date tokens of the progress and liveness
+   * stamps replaced by one placeholder — only those two: a wait's start or any
+   * other date is content. A stamp whose token was clamped to `now` (clock skew)
+   * does not match and stays in, so that edit is drawn: the safe side.
+   */
+  private static withoutAges(renderKey: string, ...stamps: Array<number | undefined>): string {
+    const ages = new Set(stamps.filter((at): at is number => at !== undefined).map((at) => Math.floor(at / 1000)));
+    if (ages.size === 0) return renderKey;
+    return renderKey.replace(DATE_TOKEN, (token, seconds: string) => (ages.has(Number(seconds)) ? '<age>' : token));
+  }
+
+  /** Make the held age-only edit once its minute is up, from the session as it is then. */
+  private holdAgeEdit(sessionKey: string, waitMs: number): void {
+    const rs = this.getState(sessionKey);
+    if (rs.ageEditTimer) return;
+    rs.ageEditTimer = setTimeout(() => {
+      rs.ageEditTimer = null;
+      const session = this.getLiveSession(sessionKey) ?? rs.lastSession;
+      if (session) this.requestRender(session, sessionKey);
+    }, waitMs);
+    rs.ageEditTimer.unref?.();
+  }
+
   // =========================================================================
   // Core Render
   // =========================================================================
@@ -1155,6 +1201,21 @@ export class ThreadSurface {
     // Skip if nothing changed (unless forced)
     if (!force && panelState.renderKey === renderKey) {
       return;
+    }
+
+    // Only the ages moved: hold the edit until a minute after the last one.
+    const withoutAges = ThreadSurface.withoutAges(renderKey, panelState.lastProgressAt, panelState.lastSignalAt);
+    if (
+      !force &&
+      panelState.renderKey !== undefined &&
+      renderState.drawnWithoutAges === withoutAges &&
+      panelState.lastRenderedAt !== undefined
+    ) {
+      const wait = panelState.lastRenderedAt + AGE_ONLY_EDIT_MIN_MS - Date.now();
+      if (wait > 0) {
+        this.holdAgeEdit(sessionKey, wait);
+        return;
+      }
     }
 
     let rendered = false;
@@ -1245,6 +1306,11 @@ export class ThreadSurface {
     // Update bookkeeping
     panelState.renderKey = renderKey;
     panelState.lastRenderedAt = Date.now();
+    renderState.drawnWithoutAges = withoutAges;
+    if (renderState.ageEditTimer) {
+      clearTimeout(renderState.ageEditTimer);
+      renderState.ageEditTimer = null;
+    }
     panelState.channelId = channelId;
     panelState.userId = panelState.userId || current.ownerId;
     current.actionPanel = panelState;
