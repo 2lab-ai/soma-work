@@ -79,10 +79,17 @@ describe('card-alert-icon — the siren image and its URL', () => {
   it('the build copies the image next to the compiled module (dist/conversation/assets), after tsc', () => {
     const pkg = JSON.parse(readFileSync(join(__dirname, '..', '..', '..', 'package.json'), 'utf8'));
     const build = String(pkg.scripts.build);
-    const copy = build.indexOf('cp -r src/conversation/assets dist/conversation/');
-    expect(copy).toBeGreaterThan(-1);
-    expect(build.indexOf('mkdir -p dist/conversation')).toBeLessThan(copy);
-    expect(build.indexOf('&& tsc &&')).toBeLessThan(copy);
+    // Every step must be there (indexOf -1 would pass a bare "less than"), in this order.
+    const at = (cmd: string) => {
+      const i = build.indexOf(cmd);
+      expect(i, cmd).toBeGreaterThan(-1);
+      return i;
+    };
+    const tsc = at('&& tsc &&');
+    const mkdir = at('mkdir -p dist/conversation &&');
+    const copy = at('cp -r src/conversation/assets dist/conversation/');
+    expect(tsc).toBeLessThan(mkdir);
+    expect(mkdir).toBeLessThan(copy);
   });
 
   it('records where the image comes from', () => {
