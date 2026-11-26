@@ -980,8 +980,10 @@ export class SessionInitializer {
     // backstop claims the flag at query start.
     if (
       // A goal objective that merely starts with `/compact` is a task, not a
-      // compaction turn (the executor wraps it — `literalPrompt`).
+      // compaction turn (the executor wraps it — `literalPrompt`). So is an
+      // answer to the model's question (#1474): the person's words, never a command.
       !verbatimReplay &&
+      event.questionAnswer !== true &&
       (dispatchText ?? '').trim().split(/\s/)[0] === '/compact' &&
       !this.deps.requestCoordinator.isRequestActive(sessionKey)
     ) {
