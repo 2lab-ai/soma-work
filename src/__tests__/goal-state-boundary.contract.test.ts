@@ -137,11 +137,17 @@ describe('goal state boundary (.prd/40 §6)', () => {
       'packages/slack/src/session-goal.ts',
       'packages/slack/src/pipeline/stream-executor.ts',
     ];
+    // The one write outside goal/machine is the cap answer's undo of a failed save, and only as that exact statement
+    // (review #1494): any other epoch write in the same function — an inline `+ 1` — is a site like any other.
+    const UNDO = /^\s*goal\.epoch = before\.epoch;\s*$/;
     const WRITE = /\bgoal\??\.epoch\s*=[^=]|\bcurrent\.epoch\s*=[^=]|\bepoch:\s*\(.*epoch \?\? 0\) \+ 1/;
-    const ALLOWED: Record<string, string> = {
-      'src/slack/goal-cap-decision.ts#answerGoalCapDecision': 'undo of a cap answer whose save failed — PR5 (one undo)',
-    };
-    const found = [...sitesOf(WRITE, files)].sort();
+    const isWrite = (line: string) => WRITE.test(line) && !UNDO.test(line);
+    expect([isWrite('    goal.epoch = before.epoch;'), isWrite('    goal.epoch = (goal.epoch ?? 0) + 1;')]).toEqual([
+      false,
+      true,
+    ]);
+    const ALLOWED: Record<string, string> = {};
+    const found = [...sitesOf({ test: isWrite } as RegExp, files)].sort();
     const unlisted = found.filter((key) => !(key in ALLOWED));
     const gone = Object.keys(ALLOWED).filter((key) => !found.includes(key));
     expect({ unlisted, gone }).toEqual({ unlisted: [], gone: [] });
@@ -154,11 +160,17 @@ describe('goal state boundary (.prd/40 §6)', () => {
    */
   it('rule 5: the goal command and goal buttons save only through goal-commit, except where listed', () => {
     const files = ['src/slack/commands/goal-handler.ts', 'src/slack/actions/goal-action-handler.ts'];
-    const SAVE = /\.saveSessions(OrThrow)?\(|\.broadcastSessionUpdate\?*\.?\(/;
+    // A port handed to commitGoalChange (`saveSessions: () => …`) is the commit's own save, not a site (review #1495):
+    // a direct save anywhere else in those functions is.
+    const PORT = /^\s*(saveSessions|broadcastSessionUpdate)\s*:\s*\(\)\s*=>/;
+    const SAVE_CALL = /\.saveSessions(OrThrow)?\(|\.broadcastSessionUpdate\?*\.?\(/;
+    const isSave = (line: string) => SAVE_CALL.test(line) && !PORT.test(line);
+    expect([
+      isSave('      saveSessions: () => this.deps.claudeHandler.saveSessions(),'),
+      isSave('      this.deps.claudeHandler.saveSessions();'),
+    ]).toEqual([false, true]);
+    const SAVE = { test: isSave } as RegExp;
     const ALLOWED: Record<string, string> = {
-      'src/slack/commands/goal-handler.ts#persistGoalChange': 'hands commitGoalChange its save and broadcast ports',
-      'src/slack/actions/goal-action-handler.ts#handleUpdateSubmit':
-        'hands commitGoalChange its save and broadcast ports',
       'src/slack/actions/goal-action-handler.ts#answerCapDecision': 'the cap answer declares its own order (D9)',
       'src/slack/actions/goal-action-handler.ts#handleDelete': 'goal-list delete — PR6 (surfaces)',
       'src/slack/commands/goal-handler.ts#setGoal': 'goal <objective> and its opening admit — PR6',
@@ -179,6 +191,18 @@ describe('goal state boundary (.prd/40 §6)', () => {
   it('rule 6: SessionGoal has one definition', () => {
     const roots = ['src', 'packages/slack/src', 'somalib'];
     const defined: string[] = [];
+    /** The SessionGoal-named declarations of a text, the one forwarding alias left out. */
+    const declarations = (text: string): string[] =>
+      [...text.matchAll(/^export (?:interface|type) (SessionGoal|SessionGoalState)\b(.*)$/gm)]
+        .filter(
+          (m) =>
+            !(m[1] === 'SessionGoalState' && /^\s*=\s*(?:import\('\.\/goal\/model'\)\.)?SessionGoal;\s*$/.test(m[2])),
+        )
+        .map((m) => m[1]);
+    // Review #1493 — a structural alias is a second definition; the forwarding alias is not.
+    expect(declarations("export type SessionGoalState = import('./goal/model').SessionGoal;")).toEqual([]);
+    expect(declarations('export type SessionGoalState = { goalId: string };')).toEqual(['SessionGoalState']);
+    expect(declarations('export type SessionGoal = {\n  goalId: string;\n};')).toEqual(['SessionGoal']);
     const walk = (dir: string) => {
       for (const entry of fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
         const rel = `${dir}/${entry.name}`;
@@ -186,8 +210,8 @@ describe('goal state boundary (.prd/40 §6)', () => {
           if (entry.name !== 'node_modules' && entry.name !== 'dist' && entry.name !== '__tests__') walk(rel);
         } else if (entry.name.endsWith('.ts') && !entry.name.endsWith('.test.ts')) {
           const text = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-          if (/^export (interface|type) (SessionGoal|SessionGoalState)\b(?! =)/m.test(text)) defined.push(rel);
-          if (/^export interface SessionGoalState\b/m.test(text)) defined.push(`${rel} (SessionGoalState copy)`);
+          for (const name of declarations(text))
+            defined.push(name === 'SessionGoal' ? rel : `${rel} (SessionGoalState copy)`);
         }
       }
     };

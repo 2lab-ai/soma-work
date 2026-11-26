@@ -1440,7 +1440,7 @@ describe('GoalLoopController — the gate reads the goal phase (.prd/39 D2, A4)'
     const session = makeSession(goal);
     const dispatched: number[] = [];
     const notices: string[] = [];
-    const dms: Array<{ text: string; decisionId?: string }> = [];
+    const dms: string[] = [];
     const controller = new GoalLoopController({
       registry: { getSessionByKey: () => session, saveSessions: () => {} },
       requestCoordinator: { isRequestActive: () => false },
@@ -1454,9 +1454,8 @@ describe('GoalLoopController — the gate reads the goal phase (.prd/39 D2, A4)'
         notices.push(text);
         return undefined;
       },
-      postOwnerDm: async (_user, text, blocks) => {
-        const raw = JSON.stringify(blocks);
-        dms.push({ text, decisionId: /"decisionId":"([^"]+)"/.exec(raw.replace(/\\"/g, '"'))?.[1] });
+      postOwnerDm: async (_user, text) => {
+        dms.push(text);
         return { channel: 'D1', ts: '9.9' };
       },
       logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },

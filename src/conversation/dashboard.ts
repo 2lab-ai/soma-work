@@ -2770,7 +2770,7 @@ function goalToKanban(s: any): KanbanGoal | undefined {
                   },
                 }
               : {}),
-            ...cardPhaseOf(goal),
+            phase: goalCardPhase(goal),
           }
         : undefined,
     queue: queue
@@ -2791,10 +2791,6 @@ function goalToKanban(s: any): KanbanGoal | undefined {
 }
 
 const GOAL_REASON_MAX = 1000;
-function cardPhaseOf(goal: any): { phase?: GoalCardPhase } {
-  const phase = goalCardPhase(goal);
-  return phase ? { phase } : {};
-}
 function finiteNumber(v: unknown): number | undefined {
   return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
 }
