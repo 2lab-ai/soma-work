@@ -87,6 +87,79 @@ describe('resumeActiveGoals (T1)', () => {
     expect(settled).toHaveBeenCalledWith('C1-T1', { cause: 'kick' });
   });
 
+  /**
+   * 2026-11-26 (owner-mac dev, 1795677176.047669). The pass runs about 25 s after boot, behind crash recovery. A
+   * person's message in that window started a turn (working at 07:25:56Z); the pass at 07:26:03Z took that live
+   * `working` for one the old process left behind and forced it idle. The card sat in the done column as "대기"
+   * for the whole turn, and the turn's own idle at the end was a no-op.
+   */
+  it('leaves a turn that started after boot running: not forced idle, not kicked', () => {
+    const running = activeGoalSession({ activityState: 'working' });
+    const sessions = new Map<string, ConversationSession>([['C1-T1', running]]);
+    const { handler } = createHandler(sessions);
+    const settled = vi.fn();
+    handler.setGoalTurnSettledHandler(settled);
+    (handler as any).requestCoordinator.setController('C1-T1', new AbortController());
+
+    expect(handler.resumeActiveGoals()).toBe(0);
+
+    expect(running.activityState).toBe('working');
+    expect(settled).not.toHaveBeenCalled();
+  });
+
+  it('counts a dispatch holding the follow-up slot as a running turn, before or between its controllers', () => {
+    const running = activeGoalSession({ activityState: 'working' });
+    const sessions = new Map<string, ConversationSession>([['C1-T1', running]]);
+    const { handler } = createHandler(sessions);
+    const settled = vi.fn();
+    handler.setGoalTurnSettledHandler(settled);
+    (handler as any).followupDispatcher = { isBusy: (key: string) => key === 'C1-T1' };
+
+    expect(handler.resumeActiveGoals()).toBe(0);
+
+    expect(running.activityState).toBe('working');
+    expect(settled).not.toHaveBeenCalled();
+  });
+
+  it('takes the old process’s pending error retry from a session whose turn already runs', () => {
+    const running = activeGoalSession({
+      activityState: 'working',
+      sessionId: 'sdk-1',
+      pendingRetryAt: Date.now() + 60_000,
+      pendingRetrySessionId: 'sdk-1',
+    } as any);
+    const sessions = new Map<string, ConversationSession>([['C1-T1', running]]);
+    const { handler, claudeHandler } = createHandler(sessions);
+    handler.setGoalTurnSettledHandler(vi.fn());
+    (handler as any).requestCoordinator.setController('C1-T1', new AbortController());
+
+    // The boot order (src/index.ts): the goal pass, then the re-arm of the retries it left.
+    handler.resumeActiveGoals();
+    const rearmed = handler.resumePendingErrorRetries();
+
+    // Re-armed, the retry would fire a second turn after the running one.
+    expect(running.pendingRetryAt).toBeUndefined();
+    expect(running.pendingRetryTimer).toBeUndefined();
+    expect(rearmed).toBe(0);
+    expect(claudeHandler.saveSessions).toHaveBeenCalled();
+  });
+
+  it('still gives back the continuation the restart cut when a later turn already runs', () => {
+    const running = activeGoalSession({ activityState: 'working' });
+    const goal = running.goal as NonNullable<ConversationSession['goal']>;
+    goal.continuationCount = 4;
+    const sessions = new Map<string, ConversationSession>([['C1-T1', running]]);
+    const { handler } = createHandler(sessions);
+    handler.setGoalTurnSettledHandler(vi.fn());
+    (handler as any).restartCutSessionKeys = new Set(['C1-T1']);
+    (handler as any).requestCoordinator.setController('C1-T1', new AbortController());
+
+    handler.resumeActiveGoals();
+
+    expect(goal.continuationCount).toBe(3);
+    expect(running.activityState).toBe('working');
+  });
+
   it('forces a stale (working) activityState to idle so the idle-driver gate passes', () => {
     const stale = activeGoalSession({ activityState: 'working' });
     const sessions = new Map<string, ConversationSession>([['C1-T1', stale]]);

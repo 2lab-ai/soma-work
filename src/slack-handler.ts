@@ -8737,6 +8737,12 @@ export class SlackHandler {
    * it and may be running, so it is neither forced idle nor kicked — the loop
    * judges when it settles — and it keeps its continuation, since the resume
    * replaces the cut turn. Must be called AFTER `notifyCrashRecovery`.
+   *
+   * And except a session with a turn running now (`isRequestActive`, or its
+   * follow-up slot held) — one that started after boot, before this pass: its
+   * `working` is live. It is neither forced idle nor kicked, and its pending
+   * error retry is taken; a cut turn still gets its continuation back, since
+   * the running turn does not replace it.
    */
   resumeActiveGoals(): number {
     const handler = this.goalTurnSettledHandler;
@@ -8751,6 +8757,7 @@ export class SlackHandler {
     let stallsEnded = 0;
     let refunded = 0;
     let leftToRestartResume = 0;
+    let leftToLiveTurn = 0;
     for (const [sessionKey, session] of this.claudeHandler.getAllSessions()) {
       // Repair a stranded queue (defense for the eval-complete crash window):
       // if the current goal is genuinely closed (completed) or absent but goals
@@ -8792,6 +8799,14 @@ export class SlackHandler {
       // idle, never kick a second turn beside it; the loop judges when the
       // resume turn settles.
       const resumedByRestart = this.restartResumedSessionKeys.has(sessionKey);
+      // A turn that started after boot (a person's message, a host turn) is running now: this pass runs about 25 s
+      // after boot, behind crash recovery. Its `working` is live, not left by the old process — forcing it idle put
+      // a running session in the done column for its whole turn (2026-11-26, 1795677176.047669). That turn carries
+      // the session like a restart resume: not forced idle, not kicked; the loop judges when it settles. The follow-up
+      // slot counts too: a dispatch holds it before its controller is set and between legs.
+      const liveTurn =
+        !resumedByRestart &&
+        (this.requestCoordinator.isRequestActive(sessionKey) || this.isFollowupSlotHeld(sessionKey));
       const panel = session.actionPanel;
       if (
         !resumedByRestart &&
@@ -8806,7 +8821,7 @@ export class SlackHandler {
         this.logger.info('Goal resume held after restart — the session is waiting on its question', { sessionKey });
         continue;
       }
-      if (!resumedByRestart && session.activityState !== 'idle') {
+      if (!resumedByRestart && !liveTurn && session.activityState !== 'idle') {
         // Recovery: treat a stale persisted working state (or a waiting one
         // with no question left) as idle.
         session.activityState = 'idle';
@@ -8839,6 +8854,19 @@ export class SlackHandler {
       if (resumedByRestart) {
         leftToRestartResume++;
         this.logger.info('Goal loop left to the restart resume of the cut turn — it judges when that turn settles', {
+          sessionKey,
+        });
+        continue;
+      }
+      if (liveTurn) {
+        // Not the replacement of a cut turn, so a cut one still got its continuation back above. It supersedes a
+        // pending error auto-retry, as a restart resume does: re-armed, that retry would run a second turn after it.
+        if (session.pendingRetryAt !== undefined) {
+          this.clearPendingErrorRetry(session);
+          retriesClaimed++;
+        }
+        leftToLiveTurn++;
+        this.logger.info('Goal loop left to the turn already running — it judges when that turn settles', {
           sessionKey,
         });
         continue;
@@ -8877,9 +8905,9 @@ export class SlackHandler {
     if (forcedIdle > 0 || repaired > 0 || retriesClaimed > 0 || stallsEnded > 0 || refunded > 0) {
       this.claudeHandler.saveSessions();
     }
-    if (resumed > 0 || repaired > 0 || leftToRestartResume > 0) {
+    if (resumed > 0 || repaired > 0 || leftToRestartResume > 0 || leftToLiveTurn > 0) {
       this.logger.info(
-        `Resumed ${resumed} active goal(s) after restart (repaired ${repaired} stranded queue(s), ${leftToRestartResume} carried by the resume of their cut turn)`,
+        `Resumed ${resumed} active goal(s) after restart (repaired ${repaired} stranded queue(s), ${leftToRestartResume} carried by the resume of their cut turn, ${leftToLiveTurn} by a turn already running)`,
       );
     }
     return resumed;
