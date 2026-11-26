@@ -1249,8 +1249,12 @@ async function start() {
 
     // Connect dashboard: goal list on the work item (SSOT 2026-10-21 T3) —
     // add / delete-current (promotes the next goal) / delete-queued.
+    // A goal added with files (the goal composer) puts them into the thread first, like a panel instruction's.
     setDashboardGoalHandler((sessionKey, action, actorUserId) =>
-      slackHandler.handleHostGoalAction(sessionKey, action, actorUserId),
+      slackHandler.handleHostGoalAction(sessionKey, action, actorUserId, {
+        // The panel composer's uploader: what Slack took is kept, so a retried add never posts a file twice (#488).
+        uploadFiles: (channel, threadTs, files) => uploadSteerFiles(channel, threadTs, files),
+      }),
     );
 
     // Connect dashboard: choice answer handler (dashboard button click → same path as Slack button)

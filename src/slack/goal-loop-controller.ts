@@ -1176,6 +1176,13 @@ export class GoalLoopController {
       return;
     }
     const now = this.now();
+    // A goal the loop starts itself (an eval verdict promoted it from the queue, a restart repaired a stranded queue)
+    // has had no opening: its files (the dashboard goal composer's) ride this first continuation, once.
+    const files = !activeGoal.openingFilesSent && activeGoal.openingFiles?.length ? activeGoal.openingFiles : undefined;
+    if (files) {
+      activeGoal.openingFilesSent = true;
+      this.persist();
+    }
     const syntheticEvent: SyntheticMessageEvent = {
       user: activeGoal.createdBy,
       channel: session.channelId,
@@ -1184,6 +1191,7 @@ export class GoalLoopController {
       text: `${GOAL_CONTINUATION_TEXT_PREFIX} ${buildGoalContinuationPrompt(activeGoal, opts)}`,
       synthetic: true,
       skipDispatch: true,
+      ...(files ? { files } : {}),
       // `goalContinuation` makes session-initializer DROP this turn (never
       // supersede) if a live request is found at concurrency-control time —
       // closing the residual async-gap window where a user turn started

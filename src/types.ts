@@ -2,7 +2,7 @@
 // Re-export for backward compatibility — all src/ files import from './types'.
 
 import type { ContextRewindRecord, PendingRewind } from '@soma/slack/context-anchor';
-import type { SessionGoalFirstFailure, SessionGoalStall } from '@soma/slack/session-goal';
+import type { SessionGoalFile, SessionGoalFirstFailure, SessionGoalStall } from '@soma/slack/session-goal';
 import type { SessionIssueTree } from 'somalib/model-commands/session-types';
 import type { CodeChangesSummary } from './code-changes/types';
 
@@ -294,6 +294,13 @@ export interface SessionGoal {
    * that never had its first turn.
    */
   openingPending?: boolean;
+  /**
+   * The files the goal was added with from the dashboard's goal composer — already in the session's Slack thread.
+   * Every opening turn of this goal carries them (`admitGoalOpeningTurn`), so a queued goal keeps them until it starts.
+   */
+  openingFiles?: SessionGoalFile[];
+  /** `openingFiles` rode a turn of this goal already; the loop's continuations carry them only while unset. */
+  openingFilesSent?: boolean;
   /**
    * The open task ids the session's task list had when this goal was paused —
    * its own work. While it stays in `goalPaused` they hold no other goal's
