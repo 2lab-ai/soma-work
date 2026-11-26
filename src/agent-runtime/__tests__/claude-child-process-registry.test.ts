@@ -93,6 +93,20 @@ describe('ClaudeChildProcessRegistry', () => {
     expect(other.kill).not.toHaveBeenCalled();
   });
 
+  it('signals only the child spawned for one owner object, not a later one of the same session', () => {
+    const registry = new ClaudeChildProcessRegistry();
+    const earlierOwner = { sessionKey: 'work:C1:1.1' };
+    const laterOwner = { sessionKey: 'work:C1:1.1' };
+    const earlier = fakeProcess({ pid: 41 });
+    const later = fakeProcess({ pid: 42 });
+    registry.track(earlier, earlierOwner);
+    registry.track(later, laterOwner);
+
+    expect(registry.killOwned(earlierOwner, 'SIGTERM')).toBe(1);
+    expect(earlier.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(later.kill).not.toHaveBeenCalled();
+  });
+
   it('escalates a graceful drain from SIGTERM to SIGKILL for survivors', async () => {
     vi.useFakeTimers();
     const registry = new ClaudeChildProcessRegistry();

@@ -66,6 +66,7 @@ import {
   KEEPALIVE_BACKSTOP_IDLE_MS,
   KEEPALIVE_REPORT_TURN_MAX_MS,
   NON_TURN_RESULT_IDLE_MS,
+  PreviousCliStillRunningError,
 } from '../claude-handler';
 import { Logger } from '../logger';
 import type { McpManager } from '../mcp-manager';
@@ -535,7 +536,7 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
       await quiet.promise;
     });
     const handler = newHandler();
-    const kill = vi.spyOn(getClaudeChildProcessRegistry(), 'killSession').mockReturnValue(1);
+    const kill = vi.spyOn(getClaudeChildProcessRegistry(), 'killOwned').mockReturnValue(1);
     const controller = new AbortController();
     const turn = handler
       .streamQuery('ping', undefined, controller, undefined, TEST_SLACK_CONTEXT, SESSION_KEY)
@@ -550,7 +551,8 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
     await turn.return!(undefined);
 
     expect(query.return).toHaveBeenCalledTimes(1);
-    expect(kill).toHaveBeenCalledWith(SESSION_KEY, 'SIGTERM');
+    // Only this query's own CLI (its owner object), not the session's.
+    expect(kill).toHaveBeenCalledWith({ sessionKey: SESSION_KEY }, 'SIGTERM');
     expect(controller.signal.aborted).toBe(false);
     kill.mockRestore();
     quiet.resolve();
@@ -592,6 +594,48 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
     quiet.resolve();
     await turn.return!(undefined);
     await firstFrame.catch(() => undefined);
+  });
+
+  // #1473 round 6 (grok/astra): the bound is no proof of exit — the session's previous CLI is killed and waited for
+  // once more; one that survives even that is never run beside: the turn fails instead of starting a second CLI.
+  it.each([
+    ['exits after the kill: the turn starts', true],
+    ['survives the kill: the turn fails, no second CLI', false],
+  ])('a previous CLI alive at the bound is killed — %s', async (_label, exitsAfterKill) => {
+    const cli = newFakeCli();
+    const quiet = deferred();
+    installScriptedQuery(cli, async function* (inputs) {
+      await readOpening(inputs, cli);
+      yield INIT;
+      await quiet.promise;
+    });
+    const registry = getClaudeChildProcessRegistry();
+    let alive = true;
+    const live = vi.spyOn(registry, 'hasLiveChildFor').mockImplementation(() => alive);
+    const kill = vi.spyOn(registry, 'killSession').mockImplementation(() => {
+      if (exitsAfterKill) alive = false;
+      return 1;
+    });
+    const wait = vi.spyOn(registry, 'waitForSessionExit').mockImplementation(async () => !alive);
+    const handler = newHandler();
+
+    const turn = startTurn(handler);
+    const first = turn.next();
+    if (exitsAfterKill) {
+      await vi.waitFor(() => expect(queryMock).toHaveBeenCalledTimes(1));
+    } else {
+      await expect(first).rejects.toThrow(PreviousCliStillRunningError);
+      expect(queryMock).not.toHaveBeenCalled();
+    }
+    expect(kill).toHaveBeenCalledWith(SESSION_KEY, 'SIGKILL');
+    expect(wait).toHaveBeenCalledTimes(2);
+
+    live.mockRestore();
+    kill.mockRestore();
+    wait.mockRestore();
+    quiet.resolve();
+    await turn.return!(undefined);
+    await first.catch(() => undefined);
   });
 
   // #1473 round 2 (grok): the settlement of a held turn goes through the query (an interrupt when the CLI still counts

@@ -220,6 +220,20 @@ export class ClaudeChildProcessRegistry {
     return signalled;
   }
 
+  /**
+   * #1473 — signal the child spawned for `owner` (one query's own owner object: the turn that started it, not every
+   * turn of its session).
+   */
+  killOwned(owner: ClaudeProcessOwner, signal: NodeJS.Signals): number {
+    let signalled = 0;
+    for (const child of this.children) {
+      if (child.exitCode !== null || this.owners.get(child) !== owner) continue;
+      this.kill(child, signal);
+      signalled += 1;
+    }
+    return signalled;
+  }
+
   killAllSync(signal: NodeJS.Signals): void {
     this.notifyShutdown();
     for (const child of this.children) {

@@ -32,7 +32,7 @@ import type { HostWriteReceipt } from 'somalib/model-commands/host-receipt';
 import type { ModelCommandContext } from 'somalib/model-commands/types';
 import { type AgentRunOptions, type AgentStreamEvent, runAgentStream, runOneShotText } from './agent-runtime';
 import { liveAgentIds, liveNonAgentTaskIds, MAX_TIMER_DELAY_MS } from './agent-runtime/background-keepalive';
-import { getClaudeChildProcessRegistry } from './agent-runtime/claude-child-process-registry';
+import { type ClaudeProcessOwner, getClaudeChildProcessRegistry } from './agent-runtime/claude-child-process-registry';
 import {
   buildStreamOptions,
   type EnvSkillDenial,
@@ -486,6 +486,19 @@ const PREVIOUS_RUN_END_WAIT_MS = STEER_SETTLEMENT_BOUND_MS + QUERY_CLOSE_MS + 1_
  * transcript: a query resolving its close does not mean its process is gone (round 5, grok).
  */
 const PREVIOUS_CLI_EXIT_WAIT_MS = 2_000 + 5_000 + 1_000;
+
+/** #1473 — after a SIGKILL of the session's previous CLI, how long the turn waits for that process to be gone. */
+const PREVIOUS_CLI_KILL_WAIT_MS = 2_000;
+
+/** #1473 — the session's previous CLI survived a kill: this turn does not start a second one beside it. */
+export class PreviousCliStillRunningError extends Error {
+  constructor(readonly sessionKey: string) {
+    super(
+      '이 세션의 이전 Claude 프로세스가 아직 종료되지 않아 이번 턴을 시작하지 않았습니다 — 잠시 뒤 다시 보내주세요.',
+    );
+    this.name = 'PreviousCliStillRunningError';
+  }
+}
 
 /**
  * The keepalive cap's hard ceiling, as a multiple of `SOMA_BG_KEEPALIVE_MAX_MS`
@@ -1658,10 +1671,11 @@ export class ClaudeHandler implements TurnSteeringPort {
 
   /**
    * #1473 — close a turn's query, bounded. Its own `return()` ends the CLI's input and waits a while for it to exit; a
-   * close that fails or does not finish within `QUERY_CLOSE_MS` did not close, and the CLI still running for the
-   * session is signalled through the process registry (not the turn's controller: its reason is the turn's).
+   * close that fails or does not finish within `QUERY_CLOSE_MS` did not close, and this query's CLI is signalled
+   * through the process registry (not the turn's controller: its reason is the turn's). A CLI that outlives that is
+   * killed by the session's next turn before it starts (`awaitPreviousRunEnd`).
    */
-  private async closeQuery(query: { return: (value?: undefined) => unknown }, sessionKey: string | undefined) {
+  private async closeQuery(query: { return: (value?: undefined) => unknown }, owner: ClaudeProcessOwner | undefined) {
     let bound: ReturnType<typeof setTimeout> | undefined;
     const closedInTime = await Promise.race([
       // A close that failed did not close: the CLI may still run.
@@ -1678,17 +1692,21 @@ export class ClaudeHandler implements TurnSteeringPort {
     ]);
     if (bound) clearTimeout(bound);
     if (closedInTime) return;
-    const signalled = sessionKey ? getClaudeChildProcessRegistry().killSession(sessionKey, 'SIGTERM') : 0;
-    this.logger.warn('A turn’s query did not close in time — its CLI is stopped', {
-      sessionKey,
-      boundMs: QUERY_CLOSE_MS,
-      signalled,
-    });
+    // Only this query's own CLI (its owner object), never a later turn's of the same session (round 6, fable).
+    const signalled = owner ? getClaudeChildProcessRegistry().killOwned(owner, 'SIGTERM') : 0;
+    this.logger.warn(
+      signalled > 0
+        ? 'A turn’s query did not close in time — its CLI is signalled'
+        : 'A turn’s query did not close in time — no tracked CLI to signal',
+      { sessionKey: owner?.sessionKey, boundMs: QUERY_CLOSE_MS, signalled },
+    );
   }
 
   /**
    * #1473 — before a turn's query starts: an abandoned run of the session ends (its loop settles and closes its query,
-   * `runsEnding`), and the session's previous CLI exits. Both bounded; a Stop of this turn ends the wait.
+   * `runsEnding`), and the session's previous CLI exits. Both bounded; a Stop of this turn ends the wait. A previous
+   * CLI still alive at the bound is killed; one that survives the kill fails this turn (never two CLIs on one
+   * transcript).
    */
   private async awaitPreviousRunEnd(sessionKey: string, signal: AbortSignal | undefined): Promise<void> {
     const startedAt = Date.now();
@@ -1719,12 +1737,18 @@ export class ClaudeHandler implements TurnSteeringPort {
     if (signal?.aborted) return;
     const registry = getClaudeChildProcessRegistry();
     if (registry.hasLiveChildFor(sessionKey)) {
-      const exited = await registry.waitForSessionExit(sessionKey, PREVIOUS_CLI_EXIT_WAIT_MS, signal);
+      let exited = await registry.waitForSessionExit(sessionKey, PREVIOUS_CLI_EXIT_WAIT_MS, signal);
       if (!exited && !signal?.aborted) {
-        this.logger.warn('The session’s previous CLI is still running — this turn starts anyway', {
+        // The bound is no proof of exit: the session's previous CLI is killed, and the turn waits for it once more. One
+        // that survives even that is not run beside — this turn fails instead (round 6, grok/astra).
+        const killed = registry.killSession(sessionKey, 'SIGKILL');
+        this.logger.warn('The session’s previous CLI did not exit in time — killed', {
           sessionKey,
           boundMs: PREVIOUS_CLI_EXIT_WAIT_MS,
+          killed,
         });
+        exited = await registry.waitForSessionExit(sessionKey, PREVIOUS_CLI_KILL_WAIT_MS, signal);
+        if (!exited && !signal?.aborted) throw new PreviousCliStillRunningError(sessionKey);
       }
     }
     const waitedMs = Date.now() - startedAt;
@@ -1756,6 +1780,9 @@ export class ClaudeHandler implements TurnSteeringPort {
     /** #1473 — the run-ahead reader's handle (ordinary turns only). */
     run?: RunHandle,
   ): AsyncGenerator<SDKMessage, void, unknown> {
+    // #1473 — this query's own owner object in the process registry: the CLI it spawns, and only that one, is the one
+    // its bounded close signals (`closeQuery`).
+    const processOwner: ClaudeProcessOwner | undefined = sessionKey ? { sessionKey } : undefined;
     // Acquire a lease on the active CCT slot. Held for the lifetime of the
     // Claude CLI streaming call, released in the outer finally below.
     let lease: SlotAuthLease | null = null;
@@ -1810,7 +1837,7 @@ export class ClaudeHandler implements TurnSteeringPort {
           workingDirectory,
           slackContext,
           // The process monitor files this turn's Claude Code process tree under the session (dashboard card).
-          ...(sessionKey ? { processOwner: { sessionKey } } : {}),
+          ...(processOwner ? { processOwner } : {}),
         },
         {
           logger: this.logger,
@@ -2701,7 +2728,7 @@ export class ClaudeHandler implements TurnSteeringPort {
         channel.close();
         // #1473 — the frames left the query open for the held turn's settlement, done above. Close it now — one owner,
         // whatever ended the loop (a result, a stop, a failure) — bounded, so a wedged CLI cannot hold the loop's end.
-        await this.closeQuery(activeQuery, steerKey);
+        await this.closeQuery(activeQuery, processOwner);
         if (steerKey && this.activeQueries.get(steerKey)?.query === activeQuery) {
           this.activeQueries.delete(steerKey);
         }
