@@ -27,6 +27,9 @@ const ANSWER_IN_PROGRESS_TEXT = '⏳ 이 질문은 이미 답변을 처리하고
  */
 const ANSWER_TAKEN_TEXT = '✅ 이 질문은 이미 답변을 받았습니다 — 카드는 곧 갱신됩니다.';
 
+/** #1474 — a legacy card clicked when no question is open on the session: the question it asked was answered. */
+const NO_OPEN_QUESTION_TEXT = '✅ 이 질문은 이미 답변되었거나 더 이상 열려 있지 않습니다.';
+
 /** #1474 — how long an answered card or form is remembered: far past any Slack lag the edit could wait in. */
 const ANSWERED_MARK_TTL_MS = 6 * 60 * 60 * 1000;
 
@@ -63,6 +66,8 @@ interface TakenQuestion {
   recordedAt: ConversationSession['activityStateChangedAt'];
   /** The session's state when the answer came: `idle` for a question recorded on an idle session (a goal decision). */
   activityState: ConversationSession['activityState'];
+  /** A chunk answer of a split form: the forms it answered (a give-back returns only these to the record). */
+  chunk: string[] | undefined;
   question: NonNullable<ConversationSession['actionPanel']>['pendingQuestion'];
   choice: NonNullable<ConversationSession['actionPanel']>['pendingChoice'];
   openBit: boolean | undefined;
@@ -213,6 +218,24 @@ export class ChoiceActionHandler {
         return;
       }
 
+      // #1474 — a legacy card (no turn on its buttons) answers the question open on the session, or nothing: with no
+      // question, bit or record left, the question it asked was answered (the record survives a restart; the
+      // remembered cards do not) — a click now would be a second answer (round 3, astra).
+      const panel = session?.actionPanel;
+      if (
+        session &&
+        branch === 'legacy' &&
+        !panel?.pendingQuestion &&
+        panel?.waitingForChoice !== true &&
+        !panel?.pendingChoice
+      ) {
+        this.logger.info('Legacy choice click refused — no question is open on the session', { sessionKey });
+        if (channel && userId) {
+          await this.ctx.slackApi.postEphemeral(channel, userId, NO_OPEN_QUESTION_TEXT).catch(() => undefined);
+        }
+        return;
+      }
+
       // Before the first await: the dashboard (or another click) answering this
       // same question right now makes this click a second answer.
       if (session) {
@@ -229,14 +252,13 @@ export class ChoiceActionHandler {
         const targets = channel ? this.resolveChoiceSyncMessageTs(sessionKey, messageTs, completionMessageTs) : [];
         // #1474 — recorded, then handed on, then drawn (answerQuestion).
         try {
-          const outcome = await this.answerQuestion({
+          await this.answerQuestion({
             session,
             sessionKey,
             channel,
             event: { user: userId, channel, thread_ts: threadTs, ts: messageTs, text: choiceId, questionAnswer: true },
             card: { targets, text: completedText, blocks: completedBlocks },
           });
-          if (outcome === 'already-answered') await this.tellAnswered(channel, userId);
         } catch (handlerError) {
           this.logger.error('Choice handler failed', { sessionKey, error: handlerError });
         }
@@ -545,6 +567,9 @@ export class ChoiceActionHandler {
       }
     }
 
+    // #1474 — answered while the edits above waited in Slack's line (the dashboard, another chunk's last submit): the
+    // form is gone, and attaching it would raise the answered question's open bit again (round 3, astra).
+    if (!this.formStore.get(pendingForm.formId) || this.wasAnswered(pendingForm.sessionKey, pendingForm.formId)) return;
     await this.ctx.threadPanel?.attachChoice(pendingForm.sessionKey, updatedPayload, pendingForm.messageTs);
   }
 
@@ -603,7 +628,7 @@ export class ChoiceActionHandler {
     // #1474 — recorded, then handed on, then drawn (answerQuestion); a failed hand-on gives the question back, and
     // the form with it.
     try {
-      const outcome = await this.answerQuestion({
+      await this.answerQuestion({
         session,
         sessionKey,
         channel,
@@ -616,10 +641,10 @@ export class ChoiceActionHandler {
           questionAnswer: true,
         },
         remainingChoice,
+        chunk: chunked,
         card: { targets, text: '✅ 모든 선택 완료', blocks: completedBlocks },
         forms: [pendingForm],
       });
-      if (outcome === 'already-answered') await this.tellAnswered(channel, userId);
     } catch (handlerError) {
       this.logger.error('Multi-choice handler failed', { sessionKey, error: handlerError });
     }
@@ -961,7 +986,7 @@ export class ChoiceActionHandler {
     );
     // #1474 — recorded, then handed on, then drawn (answerQuestion); a failed hand-on gives the question back.
     try {
-      const outcome = await this.answerQuestion({
+      await this.answerQuestion({
         session,
         sessionKey,
         channel,
@@ -975,7 +1000,6 @@ export class ChoiceActionHandler {
         },
         card: { targets, text: completedText, blocks: completedBlocks },
       });
-      if (outcome === 'already-answered') throw new Error('Session is not waiting for a choice');
     } catch (error) {
       this.logger.error('Error processing dashboard choice', { sessionKey, choiceId, error });
       throw error;
@@ -1071,7 +1095,10 @@ export class ChoiceActionHandler {
       // forms' messages) and the legacy choice message.
       const pcMulti = session.actionPanel?.pendingChoice;
       const choiceMessageTs = session.actionPanel?.choiceMessageTs;
-      const targets = this.resolveChoiceSyncMessageTs(sessionKey, choiceMessageTs, choiceMessageTs);
+      // A chunk answered from Slack before is drawn already: it is not drawn (nor remembered) again (round 3, astra).
+      const targets = this.resolveChoiceSyncMessageTs(sessionKey, choiceMessageTs, choiceMessageTs).filter(
+        (ts) => !this.wasAnswered(sessionKey, ts),
+      );
       if (pcMulti?.kind === 'multi') {
         for (const fId of pcMulti.formIds) {
           const form = this.formStore.get(fId);
@@ -1082,7 +1109,7 @@ export class ChoiceActionHandler {
       const forms = [...this.formStore.getFormsBySession(sessionKey).values()];
       // #1474 — recorded, then handed on, then drawn (answerQuestion); a failed hand-on gives the question back.
       try {
-        const outcome = await this.answerQuestion({
+        await this.answerQuestion({
           session,
           sessionKey,
           channel,
@@ -1097,7 +1124,6 @@ export class ChoiceActionHandler {
           card: { targets, text: dashboardCompletedText, blocks: dashboardCompletedBlocks },
           forms,
         });
-        if (outcome === 'already-answered') throw new Error('Session is not waiting for a choice');
       } catch (error) {
         this.logger.error('Error processing dashboard multi-choice', { sessionKey, error });
         throw error;
@@ -1186,7 +1212,7 @@ export class ChoiceActionHandler {
       return;
     }
     try {
-      const outcome = await this.answerQuestion({
+      await this.answerQuestion({
         session,
         sessionKey,
         channel,
@@ -1200,7 +1226,6 @@ export class ChoiceActionHandler {
         },
         card: { targets, text: args.completedText, blocks: args.completedBlocks },
       });
-      if (outcome === 'already-answered') await this.tellAnswered(channel, userId);
     } catch (handlerError) {
       this.logger.error('Typed answer failed', { sessionKey, error: handlerError });
     } finally {
@@ -1224,7 +1249,9 @@ export class ChoiceActionHandler {
    *    answer is never taken down by it.
    *
    * A hand-on that throws gives the question back (`giveBackQuestion`) — with its forms, its card drawn open again
-   * behind the answered drawing — and rethrows. A card or form already answered takes nothing: `already-answered`.
+   * behind the answered drawing — and rethrows. A second answer to a card or form already answered is refused at the
+   * Slack entries, before their click classification (`refuseAnswered`); the dashboard needs the question on the
+   * session (`claimDashboardAnswer`).
    */
   async answerQuestion(args: {
     session: ConversationSession;
@@ -1237,11 +1264,13 @@ export class ChoiceActionHandler {
     forms?: PendingChoiceFormData[];
     /** A chunk of a form whose other chunks are still to answer: the choice record that remains open. */
     remainingChoice?: NonNullable<ConversationSession['actionPanel']>['pendingChoice'];
-  }): Promise<'handed-on' | 'already-answered'> {
+    /** A chunk answer of a split form (the last one too): a give-back returns only its forms to the record. */
+    chunk?: boolean;
+  }): Promise<void> {
     const forms = args.forms ?? [];
     const marks = [...args.card.targets, ...forms.map((form) => form.formId)];
-    if (this.wasAnswered(args.sessionKey, ...marks)) return 'already-answered';
     const taken = this.recordAnswer(args.session, args.sessionKey, args.remainingChoice);
+    if (args.chunk) taken.chunk = forms.map((form) => form.formId);
     const remembered = this.rememberAnswered(args.sessionKey, marks);
     for (const form of forms) this.formStore.delete(form.formId);
     const drawing = this.drawAnswered(
@@ -1280,7 +1309,6 @@ export class ChoiceActionHandler {
       throw error;
     }
     await drawing;
-    return 'handed-on';
   }
 
   /**
@@ -1297,6 +1325,7 @@ export class ChoiceActionHandler {
     const taken: TakenQuestion = {
       recordedAt: undefined,
       activityState: session.activityState,
+      chunk: undefined,
       question: panel?.pendingQuestion,
       choice: panel?.pendingChoice,
       openBit: panel?.waitingForChoice,
@@ -1362,7 +1391,7 @@ export class ChoiceActionHandler {
     try {
       if (panel) {
         panel.pendingQuestion = taken.question;
-        panel.pendingChoice = taken.choice;
+        panel.pendingChoice = this.choiceGivenBack(panel.pendingChoice, taken);
         panel.waitingForChoice = taken.openBit;
         panel.choiceMessageTs = taken.choiceMessageTs;
         panel.choiceMessageLink = taken.choiceMessageLink;
@@ -1380,6 +1409,24 @@ export class ChoiceActionHandler {
       reason: notKept ? (error as AnswerNotKeptError).reason : 'dispatch failed before a turn started',
     });
     return true;
+  }
+
+  /**
+   * #1474 — the choice record a give-back leaves. A whole answer's record comes back as it was. A chunk answer
+   * returns only its own forms, to the record as it is now: another chunk of the same form answered (or given back)
+   * since has changed it, and the snapshot this one took would undo that — two chunks refused together would leave
+   * the first one's form open with no record to answer it by (round 3, astra).
+   */
+  private choiceGivenBack(
+    current: NonNullable<ConversationSession['actionPanel']>['pendingChoice'],
+    taken: TakenQuestion,
+  ): NonNullable<ConversationSession['actionPanel']>['pendingChoice'] {
+    const was = taken.choice;
+    if (!taken.chunk || was?.kind !== 'multi') return was;
+    const stillOpen = current?.kind === 'multi' && current.turnId === was.turnId ? current.formIds : [];
+    const open = new Set([...stillOpen, ...taken.chunk]);
+    // In the form's order where this answer's snapshot knows it; the rest after.
+    return { ...was, formIds: [...new Set([...was.formIds, ...stillOpen])].filter((formId) => open.has(formId)) };
   }
 
   /**
@@ -1421,6 +1468,9 @@ export class ChoiceActionHandler {
     forms: PendingChoiceFormData[],
   ): Promise<void> {
     if (!channel) return;
+    // Answered again (or asked anew) while the answered drawing waited: the card is that answer's to draw now.
+    if (session.actionPanel?.pendingQuestion !== taken.question) return;
+    if (this.wasAnswered(sessionKey, ...targets, ...forms.map((form) => form.formId))) return;
     const edits: Promise<unknown>[] = [];
     if (forms.length > 0) {
       for (const form of forms) {
@@ -1474,9 +1524,10 @@ export class ChoiceActionHandler {
 
   /**
    * #1474 — refuse a click on a card or form this handler already answered: the clicker is told, and nothing else
-   * happens — no stale mark over the answered card, no second answer. True when refused.
+   * happens — no stale mark over the answered card, no second answer. True when refused. Public for the typed-answer
+   * paths (`FormActionHandler`), which run the same click classification.
    */
-  private async refuseAnswered(
+  async refuseAnswered(
     sessionKey: string | undefined,
     channel: string | undefined,
     userId: string | undefined,

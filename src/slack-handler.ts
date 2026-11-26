@@ -2248,12 +2248,15 @@ export class SlackHandler {
       // durable transaction behind it.
       const detail = (started as { detail?: string }).detail ?? 'queue transaction failed';
       this.logger.error('Follow-up dispatch could not be opened — message NOT run', { sessionKey, detail });
-      await this.slackApi.addReaction(event.channel, event.ts, 'warning');
-      await this.slackApi.postSystemMessage(
-        event.channel,
-        `❌ 실행을 시작하지 못했습니다 — ${detail}\n_저장에 실패해 이 메시지는 실행되지 않았습니다. 다시 보내주세요._`,
-        { threadTs: event.thread_ts || event.ts },
-      );
+      // #1474 — an answer that did not run is not kept: its question goes back (round 3, astra).
+      await this.refuseFollowup(event, 'dispatch_open_failed', async () => {
+        await this.slackApi.addReaction(event.channel, event.ts, 'warning');
+        await this.slackApi.postSystemMessage(
+          event.channel,
+          `❌ 실행을 시작하지 못했습니다 — ${detail}\n_저장에 실패해 이 메시지는 실행되지 않았습니다. 다시 보내주세요._`,
+          { threadTs: event.thread_ts || event.ts },
+        );
+      });
       return;
     }
 
@@ -5427,6 +5430,31 @@ export class SlackHandler {
     // Stored: the message will run behind the turn in flight (#853 — a host waiting on it hears so).
     this.noteTurnAccepted(event.channel, event.ts);
 
+    // #1474 — from here an answer to the model's question is kept: it is in the queue. A failure on the way (a Slack
+    // paint, a notice) is not the answer's, and must not read as an answer the queue did not keep — its handler would
+    // give the question back while the answer waits in the queue, and a retry would queue it twice (round 3, astra).
+    if (event.questionAnswer === true) {
+      try {
+        await this.continueStoredFollowup(sessionKey, event, result.item, threadTs);
+      } catch (error) {
+        this.logger.warn('A stored answer’s surface failed after it was queued — the answer is kept', {
+          sessionKey,
+          itemId: result.item.id,
+          error: (error as Error)?.message ?? String(error),
+        });
+      }
+      return;
+    }
+    await this.continueStoredFollowup(sessionKey, event, result.item, threadTs);
+  }
+
+  /** The rest of `enqueueFollowup` once the message is stored: its receipt, the steer, the lane's notice. */
+  private async continueStoredFollowup(
+    sessionKey: string,
+    event: MessageEvent,
+    item: FollowupItem,
+    threadTs: string,
+  ): Promise<void> {
     // The receipt AND both controls, in ONE paint, BEFORE the steer (09 §3.1,
     // corrected 2026-09-21). The controls used to wait for the steer to answer,
     // which cost them a second trip through the shared rate-limit queue behind
@@ -5438,7 +5466,7 @@ export class SlackHandler {
     // sync below has nothing to take away.
     await this.paintFollowupReactions({ channel: event.channel, ts: event.ts }, () => ({
       sessionKey,
-      itemId: result.item.id,
+      itemId: item.id,
       roles: rolesForFollowupState('queued'),
       retain: true,
     }));
@@ -5457,13 +5485,13 @@ export class SlackHandler {
     const halted = this.followupDispatcher?.drainHalt(sessionKey);
     // D1: the default is to hand the message to the turn that is already
     // running instead of making the user wait for it.
-    const steered = halted ? 'queued' : await this.trySteerFollowup(sessionKey, event, result.item);
+    const steered = halted ? 'queued' : await this.trySteerFollowup(sessionKey, event, item);
 
     // Re-read INSIDE the paint: `result.item` is the enqueue-time snapshot, the
     // steer above moved the item, and a cancellation can land while this very
     // paint is queued — so the state the user ends up seeing is resolved in the
     // serialized section, not here.
-    await this.syncFollowupReactions(sessionKey, result.item.id);
+    await this.syncFollowupReactions(sessionKey, item.id);
     // The two facts a reaction cannot carry, and only these two: a halted lane
     // (nothing will drain while it stands — about the LANE, not this item) and
     // an undetermined state after a failed rollback. Everything the old item

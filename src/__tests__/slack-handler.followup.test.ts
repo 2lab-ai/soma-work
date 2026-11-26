@@ -3009,6 +3009,34 @@ describe('SlackHandler — follow-up queue host', () => {
       await settle();
     });
 
+    // #1474 round 3 (astra): an answer the idle dispatch could not open did not run — its question goes back.
+    it('refuses an answer whose turn could not be opened (the store failed), at once', async () => {
+      saveError = new Error('disk full');
+      addReaction.mockImplementationOnce(() => new Promise(() => undefined));
+
+      await expect(
+        handler.handleMessage(message({ ts: '333.901', text: '1', questionAnswer: true } as any), say()),
+      ).rejects.toThrow(AnswerNotKeptError);
+      expect(startWithContinuation).not.toHaveBeenCalled();
+
+      saveError = undefined;
+    });
+
+    // #1474 round 3 (astra): once stored, the answer is kept — a Slack failure after it is not a refusal.
+    it('an answer stored behind a running turn is kept, though its receipt paint then fails', async () => {
+      const { settle } = await startBusyTurn();
+      const sync = handlerAny.syncFollowupReactions;
+      handlerAny.syncFollowupReactions = vi.fn().mockRejectedValue(new Error('slack down'));
+
+      await expect(
+        handler.handleMessage(message({ ts: '333.902', text: '1', questionAnswer: true } as any), say()),
+      ).resolves.toBeUndefined();
+      expect(items().some((item: any) => item.message.ts === '333.902')).toBe(true);
+
+      handlerAny.syncFollowupReactions = sync;
+      await settle();
+    });
+
     it('emits a coded reject when the queue is over capacity', async () => {
       process.env.SOMA_FOLLOWUP_QUEUE_CAPACITY = '1';
       const scoped = new SlackHandler({ client: {}, assistant: vi.fn() } as any, claudeHandler as any, {} as any, {

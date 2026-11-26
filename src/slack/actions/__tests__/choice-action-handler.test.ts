@@ -66,6 +66,7 @@ describe('ChoiceActionHandler', () => {
       threadTs: 'thread-root',
       actionPanel: {
         choiceMessageTs: 'thread-choice-message-ts',
+        waitingForChoice: true,
       },
     });
 
@@ -192,6 +193,7 @@ describe('ChoiceActionHandler', () => {
       channelId: 'C123',
       actionPanel: {
         choiceMessageTs: 'thread-choice-message-ts',
+        waitingForChoice: true,
       },
     });
 
@@ -231,6 +233,7 @@ describe('ChoiceActionHandler', () => {
       channelId: 'C123',
       actionPanel: {
         choiceMessageTs: 'thread-choice-message-ts',
+        waitingForChoice: true,
       },
     });
 
@@ -842,12 +845,29 @@ describe('ChoiceActionHandler — P3 (PHASE>=3) classifyClick', () => {
     claudeHandler.getSessionByKey.mockReturnValue({
       threadRootTs: 'thread-root',
       threadTs: 'thread-root',
-      actionPanel: {},
+      actionPanel: { waitingForChoice: true },
     });
     await handler.handleUserChoice(clickBody(undefined, 'msg-1'));
     expect(threadPanel.resolveChoice).not.toHaveBeenCalled();
     expect(slackApi.updateMessage).toHaveBeenCalled();
     expect(messageHandler).toHaveBeenCalled();
+  });
+
+  // #1474 round 3 (astra): the remembered cards do not survive a restart; the record does.
+  it('legacy click with no question open on the session → told so, nothing sent, the card untouched', async () => {
+    claudeHandler.getSessionByKey.mockReturnValue({
+      threadRootTs: 'thread-root',
+      threadTs: 'thread-root',
+      actionPanel: {},
+    });
+    await handler.handleUserChoice(clickBody(undefined, 'msg-1'));
+    expect(messageHandler).not.toHaveBeenCalled();
+    expect(slackApi.updateMessage).not.toHaveBeenCalled();
+    expect(slackApi.postEphemeral).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.stringContaining('더 이상 열려 있지 않습니다'),
+    );
   });
 
   it('pendingChoice present + turnId mismatch → stale', async () => {

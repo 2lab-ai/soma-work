@@ -40,6 +40,9 @@ export class FormActionHandler {
       const fallbackThreadTs = body.message?.thread_ts || messageTs;
       const threadTs = this.resolveSessionThreadTs(sessionKey, fallbackThreadTs);
 
+      // #1474 — the question this card asked is already answered (its edit is still on its way): no input to open.
+      if (await this.choiceHandler.refuseAnswered(sessionKey, channel, body.user?.id, messageTs)) return;
+
       await client.views.open({
         trigger_id: triggerId,
         view: this.buildCustomInputModal(
@@ -69,6 +72,9 @@ export class FormActionHandler {
       const messageTs = body.message?.ts;
       const fallbackThreadTs = body.message?.thread_ts || messageTs;
       const threadTs = this.resolveSessionThreadTs(sessionKey, fallbackThreadTs);
+
+      // #1474 — the form is already answered (its edit is still on its way): no input to open.
+      if (await this.choiceHandler.refuseAnswered(sessionKey, channel, body.user?.id, formId, messageTs)) return;
 
       // P3 (PHASE>=3): inherit turnId from the PendingFormStore record so the
       // modal submission path can classify stale vs live clicks.
@@ -191,6 +197,10 @@ export class FormActionHandler {
       },
     ];
 
+    // #1474 — a card already answered (a modal opened before, or the edit still on its way): told so, before the
+    // classifier would read it stale and mark the answered card invalid.
+    if (await this.choiceHandler.refuseAnswered(sessionKey, channel, userId, messageTs)) return;
+
     // P3 (PHASE>=3) classifier — reuse the same matrix as ChoiceActionHandler.
     const branch = classifyClick(this.ctx.claudeHandler, { sessionKey, payloadTurnId, messageTs });
 
@@ -229,6 +239,9 @@ export class FormActionHandler {
     userId: string,
     inputValue: string,
   ): Promise<void> {
+    // #1474 — the form is already answered: told so, instead of a form that silently is not there.
+    if (await this.choiceHandler.refuseAnswered(sessionKey, channel, userId, formId, messageTs)) return;
+
     const pendingForm = this.formStore.get(formId);
     if (!pendingForm) {
       this.logger.warn('Pending form not found for custom input', { formId });

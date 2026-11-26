@@ -38,6 +38,7 @@ describe('FormActionHandler', () => {
     choiceHandler = {
       completeMultiChoiceForm: vi.fn().mockResolvedValue(undefined),
       answerWithText: (args: Parameters<ChoiceActionHandler['answerWithText']>[0]) => choice.answerWithText(args),
+      refuseAnswered: (...args: Parameters<ChoiceActionHandler['refuseAnswered']>) => choice.refuseAnswered(...args),
     };
 
     handler = new FormActionHandler(
@@ -224,12 +225,14 @@ describe('FormActionHandler — P3 (PHASE>=3) classifyClick', () => {
   let choiceHandler: any;
   let sessionRegistry: any;
   let handler: FormActionHandler;
+  let choiceReal: ChoiceActionHandler;
   const sessionKey = 'C1:thread-root';
 
   beforeEach(() => {
     slackApi = {
       updateMessage: vi.fn().mockResolvedValue(undefined),
       postMessage: vi.fn().mockResolvedValue({ ts: 'posted' }),
+      postEphemeral: vi.fn().mockResolvedValue(undefined),
     };
     sessionRegistry = { persistAndBroadcast: vi.fn() };
     claudeHandler = {
@@ -249,15 +252,71 @@ describe('FormActionHandler — P3 (PHASE>=3) classifyClick', () => {
       { slackApi, claudeHandler, messageHandler, threadPanel } as any,
       formStore as any,
     );
+    choiceReal = choice;
     choiceHandler = {
       completeMultiChoiceForm: vi.fn().mockResolvedValue(undefined),
       answerWithText: (args: Parameters<ChoiceActionHandler['answerWithText']>[0]) => choice.answerWithText(args),
+      refuseAnswered: (...args: Parameters<ChoiceActionHandler['refuseAnswered']>) => choice.refuseAnswered(...args),
     };
     handler = new FormActionHandler(
       { slackApi, claudeHandler, messageHandler, threadPanel } as any,
       formStore,
       choiceHandler as any,
     );
+  });
+
+  // #1474 round 3 (fable/grok): the typed answer is a seventh way in — it runs the same click classification.
+  it('a typed answer to a P3 card already answered is told so: no stale mark over the answered card, no dispatch', async () => {
+    let releaseEdit!: () => void;
+    slackApi.updateMessage.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseEdit = resolve;
+        }),
+    );
+    claudeHandler.getSessionByKey.mockReturnValue({
+      channelId: 'C1',
+      threadRootTs: 'tr',
+      threadTs: 'tr',
+      activityState: 'waiting',
+      actionPanel: {
+        waitingForChoice: true,
+        choiceMessageTs: 'msg-1',
+        pendingChoice: { turnId: 't1', kind: 'single', choiceTs: 'msg-1', formIds: [] },
+        pendingQuestion: { type: 'user_choice', question: 'Q', choices: [{ id: '1', label: 'A' }] },
+      },
+    });
+    const clicking = choiceReal.handleUserChoice({
+      actions: [{ value: JSON.stringify({ sessionKey, choiceId: '1', label: 'A', question: 'Q', turnId: 't1' }) }],
+      user: { id: 'U1' },
+      channel: { id: 'C1' },
+      message: { ts: 'msg-1' },
+    });
+    await Promise.resolve();
+
+    await handler.handleCustomInputSubmit(
+      { user: { id: 'U1' } },
+      {
+        private_metadata: JSON.stringify({
+          sessionKey,
+          question: 'Q',
+          channel: 'C1',
+          messageTs: 'msg-1',
+          threadTs: 'tr',
+          type: 'single',
+          turnId: 't1',
+        }),
+        state: { values: { custom_input_block: { custom_input_text: { value: 'hello' } } } },
+      },
+    );
+
+    expect(messageHandler).toHaveBeenCalledTimes(1);
+    const staleMarks = slackApi.updateMessage.mock.calls.filter((call: any[]) => String(call[2]).includes('유효하지'));
+    expect(staleMarks).toHaveLength(0);
+    expect(slackApi.postEphemeral).toHaveBeenCalledWith('C1', 'U1', expect.stringContaining('이미 답변을 받았습니다'));
+
+    releaseEdit();
+    await clicking;
   });
 
   it('#1474 — a typed answer that completes the form is handed on before any Slack write', async () => {

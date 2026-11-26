@@ -382,6 +382,160 @@ describe('ChoiceActionHandler — recorded, handed on, then drawn (#1474)', () =
     expect(session.actionPanel.pendingQuestion).toBe(QUESTION);
   });
 
+  it('an answer given back, then answered again before Slack drew either: the card ends drawn as answered', async () => {
+    messageHandler.mockRejectedValueOnce(new AnswerNotKeptError('capacity'));
+    await handler.handleUserChoice(button('1')); // refused: given back, its draw-back waits behind the drawing
+    const answeringAgain = handler.handleUserChoice(button('2')); // the owner answers again at once
+    await Promise.resolve();
+    expect(messageHandler).toHaveBeenCalledTimes(2);
+
+    slackWrite.release();
+    await answeringAgain;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // Two answered drawings and no draw-back over the second: the card reads the answer the session took.
+    const drawn = slackApi.updateMessage.mock.calls.map((call: any[]) => String(call[2]));
+    expect(drawn).toHaveLength(2);
+    expect(drawn.every((text: string) => text.startsWith('✅'))).toBe(true);
+    expect(session.actionPanel.pendingQuestion).toBeUndefined();
+  });
+
+  it('two chunks of a split form refused together both come back to the record', async () => {
+    session.actionPanel.pendingChoice = { kind: 'multi', turnId: 'turn-1', formIds: ['form-a', 'form-b'] };
+    const form = (formId: string, messageTs: string) => ({
+      formId,
+      sessionKey: KEY,
+      channel: 'C1',
+      threadTs: 'root',
+      messageTs,
+      turnId: 'turn-1',
+      questions: [{ id: formId, question: `${formId}?`, choices: [{ id: '1', label: 'A' }] }],
+      selections: { [formId]: { choiceId: '1', label: 'A' } },
+      createdAt: Date.now(),
+    });
+    formStore.set('form-a', form('form-a', 'ts-a'));
+    formStore.set('form-b', form('form-b', 'ts-b'));
+    slackWrite.release();
+    const refusals = [deferred(), deferred()];
+    let call = 0;
+    messageHandler.mockImplementation(() => {
+      const refusal = refusals[call++];
+      return refusal.promise.then(() => {
+        throw new AnswerNotKeptError('capacity');
+      });
+    });
+    const submit = (formId: string, ts: string) =>
+      handler.handleFormSubmit({
+        actions: [{ value: JSON.stringify({ formId, sessionKey: KEY }) }],
+        user: { id: 'U1' },
+        channel: { id: 'C1' },
+        message: { ts },
+      });
+
+    const a = submit('form-a', 'ts-a');
+    await Promise.resolve();
+    const b = submit('form-b', 'ts-b'); // the last chunk: it closes the question
+    await Promise.resolve();
+    expect(session.actionPanel.pendingQuestion).toBeUndefined();
+
+    refusals[0].release();
+    await a;
+    refusals[1].release();
+    await b;
+
+    expect(session.actionPanel.pendingQuestion).toBe(QUESTION);
+    expect([...session.actionPanel.pendingChoice.formIds].sort()).toEqual(['form-a', 'form-b']);
+    expect(formStore.get('form-a')).toBeDefined();
+    expect(formStore.get('form-b')).toBeDefined();
+  });
+
+  it('after one chunk answered from Slack, the dashboard answers the rest', async () => {
+    const multi = {
+      type: 'user_choices' as const,
+      questions: [
+        { id: 'qa', question: 'A?', choices: [{ id: '1', label: 'A' }] },
+        { id: 'qb', question: 'B?', choices: [{ id: '1', label: 'B' }] },
+      ],
+    };
+    session.actionPanel = {
+      waitingForChoice: true,
+      pendingQuestion: multi,
+      choiceMessageTs: 'ts-a',
+      pendingChoice: { kind: 'multi', turnId: 'turn-1', formIds: ['form-a', 'form-b'] },
+    };
+    for (const [formId, ts, qid] of [
+      ['form-a', 'ts-a', 'qa'],
+      ['form-b', 'ts-b', 'qb'],
+    ] as const) {
+      formStore.set(formId, {
+        formId,
+        sessionKey: KEY,
+        channel: 'C1',
+        threadTs: 'root',
+        messageTs: ts,
+        turnId: 'turn-1',
+        questions: [multi.questions.find((q) => q.id === qid)],
+        selections: { [qid]: { choiceId: '1', label: 'A' } },
+        createdAt: Date.now(),
+      });
+    }
+    slackWrite.release();
+    await handler.handleFormSubmit({
+      actions: [{ value: JSON.stringify({ formId: 'form-a', sessionKey: KEY }) }],
+      user: { id: 'U1' },
+      channel: { id: 'C1' },
+      message: { ts: 'ts-a' },
+    });
+
+    await handler.handleMultiChoiceFromDashboard(
+      KEY,
+      { qa: { choiceId: '1', label: 'A' }, qb: { choiceId: '1', label: 'B' } },
+      'U1',
+    );
+
+    expect(messageHandler).toHaveBeenCalledTimes(2);
+    expect(session.actionPanel.pendingQuestion).toBeUndefined();
+  });
+
+  it('a form selection whose edit waits while the dashboard answers does not raise the answered question again', async () => {
+    const multi = {
+      type: 'user_choices' as const,
+      questions: [{ id: 'q1', question: 'Q1?', choices: [{ id: '1', label: 'A' }] }],
+    };
+    session.actionPanel = { waitingForChoice: true, pendingQuestion: multi, choiceMessageTs: 'form-ts' };
+    formStore.set('form-1', {
+      formId: 'form-1',
+      sessionKey: KEY,
+      channel: 'C1',
+      threadTs: 'root',
+      messageTs: 'form-ts',
+      questions: multi.questions,
+      selections: {},
+      createdAt: Date.now(),
+    });
+    const attachChoice = vi.fn(async () => {
+      session.actionPanel.waitingForChoice = true; // what the real attach does
+    });
+    (handler as any).ctx.threadPanel.attachChoice = attachChoice;
+
+    const selecting = handler.handleMultiChoice({
+      actions: [
+        { value: JSON.stringify({ formId: 'form-1', sessionKey: KEY, questionId: 'q1', choiceId: '1', label: 'A' }) },
+      ],
+      user: { id: 'U1' },
+      channel: { id: 'C1' },
+      message: { ts: 'form-ts' },
+    });
+    await Promise.resolve();
+    const answering = handler.handleMultiChoiceFromDashboard(KEY, { q1: { choiceId: '1', label: 'A' } }, 'U1');
+    await Promise.resolve();
+    slackWrite.release();
+    await Promise.all([selecting, answering]);
+
+    expect(attachChoice).not.toHaveBeenCalled();
+    expect(session.actionPanel.waitingForChoice).toBe(false);
+  });
+
   it('a click on an older question takes nothing: the open question stays open', async () => {
     slackWrite.release();
     session.actionPanel.pendingChoice = { kind: 'single', turnId: 'turn-new', choiceTs: 'q-ts' };
