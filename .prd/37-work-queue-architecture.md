@@ -1,6 +1,6 @@
 # 37 — 작업 큐 아키텍처
 
-Status: in-progress · v1 shipped 2026-11-19 · v2 2026-11-26 구현(work-queue/loop.md 라운드 4)
+Status: shipped · v1 2026-11-19 · v2 2026-11-26(work-queue/loop.done.md R4, 실측 통과)
 
 > 한 줄 결론: 줄 규칙(키 겹침 · 순서 · 내역 · 보기)은 `somalib/work-queue/line.ts` 하나다. 레인 원장(`ledger.ts`, SQLite 한 행,
 > MCP 프로세스와 호스트가 함께 쓴다)과 사람마다의 줄(`src/user-task-queue`, 호스트 안 · 인그레스 동기 판정)이 그 규칙을
