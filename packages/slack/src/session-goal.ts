@@ -14,172 +14,24 @@
  *
  * Lives in `@soma/slack` (not the `src/` composition root) because the
  * package tree must be importable from `stream-executor` without a cycle;
- * the structural types below mirror `SessionGoal` in `src/types.ts`.
+ * The goal types are the one model in `./goal/model` (re-exported below).
  */
 
-export type SessionGoalStatus = 'active' | 'paused' | 'complete' | 'queued';
+import { DEFAULT_GOAL_MAX_CONTINUATIONS, MAX_GOAL_HISTORY, type SessionGoal } from './goal/model';
 
-/**
- * Default cap for `maxContinuations`. Mirrors
- * `DEFAULT_GOAL_MAX_CONTINUATIONS` in `src/types.ts` (the package tree
- * cannot import the composition root). See `docs/goal-command/spec.md`
- * §Auto-Continuation Loop.
- */
-export const DEFAULT_GOAL_MAX_CONTINUATIONS = 10;
+export type {
+  GoalCompletedVia,
+  SessionGoal,
+  SessionGoalFile,
+  SessionGoalFirstFailure,
+  SessionGoalPendingEval,
+  SessionGoalStall,
+  SessionGoalStatus,
+} from './goal/model';
+export { DEFAULT_GOAL_MAX_CONTINUATIONS, MAX_GOAL_HISTORY } from './goal/model';
 
-/** Cap on `goalHistory` length. Single source of truth (the former src/types.ts mirror was removed). */
-export const MAX_GOAL_HISTORY = 20;
-
-/**
- * A stopped goal loop: the evaluator found the same failure as last time. The
- * host asked the owner which of `actions` to do next (Slack + dashboard).
- * Single definition — `src/types.ts` re-exports it.
- */
-export interface SessionGoalStall {
-  /** Round id carried by the question; an answer for another round is stale. */
-  stallId: string;
-  stalledAt: number;
-  /** The repeated failure reason (the evaluator's words). */
-  reason: string;
-  /** The three next instructions the evaluator expects the owner to give. */
-  actions: string[];
-  /** The evaluator's confidence that the failure is the same. */
-  confidence: number;
-  /** The host question's turn id once posted — its form is retracted when the round ends without an answer. */
-  questionTurnId?: string;
-  /**
-   * #745: where the goal first failed for this reason (a context anchor), offered
-   * as a rollback because no turn since did new work. Absent = not offered.
-   */
-  rollbackAnchor?: string;
-  /** How many evaluated turns since the first failure would leave the context. */
-  rollbackTurns?: number;
-  /** The time of the last entry the rollback keeps (the first failure's), fixed when the offer is made (#744 marks). */
-  rollbackKeptUntil?: number;
-}
-
-/**
- * #745: where the goal first failed for its current failure reason — the
- * context anchor at the end of that turn — and whether any evaluated turn since
- * did new work. A new reason (or completion) starts it over.
- */
-export interface SessionGoalFirstFailure {
-  anchor?: string;
-  at: number;
-  /** Evaluated turns since the first failure (same reason). */
-  turns: number;
-  /** Some turn since did concrete new work (the evaluator's `progressed`). */
-  progressed: boolean;
-}
-
-/**
- * Structural mirror of `SessionGoal` (`src/types.ts`) — only the fields the
- * apply/queue helpers create, clear, or carry. The real `SessionGoal` is
- * assignable to this shape and vice versa.
- */
-/**
- * A file the goal's opening turn carries: a Slack file in the session's thread, in the shape the message pipeline
- * downloads from (`MessageEvent.files`). Mirrors `SlackEventFile` (`src/conversation/new-task-launcher.ts`).
- */
-export interface SessionGoalFile {
-  id: string;
-  name: string;
-  mimetype: string;
-  filetype: string;
-  url_private: string;
-  url_private_download: string;
-  size: number;
-  permalink?: string;
-}
-
-export interface SessionGoalState {
-  goalId: string;
-  objective: string;
-  /**
-   * The files the goal was added with (the dashboard's goal composer): already in the session's Slack thread. Every
-   * opening turn of this goal carries them — when it starts at once, when it is promoted from the queue later, and
-   * when a paused goal is resumed — so a queued goal does not lose what it was given.
-   */
-  openingFiles?: SessionGoalFile[];
-  /**
-   * The skill part of an objective written with a `$skill` in the dashboard's goal composer (`goal … $skill`, split by
-   * `CommandRouter.splitGoalSkill`): the goal's first turn runs it as a command, so the skill is resolved then — when
-   * it starts at once, when it is promoted from the queue later, or when a paused goal is resumed.
-   */
-  openingPrompt?: string;
-  /**
-   * {@link openingFiles} / {@link openingPrompt} rode a turn of this goal already (its opening, or the first
-   * continuation when the loop itself started the goal — an eval verdict promoting it from the queue, a restart
-   * repairing a stranded queue). The loop's continuations carry them only while this is unset; an explicit opening
-   * (start, promote, resume) always does.
-   */
-  openingSent?: boolean;
-  status: SessionGoalStatus;
-  createdAt: number;
-  updatedAt: number;
-  createdBy: string;
-  continuationCount: number;
-  maxContinuations: number;
-  /** ms epoch the cap-reached "keep going?" decision opened (S3); undefined ⇒ none pending. */
-  capDmPendingAt?: number;
-  /** The pending decision's round id (DM buttons + dashboard card). */
-  capDecisionId?: string;
-  /** Where the round's DM landed (stored after a successful post). */
-  capDmRef?: { channel: string; ts: string };
-  /**
-   * Open while the loop is stopped on a repeated failure (goal stall, `src/slack/goal-stall.ts`).
-   * Ended through the cap-decision retirer, like the cap decision.
-   */
-  stall?: SessionGoalStall;
-  /** The `remaining` list of the verdict behind `lastEvalReason` (goal stall comparison). */
-  lastEvalRemaining?: string[];
-  /** #968 — the task ids the task gate held the goal open on (see `src/slack/goal-task-gate.ts`). */
-  lastEvalGateOpen?: string[];
-  /** #745: where the goal first failed for its current reason. */
-  firstFailure?: SessionGoalFirstFailure;
-  /**
-   * The ids of the tasks the session's task list (TodoWrite ledger) had open
-   * when this goal was paused — its own unfinished work. While it waits (paused,
-   * or resumed into the queue) they hold no other goal's completion
-   * (`src/slack/goal-task-gate.ts`); when it takes the current slot again
-   * ({@link rebaseGoalAsActive}) it is cleared, so they count for it again.
-   * They apply only while the task list they came from is still the latest
-   * ({@link heldListAt}): once the running goal writes its own list, every task
-   * on it is that goal's — the ledger matches a new task onto an old id by its
-   * text, so an id alone does not say whose task it is.
-   */
-  heldTaskIds?: string[];
-  /** The task list (`TaskLedger.updatedAt`) {@link heldTaskIds} were taken from. */
-  heldListAt?: number;
-  /**
-   * The goal's opening turn was admitted but has not reached the model yet
-   * (set by the host when it admits the opening, cleared right before the
-   * opening's model call). While set, cancelling the opening cancels the
-   * goal, and `goal resume` re-admits the opening instead of resuming a goal
-   * that never had its first turn.
-   */
-  openingPending?: boolean;
-  evalAttemptCount?: number;
-  /** A scheduled completion-eval retry (see `SessionGoal` in `src/types.ts`) — dropped when the goal leaves the slot. */
-  evalDispatchRetryCount?: number;
-  evalBackoffUntil?: number;
-  evalRetryReason?: string;
-  epoch?: number;
-  pendingEval?: { requestedAt: number; turnId: string };
-  lastEvalReason?: string;
-  lastEvalSummaryHash?: string;
-  lastAssistantTurnSummary?: string;
-  completedAt?: number;
-  completedBy?: string;
-  completedVia?: 'user' | 'eval-model';
-  completionReason?: string;
-  activeMsUsed?: number;
-  tokensInput?: number;
-  tokensOutput?: number;
-  tokensCacheRead?: number;
-  tokensCacheCreate?: number;
-  costUsd?: number;
-}
+/** The queue helpers' goal: the one model (`./goal/model`). The name stays for its callers. */
+export type SessionGoalState = SessionGoal;
 
 /**
  * Structural session shape the queue helpers mutate. Mirrors the

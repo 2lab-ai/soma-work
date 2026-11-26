@@ -24,6 +24,7 @@ import {
 } from '@soma/slack/followup-queue';
 import { FOLLOWUP_RESTART_FREEZE_REASON, type FollowupQueueView } from '@soma/slack/followup-queue-blocks';
 import { FollowupQueueStore } from '@soma/slack/followup-queue-store';
+import { slotGoalInFlight, slotHoldOf } from '@soma/slack/goal/read';
 import { OutputFlag } from '@soma/slack/output-flags';
 import { isLocalSlashCommand, shouldForwardAsLocalSlashCommand } from '@soma/slack/pipeline/local-slash-command';
 import { runWithTimeout } from '@soma/slack/pipeline/stream-executor-cleanup-helpers';
@@ -3068,8 +3069,7 @@ export class SlackHandler {
           : userSettingsStore.getUserAutoGoalEnabled(event.user))
       ) {
         const fullSession = this.claudeHandler.getSessionByKey?.(sessionResult.sessionKey);
-        const inFlight =
-          !!fullSession?.goal && (fullSession.goal.status === 'active' || fullSession.goal.status === 'paused');
+        const inFlight = !!fullSession && slotGoalInFlight(fullSession) !== undefined;
         if (fullSession && !inFlight && !fullSession.goalQueue?.length) {
           const applied = enqueueOrActivateGoal(
             fullSession,
@@ -10369,7 +10369,7 @@ export class SlackHandler {
   /** Refuse a pause whose goal is not the running (or paused-in-place) current goal. */
   private assertGoalPausable(session: ConversationSession, goalId: string): void {
     const goal = session.goal;
-    if (!goal || goal.goalId !== goalId || (goal.status !== 'active' && goal.status !== 'paused')) {
+    if (!goal || goal.goalId !== goalId || !slotGoalInFlight(session)) {
       throw new HostGoalActionError(409, 'The current goal has changed — refresh and try again');
     }
   }
@@ -10378,7 +10378,8 @@ export class SlackHandler {
   private assertGoalResumable(session: ConversationSession, goalId: string): NonNullable<ConversationSession['goal']> {
     const shelved = session.goalPaused?.find((g) => g.goalId === goalId);
     if (shelved) return shelved;
-    if (session.goal?.goalId === goalId && session.goal.status === 'paused') return session.goal;
+    const hold = slotHoldOf(session);
+    if (hold?.goalId === goalId) return hold;
     throw new HostGoalActionError(409, 'That goal is no longer paused — refresh and try again');
   }
 

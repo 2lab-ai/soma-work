@@ -91,7 +91,9 @@ describe('GoalLoopController — cap-reached owner DM (S3)', () => {
     expect(h.goal.capDmPendingAt).toBeDefined();
   });
 
-  it('does not re-DM when the round is already pending and its DM landed (dedup)', async () => {
+  // .prd/39 A4 (X4) — the round is open and its DM landed: a turn end judges nothing, DMs nothing and posts no
+  // second "paused" notice (it used to, on every kick).
+  it('does not re-DM, re-judge or re-announce when the round is already pending and its DM landed', async () => {
     const h = makeHarness({
       capDmPendingAt: 12345,
       capDecisionId: 'round-1',
@@ -101,8 +103,7 @@ describe('GoalLoopController — cap-reached owner DM (S3)', () => {
     await h.controller.settled(SESSION_KEY);
 
     expect(h.dms).toHaveLength(0);
-    // falls back to the in-thread pause notice
-    expect(h.notices.some((n) => n.includes('paused'))).toBe(true);
+    expect(h.notices).toEqual([]);
   });
 
   it('the DM buttons carry the round id, and the DM location is kept so the dashboard can rewrite it (T1/T2)', async () => {

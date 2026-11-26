@@ -1,3 +1,4 @@
+import { capAskOf } from '@soma/slack/goal/read';
 import { installConsoleRedaction } from './logger';
 
 installConsoleRedaction();
@@ -2647,9 +2648,7 @@ async function start() {
       );
       // DM rewrites the previous process could not deliver.
       flushGoalCapDmSync((decisionId) =>
-        [...registry.getAllSessions().values()].some(
-          (s) => s.goal?.capDecisionId === decisionId && s.goal.capDmPendingAt !== undefined,
-        ),
+        [...registry.getAllSessions().values()].some((s) => capAskOf(s.goal)?.roundId === decisionId),
       );
       timing('Goal turn-settled driver installed');
     } catch (error) {
