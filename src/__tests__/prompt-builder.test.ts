@@ -206,14 +206,16 @@ describe('PromptBuilder', () => {
       expect(confirm).toContain('`no risk signals found`');
     });
 
-    // .prd/36 G9 — a deploy lines up in `deploy:<target>` by the PRs it ships: PRs another deploy already ships are not
-    // shipped twice, and a deploy that has to wait ends its turn (no polling, no cron, no question) until the host wakes it.
+    // .prd/36 G9 (v2) — a deploy lines up in the lane `deploy-<target>` by the PRs it ships: PRs another deploy already
+    // ships are not shipped twice, and a deploy that has to wait ends its turn (no polling, no cron, no question) until
+    // the host wakes it. A lane needs no configuration: every host has one.
     it('deploy workflow lines up in the work queue by its PR keys before the confirmation', () => {
       const prompt = builder.loadWorkflowPrompt('deploy')!;
       const section = prompt.slice(prompt.indexOf('## Work Queue'), prompt.indexOf('## Pre-Execution Confirmation'));
       expect(prompt.indexOf('## Work Queue')).toBeGreaterThan(prompt.indexOf('## Delta and Risk Check'));
       expect(section).toContain('queue_enter');
-      expect(section).toContain('deploy:<target>');
+      expect(section).toContain('deploy-<target>');
+      expect(section).not.toContain('deploy:<target>');
       expect(section).toMatch(/owner\/repo#N/);
       expect(section).toContain('CONFLICT');
       expect(section).toMatch(/already ships? in another deploy/);
@@ -221,10 +223,12 @@ describe('PromptBuilder', () => {
       expect(section).toMatch(/no polling, no cron, no question/);
       expect(section).toMatch(/host wakes this thread/);
       expect(section).toContain('queue_done');
-      expect(section).toContain('NO_QUEUES');
-      // Review R1 — the queue name is the target as `queue_list` names it, and an unknown name is checked, not skipped.
+      // v2 — no configured queue list: only a runtime without the queue (`QUEUE_UNAVAILABLE`) goes on without a line.
+      expect(section).not.toContain('NO_QUEUES');
+      expect(section).not.toContain('UNKNOWN_QUEUE');
+      expect(section).toContain('QUEUE_UNAVAILABLE');
+      // Review R1 — the lane name is the target as others name it: without a `deploy/` prefix, lower case.
       expect(section).toMatch(/without a `deploy\/` prefix, lower case/);
-      expect(section).toMatch(/UNKNOWN_QUEUE[^\n]*queues/);
       // Review R1 — an answer to a question asked while holding the entry re-checks the entry before merging.
       expect(section).toMatch(/queue_list[^\n]*mine/);
     });

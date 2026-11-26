@@ -10,6 +10,10 @@
  * Each row also picks the CPU cap on one of that person's tasks (100% = one core; 100% by default, none for an admin):
  * the process monitor holds a task over it to it with a duty cycle (src/process-monitor/cpu-throttler.ts).
  *
+ * Above the people: the lanes (.prd/36 v2 — `qa-dev2`, `deploy-stage0`, one at a time) the way a person's row shows a
+ * person — what runs, what waits in order — and each lane's history, the entries one after another with when each
+ * waited, ran and ended, so the page shows the lane ran them one at a time (`GET /api/dashboard/work-queues`).
+ *
  * Admins only (the tab is `adminOnly`; `user-task-limits-routes.ts` refuses everyone else). Turning needs admin mode.
  * Client script: String.raw, no `${…}` and no backticks (ships byte for byte).
  */
@@ -22,6 +26,10 @@ export const TASK_QUEUE_TAB_HTML = `<div slot="task-queue" data-tab="task-queue"
     <p class="intro">사람마다 동시에 진행할 수 있는 작업(스레드) 수입니다. 이보다 많이 시키면 새 요청은 그 사람의 대기큐에 들어가고, 진행 중인 작업이 끝나면 자동으로 시작합니다. 기본은 1개, 관리자는 무제한입니다. 노브를 볼륨처럼 돌려 정하세요 — 위·오른쪽으로 끌거나 휠·화살표 키로 돌리고, 손을 떼면 저장됩니다. 끝까지 돌리면 ∞(무제한)입니다.</p>
     <p class="intro">CPU 한도는 그 사람의 작업 하나가 쓸 수 있는 CPU입니다(100% = 코어 1개). 기본은 100%, 관리자는 무제한입니다. 작업의 프로세스 트리 전체가 한도를 넘으면 그 아래 프로세스를 아주 짧게 멈췄다 이어 가며 한도에 맞춥니다(Claude Code 자체는 멈추지 않습니다).</p>
     <div id="tq-status" class="status" role="status" aria-live="polite"></div>
+    <h3 class="tq-h">레인 큐 — 한 번에 하나씩</h3>
+    <p class="intro">QA · 배포처럼 한 번에 하나만 돌아야 하는 일은 레인(예: <code>qa-dev2</code>)에 줄을 섭니다. 레인은 작업이 처음 줄을 설 때 생기고, 앞 작업이 끝나면 다음 차례가 자동으로 시작합니다. 아래 내역은 레인마다 들어온 순서대로 하나씩 끝낸 기록입니다.</p>
+    <section class="group" id="tq-lanes"><div class="notice">불러오는 중…</div></section>
+    <h3 class="tq-h">개인별 큐 — 사람마다 동시 작업 수</h3>
     <section class="group" id="tq-body"><div class="notice">불러오는 중…</div></section>
   </main>
 </div>`;
@@ -50,6 +58,16 @@ export const TASK_QUEUE_TAB_CSS = `
 .tq-knob.is-default .tq-fill { stroke: var(--text-tertiary); }
 .tq-cpu { font-size: 12px; color: var(--text-secondary); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .tq-cpu select { font: inherit; font-size: 12px; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+.tq-h { font-size: 14px; font-weight: 650; margin: 18px 0 6px; }
+#tq-lanes { padding: 16px; display: grid; gap: 12px; }
+.tq-lane { border: 1px solid var(--border); border-radius: 12px; background: var(--surface); padding: 12px 14px; display: grid; gap: 8px; }
+.tq-lane-h { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.tq-lane-name { font-family: var(--mono, monospace); font-weight: 650; }
+.tq-lane-now { font-size: 13px; display: grid; gap: 2px; }
+.tq-hist { width: 100%; border-collapse: collapse; font-size: 12px; }
+.tq-hist th, .tq-hist td { text-align: left; padding: 4px 6px; border-top: 1px solid var(--border); vertical-align: top; }
+.tq-hist th { color: var(--text-secondary); font-weight: 600; }
+.tq-hist .tq-keys { font-family: var(--mono, monospace); color: var(--text-secondary); overflow-wrap: anywhere; }
 @media (prefers-reduced-motion: reduce) { .tq-fill, .tq-pointer { transition: none; } }
 `;
 
@@ -223,7 +241,64 @@ function tqSetAdminMode(on) {
   try { localStorage.setItem('soma_admin_mode', on ? 'on' : 'off'); } catch (_e) {}
   renderTaskQueue();
 }
+var _tqLanes = null;       // GET /api/dashboard/work-queues (.prd/36 v2)
+var TQ_END = { done: '완료', cancelled: '취소', released: '돌려놓음' };
+function tqClock(ms) {
+  var d = new Date(ms);
+  var p = function(n) { return (n < 10 ? '0' : '') + n; };
+  return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+function tqDur(ms) {
+  var m = Math.max(0, Math.round(ms / 60000));
+  return m < 60 ? m + '분' : Math.floor(m / 60) + '시간' + (m % 60 ? ' ' + (m % 60) + '분' : '');
+}
+// One lane: what runs and waits now, then its history oldest first — each entry's wait, run and end in turn, the
+// next one starting only after the one before it ended (one at a time).
+function tqLaneHtml(q) {
+  var now = Date.now();
+  var who = function(e) { return esc((e.task && e.task.title) || e.label || e.id) + ' <span class="tq-sub">' + esc((e.task && e.task.ownerName) || '') + '</span>'; };
+  var lines = q.running.map(function(e) {
+    return '<div>▶ 진행 중: ' + who(e) + ' · <span class="tq-keys">' + esc((e.keys || []).join(', ')) + '</span> · ' + tqDur(now - (e.startedAt || e.enteredAt)) + '째</div>';
+  }).concat(q.waiting.map(function(e) {
+    return '<div>⏳ 대기 #' + e.position + ': ' + who(e) + ' · <span class="tq-keys">' + esc((e.keys || []).join(', ')) + '</span> · ' + tqDur(now - e.enteredAt) + '째</div>';
+  }));
+  if (!lines.length) lines.push('<div class="tq-sub">비어 있음 — 다음 작업이 줄을 서면 바로 시작합니다.</div>');
+  var ran = (q.recent || []).slice().reverse();
+  var rows = ran.map(function(r) {
+    var run = r.startedAt != null ? tqClock(r.startedAt) + ' → ' + tqClock(r.endedAt) + ' (' + tqDur(r.endedAt - r.startedAt) + ')' : '실행 안 함';
+    return '<tr><td>' + esc(r.id) + '</td><td>' + esc((r.task && r.task.title) || r.label || '') + '</td><td class="tq-keys">' + esc((r.keys || []).join(', ')) + '</td>'
+      + '<td>' + tqClock(r.enteredAt) + '</td><td>' + run + '</td><td>' + esc(TQ_END[r.end] || r.end) + (r.reason ? ' <span class="tq-sub">' + esc(r.reason) + '</span>' : '') + '</td></tr>';
+  });
+  return '<div class="tq-lane"><div class="tq-lane-h"><span class="tq-lane-name">' + esc(q.title) + '</span>'
+    + '<span class="tq-sub">한 번에 ' + (q.capacity == null ? '제한 없음' : q.capacity + '개') + ' · 진행 ' + q.running.length + ' · 대기 ' + q.waiting.length + '</span></div>'
+    + '<div class="tq-lane-now">' + lines.join('') + '</div>'
+    + (rows.length
+      ? '<table class="tq-hist"><thead><tr><th>항목</th><th>작업</th><th>키</th><th>줄 선 시각</th><th>진행</th><th>끝</th></tr></thead><tbody>' + rows.join('') + '</tbody></table>'
+      : '<div class="tq-sub">아직 내역이 없습니다.</div>')
+    + '</div>';
+}
+function renderTaskQueueLanes() {
+  var el = document.getElementById('tq-lanes');
+  if (!el || !_tqLanes) return;
+  var lanes = _tqLanes.lanes || [];
+  el.innerHTML = lanes.length ? lanes.map(tqLaneHtml).join('') : '<div class="notice">아직 쓰인 레인이 없습니다.</div>';
+}
+async function loadTaskQueueLanes() {
+  var el = document.getElementById('tq-lanes');
+  try {
+    var res = await fetch('/api/dashboard/work-queues');
+    if (!res.ok) {
+      if (el) el.innerHTML = '<div class="notice is-error" role="alert">레인 큐를 불러오지 못했습니다 (HTTP ' + res.status + ')</div>';
+      return;
+    }
+    _tqLanes = await res.json();
+    renderTaskQueueLanes();
+  } catch (_e) {
+    if (el) el.innerHTML = '<div class="notice is-error" role="alert">레인 큐를 불러오지 못했습니다. 다시 시도하세요.</div>';
+  }
+}
 async function loadTaskQueue() {
+  loadTaskQueueLanes();
   var el = document.getElementById('tq-body');
   try {
     var res = await fetch('/api/settings/task-limits');

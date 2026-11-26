@@ -28,24 +28,26 @@ const WORKFLOWS_DIR = path.join(PROMPT_DIR, 'workflows');
 
 /** System prompt per workflow: 'default' plus every src/prompt/workflows/*.prompt. */
 const WORKFLOW_BUDGET: Record<string, number> = {
+  // 2026-11-26 (.prd/36 v2): + common.prompt 'Waiting your turn' (~480 chars, every workflow but default's headroom) —
+  // a busy lane (a skill's own lock too) is a queue_enter and the end of the turn, never a stop or a question.
   // 2026-11-14 (#1284): + common.prompt 'Tasks for the user' (~700 chars, every workflow but the two with headroom) —
   // a task for the user goes through instruct_user, apart from questions.
   // 2026-11-06: + 'Before Refusing or Narrowing an Instruction' (verify the premise of a refusal; incident in the section).
   default: 12_100,
   // 2026-11-12 (#1232): + Delta and Risk Check before the confirmation, + Restart Re-Attach.
   // 2026-11-19 (.prd/36 G9): + Work Queue — line up in deploy:<target> by PR keys; replaces the #726 host gate.
-  deploy: 39_100, // env-access WU5 (#1213): the environment's GitHub reader, ahead of the broker; R6: `fields` + path encoding
-  'jira-brainstorming': 8_700,
-  'jira-create-pr': 10_600,
-  'jira-executive-summary': 7_200,
-  'jira-planning': 7_600,
+  deploy: 39_800, // env-access WU5 (#1213): the environment's GitHub reader, ahead of the broker; R6: `fields` + path encoding
+  'jira-brainstorming': 9_100,
+  'jira-create-pr': 10_800,
+  'jira-executive-summary': 7_800,
+  'jira-planning': 8_000,
   onboarding: 13_100,
-  'pr-docs-confluence': 11_100,
-  'pr-fix-and-update': 14_200,
+  'pr-docs-confluence': 11_300,
+  'pr-fix-and-update': 14_800,
   'pr-review': 28_900,
-  'z-epic-update': 7_000,
-  'z-plan-to-work': 7_700,
-  zwork: 6_000, // +100 on purpose (2026-11-16): the task card line on the session issue tree (.prd/29).
+  'z-epic-update': 7_600,
+  'z-plan-to-work': 8_100,
+  zwork: 6_600, // +480 for the turn-waiting rule (2026-11-26); +100 on purpose (2026-11-16): the task card line on the session issue tree (.prd/29).
 };
 
 /** Prompts sent whole on their own call: the dispatch classifier, goal evaluation, the restart resume turn. */

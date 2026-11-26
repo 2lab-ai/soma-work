@@ -384,3 +384,74 @@ describe('the CPU cap', () => {
     await second;
   });
 });
+
+describe('.prd/36 v2 — the lanes, one at a time', () => {
+  const HOUR = 60 * 60 * 1000;
+  const lane = {
+    id: 'qa-dev2',
+    title: 'qa-dev2',
+    kind: 'lane',
+    capacity: 1,
+    running: [
+      {
+        id: 'wq-3',
+        state: 'running',
+        position: 0,
+        keys: ['ABC-3'],
+        enteredAt: 0,
+        startedAt: Date.now() - HOUR,
+        task: { title: 'third', ownerName: 'Ann' },
+      },
+    ],
+    waiting: [
+      {
+        id: 'wq-4',
+        state: 'waiting',
+        position: 1,
+        keys: ['ABC-4'],
+        enteredAt: Date.now() - 600_000,
+        task: { title: '<b>fourth</b>', ownerName: 'Bob' },
+      },
+    ],
+    recent: [
+      {
+        id: 'wq-2',
+        end: 'done',
+        keys: ['ABC-2'],
+        enteredAt: 3 * HOUR,
+        startedAt: 4 * HOUR,
+        endedAt: 5 * HOUR,
+        task: { title: 'second' },
+      },
+      {
+        id: 'wq-1',
+        end: 'released',
+        reason: 'admin:U9',
+        keys: ['ABC-1'],
+        enteredAt: HOUR,
+        startedAt: HOUR,
+        endedAt: 3 * HOUR,
+        task: { title: 'first' },
+      },
+    ],
+  };
+  const esc = (s: unknown) =>
+    String(s ?? '').replace(
+      /[&<>"']/g,
+      (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string,
+    );
+  const { tqLaneHtml } = load<any>(['tqClock', 'tqDur', 'tqLaneHtml'], {
+    esc,
+    TQ_END: { done: '완료', cancelled: '취소', released: '돌려놓음' },
+  });
+
+  it('says how many run at once, what runs and waits now, and the history oldest first — each run after the last ended', () => {
+    const html = tqLaneHtml(lane);
+    expect(html).toContain('한 번에 1개 · 진행 1 · 대기 1');
+    expect(html).toContain('▶ 진행 중: third');
+    expect(html).toContain('⏳ 대기 #1: &lt;b&gt;fourth&lt;/b&gt;');
+    expect(html.indexOf('wq-1')).toBeLessThan(html.indexOf('wq-2'));
+    expect(html).toContain('돌려놓음');
+    expect(html).toContain('(2시간)');
+  });
+});

@@ -43,4 +43,7 @@ Anything the user must do themselves (an owner-only check, a login, a phone step
 ## Host-woken turns
 A turn the host starts — a `[pr-watch]` CI or review message, a `[cron:…]` run — is not a user instruction. The restart resume turn is not one of these: it carries the user's request. If it changed nothing — no new outcome, nothing to check, nothing a person must do — end the turn without a message. A turn that finished or changed work reports as usual (the Executive Summary, the task card). A user's instruction always gets a reply.
 
+## Waiting your turn
+Work that must run one at a time (a deploy, a QA run on an environment, anything a skill guards with its own lock) waits in the work queue named for it (`qa-dev2`). Busy is a wait, never a stop or a question: `queue_enter` it with the work's keys; `queued` → end the turn, the host wakes you. `running` while the skill's lock is still held → a run outside the queue has it: keep the turn and wait for that lock as the skill allows. `queue_try` takes it only if free.
+
 </system_prompt>
