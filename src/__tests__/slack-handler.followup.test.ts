@@ -1598,6 +1598,36 @@ describe('SlackHandler — follow-up queue host', () => {
         expect(injected).toHaveLength(1);
       });
 
+      // .prd/39 S6 (PR10) — the dashboard places a card by what the host holds in memory: a turn on the slot before the
+      // display says working (X1), a goal drive deferred until the slot frees (H6), a restart resume not yet run (S5).
+      it('S6 (PR10): the board probe reads the held turn, the deferred drive and the pending restart resume', async () => {
+        registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+        expect(handler.goalBoardRuntimeOf(SESSION_KEY)).toEqual({
+          turnHeld: false,
+          driven: false,
+          resumePending: false,
+        });
+
+        const { settle } = await startBusyTurn(); // preparing: the display still reads idle
+        expect(handler.goalBoardRuntimeOf(SESSION_KEY)).toEqual({ turnHeld: true, driven: true, resumePending: false });
+        await settle();
+        expect(handler.goalBoardRuntimeOf(SESSION_KEY)).toEqual({
+          turnHeld: false,
+          driven: false,
+          resumePending: false,
+        });
+
+        // A drive the turn end deferred until the follow-ups drained: someone will act, the card is not DONE.
+        (handlerAny.followupDeferredGoalSessions ??= new Set<string>()).add(SESSION_KEY);
+        expect(handler.goalBoardRuntimeOf(SESSION_KEY).driven).toBe(true);
+        handlerAny.followupDeferredGoalSessions.delete(SESSION_KEY);
+
+        handlerAny.recovery.resumed.add(SESSION_KEY);
+        expect(handler.goalBoardRuntimeOf(SESSION_KEY).resumePending).toBe(true);
+        handlerAny.recovery.passRan();
+        expect(handler.goalBoardRuntimeOf(SESSION_KEY).resumePending).toBe(false);
+      });
+
       it('A26: a follow-up queued at the goal turn end runs first; the driver fires once, after the queue drained', async () => {
         registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
         const order: string[] = [];

@@ -376,9 +376,28 @@ export class GoalLoopController {
       .finally(() => {
         // Drop the queue entry once drained so the map doesn't grow without
         // bound. A new trigger re-seeds it.
-        if (this.queues.get(sessionKey) === next) this.queues.delete(sessionKey);
+        if (this.queues.get(sessionKey) === next) {
+          this.queues.delete(sessionKey);
+          this.noteStoppedActing(sessionKey);
+        }
       });
     this.queues.set(sessionKey, next);
+  }
+
+  /**
+   * .prd/39 S6 — the board reads {@link isActing} from memory (`driven`): the push a step made mid-run showed the card
+   * RUNNING, so the loop pushes again once it stops acting, or the card would stay there.
+   */
+  private noteStoppedActing(sessionKey: string): void {
+    if (this.isActing(sessionKey)) return;
+    try {
+      this.deps.registry.broadcastSessionUpdate?.();
+    } catch (err: unknown) {
+      this.deps.logger.warn('Goal loop board push failed', {
+        sessionKey,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   /**
@@ -1271,7 +1290,10 @@ export class GoalLoopController {
     void this.deps
       .injectContinuation(syntheticEvent, { sessionKey, session })
       // Settles once the continuation's turn holds the slot or ran (handleMessage), or failed to start.
-      .finally(() => this.injecting.delete(sessionKey))
+      .finally(() => {
+        this.injecting.delete(sessionKey);
+        this.noteStoppedActing(sessionKey);
+      })
       .catch(async (err: unknown) => {
         const injectErr = err instanceof Error ? err.message : String(err);
         this.deps.logger.error('Goal continuation injection failed — loop stalled', { sessionKey, error: injectErr });

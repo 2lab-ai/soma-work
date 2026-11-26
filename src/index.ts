@@ -98,6 +98,7 @@ import {
   setDashboardFollowupHandler,
   setDashboardGoalDecisionHandler,
   setDashboardGoalHandler,
+  setDashboardGoalRuntime,
   setDashboardInstructionApprovals,
   setDashboardLifecycleHandler,
   setDashboardModelHandler,
@@ -918,6 +919,9 @@ async function start() {
 
     // Connect dashboard: session accessor + real-time WebSocket broadcast on state changes
     setDashboardSessionAccessor(() => claudeHandler.getAllSessions());
+    // .prd/39 S6 — the board places a card by what the host holds in memory (a turn held, a goal driven, a restart
+    // resume pending), not only by the display activity.
+    setDashboardGoalRuntime((sessionKey) => slackHandler.goalBoardRuntimeOf(sessionKey));
     claudeHandler.getSessionRegistry().setActivityStateChangeCallback(() => broadcastSessionUpdate());
     // Connect dashboard: the process monitor — each session's Claude Code process and every process under it on this
     // node (the card's CPU · 메모리 chip, the 프로세스 tab with pause · resume). Samples every 5 s while one is alive.
