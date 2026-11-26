@@ -138,7 +138,16 @@ function blocksOf(raw: Record<string, unknown>): Array<Record<string, unknown>> 
  * Feed every SDK message of a turn, in order. Updates `contextAnchor` when the
  * message is a safe chain point of the main agent. Returns whether it moved.
  */
-export function trackChainPoint(session: ContextAnchorSession, raw: Record<string, unknown>): boolean {
+export function trackChainPoint(
+  session: ContextAnchorSession,
+  raw: Record<string, unknown>,
+  /**
+   * #1473 — the compaction epoch the frame belongs to. The turn's control loop runs ahead of the renderer, and the
+   * renderer is what counts a compaction (`session.compactionCount`); the loop passes the epoch it counted itself, so
+   * a cut point recorded right after a compaction carries the new epoch, not the one the renderer has not left yet.
+   */
+  epoch: number = session.compactionCount ?? 0,
+): boolean {
   if (raw.parent_tool_use_id !== undefined && raw.parent_tool_use_id !== null) return false;
   if (raw.type !== 'assistant' && raw.type !== 'user') return false;
   if (raw.isReplay === true || raw.isSynthetic === true) return false;
@@ -161,7 +170,7 @@ export function trackChainPoint(session: ContextAnchorSession, raw: Record<strin
   if (open.size > 0) return false;
   session.contextAnchor = encodeContextAnchor({
     sid: session.sessionId,
-    epoch: session.compactionCount ?? 0,
+    epoch,
     uuid,
   });
   return true;

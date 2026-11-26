@@ -2942,6 +2942,7 @@ describe('ClaudeHandler keepalive cap measures silence, not age (#1039)', () => 
 describe('ClaudeHandler — a turn result that waits for the host is logged (#1471)', () => {
   const BEHIND_LOG = 'The host is behind its Claude Code process';
   const WAITED_LOG = 'A turn result waited for the host';
+  const RENDER_WAITED_LOG = 'A turn result waited for the renderer';
 
   beforeEach(() => {
     queryMock.mockReset();
@@ -2961,7 +2962,9 @@ describe('ClaudeHandler — a turn result that waits for the host is logged (#14
     });
   }
 
-  it('says the host is behind while the result waits, then how long it waited', async () => {
+  // #1473 — a slow renderer no longer holds the turn's result: the loop handles it when it arrives. The host is not
+  // behind its Claude Code process (no watch, no lag); the renderer's own wait is reported apart, once it takes it.
+  it('a slow renderer does not hold the result: the host is not behind, and the render wait is reported apart', async () => {
     vi.useFakeTimers();
     const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
     try {
@@ -2975,17 +2978,14 @@ describe('ClaudeHandler — a turn result that waits for the host is logged (#14
       await resultSent.promise;
       await vi.advanceTimersByTimeAsync(HOST_LAG_WATCH_MS + 1_000);
 
-      const behind = callsOf(warn, BEHIND_LOG);
-      expect(behind).toHaveLength(1);
-      expect(behind[0][1]).toMatchObject({ stillInTransit: 1, sessionKey: SESSION_KEY });
+      expect(callsOf(warn, BEHIND_LOG)).toHaveLength(0);
 
       const frames = await collect(turn);
       expect(resultsOf(frames)).toHaveLength(1);
-      const waited = callsOf(warn, WAITED_LOG);
-      expect(waited).toHaveLength(1);
-      const lag = waited[0][1] as { waitedMs: number; stillInTransit: number };
-      expect(lag.waitedMs).toBeGreaterThanOrEqual(HOST_LAG_WATCH_MS);
-      expect(lag.stillInTransit).toBe(0);
+      expect(callsOf(warn, WAITED_LOG)).toHaveLength(0);
+      const rendered = callsOf(warn, RENDER_WAITED_LOG);
+      expect(rendered).toHaveLength(1);
+      expect((rendered[0][1] as { renderWaitMs: number }).renderWaitMs).toBeGreaterThanOrEqual(HOST_LAG_WATCH_MS);
     } finally {
       warn.mockRestore();
     }
@@ -3186,7 +3186,9 @@ describe('ClaudeHandler — a held run yields to a waiting command (#1472)', () 
     }
   });
 
-  it('a request made while the host was a frame behind is kept, and made once the loop catches up', async () => {
+  // #1473 — the renderer falling behind no longer puts the loop behind: a request made while the consumer is paused is
+  // made at once, on the frames the loop has already handled.
+  it('a request made while the renderer is paused is made at once: the loop is not behind it', async () => {
     const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
     try {
       const cli = newFakeCli();
@@ -3232,22 +3234,21 @@ describe('ClaudeHandler — a held run yields to a waiting command (#1472)', () 
       emitProgress.resolve();
       await hostCaughtUp();
 
-      // One agent frame is handed to the paused consumer, the second waits unhandled: the host is a frame behind.
+      // Both agent frames are handled though the consumer took at most one: the request is made now.
       waiting = true;
       handler.requestHoldRelease(SESSION_KEY);
       await hostCaughtUp();
-      expect(cli.stopTask).not.toHaveBeenCalled();
-      expect(cli.inputEnded).toBe(false);
+      expect(cli.stopTask).toHaveBeenCalledTimes(1);
+      expect(cli.inputEnded).toBe(true);
+      expect(callsOf(info, YIELD_LOG)).toHaveLength(1);
 
-      // The consumer catches up; nothing else arrives and no one asks again.
+      // The consumer catches up and gets the turn's one result; no one asks again.
       const resume = paused;
       paused = undefined;
       resume.resolve();
       await consumed;
 
       expect(cli.stopTask).toHaveBeenCalledTimes(1);
-      expect(cli.inputEnded).toBe(true);
-      expect(callsOf(info, YIELD_LOG)).toHaveLength(1);
       expect(resultsOf(frames)).toHaveLength(1);
     } finally {
       info.mockRestore();

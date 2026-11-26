@@ -100,6 +100,13 @@ export interface SteerSignals {
    * offer the refused ones once more.
    */
   inputReopened(sessionKey: string): void;
+  /**
+   * #1473 — the turn's verdict on the messages steered into it, the moment the control loop decides it: `consumed`
+   * ran in the turn, `discarded` did not and goes back to the queue. The same verdict also travels down the stream
+   * as the settlement frame, which the renderer may reach long after (or never, when it is stopped first): applying
+   * both must come to the same as applying one.
+   */
+  settled?(sessionKey: string, verdict: { consumed: string[]; discarded: string[] }): void;
 }
 
 /**

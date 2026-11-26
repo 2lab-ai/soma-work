@@ -41,7 +41,8 @@ import { pumpFrames } from './agent-runtime/frame-pump';
 import { permissionAdviceBoard, resolvePermissionAdvice } from './agent-runtime/policy/permission-advice';
 import type { SafetyClassifier } from './agent-runtime/policy/safety-classifier';
 import { buildSafetyClassifier } from './agent-runtime/policy/safety-classifier-factory';
-import { ResultTransit } from './agent-runtime/result-transit';
+import { HOST_LAG_WARN_MS, ResultTransit } from './agent-runtime/result-transit';
+import { runAhead } from './agent-runtime/run-ahead';
 import { readUuidList, STEER_SETTLEMENT_SUBTYPE } from './agent-runtime/steer-settlement';
 import {
   buildInitialUserMessage,
@@ -444,6 +445,18 @@ export const BG_FOLLOWUP_GRACE_MS = 5_000;
  * it is handled; this covers the stretch before that, which reached an hour.
  */
 export const HOST_LAG_WATCH_MS = 60_000;
+
+/**
+ * #1473 — one ordinary turn as its run-ahead reader sees it (`streamQuery` → `runAhead`). The control loop runs at
+ * the CLI's pace and the renderer reads behind it; when the renderer stops early (Stop, `Send now`, an idle
+ * timeout), `abandon` ends the query the loop is parked on, so the loop reaches its end and its cleanup runs then —
+ * not when the next frame happens to arrive. `abandoned` tells the loop to stop where it is: nothing after that
+ * point has a reader.
+ */
+interface RunHandle {
+  abandoned: boolean;
+  abandon?: () => void;
+}
 
 /**
  * The keepalive cap's hard ceiling, as a multiple of `SOMA_BG_KEEPALIVE_MAX_MS`
@@ -1486,7 +1499,7 @@ export class ClaudeHandler implements TurnSteeringPort {
    * no mid-turn input. Every other session goes through `streamSdkQuery` with
    * its key.
    */
-  async *streamQuery(
+  streamQuery(
     prompt: string,
     session?: ConversationSession,
     abortController?: AbortController,
@@ -1496,7 +1509,7 @@ export class ClaudeHandler implements TurnSteeringPort {
   ): AsyncGenerator<SDKMessage, void, unknown> {
     const incidentRequest = session?.incidentRequest;
     if (session && incidentRequest) {
-      yield* this.streamIncidentAttempt(
+      return this.streamIncidentAttempt(
         prompt,
         incidentRequest,
         session,
@@ -1504,16 +1517,64 @@ export class ClaudeHandler implements TurnSteeringPort {
         workingDirectory,
         slackContext,
       );
-      return;
     }
+    // #1473 — the control loop runs at the CLI's pace; only the drawing waits for Slack. The renderer asks for the
+    // next frame after Slack drew this one, through one serial lane every session shares, and that lane ran an hour
+    // behind (#1470): every `result` was handled an hour late, and a message pushed meanwhile stayed refused.
+    // `runAhead` pulls the loop as fast as it runs; what it yields waits for the renderer in order. The incident
+    // attempt above keeps its own reading: its turn is read by a machine at the end, nothing is drawn as it goes.
+    const run: RunHandle = { abandoned: false };
+    const renderWait = new ResultTransit();
+    return runAhead(
+      this.streamOrdinaryTurn(prompt, session, abortController, workingDirectory, slackContext, sessionKey, run),
+      {
+        onYield: (message) => {
+          if (message.type === 'result') renderWait.arrived();
+        },
+        onTake: (message) => {
+          if (message.type !== 'result') return;
+          // One terminal result per run (the loop ends at it): one line per run, so a p95 can be read across runs.
+          // The time the turn's end waited for the renderer — what decides whether settling leaves the render path
+          // too (#1473 follow-up).
+          renderWait.handled();
+          const drawn = renderWait.summary();
+          const waitedMs = drawn?.maxWaitMs ?? 0;
+          const fields = { renderWaitMs: waitedMs, sessionKey };
+          if (waitedMs >= HOST_LAG_WARN_MS) this.logger.warn('A turn result waited for the renderer', fields);
+          else this.logger.info('A turn result reached the renderer', fields);
+        },
+        onAbandon: () => run.abandon?.(),
+      },
+    );
+  }
+
+  /** The ordinary turn: refused without a Slack user, else the SDK loop (`streamSdkQuery`) under the run handle. */
+  private async *streamOrdinaryTurn(
+    prompt: string,
+    session: ConversationSession | undefined,
+    abortController: AbortController | undefined,
+    workingDirectory: string | undefined,
+    slackContext: SlackContext | undefined,
+    sessionKey: string | undefined,
+    run: RunHandle,
+  ): AsyncGenerator<SDKMessage, void, unknown> {
     // #597 (.prd/17 D2): a turn runs only under a context the server vouches
     // for — the Slack event's user. Refused here, before a slot lease or the
     // SDK; never the old "no Slack context → bypass" options. (Incident attempts
-    // above run on their own isolated, deny-by-default options.)
+    // run on their own isolated, deny-by-default options.)
     if (!slackContext?.user) {
       throw new ExecutionContextMissingError('no Slack user');
     }
-    yield* this.streamSdkQuery(prompt, session, abortController, workingDirectory, slackContext, sessionKey);
+    yield* this.streamSdkQuery(
+      prompt,
+      session,
+      abortController,
+      workingDirectory,
+      slackContext,
+      sessionKey,
+      undefined,
+      run,
+    );
   }
 
   /**
@@ -1536,6 +1597,8 @@ export class ClaudeHandler implements TurnSteeringPort {
     slackContext?: SlackContext,
     sessionKey?: string,
     incident?: IncidentStreamWiring,
+    /** #1473 — the run-ahead reader's handle (ordinary turns only). */
+    run?: RunHandle,
   ): AsyncGenerator<SDKMessage, void, unknown> {
     // Acquire a lease on the active CCT slot. Held for the lifetime of the
     // Claude CLI streaming call, released in the outer finally below.
@@ -1674,6 +1737,22 @@ export class ClaudeHandler implements TurnSteeringPort {
       if (steerKey) {
         this.activeQueries.set(steerKey, { query: activeQuery, channel, withdrawnSteers });
       }
+      // #1473 — the renderer stopped (Stop, `Send now`, an idle timeout) while this loop runs ahead of it: end the
+      // query the loop is parked on. Its own `return()` closes the CLI and awaits its exit, which ends the read
+      // (`queryFrames`); the loop then stops where it is (`run.abandoned`) and its cleanup runs now.
+      // The frames stop at once (`pumpFrames` `until`): the loop leaves its read, and leaving it ends the frames —
+      // `queryFrames` → the query's own `return()`, which closes the CLI.
+      let releaseFrames: () => void = () => {};
+      const framesReleased = new Promise<void>((resolve) => {
+        releaseFrames = resolve;
+      });
+      if (run) {
+        run.abandon = () => {
+          run.abandoned = true;
+          channel.close();
+          releaseFrames();
+        };
+      }
       // The frames, read as fast as the CLI sends them (`pumpFrames`): the loop
       // below hands each one to a consumer that renders it before asking for
       // the next, and two facts must not wait for that —
@@ -1704,24 +1783,28 @@ export class ClaudeHandler implements TurnSteeringPort {
        * A read steer opened or joined a turn; that turn is over once a result after the receipt has been handled.
        */
       const readSteers = new Map<string, number>();
-      const frames = pumpFrames(queryFrames(activeQuery), (frame) => {
-        arrivedFrames += 1;
-        const raw = frame as unknown as Record<string, unknown>;
-        if (raw.type === 'result') {
-          channel.holdPushes();
-          resultTransit.arrived();
-          armHostLagWatch();
-          return;
-        }
-        if (!steerKey || raw.type !== 'command_lifecycle' || raw.state !== 'started') return;
-        const uuid = raw.command_uuid;
-        // The opening message is reported the same way: only a steer counts.
-        if (typeof uuid === 'string' && channel.pushedUuids().includes(uuid)) {
-          // `arrivedFrames` already counts this receipt: it is the receipt's own sequence number.
-          readSteers.set(uuid, arrivedFrames);
-          this.steerSignals?.read(steerKey, uuid);
-        }
-      });
+      const frames = pumpFrames(
+        queryFrames(activeQuery),
+        (frame) => {
+          arrivedFrames += 1;
+          const raw = frame as unknown as Record<string, unknown>;
+          if (raw.type === 'result') {
+            channel.holdPushes();
+            resultTransit.arrived();
+            armHostLagWatch();
+            return;
+          }
+          if (!steerKey || raw.type !== 'command_lifecycle' || raw.state !== 'started') return;
+          const uuid = raw.command_uuid;
+          // The opening message is reported the same way: only a steer counts.
+          if (typeof uuid === 'string' && channel.pushedUuids().includes(uuid)) {
+            // `arrivedFrames` already counts this receipt: it is the receipt's own sequence number.
+            readSteers.set(uuid, arrivedFrames);
+            this.steerSignals?.read(steerKey, uuid);
+          }
+        },
+        { until: framesReleased },
+      );
 
       // Set once the turn's steered sends have been settled (the settlement
       // frame was emitted). Guards the abandonment warning in the finally AND
@@ -2018,6 +2101,24 @@ export class ClaudeHandler implements TurnSteeringPort {
         clearTimeout(keepaliveCapTimer);
         keepaliveCapTimer = setTimeout(() => fireKeepaliveCap('idle'), keepaliveMaxMs);
       };
+      // #1473 — the turn's verdict on its steered messages reaches the host when this loop decides it. The same
+      // verdict travels down the stream as the settlement frame, but this loop now runs ahead of the renderer: a
+      // renderer stopped before it reached that frame (Stop, `Send now`, an idle timeout) would drop the verdict, and
+      // the rows would sit `steered` with nothing left to settle them. Applying both is the same as applying one.
+      const announceSettlement = (settlement: SDKMessage | undefined) => {
+        if (!settlement || !steerKey) return;
+        const frame = settlement as unknown as Record<string, unknown>;
+        const verdict = { consumed: readUuidList(frame.consumed), discarded: readUuidList(frame.discarded) };
+        if (verdict.consumed.length === 0 && verdict.discarded.length === 0) return;
+        try {
+          this.steerSignals?.settled?.(steerKey, verdict);
+        } catch (error) {
+          this.logger.debug('Steer signal listener failed', {
+            signal: 'settled',
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      };
       // End a held turn the way the terminal path ends any turn — settle, then
       // close. An `errorResult` ends it as that error; otherwise it ends on
       // `heldTurnResult`, settled against `latest` (the freshest queue state).
@@ -2045,6 +2146,7 @@ export class ClaudeHandler implements TurnSteeringPort {
             untracked,
           );
           if (settlement) steerSettled = true;
+          announceSettlement(settlement);
         }
         channel.close();
         this.logger.info('Background work settled; ending the deferred turn', {
@@ -2053,8 +2155,14 @@ export class ClaudeHandler implements TurnSteeringPort {
         });
         return { settlement, result: errorResult ?? heldTurnResult(turn) };
       };
+      /** #1473 — the compaction epoch of the frames this loop handles (see `trackChainPoint` below). */
+      let anchorEpoch = session?.compactionCount ?? 0;
       try {
         for await (const message of frames) {
+          // #1473 — the renderer stopped and the query is being closed (`run.abandon`): nothing after this point has
+          // a reader. Leaving the loop ends the frames (`queryFrames` → the query's own `return()`), as the
+          // renderer's own `return()` at a yield did before the loop ran ahead.
+          if (run?.abandoned) return;
           const raw = message as unknown as Record<string, unknown>;
           frameSeq += 1;
           // #1039 — the keepalive cap measures silence: any sign of the held
@@ -2152,8 +2260,13 @@ export class ClaudeHandler implements TurnSteeringPort {
             }
           }
 
+          // #1473 — this loop runs ahead of the renderer, which is what counts a compaction
+          // (`session.compactionCount`, the executor's compact-boundary handler): the loop counts the boundaries it
+          // has handled itself, so a cut point right after one is recorded in the new epoch. Every boundary frame
+          // counts, as the renderer counts every one it maps (`sdk-message-to-event.ts` mapSystem).
+          if (raw.type === 'system' && raw.subtype === 'compact_boundary') anchorEpoch += 1;
           // Context rollback (#743): remember the latest safe cut point.
-          if (session) trackChainPoint(session, raw);
+          if (session) trackChainPoint(session, raw, anchorEpoch);
 
           // #966 — the host closed the input, so the CLI is exiting and stops the background tasks it
           // still runs. Those reports are the turn's end: mark them so the turn-end decision still
@@ -2220,7 +2333,9 @@ export class ClaudeHandler implements TurnSteeringPort {
               const { settlement, result } = await endHeldTurn(held, message);
               if (settlement) yield settlement;
               yield result;
-              continue;
+              // #1473 — the turn's end: nothing reads past it (the renderer finalizes on `result`), so the loop ends
+              // here and the CLI and the lease go now, not when the renderer gets this far.
+              return;
             }
             held = {
               answer: resultRanATurn(raw) ? message : held.answer,
@@ -2267,7 +2382,7 @@ export class ClaudeHandler implements TurnSteeringPort {
             const { settlement, result } = await endHeldTurn(held);
             if (settlement) yield settlement;
             yield result;
-            continue;
+            return; // #1473 — the turn's end (see the error branch above).
           }
 
           if (message.type === 'result') {
@@ -2344,6 +2459,7 @@ export class ClaudeHandler implements TurnSteeringPort {
             if (!steerSettled) {
               settlement = await this.settleSteeredSends(activeQuery, message, channel, capabilities);
               if (settlement) steerSettled = true;
+              announceSettlement(settlement);
             }
             channel.close();
             // Emitted BEFORE the result so a consumer that stops on `result`
@@ -2351,9 +2467,12 @@ export class ClaudeHandler implements TurnSteeringPort {
             if (settlement) yield settlement;
           }
           yield message;
+          // #1473 — every `result` this loop yields ends the turn (attributed, not held): nothing reads past it.
+          if (message.type === 'result') return;
           // #1472 — a release asked while this frame was still unhandled: the loop has handled it now.
           if (holdReleaseAsked) considerHoldRelease();
         }
+        if (run?.abandoned) return;
         // The stream ended with a result still held: the keepalive cap or its
         // backstop ended the CLI, the silence bound or the follow-up grace closed
         // the input, or the CLI exited on its own. The held result is still this
@@ -2403,6 +2522,8 @@ export class ClaudeHandler implements TurnSteeringPort {
         if (steerKey && this.activeQueries.get(steerKey)?.query === activeQuery) {
           this.activeQueries.delete(steerKey);
         }
+        // #1473 — the host reads this when the run settles: how long the slot was held after the turn had ended.
+        if (steerKey) this.turnLoopEndedAt.set(steerKey, Date.now());
       }
     } finally {
       if (heartbeatTimer) clearInterval(heartbeatTimer);
@@ -2861,6 +2982,18 @@ export class ClaudeHandler implements TurnSteeringPort {
 
   /** Who is told what a running turn knows at frame arrival ({@link SteerSignals}). */
   private steerSignals?: SteerSignals;
+  /** #1473 — when each session's turn loop last ended, until the host reads it as the run settles. */
+  private readonly turnLoopEndedAt = new Map<string, number>();
+
+  /**
+   * #1473 — when the turn loop of `sessionKey`'s last run ended (its CLI gone, its verdicts decided), once: the
+   * reading forgets it. The host reads it as the run settles; the gap is what the run's slot waited for after that.
+   */
+  takeTurnLoopEndedAt(sessionKey: string): number | undefined {
+    const at = this.turnLoopEndedAt.get(sessionKey);
+    this.turnLoopEndedAt.delete(sessionKey);
+    return at;
+  }
 
   /** Register the host's listener for {@link SteerSignals}. One listener; a second call replaces it. */
   setSteerSignals(signals: SteerSignals): void {

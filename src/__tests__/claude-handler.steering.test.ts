@@ -552,13 +552,18 @@ describe('ClaudeHandler streaming-input turn (user-steering WU1)', () => {
  */
 interface ScriptedCli {
   send(frame: Record<string, unknown>): void;
+  /**
+   * Run `act` when the host reads past the frame sent before it: synchronously, inside the read-ahead's next read —
+   * after that frame's arrival (a `result` is in transit from there), before the turn loop has handled it.
+   */
+  during(act: () => void): void;
   end(): void;
   /** The next message the host put on the turn's input (the opening one first). */
   nextInput(): Promise<{ uuid?: string } | undefined>;
 }
 
 function installScriptedCli(): ScriptedCli {
-  const outbox: Array<Record<string, unknown> | null> = [];
+  const outbox: Array<Record<string, unknown> | (() => void) | null> = [];
   let wake: (() => void) | undefined;
   let inputs: AsyncIterator<unknown> | undefined;
   queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<unknown> }) => {
@@ -572,6 +577,10 @@ function installScriptedCli(): ScriptedCli {
         }
         const frame = outbox.shift();
         if (frame === null || frame === undefined) return;
+        if (typeof frame === 'function') {
+          frame();
+          continue;
+        }
         yield frame;
       }
     })();
@@ -580,7 +589,7 @@ function installScriptedCli(): ScriptedCli {
       cancelAsyncMessage: vi.fn(async () => false),
     });
   });
-  const put = (frame: Record<string, unknown> | null) => {
+  const put = (frame: Record<string, unknown> | (() => void) | null) => {
     outbox.push(frame);
     const w = wake;
     wake = undefined;
@@ -588,6 +597,7 @@ function installScriptedCli(): ScriptedCli {
   };
   return {
     send: (frame) => put(frame),
+    during: (act) => put(act),
     end: () => put(null),
     nextInput: async () => (await inputs?.next())?.value as { uuid?: string } | undefined,
   };
@@ -727,7 +737,59 @@ describe('ClaudeHandler acts on a frame when it arrives, not when the consumer r
     expect(inputReopened).not.toHaveBeenCalled();
   });
 
-  it('takes steers again after a result that does not end the turn, and says the input reopened', async () => {
+  // #1473 — the verdict on the steered messages is the host's the moment the loop decides it, not when the consumer
+  // reads the settlement frame (it can sit behind Slack's line for as long as the renderer is behind).
+  it('tells the host its verdict on the steered messages when the loop settles them, before the consumer reads it', async () => {
+    const cli = installScriptedCli();
+    const handler = newHandler();
+    const settled = vi.fn();
+    handler.setSteerSignals({ read: vi.fn(), inputReopened: vi.fn(), settled });
+    const it = handler
+      .streamQuery('hello there', undefined, undefined, undefined, TEST_SLACK_CONTEXT, SESSION_KEY)
+      [Symbol.asyncIterator]();
+    cli.send(INIT);
+    await it.next(); // init — and nothing more until the end
+    const opening = await cli.nextInput();
+    expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-early', text: 'in time' })).toBe(true);
+
+    cli.send(resultFor(opening?.uuid));
+    cli.end();
+    await vi.waitFor(() => expect(settled).toHaveBeenCalledTimes(1));
+    expect(settled).toHaveBeenCalledWith(SESSION_KEY, { consumed: ['u-early'], discarded: [] });
+
+    const rest: Array<Record<string, unknown>> = [];
+    for (let next = await it.next(); !next.done; next = await it.next())
+      rest.push(next.value as Record<string, unknown>);
+    expect(rest.find((frame) => frame.subtype === STEER_SETTLEMENT_SUBTYPE)).toMatchObject({ consumed: ['u-early'] });
+    expect(settled).toHaveBeenCalledTimes(1); // told once
+  });
+
+  // #1473 — a consumer that stops reading (the turn aborted, the renderer gone) does not leave the loop waiting on a
+  // silent CLI: the run is abandoned — the input closes and the query ends — and the stop returns now.
+  it('ends the loop at once when the consumer stops while the CLI is silent', async () => {
+    const cli = installScriptedCli();
+    const handler = newHandler();
+    const it = handler
+      .streamQuery('hello there', undefined, undefined, undefined, TEST_SLACK_CONTEXT, SESSION_KEY)
+      [Symbol.asyncIterator]();
+    cli.send(INIT);
+    await it.next();
+    await cli.nextInput();
+    expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-1', text: 'while it runs' })).toBe(true);
+
+    const stopped = await Promise.race([
+      it.return(undefined).then(() => 'stopped'),
+      new Promise((resolve) => setTimeout(() => resolve('still waiting'), 2_000)),
+    ]);
+
+    expect(stopped).toBe('stopped');
+    expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-2', text: 'after the stop' })).toBe(false);
+    expect((await it.next()).done).toBe(true);
+  });
+
+  // #1473 — the loop runs ahead of the renderer: a result that does not end the turn is handled when it arrives, not
+  // when the consumer reads it. The consumer here reads nothing past `init` until the turn is over.
+  it('takes steers again after a result that does not end the turn, and says the input reopened — the consumer reading nothing', async () => {
     const cli = installScriptedCli();
     const handler = newHandler();
     const inputReopened = vi.fn();
@@ -741,28 +803,31 @@ describe('ClaudeHandler acts on a frame when it arrives, not when the consumer r
     const opening = await cli.nextInput();
     // A result for something else (an orphan notification drained on resume,
     // #257): it does not answer this turn, so the turn goes on.
+    let inTransit: boolean | undefined;
     cli.send(resultFor('someone-elses-uuid'));
+    cli.during(() => {
+      // The result arrived; the loop has not handled it: a steer now is refused (PR #1227).
+      inTransit = handler.steerTurn(SESSION_KEY, { uuid: 'u-1', text: 'do Y' });
+    });
     await settle();
-    expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-1', text: 'do Y' })).toBe(false);
-    expect(inputReopened).not.toHaveBeenCalled();
-
-    // The consumer gets to that result (it is skipped, so `next()` stays parked).
-    const parked = it.next();
-    await settle();
+    expect(inTransit).toBe(false);
+    // The loop handled it with no `next()` from the consumer: the input took messages again, and said so.
     expect(inputReopened).toHaveBeenCalledTimes(1);
     expect(inputReopened).toHaveBeenCalledWith(SESSION_KEY);
     expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-1', text: 'do Y' })).toBe(true);
 
     cli.send(resultFor(opening?.uuid));
     cli.end();
-    expect(((await parked).value as { subtype: string }).subtype).toBe(STEER_SETTLEMENT_SUBTYPE);
+    // The skipped result never reaches the consumer; the settlement and the turn's result do.
+    expect(((await it.next()).value as { subtype: string }).subtype).toBe(STEER_SETTLEMENT_SUBTYPE);
     expect(((await it.next()).value as { type: string }).type).toBe('result');
     expect((await it.next()).done).toBe(true);
   });
 
-  // PR #1227 review: two results in a row that both leave the turn open (a held turn's tail). The second arrives
-  // before the host could say the input reopened after the first — the refused steer must still be offered again.
-  it('still says the input reopened when a second result arrived before it could', async () => {
+  // PR #1227 review: two results in a row that both leave the turn open (a held turn's tail). Whichever way the second
+  // one's arrival and the first one's handling interleave, the steer refused while the first was in transit is offered
+  // again exactly once — and, #1473, with no consumer reading.
+  it('still says the input reopened, once, when a second result follows the first', async () => {
     const cli = installScriptedCli();
     const handler = newHandler();
     const inputReopened = vi.fn();
@@ -773,19 +838,20 @@ describe('ClaudeHandler acts on a frame when it arrives, not when the consumer r
     cli.send(INIT);
     await it.next();
     const opening = await cli.nextInput();
+    let inTransit: boolean | undefined;
     cli.send(resultFor('someone-elses-uuid'));
+    cli.during(() => {
+      inTransit = handler.steerTurn(SESSION_KEY, { uuid: 'u-1', text: 'do Y' });
+    });
     cli.send(resultFor('another-uuid'));
     await settle();
-    expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-1', text: 'do Y' })).toBe(false);
-
-    const parked = it.next(); // the consumer works through both skipped results
-    await settle();
+    expect(inTransit).toBe(false);
     expect(inputReopened).toHaveBeenCalledTimes(1);
     expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-1', text: 'do Y' })).toBe(true);
 
     cli.send(resultFor(opening?.uuid));
     cli.end();
-    expect(((await parked).value as { subtype: string }).subtype).toBe(STEER_SETTLEMENT_SUBTYPE);
+    expect(((await it.next()).value as { subtype: string }).subtype).toBe(STEER_SETTLEMENT_SUBTYPE);
     await it.next();
     expect((await it.next()).done).toBe(true);
   });
@@ -1112,7 +1178,9 @@ describe('ClaudeHandler steer settlement (spec §6 item 6)', () => {
 
     expect(interrupt).toHaveBeenCalledTimes(1);
     expect(frames.filter((f) => (f as { subtype?: string }).subtype === STEER_SETTLEMENT_SUBTYPE)).toHaveLength(1);
-    expect(frames.filter((f) => (f as { type: string }).type === 'result')).toHaveLength(2);
+    // #1473 — the turn ends at its first result: the loop reads nothing past it (the renderer stopped there before
+    // the loop ran ahead — its bounded iterator-return after `result`), so the second one is never read.
+    expect(frames.filter((f) => (f as { type: string }).type === 'result')).toHaveLength(1);
   });
 
   /**

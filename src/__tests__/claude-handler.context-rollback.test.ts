@@ -177,6 +177,23 @@ describe('ClaudeHandler — context rollback', () => {
     expect(markRewoundTurnsMock).not.toHaveBeenCalled();
   });
 
+  // #1473 — the loop runs ahead of the renderer, which is what counts a compaction (`session.compactionCount`): the loop
+  // counts the boundaries it handled itself, so a cut point right after one carries the new epoch.
+  it('a cut point right after a compaction carries the new epoch, though nothing has counted it on the session yet', async () => {
+    const session: any = { sessionId: SID, compactionCount: 0, ownerId: 'U1', channelId: 'C1', threadTs: '1.1' };
+    installTurn((opening) => [
+      { type: 'system', subtype: 'init', session_id: SID, model: 'claude-test', tools: [] },
+      { type: 'system', subtype: 'compact_boundary', session_id: SID, compact_metadata: { trigger: 'auto' } },
+      { type: 'assistant', uuid: U(20), message: { content: [{ type: 'text', text: 'after the compaction' }] } },
+      result(opening),
+    ]);
+    const handler = new ClaudeHandler({ getPluginManager: () => null } as unknown as McpManager);
+    await drain(handler, session);
+
+    expect(session.compactionCount).toBe(0); // the reader here is not the executor: it counted nothing
+    expect(decodeContextAnchor(session.contextAnchor)).toMatchObject({ uuid: U(20), epoch: 1 });
+  });
+
   it('a waiting rollback becomes resumeSessionAt once, and the anchor follows the new chain', async () => {
     const session: any = {
       sessionId: SID,
