@@ -117,6 +117,31 @@ describe('ThreadSurface — an edit that only moves the ages waits a minute', ()
     expect(updates).toHaveLength(2);
   });
 
+  it('a wait that starts in the same second as the progress is drawn at once', async () => {
+    // A waiting header shows two dates: since when it waits, and the last progress. When both move in the same
+    // second they cannot be told apart, and the wait's start is content — so the edit is drawn.
+    session.activityState = 'waiting';
+    session.activityStateChangedAt = T0 + 5_000;
+    await vi.advanceTimersByTimeAsync(5_000);
+    await surface.setStatus(session, KEY, { waitingForChoice: true, lastProgressAt: T0 + 5_000 });
+    expect(updates).toHaveLength(2);
+
+    session.activityStateChangedAt = T0 + 15_000;
+    await vi.advanceTimersByTimeAsync(10_000);
+    await surface.setStatus(session, KEY, { lastProgressAt: T0 + 15_000 });
+
+    expect(updates).toHaveLength(3);
+    expect(last(updates)).toContain(`${token(T0 + 15_000)}부터 기다림`);
+  });
+
+  it('a badge change is drawn at once', async () => {
+    session.activityState = 'idle';
+    await vi.advanceTimersByTimeAsync(5_000);
+    await surface.setStatus(session, KEY, { lastProgressAt: T0 + 5_000 });
+
+    expect(updates).toHaveLength(2);
+  });
+
   it('an age edit after the minute is made at once', async () => {
     await vi.advanceTimersByTimeAsync(61_000);
     await surface.setStatus(session, KEY, { lastProgressAt: T0 + 61_000 });

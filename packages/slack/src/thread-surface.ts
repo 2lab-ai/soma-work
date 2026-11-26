@@ -1133,13 +1133,23 @@ export class ThreadSurface {
   /**
    * The rendered blocks with the date tokens of the progress and liveness
    * stamps replaced by one placeholder — only those two: a wait's start or any
-   * other date is content. A stamp whose token was clamped to `now` (clock skew)
-   * does not match and stays in, so that edit is drawn: the safe side.
+   * other date is content. A token is taken out only when its second appears
+   * once in the blocks: a second shared with another date (a wait that started
+   * in the same second as the last progress) cannot be told apart, so it stays
+   * in and that edit is drawn — the safe side, as is a stamp whose token was
+   * clamped to `now` (clock skew) and so does not match.
    */
   private static withoutAges(renderKey: string, ...stamps: Array<number | undefined>): string {
     const ages = new Set(stamps.filter((at): at is number => at !== undefined).map((at) => Math.floor(at / 1000)));
     if (ages.size === 0) return renderKey;
-    return renderKey.replace(DATE_TOKEN, (token, seconds: string) => (ages.has(Number(seconds)) ? '<age>' : token));
+    const seen = new Map<number, number>();
+    for (const match of renderKey.matchAll(DATE_TOKEN)) {
+      const seconds = Number(match[1]);
+      seen.set(seconds, (seen.get(seconds) ?? 0) + 1);
+    }
+    return renderKey.replace(DATE_TOKEN, (token, seconds: string) =>
+      ages.has(Number(seconds)) && seen.get(Number(seconds)) === 1 ? '<age>' : token,
+    );
   }
 
   /** Make the held age-only edit once its minute is up, from the session as it is then. */

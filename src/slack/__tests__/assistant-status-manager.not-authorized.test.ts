@@ -105,6 +105,27 @@ describe('AssistantStatusManager — not_authorized stops one thread, not the ap
     expect(callsFor('1.1')).toBe(3);
   });
 
+  it("a late refusal of the previous turn's call does not stop the new turn", async () => {
+    let refuse!: (error: unknown) => void;
+    slackApi.setAssistantStatus.mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          refuse = reject;
+        }),
+    );
+
+    const oldTurn = manager.setStatus('C1', '1.1', 'is thinking...');
+    manager.bumpEpoch('C1', '1.1');
+    const newTurn = manager.setStatus('C1', '1.1', 'is reading files...');
+    refuse(notAuthorized());
+    await Promise.all([oldTurn, newTurn]);
+
+    // The new turn's own write went out, and its heartbeat runs.
+    expect(callsFor('1.1')).toBe(2);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(callsFor('1.1')).toBe(3);
+  });
+
   it('a transient error is still retried on the heartbeat', async () => {
     slackApi.setAssistantStatus.mockRejectedValueOnce(
       Object.assign(new Error('ratelimited'), { data: { error: 'ratelimited' } }),

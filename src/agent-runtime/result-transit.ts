@@ -30,9 +30,18 @@ export interface BehindLag {
   stillInTransit: number;
 }
 
+/** Every result of one run, fast ones included — what a p95 is read from. */
+export interface TransitSummary {
+  count: number;
+  p95WaitMs: number;
+  maxWaitMs: number;
+}
+
 export class ResultTransit {
   /** Arrival times of the results the loop has not handled yet, oldest first. */
   private readonly arrivals: number[] = [];
+  /** How long each handled result waited, in handling order. */
+  private readonly waits: number[] = [];
 
   constructor(private readonly now: () => number = Date.now) {}
 
@@ -54,6 +63,7 @@ export class ResultTransit {
     if (at === undefined) return undefined;
     const now = this.now();
     const waitedMs = now - at;
+    this.waits.push(waitedMs);
     if (waitedMs < HOST_LAG_WARN_MS) return undefined;
     const oldest = this.arrivals[0];
     return {
@@ -70,5 +80,16 @@ export class ResultTransit {
     const oldestInTransitMs = this.now() - oldest;
     if (oldestInTransitMs < HOST_LAG_WARN_MS) return undefined;
     return { oldestInTransitMs, stillInTransit: this.arrivals.length };
+  }
+
+  /** The waits of every result handled so far, or `undefined` when none was. */
+  summary(): TransitSummary | undefined {
+    if (this.waits.length === 0) return undefined;
+    const sorted = [...this.waits].sort((a, b) => a - b);
+    return {
+      count: sorted.length,
+      p95WaitMs: sorted[Math.ceil(sorted.length * 0.95) - 1],
+      maxWaitMs: sorted[sorted.length - 1],
+    };
   }
 }

@@ -233,10 +233,15 @@ export class AssistantStatusManager {
     return matched;
   }
 
-  /** This thread refused the status call ({@link THREAD_REFUSED_CODES}): stop its heartbeat and retries for the turn. */
-  private markThreadRefused(key: string, err: unknown): boolean {
+  /**
+   * This thread refused the status call ({@link THREAD_REFUSED_CODES}): stop its heartbeat and retries for the turn.
+   * Only the turn that sent the call learns it: a late answer to an earlier turn's call (the lane is serial and can
+   * run far behind) is dropped, so the new turn's own try still goes out.
+   */
+  private markThreadRefused(key: string, entry: LastStatusEntry, err: unknown): boolean {
     const code = readErrorCode(err);
     if (typeof code !== 'string' || !THREAD_REFUSED_CODES.has(code)) return false;
+    if ((this.epochCounter.get(key) ?? 0) !== entry.epoch) return true;
     if (!this.refusedThreads.has(key)) {
       this.refusedThreads.add(key);
       this.logger.info('Status call refused for this thread — not retried until its next turn', { key, code });
@@ -271,7 +276,7 @@ export class AssistantStatusManager {
         this.recordSetStatusSuccess(key);
       } catch (error) {
         // The best-effort auth clear runs inside this same serialized lane.
-        if (this.markThreadRefused(key, error)) return;
+        if (this.markThreadRefused(key, entry, error)) return;
         if (this.markDisabledIfScopeMissing(error)) {
           await this.bestEffortClearSlack(entry.channelId, entry.threadTs);
         } else if (entry.descriptor === '') {

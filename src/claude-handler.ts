@@ -2280,6 +2280,10 @@ export class ClaudeHandler implements TurnSteeringPort {
         disarmNonTurnResultTimer();
         disarmKeepaliveTimers();
         if (hostLagWatch) clearTimeout(hostLagWatch);
+        // #1471 — every result of the run, fast ones too: the p95 that decides whether turn control leaves the
+        // render path sooner (#1473) is read from these lines, not from the warnings alone.
+        const transit = resultTransit.summary();
+        if (transit) this.logger.info('Turn results handled by the host', { ...transit, sessionKey: steerKey });
         channel.close();
         if (steerKey && this.activeQueries.get(steerKey)?.query === activeQuery) {
           this.activeQueries.delete(steerKey);

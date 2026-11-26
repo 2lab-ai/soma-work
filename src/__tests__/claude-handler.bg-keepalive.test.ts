@@ -2991,9 +2991,10 @@ describe('ClaudeHandler — a turn result that waits for the host is logged (#14
     }
   });
 
-  it('a result the host handles at once logs nothing, and leaves no watch behind', async () => {
+  it('a result the host handles at once warns nothing, leaves no watch behind, and is still counted', async () => {
     vi.useFakeTimers();
     const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
     try {
       const cli = newFakeCli();
       const resultSent = deferred();
@@ -3005,8 +3006,12 @@ describe('ClaudeHandler — a turn result that waits for the host is logged (#14
       expect(resultsOf(frames)).toHaveLength(1);
       expect(callsOf(warn, BEHIND_LOG)).toHaveLength(0);
       expect(callsOf(warn, WAITED_LOG)).toHaveLength(0);
+      const counted = callsOf(info, 'Turn results handled by the host');
+      expect(counted).toHaveLength(1);
+      expect(counted[0][1]).toMatchObject({ count: 1, sessionKey: SESSION_KEY });
     } finally {
       warn.mockRestore();
+      info.mockRestore();
     }
   });
 });

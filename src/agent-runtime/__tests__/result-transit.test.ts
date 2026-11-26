@@ -69,4 +69,22 @@ describe('ResultTransit — how long a turn result waits for the host', () => {
     expect(transit.handled()).toBeUndefined();
     expect(transit.inTransit).toBe(0);
   });
+
+  it('the summary counts every handled result, fast ones too, so a p95 can be read', () => {
+    const c = clock();
+    const transit = new ResultTransit(c.now);
+    expect(transit.summary()).toBeUndefined();
+
+    // 19 fast results and one slow one: the slow one alone is warned about, all 20 are counted.
+    for (let i = 0; i < 19; i++) {
+      transit.arrived();
+      c.advance(100);
+      transit.handled();
+    }
+    transit.arrived();
+    c.advance(20_000);
+    transit.handled();
+
+    expect(transit.summary()).toEqual({ count: 20, p95WaitMs: 100, maxWaitMs: 20_000 });
+  });
 });
