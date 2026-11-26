@@ -2036,5 +2036,15 @@
   "이 세션에 지시할 수 없는 계정이에요": "This account cannot instruct this session",
   "끝났거나 잠든 세션이에요": "The session has ended or is asleep",
   "파일만으로는 목표를 추가할 수 없어요": "Files alone cannot be a goal",
-  "첨부 파일을 읽지 못했어요 — 다시 붙여 주세요": "The attached files could not be read — attach them again"
+  "첨부 파일을 읽지 못했어요 — 다시 붙여 주세요": "The attached files could not be read — attach them again",
+  "확인": "Confirm",
+  "차례 끝내기": "End turn",
+  "대기에서 빼기": "Take out of the wait",
+  "차례 끝남": "Turn ended",
+  "{lane}에서 진행 중인 「{title}」의 차례를 지금 끝낼까요?": "End the turn of “{title}” in {lane} now?",
+  "이 작업은 레인에서 빠지고, 그 스레드에 ⏹ 안내가 갑니다. 작업 세션은 멈추지 않고 레인 없이 계속합니다 — 다시 줄을 서려면 그 스레드에서 큐에 다시 들어가야 합니다.": "The task leaves the lane and its thread gets a ⏹ notice. The session itself does not stop — it goes on without the lane; to line up again it re-enters the queue from that thread.",
+  "대기 중인 다음 작업 「{next}」이 바로 시작합니다.": "The next waiting task, “{next}”, starts right away.",
+  "대기 중인 작업은 없습니다.": "Nothing waits behind it.",
+  "「{title}」을 {lane} 대기에서 뺄까요?": "Take “{title}” out of the {lane} wait?",
+  "줄에서 빠지고, 차례가 와도 시작하지 않습니다. 다시 하려면 큐에 다시 들어가야 합니다.": "It leaves the line and will not start when its turn comes. To run it, enter the queue again."
 }
