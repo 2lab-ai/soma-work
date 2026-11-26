@@ -9284,7 +9284,10 @@ function viewerCanInstruct(s) {
 // page's own controls ride in its toolbar (the scope group) and actions (새 작업) slots. The brand is the
 // page's h1; each link's title says what the page is for (its hover title, and the folded menu row's
 // second line); the status says what it is about before its word.
+// One list on every page (dashboard · settings · conversations, app-bar-nav.test.ts): the same four links, the
+// page's own marked current.
 var APP_BAR_NAV = [
+  { id: 'dashboard', label: '대시보드', href: '/dashboard', icon: 'board', title: '에이전트 인박스 — 작업 카드 보드', current: true },
   { id: 'conversations', label: '대화', href: '/conversations', icon: 'chat', title: '지난 대화를 모두 봅니다' },
   { id: 'settings', label: '설정', href: '/dashboard/settings', icon: 'gear', title: 'Slack 명령으로 바꾸던 설정을 여기서 확인하고 바꿉니다' },
   { id: 'memory', label: '기억', href: '/dashboard/settings#memory', icon: 'brain', title: '에이전트가 기억하는 개인 메모리와 관찰 기록을 보고 고칩니다' },
@@ -9335,6 +9338,7 @@ function paintPhoneDock() {
   var items = [{ id: 'board', label: '보드', href: home, icon: 'board', current: true, badge: _dockNeeds, title: '에이전트 인박스' }];
   for (var i = 0; i < APP_BAR_NAV.length; i++) {
     var l = APP_BAR_NAV[i];
+    if (l.id === 'dashboard') continue; // 보드 above is this page
     items.push({ id: l.id, label: l.label, href: l.href, icon: l.icon, title: l.title });
   }
   dock.data = { label: '주 메뉴', items: items, action: { id: 'new-task', label: '새 작업', icon: 'plus' } };

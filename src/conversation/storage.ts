@@ -90,6 +90,8 @@ export class ConversationStorage {
             channelId: record.channelId,
             ownerName: record.ownerName,
             title: record.title,
+            // The list names a conversation as its page does (viewer.ts titleOf: title, else titleSub).
+            titleSub: record.titleSub,
             workflow: record.workflow,
             turnCount: record.turns.length,
             createdAt: record.createdAt,

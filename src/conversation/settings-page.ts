@@ -639,10 +639,13 @@ function initPreferences() {
 // bar's own: its ui-sound-change is answered by the head's sound script (somaSoundBindBar, bound to #app-bar
 // at DOMContentLoaded), which keeps the choice and re-hands the bar its state. Links are real links:
 // ui-navigate is not cancelled.
+// One list on every page (dashboard · settings · conversations, app-bar-nav.test.ts): the same four links, the
+// page's own marked current. 기억 is this page's 기억 tab (the hash picks it).
 var APP_BAR_NAV = [
-  { id: 'dashboard', label: '대시보드', href: '/dashboard', icon: 'board' },
-  { id: 'conversations', label: '대화', href: '/conversations', icon: 'chat' },
-  { id: 'settings', label: '설정', href: '/dashboard/settings', icon: 'gear', current: true },
+  { id: 'dashboard', label: '대시보드', href: '/dashboard', icon: 'board', title: '에이전트 인박스 — 작업 카드 보드' },
+  { id: 'conversations', label: '대화', href: '/conversations', icon: 'chat', title: '지난 대화를 모두 봅니다' },
+  { id: 'settings', label: '설정', href: '/dashboard/settings', icon: 'gear', title: 'Slack 명령으로 바꾸던 설정을 여기서 확인하고 바꿉니다', current: true },
+  { id: 'memory', label: '기억', href: '/dashboard/settings#memory', icon: 'brain', title: '에이전트가 기억하는 개인 메모리와 관찰 기록을 보고 고칩니다' },
 ];
 var _appBarAccount = null; // { name, href, role? } once /auth/me answers
 function paintAppBar() {

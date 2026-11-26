@@ -150,7 +150,7 @@ describe('viewer pages — the shell (M-07)', () => {
     // The toggle is the head script's (it binds the bar): the shell keeps no theme code of its own.
     expect(VIEWER_SHELL_JS).not.toMatch(/'ui-theme-change'|soma-theme|function (setTheme|currentTheme)\(/);
     expect(VIEWER_SHELL_JS).toContain(
-      "{ id: 'conversations', label: '대화', href: '/conversations', icon: 'chat', current: true }",
+      "{ id: 'conversations', label: '대화', href: '/conversations', icon: 'chat', title: '지난 대화를 모두 봅니다', current: true }",
     );
   });
 });

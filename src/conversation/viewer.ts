@@ -16,6 +16,7 @@
  * Client scripts: String.raw, no `${…}` and no backticks (they ship byte for byte); the page data is JSON.
  */
 
+import { soundClientJs } from './sound-client';
 import { themeClientJs } from './theme-client';
 import type { ConversationMeta, ConversationRecord, ConversationTurn } from './types';
 import { UI_LIB_VERSION, uiIcon, uiLibKitCss, uiLibTokensCss } from './ui-lib';
@@ -121,17 +122,21 @@ a.att:focus-visible { outline: 2px solid var(--ui-border-focus); outline-offset:
 
 /** The app bar and the signed-in account, on both pages; the theme is the head's theme script (themeClientJs, soma-work 830). */
 export const VIEWER_SHELL_JS = String.raw`
+// One list on every page (dashboard · settings · conversations, app-bar-nav.test.ts): the same four links, the
+// page's own marked current.
 var APP_BAR_NAV = [
-  { id: 'dashboard', label: '대시보드', href: '/dashboard', icon: 'board' },
-  { id: 'conversations', label: '대화', href: '/conversations', icon: 'chat', current: true },
-  { id: 'settings', label: '설정', href: '/dashboard/settings', icon: 'gear' },
+  { id: 'dashboard', label: '대시보드', href: '/dashboard', icon: 'board', title: '에이전트 인박스 — 작업 카드 보드' },
+  { id: 'conversations', label: '대화', href: '/conversations', icon: 'chat', title: '지난 대화를 모두 봅니다', current: true },
+  { id: 'settings', label: '설정', href: '/dashboard/settings', icon: 'gear', title: 'Slack 명령으로 바꾸던 설정을 여기서 확인하고 바꿉니다' },
+  { id: 'memory', label: '기억', href: '/dashboard/settings#memory', icon: 'brain', title: '에이전트가 기억하는 개인 메모리와 관찰 기록을 보고 고칩니다' },
 ];
 var _appBarAccount = null; // { name, href, role? } once /auth/me answers
 var _csrfToken = '';
 function paintAppBar() {
   var bar = document.getElementById('app-bar');
   if (!bar) return;
-  var data = { brand: { label: 'soma-work', mark: true, href: '/dashboard' }, nav: APP_BAR_NAV, navLabel: '주 메뉴', theme: somaThemeNow().theme, palette: somaThemeNow().palette, design: somaThemeNow().design, designs: SOMA_DESIGNS };
+  // The speaker before the theme toggle, as on the other pages: the head's sound script's choice (_somaOn).
+  var data = { brand: { label: 'soma-work', mark: true, href: '/dashboard' }, nav: APP_BAR_NAV, navLabel: '주 메뉴', theme: somaThemeNow().theme, palette: somaThemeNow().palette, design: somaThemeNow().design, designs: SOMA_DESIGNS, sound: typeof _somaOn !== 'undefined' && !!_somaOn };
   if (_appBarAccount) data.account = _appBarAccount;
   bar.data = data;
 }
@@ -164,6 +169,8 @@ function page(opts: { title: string; view: 'list' | 'detail'; solo?: boolean; bo
 <title>${escapeHtml(opts.title)}</title>
 <!-- The theme (soma-work 830): light · dark · light·mono · dark·mono on <html> before CSS paints, and the bar's toggle. -->
 <script data-fouc>${themeClientJs()}</script>
+<!-- Interface sound, as on the dashboard and the settings page: the bar's speaker (somaSoundBindBar). -->
+<script data-sound>${soundClientJs(UI_LIB_VERSION)}</script>
 <!-- @2lab.ai/ui: the kit classes (.ui-row, .ui-btn, .ui-empty …) and the tokens (--ui-* on :root and [data-theme]). -->
 <style id="ui-kit">
 ${uiLibKitCss()}
