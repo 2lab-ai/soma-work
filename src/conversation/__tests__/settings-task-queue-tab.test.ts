@@ -440,7 +440,7 @@ describe('.prd/36 v2 — the lanes, one at a time', () => {
       /[&<>"']/g,
       (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string,
     );
-  const { tqLaneHtml } = load<any>(['tqClock', 'tqDur', 'tqLaneHtml'], {
+  const { tqLaneHtml } = load<any>(['tqClock', 'tqDur', 'wqReason', 'tqLaneHtml'], {
     esc,
     TQ_END: { done: '완료', cancelled: '취소', released: '돌려놓음' },
   });
@@ -453,5 +453,11 @@ describe('.prd/36 v2 — the lanes, one at a time', () => {
     expect(html.indexOf('wq-1')).toBeLessThan(html.indexOf('wq-2'));
     expect(html).toContain('돌려놓음');
     expect(html).toContain('(2시간)');
+  });
+
+  it("why an entry left says it in the reader's words, as the board's section does (관리자, not admin:U9)", () => {
+    const html = tqLaneHtml(lane);
+    expect(html).toContain('돌려놓음 <span class="tq-sub">관리자</span>');
+    expect(html).not.toContain('admin:U9');
   });
 });

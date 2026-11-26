@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 /**
  * The board's 작업 큐 section (.prd/36 v2 §4.3, SSOT_4): under the CRON lane, `작업 큐 | 개인별 큐`; a card that waits
  * in a lane leaves the board's columns for its lane; each lane's history shows it ran one at a time. Executes the
@@ -82,6 +83,52 @@ describe('wqActionsFor — who may do what to a lane entry', () => {
   });
 });
 
+describe('wqCardButtonsHtml — the open card of a lane-waiting card', () => {
+  const build = (map: Record<string, unknown>) =>
+    new Function(
+      'map',
+      `var _wqEntryByCard = map;
+       function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
+       function escJs(s) { return esc(s).replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'"); }
+       ${varSource('WQ_CARD_BUTTONS')}
+       ${fnSource('wqCardButtonsHtml')}
+       return wqCardButtonsHtml;`,
+    )(map) as (key: string) => string;
+
+  it('an admin (admin mode) gets 먼저 진행 and 대기에서 빼기; each press reaches wqCardAction with the card key', () => {
+    const html = build({ 'h:1::work:C1:t1': { id: 'wq-6', queue: 'qa-x', can: ['first', 'cancel'] } })(
+      'h:1::work:C1:t1',
+    );
+    const { document } = globalThis as unknown as { document: any };
+    const holder = document.createElement('div');
+    holder.innerHTML = html;
+    const btns: any[] = [...holder.querySelectorAll('button')];
+    expect(btns.map((b) => [b.textContent, b.dataset.action])).toEqual([
+      ['먼저 진행', 'wq-first'],
+      ['대기에서 빼기', 'wq-cancel'],
+    ]);
+    const calls: unknown[][] = [];
+    for (const b of btns) {
+      new Function('event', 'wqCardAction', b.getAttribute('onclick') as string)(
+        { stopPropagation() {} },
+        (...a: unknown[]) => calls.push(a),
+      );
+    }
+    expect(calls).toEqual([
+      ['h:1::work:C1:t1', 'wq-first'],
+      ['h:1::work:C1:t1', 'wq-cancel'],
+    ]);
+  });
+
+  it('the owner gets 대기에서 빼기 only; a card with no lane entry, or nothing allowed, gets nothing', () => {
+    const fn = build({ a: { id: 'wq-1', queue: 'q', can: ['cancel'] }, b: { id: 'wq-2', queue: 'q', can: [] } });
+    expect(fn('a')).toContain('대기에서 빼기');
+    expect(fn('a')).not.toContain('먼저 진행');
+    expect(fn('b')).toBe('');
+    expect(fn('c')).toBe('');
+  });
+});
+
 describe('the history — one at a time', () => {
   const { wqStripBars, wqRecordText } = load<any>(
     ['wqStripBars', 'wqRecordText', 'wqReason', 'wqDur', 'wqClock'],
@@ -137,6 +184,9 @@ describe('the history — one at a time', () => {
     expect(t).toMatchObject({ end: '돌려놓음', label: 'task wq-2', keys: ' · ABC-1', why: ' — 관리자' });
     expect(t.when).toMatch(/→ .* \(1시간\)$/);
     expect(wqRecordText({ ...rec('r', undefined, 5 * HOUR, 'refused') }).end).toBe('같은 작업이라 거절');
+    expect(wqRecordText({ ...rec('r', undefined, 5 * HOUR, 'refused'), reason: 'same-work' }).why).toBe(
+      ' — 같은 키가 다른 스레드에서 진행 중이거나 대기 중',
+    );
     expect(wqRecordText({ ...rec('s', undefined, 5 * HOUR, 'started') }).when).toMatch(/시작 \(대기 1시간\)/);
   });
 });
@@ -186,10 +236,11 @@ describe('the page', () => {
     expect(render).toContain('paintWorkQueues(wqSplit.byLane, uq.line)');
   });
 
-  it("a lane card's own buttons reach the section (wireInbox ui-action → wqCardAction)", () => {
-    const wire = page.slice(page.indexOf('\nfunction wireInbox('));
-    expect(wire.indexOf("wqAction.indexOf('wq-') === 0")).toBeGreaterThan(0);
-    expect(WORK_QUEUE_CLIENT_JS).toContain("{ id: 'wq-first', label: '먼저 진행' }");
+  it("a lane card's open card leads its actions bar with the lane buttons (the body is the page's, not the element's)", () => {
+    const body = page.slice(page.indexOf('\nfunction renderCardBody('));
+    const bar = body.slice(body.indexOf('const laneBtns'), body.indexOf('const needsHtml'));
+    expect(bar).toContain('wqCardButtonsHtml(s.key)');
+    expect(bar.indexOf('laneBtns + sessionActionHtml(')).toBeGreaterThan(0);
     expect(WORK_QUEUE_CLIENT_JS).toContain("'/api/dashboard/work-queues/'");
   });
 

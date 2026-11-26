@@ -621,11 +621,8 @@ export class UserTaskQueue {
       enteredAt: now,
       endedAt: now,
       end: 'refused',
-      // Never another thread's id: a private thread stays unnamed in the history.
-      reason:
-        claims.length === 1
-          ? 'its key already runs or waits in another thread'
-          : `its ${claims.length} keys already run or wait in other threads`,
+      // A code the readers put in words (wqReason); never another thread's id — a private thread stays unnamed.
+      reason: 'same-work',
     };
     this.commit(this.withRecords(this.ledger, record));
     // A late Slack retry of the refused message is not a new request either.

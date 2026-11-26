@@ -55,6 +55,23 @@ export const WORK_QUEUE_CSS = String.raw`
 .wq-empty { color: var(--text-tertiary); font-size: 13px; padding: 4px 0; }
 `;
 
+// Why an entry left a lane, in the reader's words — the board's section and the settings tab (TASK_QUEUE_CLIENT_JS)
+// say it the same way.
+export const WQ_REASON_JS = String.raw`function wqReason(reason) {
+  var s = String(reason || '');
+  if (s.indexOf('admin:') === 0) return '관리자';
+  if (s === 'holder-idle') return '세션이 일을 하지 않음';
+  if (s === 'holder-asking') return '사람 답을 오래 기다림';
+  if (s === 'holder-gone') return '세션이 사라짐';
+  if (s === 'holder-stuck') return '턴이 너무 오래 멈춤';
+  if (s === 'wake-expired') return '차례를 알리지 못함';
+  if (s === 'person') return '본인';
+  if (s === 'admin') return '관리자';
+  if (s === 'closed') return '세션 종료';
+  if (s === 'same-work') return '같은 키가 다른 스레드에서 진행 중이거나 대기 중';
+  return s;
+}`;
+
 export const WORK_QUEUE_CLIENT_JS = String.raw`
 // ── 작업 큐 section (.prd/36 v2, work-queue-client.ts) ──
 var WQ_POLL_MS = 15000;
@@ -132,19 +149,7 @@ function wqRecordText(r) {
   var why = r.reason && r.end !== 'started' ? ' — ' + wqReason(r.reason) : '';
   return { glyph: WQ_END_GLYPH[r.end] || '·', end: WQ_END_LABEL[r.end] || r.end, label: label, keys: keys, when: when, why: why };
 }
-function wqReason(reason) {
-  var s = String(reason || '');
-  if (s.indexOf('admin:') === 0) return '관리자';
-  if (s === 'holder-idle') return '세션이 일을 하지 않음';
-  if (s === 'holder-asking') return '사람 답을 오래 기다림';
-  if (s === 'holder-gone') return '세션이 사라짐';
-  if (s === 'holder-stuck') return '턴이 너무 오래 멈춤';
-  if (s === 'wake-expired') return '차례를 알리지 못함';
-  if (s === 'person') return '본인';
-  if (s === 'admin') return '관리자';
-  if (s === 'closed') return '세션 종료';
-  return s;
-}
+${WQ_REASON_JS}
 
 // Pure: the 24-hour strip's bars — every lane run (ended or running) inside the window, left and width in percent.
 // A lane runs one at a time, so the bars never overlap: the strip itself shows it.
@@ -327,15 +332,9 @@ function wqLaneBlock(q, cards, now) {
     placeCard(s, 'working', null, true);
     if (entry) {
       carded[entry.id] = true;
-      _wqEntryByCard[s.key] = { id: entry.id, queue: q.id };
-      var can = wqActionsFor(entry, wqCanManage(), wqViewer());
-      var extra = [];
-      if (can.indexOf('first') >= 0) extra.push({ id: 'wq-first', label: '먼저 진행' });
-      if (can.indexOf('cancel') >= 0) extra.push({ id: 'wq-cancel', label: '대기에서 빼기' });
-      if (extra.length) {
-        var c = _cardData[s.key];
-        c.actions = (c.actions || []).concat(extra);
-      }
+      // What the reader may do to it: its open card draws the buttons (wqCardButtonsHtml) — a session card's body is
+      // the page's own, so the element's data actions never show on it.
+      _wqEntryByCard[s.key] = { id: entry.id, queue: q.id, can: wqActionsFor(entry, wqCanManage(), wqViewer()) };
     }
     keys.push(s.key);
   });
@@ -489,7 +488,19 @@ async function wqAct(entryId, action, entry) {
   loadWorkQueues();
 }
 
-// A lane card's own buttons (먼저 진행 · 대기에서 빼기), from wireInbox's ui-action.
+// A lane card's buttons on its open card (renderCardBody's actions bar, before 중지 · Slack): 먼저 진행 · 대기에서 빼기,
+// as the reader may (wqActionsFor at the last paint). Nothing for a card that does not wait in a lane.
+var WQ_CARD_BUTTONS = [['first', 'wq-first', '먼저 진행'], ['cancel', 'wq-cancel', '대기에서 빼기']];
+function wqCardButtonsHtml(key) {
+  var at = _wqEntryByCard[key];
+  if (!at || !at.can || !at.can.length) return '';
+  var k = escJs(key);
+  return WQ_CARD_BUTTONS.filter(function(b) { return at.can.indexOf(b[0]) >= 0; }).map(function(b) {
+    return '<button type="button" class="ui-btn" data-action="' + b[1] + '" onclick="event.stopPropagation();wqCardAction(\'' + k + '\',\'' + b[1] + '\')">' + esc(b[2]) + '</button>';
+  }).join('');
+}
+
+// A lane card's own buttons (먼저 진행 · 대기에서 빼기), pressed on its open card (wqCardButtonsHtml).
 function wqCardAction(cardId, actionId) {
   var at = _wqEntryByCard[cardId];
   if (!at) return;

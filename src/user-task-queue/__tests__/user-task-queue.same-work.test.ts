@@ -175,8 +175,7 @@ describe('UserTaskQueue — the same work sent again fails fast', () => {
     h.running.set('U1', [{ ...taskA, channel: 'D9', sessionKey: 'D9:1.0' }]);
     h.queue.gate(input('ABC-1'));
     const reason = h.queue.snapshot().records?.slice(-1)[0].reason ?? '';
-    expect(reason).not.toContain('D9');
-    expect(reason).not.toContain('run:');
+    expect(reason).toBe('same-work');
   });
 });
 
