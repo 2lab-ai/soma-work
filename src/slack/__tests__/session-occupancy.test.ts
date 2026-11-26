@@ -92,6 +92,26 @@ describe('SessionOccupancy — run phase', () => {
     expect(w.occupancy.turnHeld('k')).toBe(false);
   });
 
+  it('a run that reported working and released its slot without reporting its end holds nothing', () => {
+    const w = world();
+    w.slots.set('k', 3);
+    w.occupancy.noteTurnActivity('k', 'working');
+    expect(w.occupancy.turnHeld('k')).toBe(true);
+    w.slots.delete('k'); // released — no idle report ever came
+    expect(w.occupancy.runPhase('k')).toBe('none');
+    expect(w.occupancy.turnHeld('k')).toBe(false);
+    expect(w.occupancy.driven('k')).toBe(false);
+  });
+
+  it('a request with no dispatcher slot is a running turn', () => {
+    const w = world();
+    w.requests.add('k');
+    expect(w.occupancy.runPhase('k')).toBe('running');
+    expect(w.occupancy.turnHeld('k')).toBe(true);
+    expect(w.occupancy.driven('k')).toBe(true);
+    expect(w.occupancy.slotHeld('k')).toBe(false);
+  });
+
   it('no mark after forget — a deleted session holds nothing', () => {
     const w = world();
     w.occupancy.noteTurnActivity('k', 'working');

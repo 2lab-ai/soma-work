@@ -86,14 +86,16 @@ export class SessionOccupancy {
 
   /**
    * A turn is starting or running — what the goal loop must not judge or inject beside. A run that is only
-   * settling (its turn ended) does not hold the turn. Outside a dispatcher run (slot-less task turns), a
-   * `working` mark from this process still counts, as between the legs of a continuation.
+   * settling (its turn ended) does not hold the turn. Outside a dispatcher run, a turn the runtime reported
+   * `working` while no slot was held (a slot-less turn) still counts. A dispatcher run's mark ends with its run:
+   * once the slot is released it speaks for nothing, even if the run never reported its end.
    */
   turnHeld(key: string): boolean {
     const phase = this.runPhase(key);
     if (phase === 'preparing' || phase === 'running') return true;
-    if (phase === 'none') return this.marks.get(key)?.activity === 'working';
-    return false;
+    if (phase !== 'none') return false;
+    const mark = this.marks.get(key);
+    return mark !== undefined && mark.epoch === undefined && mark.activity === 'working';
   }
 
   /** Someone will act for the session: a run holds its slot, or the goal loop is acting. */

@@ -10,15 +10,15 @@ import { describe, expect, it } from 'vitest';
 const ROOT = path.resolve(__dirname, '..', '..');
 
 /** Non-comment lines of a source file, each with the class member or top-level function it sits in. */
-function membersOf(relPath: string): Array<{ member: string; line: number; text: string }> {
+function membersOf(relPath: string): Array<{ member: string; text: string }> {
   const lines = fs.readFileSync(path.join(ROOT, relPath), 'utf8').split('\n');
   const member =
     /^ {2}(?:(?:private|public|protected|static|async|readonly|get|set)\s+)*([A-Za-z_$][\w$]*)\s*(?:<[^>]*>)?\(/;
   const topLevel =
     /^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)|^(?:export\s+)?(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=|^(?:export\s+)?(?:abstract\s+)?(?:class|interface)\s+([A-Za-z_$][\w$]*)/;
-  const out: Array<{ member: string; line: number; text: string }> = [];
+  const out: Array<{ member: string; text: string }> = [];
   let current = '(module)';
-  lines.forEach((text, i) => {
+  lines.forEach((text) => {
     const m = member.exec(text);
     if (m) current = m[1];
     else {
@@ -27,7 +27,7 @@ function membersOf(relPath: string): Array<{ member: string; line: number; text:
     }
     const trimmed = text.trim();
     if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) return;
-    out.push({ member: current, line: i + 1, text });
+    out.push({ member: current, text });
   });
   return out;
 }
@@ -41,14 +41,12 @@ function goalScopeFiles(): string[] {
   return ['src/slack-handler.ts', ...goalFiles.sort()];
 }
 
-/** `file#member` → the lines in it that match `pattern`. */
-function sitesOf(pattern: RegExp, files: string[]): Map<string, number[]> {
-  const sites = new Map<string, number[]>();
+/** Every `file#member` with a line that matches `pattern`. */
+function sitesOf(pattern: RegExp, files: string[]): Set<string> {
+  const sites = new Set<string>();
   for (const file of files) {
-    for (const { member, line, text } of membersOf(file)) {
-      if (!pattern.test(text)) continue;
-      const key = `${file}#${member}`;
-      sites.set(key, [...(sites.get(key) ?? []), line]);
+    for (const { member, text } of membersOf(file)) {
+      if (pattern.test(text)) sites.add(`${file}#${member}`);
     }
   }
   return sites;
@@ -98,7 +96,7 @@ describe('goal state boundary (.prd/40 §6)', () => {
         'safeguard stop of a turn started during the eval — PR8',
     };
 
-    const found = [...sitesOf(DIRECT_ASK, goalScopeFiles()).keys()].sort();
+    const found = [...sitesOf(DIRECT_ASK, goalScopeFiles())].sort();
     const unlisted = found.filter((key) => !(key in ALLOWED));
     const gone = Object.keys(ALLOWED).filter((key) => !found.includes(key));
     expect({ unlisted, gone }).toEqual({ unlisted: [], gone: [] });
@@ -115,10 +113,4 @@ describe('goal state boundary (.prd/40 §6)', () => {
     expect(body('isFollowupSlotHeld')).toContain('this.occupancy.slotHeld(');
     expect(body('isFollowupTurnBusy')).toContain('this.occupancy.slotHeld(');
   });
-
-  it.todo('rule 1 (PR2): no goal, loop or recovery code reads activityState as a condition');
-  it.todo('rule 3 (PR4–5): only goal/machine.ts writes goal status, phase fields, counters and epoch');
-  it.todo('rule 4 (PR3): control flow reads those fields through goal/read.ts (phaseOf, placeOf)');
-  it.todo('rule 5 (PR5): only goal-commit.ts saves and broadcasts after a goal change');
-  it.todo('rule 6 (PR3): SessionGoal is defined once, in goal/model.ts');
 });

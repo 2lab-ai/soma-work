@@ -45,21 +45,24 @@ describe('SessionRegistry — turn activity reports', () => {
     ]);
   });
 
-  it('stops reporting after unsubscribe, and a throwing listener does not stop the transition', () => {
+  it('stops reporting after unsubscribe, and a throwing listener stops neither the others nor the transition', () => {
     const registry = new SessionRegistry();
     const session = registry.createSession('U1', 'Tester', 'C1', '111.333');
-    const heard: string[] = [];
-    const off = registry.addTurnActivityListener((_k, state) => heard.push(state));
+    const key = registry.getSessionKey('C1', '111.333');
     registry.addTurnActivityListener(() => {
       throw new Error('listener bug');
     });
+    const heard: string[] = [];
+    const off = registry.addTurnActivityListener((_k, state) => heard.push(state));
 
     registry.setActivityState('C1', '111.333', 'working');
     expect(session.activityState).toBe('working');
+    registry.setActivityStateByKey(key, 'waiting');
+    expect(session.activityState).toBe('waiting');
     off();
     registry.setActivityState('C1', '111.333', 'idle');
 
-    expect(heard).toEqual(['working']);
+    expect(heard).toEqual(['working', 'waiting']);
     expect(session.activityState).toBe('idle');
   });
 
