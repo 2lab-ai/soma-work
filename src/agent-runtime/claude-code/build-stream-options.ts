@@ -1182,13 +1182,16 @@ function applyTenantReadBoundary(
       user: input.user,
     });
   }
-  // Made before the lists are built: a missing directory is not opened, and thread files land here mid-turn.
+  // Made before the lists are built: a missing directory is not opened. Thread files land in the uploads directory
+  // mid-turn; the CLI writes its shell snapshot (which every command sources) on the first run of a config dir.
+  const claudeConfigDir = input.queryEnv.CLAUDE_CONFIG_DIR || path.join(home, '.claude');
   const uploads = userUploadsDir(DATA_DIR, input.user);
-  if (uploads) {
+  for (const dir of [uploads, path.join(claudeConfigDir, 'shell-snapshots')]) {
+    if (!dir) continue;
     try {
-      fs.mkdirSync(uploads, { recursive: true, mode: 0o700 });
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     } catch (error) {
-      logger.warn("The user's uploads directory could not be made", { user: input.user, error });
+      logger.warn('A directory the session reads could not be made', { user: input.user, dir, error });
     }
   }
   const boundary = tenantReadBoundary({
@@ -1200,7 +1203,7 @@ function applyTenantReadBoundary(
     codeRoot: path.resolve(__dirname, '..', '..', '..'),
     dataDir: DATA_DIR,
     ownDataDir: path.join(DATA_DIR, input.user),
-    claudeConfigDir: input.queryEnv.CLAUDE_CONFIG_DIR || path.join(home, '.claude'),
+    claudeConfigDir,
     ghConfigDir: input.queryEnv.GH_CONFIG_DIR,
     pluginPaths: (options.plugins ?? []).map((plugin) => plugin.path),
     grantedSkillDirs: input.grantedSkillDirs,
@@ -1220,7 +1223,10 @@ function applyTenantReadBoundary(
   if (input.workingDirectory && slackMcp?.env?.SOMA_UPLOAD_ROOTS) {
     try {
       const roots = JSON.parse(slackMcp.env.SOMA_UPLOAD_ROOTS) as string[];
-      if (!roots.includes(input.workingDirectory)) roots.push(input.workingDirectory);
+      // And what its commands write to the CLI temp directory (TMPDIR).
+      for (const dir of [input.workingDirectory, ...(claudeTmpDir ? [claudeTmpDir] : [])]) {
+        if (!roots.includes(dir)) roots.push(dir);
+      }
       slackMcp.env.SOMA_UPLOAD_ROOTS = JSON.stringify(roots);
     } catch {
       // Left as built: the server then closes uploads rather than opening them.

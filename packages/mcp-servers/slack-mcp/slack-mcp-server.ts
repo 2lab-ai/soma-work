@@ -23,6 +23,7 @@
  *   - SOMA_DISPLAY_LANG: `ko` | `en` — the language of the version line in an upload's comment
  *   - SOMA_DOWNLOAD_DIR: where download_thread_file saves (the speaker's uploads directory); else the OS temp dir
  *   - SOMA_UPLOAD_ROOTS: JSON array of the roots a non-admin session may upload from (send_file, send_media)
+ *   - SOMA_UPLOAD_EXTRA_ROOTS: JSON array of roots an admin may upload from beside /tmp (its uploads directory)
  */
 
 import { WebClient } from '@slack/web-api';
@@ -61,15 +62,32 @@ import type { GetThreadMessagesResult, SlackMcpContext } from './types.js';
 /** Allowed Slack file URL hosts — prevents token exfiltration to attacker-controlled domains */
 const ALLOWED_FILE_HOSTS = new Set(['files.slack.com', 'files-pri.slack.com', 'files-tmb.slack.com']);
 
-/** SOMA_UPLOAD_ROOTS (JSON array): the roots a non-admin session may upload from; empty for an admin. */
-function uploadRoots(): string[] {
+/** A JSON array of absolute paths from `name`; undefined when unset. A value that is set but not one closes. */
+function rootsFromEnv(name: string): string[] | undefined {
+  const raw = process.env[name];
+  if (raw === undefined) return undefined;
   try {
-    const roots = JSON.parse(process.env.SOMA_UPLOAD_ROOTS || '[]');
-    return Array.isArray(roots) ? roots.filter((r): r is string => typeof r === 'string' && r.length > 0) : [];
+    const roots: unknown = JSON.parse(raw);
+    if (
+      Array.isArray(roots) &&
+      roots.length > 0 &&
+      roots.every((r) => typeof r === 'string' && r.length > 0 && path.isAbsolute(r))
+    ) {
+      return roots as string[];
+    }
   } catch {
-    // A value that does not parse closes uploads rather than opening them.
-    return ['/nonexistent-upload-root'];
+    // Falls through: closed.
   }
+  return ['/nonexistent-upload-root'];
+}
+
+/**
+ * The roots of an upload: SOMA_UPLOAD_ROOTS (a non-admin: only these, strictly) and SOMA_UPLOAD_EXTRA_ROOTS (an
+ * admin: the uploads directory beside /tmp). A value that is set but malformed closes uploads rather than opening
+ * them.
+ */
+function uploadRoots(): { own: string[]; extra: string[] } {
+  return { own: rootsFromEnv('SOMA_UPLOAD_ROOTS') ?? [], extra: rootsFromEnv('SOMA_UPLOAD_EXTRA_ROOTS') ?? [] };
 }
 
 /** #1074 — how an upload becomes a new version of an earlier one. */
@@ -856,7 +874,11 @@ class SlackMcpServer extends BaseMcpServer {
     artifact_key?: string;
   }): Promise<ToolResult> {
     // A non-admin's file is uploaded from a snapshot the bot took of the file it checked, never re-read by path.
-    const { resolvedPath, size, cleanup } = await validateFilePath(args.file_path, uploadRoots());
+    const { resolvedPath, size, cleanup } = await validateFilePath(
+      args.file_path,
+      uploadRoots().own,
+      uploadRoots().extra,
+    );
     try {
       const displayName = args.filename || path.basename(resolvedPath);
       const resolved = this.resolveThread(args.thread);
@@ -931,7 +953,11 @@ class SlackMcpServer extends BaseMcpServer {
     artifact_key?: string;
   }): Promise<ToolResult> {
     // A non-admin's file is uploaded from a snapshot the bot took of the file it checked, never re-read by path.
-    const { resolvedPath, size, cleanup } = await validateFilePath(args.file_path, uploadRoots());
+    const { resolvedPath, size, cleanup } = await validateFilePath(
+      args.file_path,
+      uploadRoots().own,
+      uploadRoots().extra,
+    );
     try {
       const displayName = args.filename || path.basename(resolvedPath);
       const resolved = this.resolveThread(args.thread);

@@ -104,8 +104,10 @@ describe('McpConfigBuilder slack-mcp server', () => {
       mentionTs: '1700000010.000000',
       user: 'U123',
     });
+    const { DATA_DIR } = await import('../env-paths');
     const roots = JSON.parse(config.mcpServers?.['slack-mcp']?.env?.SOMA_UPLOAD_ROOTS ?? '[]');
-    expect(roots).toEqual([path.join('/tmp', 'U123')]);
+    // Its own root, and its uploads directory, so a downloaded thread file can be sent on.
+    expect(roots).toEqual([path.join('/tmp', 'U123'), path.join(DATA_DIR, 'U123', 'uploads')]);
   });
 
   it('passes both work and source thread in SLACK_MCP_CONTEXT when bot migrates to new thread', async () => {

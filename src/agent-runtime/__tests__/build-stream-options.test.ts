@@ -991,7 +991,11 @@ describe('sandbox: admin profile and write protection (env-access WU2, #1210)', 
       });
       const { options } = await withSettings(false, () => build(SAFE_USER, deps));
       const env = (options.mcpServers?.['slack-mcp'] as { env?: Record<string, string> }).env;
-      expect(JSON.parse(env?.SOMA_UPLOAD_ROOTS ?? '[]')).toEqual([path.join('/tmp', SAFE_USER), WORK_DIR]);
+      const roots = JSON.parse(env?.SOMA_UPLOAD_ROOTS ?? '[]') as string[];
+      // The roots built for the speaker, then the session folder (and the CLI temp directory once the user's root
+      // exists on this host).
+      expect(roots.slice(0, 2)).toEqual([path.join('/tmp', SAFE_USER), WORK_DIR]);
+      expect(roots.slice(2).every((p) => p.startsWith(`${CLAUDE_TMP_ROOT}/`))).toBe(true);
     });
 
     it("no temp directory is made while the user's root is not there", async () => {

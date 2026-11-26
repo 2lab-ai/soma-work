@@ -6,6 +6,7 @@
  */
 
 import * as fs from 'fs/promises';
+import * as os from 'os';
 import * as path from 'path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ALLOWED_MEDIA_EXTENSIONS, getMediaType, validateFilePath } from './helpers/file-validator.js';
@@ -120,6 +121,34 @@ describe("validateFilePath — a non-admin's own root", () => {
   it("refuses another user's file, by its path or through a linked parent directory", async () => {
     await expect(validateFilePath(path.join(other, 'theirs.png'), [own])).rejects.toThrow(/your own folder/);
     await expect(validateFilePath(path.join(own, 'via-link', 'theirs.png'), [own])).rejects.toThrow(/your own folder/);
+  });
+
+  it('a downloaded thread file in the uploads directory outside /tmp can be sent on', async () => {
+    const uploads = await fs.mkdtemp(path.join(os.tmpdir(), 'slack-mcp-uploads-'));
+    try {
+      const file = path.join(uploads, 'thread.png');
+      await fs.writeFile(file, 'png');
+      // A non-admin: its own roots include the uploads directory.
+      const asUser = await validateFilePath(file, [own, uploads]);
+      expect(asUser.size).toBe(3);
+      await asUser.cleanup?.();
+      // An admin: the uploads directory beside /tmp.
+      await expect(validateFilePath(file, [], [uploads])).resolves.toMatchObject({ resolvedPath: file });
+      // Neither: outside /tmp.
+      if (!file.startsWith('/tmp/') && !file.startsWith('/private/tmp/')) {
+        await expect(validateFilePath(file)).rejects.toThrow(/restricted to \/tmp/);
+      }
+    } finally {
+      await fs.rm(uploads, { recursive: true, force: true });
+    }
+  });
+
+  it('an allowed root that became a link is ignored, so its target is not authorized', async () => {
+    const swappedRoot = path.join(base, 'swapped-root');
+    await fs.symlink(other, swappedRoot);
+    await expect(validateFilePath(path.join(swappedRoot, 'theirs.png'), [swappedRoot])).rejects.toThrow(
+      /your own folder/,
+    );
   });
 
   it('without roots (an admin) the /tmp rule alone applies', async () => {

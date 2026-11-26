@@ -77,7 +77,7 @@ export function getMediaType(ext: string): 'image' | 'audio' | 'video' | null {
  * Defence layers:
  *   1. Absolute path requirement
  *   2. Path-segment traversal check
- *   3. Allowlisted root directory (/tmp only)
+ *   3. Allowlisted root directory (/tmp, and the speaker's uploads directory)
  *   4. Symlink rejection
  *   5. Regular-file check, then — for a non-admin — the real path inside the session's own roots
  *   6. Readability check
@@ -86,6 +86,7 @@ export function getMediaType(ext: string): 'image' | 'audio' | 'video' | null {
 export async function validateFilePath(
   filePath: string,
   ownRoots: readonly string[] = [],
+  extraRoots: readonly string[] = [],
 ): Promise<{ resolvedPath: string; size: number; cleanup?: () => Promise<void> }> {
   if (!filePath) {
     throw new Error('file_path is required');
@@ -103,7 +104,11 @@ export async function validateFilePath(
     throw new Error(`Path traversal not allowed: ${filePath}`);
   }
 
-  const underAllowedRoot = ALLOWED_UPLOAD_ROOTS.some((root) => resolvedPath.startsWith(root + path.sep));
+  // /tmp, plus the speaker's uploads directory (where thread files the model downloads are saved); a non-admin's
+  // own roots are checked again, strictly, below.
+  const underAllowedRoot = [...ALLOWED_UPLOAD_ROOTS, ...extraRoots, ...ownRoots].some((root) =>
+    resolvedPath.startsWith(path.resolve(root) + path.sep),
+  );
   if (!underAllowedRoot) {
     throw new Error(`Upload restricted to /tmp directory. Rejected: ${resolvedPath}`);
   }
@@ -146,9 +151,27 @@ export async function validateFilePath(
   return { resolvedPath, size: lstatResult.size };
 }
 
-/** `real` is one of `roots` (as the OS resolves them) or inside one. */
+/** macOS links the OS keeps at the root: a root reached through one of them is not a planted link. */
+const OS_ROOT_LINKS: Readonly<Record<string, string>> = {
+  tmp: '/private/tmp',
+  var: '/private/var',
+  etc: '/private/etc',
+};
+
+/** `root` where it really is, or undefined when it is missing or reached through a link (one a session may plant). */
+async function realRoot(root: string): Promise<string | undefined> {
+  const lexical = path.resolve(root);
+  const real = await fs.realpath(lexical).catch(() => undefined);
+  if (!real) return undefined;
+  const first = lexical.split(path.sep)[1] ?? '';
+  const viaOsLink = process.platform === 'darwin' && OS_ROOT_LINKS[first];
+  const expected = viaOsLink ? viaOsLink + lexical.slice(first.length + 1) : lexical;
+  return real === expected ? real : undefined;
+}
+
+/** `real` is one of `roots` (each only where it really is, never through a link) or inside one. */
 async function insideRoots(real: string, roots: readonly string[]): Promise<boolean> {
-  const realRoots = await Promise.all(roots.map((root) => fs.realpath(root).catch(() => path.resolve(root))));
+  const realRoots = (await Promise.all(roots.map(realRoot))).filter((r): r is string => r !== undefined);
   return realRoots.some((root) => real === root || real.startsWith(root + path.sep));
 }
 
