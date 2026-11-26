@@ -104,9 +104,10 @@ applyVerdict(goal, verdict, { stallAllowed, reused }) → GoalChange    // conti
 ```
 
 - 판정 결과를 적용하기 직전과 이어하기를 넣기 직전에 같은 확인을 한다: 같은 goal · 에폭 ∧ ¬`turnHeld` ∧ ¬종료 중(D15, X6).
-  실패하면 버리고, goal이 아직 굴릴 상태면 다시 판정하는 실행(직렬 실행에 줄 서는 킥).
+  실패하면 버린다. 다시 판정하는 일은 에폭을 옮긴 커밋이 이미 직렬 실행에 줄 세웠다 — 폐기 경로는 예약하지 않는다(재판정의 주인은 하나).
 - 이어하기를 넣을 때 실행이 `settling`이면 `PendingDrive{inject}`로 미루고, 슬롯이 풀리면 같은 goal · 에폭 ∧ `running` ∧ ¬`turnHeld`일 때
-  한 번만 넣는다(다시 판정하지 않는다). 그 사이 goal이 바뀌거나 사람의 턴 · 팔로업 · 종료가 오면 취소하고 `spent`면 돌려준다.
+  한 번만 넣는다(다시 판정하지 않는다). 그 사이 goal이 바뀌거나 사람의 턴 · 팔로업 · 종료가 오면 취소한다. 환급은 지금 펜스의 조건
+  그대로: 같은 goal · 에폭 ∧ 횟수 > 0 ∧ 열린 cap 질문 없음.
 - `judge`는 슬롯이 풀렸는데 팔로업이 남으면 소비하지 않고 `waitFor: followups`로 바뀐다. 판정 중에 온 킥은 직렬 실행이 받는다.
 - 재시도 타이머는 `{goalId, epoch}`에 묶이고 핸들을 갖는다. `commitGoalChange`가 goal을 바꾸면 취소한다.
 
@@ -139,7 +140,7 @@ WU4가 디스크 모양을 바꾼다. 그 전까지(WU1–WU3)는 옛 필드를 
 | `openingPending` | `phase: { kind: 'opening' }` |
 | `pendingEval` | 저장 안 함(S4 런타임, D4) — 로드 때 버린다(지금과 같음) |
 | `evalBackoffUntil` · `evalDispatchRetryCount` · `evalRetryReason` | `phase: { kind: 'retrying', until, attempt, reason }` |
-| `capDmPendingAt` · `capDecisionId` · `capDmRef` | `phase: { kind: 'asking', ask: { kind: 'cap', roundId, openedAt, dmRef? } }`. id 없는 옛 라운드는 로드 때 id를 받는다 |
+| `capDmPendingAt` · `capDecisionId` · `capDmRef` | `phase: { kind: 'asking', ask: { kind: 'cap', roundId?, openedAt, dmRef? } }`. id 없는 옛 라운드는 id 없이 유지한다(옛 DM 버튼이 답할 수 있게, D17) |
 | `stall` | `phase: { kind: 'asking', ask: { kind: 'stall', stall } }` |
 | (알림 · 메모리 집합뿐 — 옛 표현 없음) | `phase: { kind: 'stopped', why, at }` — 지문이 맞고 옛 필드가 비었으면 보존(D17) |
 | 위 아무것도 없음 | `phase: { kind: 'running' }` |
