@@ -41,6 +41,12 @@ export interface GoalActionValue {
   threadTs?: string;
   /** Cap-decision DM buttons only: the decision round they answer (`SessionGoal.capDecisionId`). */
   decisionId?: string;
+  /**
+   * Goal-list buttons: where the line was when the message was rendered (.prd/39 D12, X14). A delete asks the host
+   * for that place; a goal that moved since (promoted from the queue) answers "the list changed", never deletes the
+   * goal that runs now. Absent on messages rendered before this field — those fall back to the click-time place.
+   */
+  place?: 'current' | 'queued' | 'paused';
 }
 
 export function encodeGoalActionValue(value: GoalActionValue): string {
@@ -58,6 +64,9 @@ export function decodeGoalActionValue(raw: unknown): GoalActionValue | null {
         channel: typeof parsed.channel === 'string' ? parsed.channel : undefined,
         threadTs: typeof parsed.threadTs === 'string' ? parsed.threadTs : undefined,
         ...(typeof parsed.decisionId === 'string' && parsed.decisionId ? { decisionId: parsed.decisionId } : {}),
+        ...(parsed.place === 'current' || parsed.place === 'queued' || parsed.place === 'paused'
+          ? { place: parsed.place }
+          : {}),
       };
     }
   } catch {
@@ -186,7 +195,9 @@ export function buildGoalStatusBlocks(input: GoalStatusBlocksInput): any[] {
     blocks.push(section(lines.join('\n')));
     // Buttons make sense only while the goal is still live (active/paused).
     if (goal.status === 'active' || goal.status === 'paused') {
-      blocks.push(actionButtons(valueFor(goal), goal.status === 'active' ? 'pause' : 'resume'));
+      blocks.push(
+        actionButtons({ ...valueFor(goal), place: 'current' }, goal.status === 'active' ? 'pause' : 'resume'),
+      );
     }
   }
 
@@ -195,7 +206,7 @@ export function buildGoalStatusBlocks(input: GoalStatusBlocksInput): any[] {
     blocks.push(section(`📋 *Queued goals (${queue.length})* — start automatically in order:`));
     for (const q of queue.slice(0, limit)) {
       blocks.push(section(`• ${formatObjective(q.objective)}`));
-      blocks.push(actionButtons(valueFor(q)));
+      blocks.push(actionButtons({ ...valueFor(q), place: 'queued' }));
     }
     if (queue.length > limit) {
       blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: `…and ${queue.length - limit} more` }] });
@@ -214,7 +225,7 @@ export function buildGoalStatusBlocks(input: GoalStatusBlocksInput): any[] {
     const pausedLimit = Math.min(limit, PAUSED_ROWS_MAX);
     paused.slice(0, pausedLimit).forEach((p, i) => {
       blocks.push(section(`${i + 1}. ${formatObjective(p.objective)}`));
-      blocks.push(actionButtons(valueFor(p), 'resume'));
+      blocks.push(actionButtons({ ...valueFor(p), place: 'paused' }, 'resume'));
     });
     if (paused.length > pausedLimit) {
       blocks.push({

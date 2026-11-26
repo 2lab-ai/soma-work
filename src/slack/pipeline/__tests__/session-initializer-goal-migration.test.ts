@@ -300,7 +300,8 @@ describe('SessionInitializer — bot-thread migration copies goal (#1082)', () =
     await migrate(original);
 
     expect(botSession).toBeDefined();
-    expect(botSession.goal).toEqual(goal);
+    // The same goal, one epoch on (.prd/39 D11 — the move is an intent change).
+    expect(botSession.goal).toEqual({ ...goal, epoch: (goal.epoch ?? 0) + 1 });
     // CLONE, not reference — terminating/mutating the original session must
     // not bleed into the migrated session.
     expect(botSession.goal).not.toBe(goal);
@@ -313,6 +314,36 @@ describe('SessionInitializer — bot-thread migration copies goal (#1082)', () =
     (goal.pendingEval as { turnId: string }).turnId = 'MUTATED-NESTED';
     expect(botSession.goal.pendingEval.turnId).toBe('turn-orig-1');
     expect(botSession.goal.pendingEval).not.toBe(goal.pendingEval);
+  });
+
+  // .prd/39 D11 · A12 (X12) — every goal the thread holds moves with it: the queue, the shelf and the history, not
+  // only the slot. A question open in the old thread closes (its buttons address the old session) and the epoch moves.
+  it('moves the queue, the shelf and the history, and closes the questions the old thread asked', async () => {
+    const queued = makeGoal({ goalId: 'q1', status: 'queued' } as Partial<SessionGoal>);
+    const shelved = makeGoal({ goalId: 'p1', status: 'paused' } as Partial<SessionGoal>);
+    const done = makeGoal({ goalId: 'h1', status: 'complete' } as Partial<SessionGoal>);
+    const asking = makeGoal({
+      capDmPendingAt: 7,
+      capDecisionId: 'round-old',
+      stall: { stallId: 's-old', stalledAt: 1, reason: 'r', actions: ['a', 'b', 'c'], confidence: 0.99 },
+    } as Partial<SessionGoal>);
+    const original = makeOriginalSession({
+      goal: asking,
+      goalQueue: [queued],
+      goalPaused: [shelved],
+      goalHistory: [done],
+    });
+
+    await migrate(original);
+
+    expect(botSession.goalQueue).toEqual([queued]);
+    expect(botSession.goalQueue[0]).not.toBe(queued);
+    expect(botSession.goalPaused).toEqual([shelved]);
+    expect(botSession.goalHistory).toEqual([done]);
+    expect(botSession.goal.capDmPendingAt).toBeUndefined();
+    expect(botSession.goal.capDecisionId).toBeUndefined();
+    expect(botSession.goal.stall).toBeUndefined();
+    expect(botSession.goal.epoch).toBe(6);
   });
 
   it('does NOT carry the runtime stash goalLastTurnText across migration', async () => {

@@ -79,14 +79,16 @@ export class GoalActionHandler {
       // admitted through the follow-up fence (SSOT 2026-10-21). A completed
       // (history) goal has nothing to start and is removed locally below.
       const hostAction = getHostGoalActionHandler();
+      // Where the line was shown (X14); a message from before the field falls back to the click-time place.
       const expect =
-        session.goal?.goalId === value.goalId
+        value.place ??
+        (session.goal?.goalId === value.goalId
           ? 'current'
           : session.goalQueue?.some((g) => g.goalId === value.goalId)
             ? 'queued'
             : session.goalPaused?.some((g) => g.goalId === value.goalId)
               ? 'paused'
-              : undefined;
+              : undefined);
       if (hostAction && expect) {
         try {
           const outcome = await hostAction(

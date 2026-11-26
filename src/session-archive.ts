@@ -139,6 +139,8 @@ export interface ArchivedSession {
   goalHistory?: SessionGoal[];
   /** Goals the owner paused (SSOT 2026-11-06) — they wait for a resume, so a revive brings them back. */
   goalPaused?: SessionGoal[];
+  /** Goals queued behind the current one (.prd/39 D11, X11) — a revive brings them back, still queued. */
+  goalQueue?: SessionGoal[];
   taskLedger?: TaskLedger;
 
   // SSOT 2026-10-23 — a closed cron run stays filed under its job.
@@ -253,6 +255,7 @@ function sessionToArchive(
     goal: session.goal ? JSON.parse(JSON.stringify(session.goal)) : undefined,
     goalHistory: session.goalHistory ? JSON.parse(JSON.stringify(session.goalHistory)) : undefined,
     goalPaused: session.goalPaused?.length ? JSON.parse(JSON.stringify(session.goalPaused)) : undefined,
+    goalQueue: session.goalQueue?.length ? JSON.parse(JSON.stringify(session.goalQueue)) : undefined,
     taskLedger: session.taskLedger ? JSON.parse(JSON.stringify(session.taskLedger)) : undefined,
     cronJob: session.cronJob ? { ...session.cronJob } : undefined,
     agents: session.agents ? JSON.parse(JSON.stringify(session.agents)) : undefined,

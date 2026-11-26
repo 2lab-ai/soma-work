@@ -3070,7 +3070,8 @@ export class SlackHandler {
       ) {
         const fullSession = this.claudeHandler.getSessionByKey?.(sessionResult.sessionKey);
         const inFlight = !!fullSession && slotGoalInFlight(fullSession) !== undefined;
-        if (fullSession && !inFlight && !fullSession.goalQueue?.length) {
+        // .prd/39 D12 (X15) — not beside a goal that waits: queued, or paused on the shelf by its owner.
+        if (fullSession && !inFlight && !fullSession.goalQueue?.length && !fullSession.goalPaused?.length) {
           const applied = enqueueOrActivateGoal(
             fullSession,
             effectiveText,
