@@ -11,7 +11,6 @@ import {
   type GoalStopWhy,
   MAX_GOAL_HISTORY,
   type SessionGoal,
-  type SessionGoalFile,
   type StoredGoalPhase,
 } from './model';
 import { phaseOf } from './read';
@@ -294,6 +293,8 @@ export function advanceGoalQueue(
 function rebaseGoalAsActive(goal: SessionGoalState, priorEpoch: number | undefined): void {
   goal.status = 'active';
   goal.holdWhy = undefined; // D6 — no longer held
+  // S3 — it starts running again: a stop it carried (loaded, or set before it was held) is not its phase any more.
+  goal.phase = undefined;
   goal.continuationCount = 0;
   goal.epoch = Math.max(goal.epoch ?? 0, priorEpoch ?? 0) + 1;
   goal.updatedAt = Date.now();
@@ -692,15 +693,15 @@ const fingerprintOf = (goal: SessionGoal): GoalPhaseFingerprint => ({
 /** The phase as stored: what `phaseOf` reads, with the question named by kind (its fields stay where they are). */
 function storedPhaseOf(goal: SessionGoal): StoredGoalPhase | undefined {
   const phase = phaseOf(goal);
-  if (!phase) return undefined;
-  if (phase.kind === 'asking') return { kind: 'asking', ask: phase.ask.kind };
-  return phase;
+  return phase?.kind === 'asking' ? { kind: 'asking', ask: phase.ask.kind } : phase;
 }
 
 /**
  * .prd/39 D4 · D17 — the goal as stored. Without the judge's lease (`pendingEval`: a judge lives only in the process
  * that runs it, D4). With its phase and the fingerprint an older version would move (`phaseFp`), written beside the
- * legacy fields until PR10 drops them.
+ * legacy fields. The legacy fields stay on disk while a build that cannot read `phase` may still load the record: such
+ * a build that starts a goal's first turn clears only `openingPending`, and a phase-only record would keep `opening`
+ * — the loop would never drive that goal (.prd/goal-state/loop.md R2.1).
  */
 export function storedGoal<T extends SessionGoal | undefined>(goal: T): T {
   if (!goal) return goal;
@@ -741,12 +742,11 @@ export function settleLoadedPhase(goal: SessionGoal): SessionGoal {
 export function settleCompletedSlot(session: GoalQueueSession): void {
   const goal = session.goal;
   if (!goal || goal.status !== 'complete') return;
-  const history = session.goalHistory ?? [];
+  const history = (session.goalHistory ??= []);
   if (!history.some((g) => g.goalId === goal.goalId)) {
     history.push(goal);
     if (history.length > MAX_GOAL_HISTORY) history.splice(0, history.length - MAX_GOAL_HISTORY);
   }
-  session.goalHistory = history;
   session.goal = undefined;
 }
 

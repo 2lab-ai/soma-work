@@ -5193,6 +5193,7 @@ export class SlackHandler {
       return;
     }
     if (notice.type === 'run-settled') {
+      this.pushBoardForGoalRelease(notice.sessionKey);
       // Rows the run took over were settled with it: repaint what they now say.
       for (const itemId of notice.report.adoptedItemIds ?? [])
         void this.syncFollowupReactions(notice.sessionKey, itemId);
@@ -5214,6 +5215,17 @@ export class SlackHandler {
         reason: notice.stage === 'interrupt' ? 'interrupt_denied' : 'dispatch_denied',
       });
     }
+  }
+
+  /**
+   * .prd/39 S6 — a run let its slot go. The board places a goal's card by `driven`, and a card patch never moves a
+   * card between columns: a session whose goal the board places gets a full push now, read after the release, or a
+   * card the run held in RUNNING would stay there until some other push.
+   */
+  private pushBoardForGoalRelease(slotKey: string): void {
+    const canonicalKey = this.followupMigration?.bySlot.get(slotKey) ?? slotKey;
+    if (!phaseOf(this.claudeHandler.getSessionByKey(canonicalKey)?.goal)) return;
+    queueMicrotask(() => this.claudeHandler.broadcastSessionUpdate?.());
   }
 
   /** Depth/uncertain read from live memory, for events raised outside the save sink. */

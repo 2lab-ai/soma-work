@@ -14,7 +14,9 @@ import { describe, expect, it, vi } from 'vitest';
 import type { SyntheticMessageEvent } from '../../cron-scheduler';
 import { GOAL_NO_NEW_EVAL_MARK } from '../../prompt/session-goal-block';
 import type { ConversationSession, SessionGoal } from '../../types';
+import { commitGoalChange } from '../goal-commit';
 import type { GoalEvalVerdict } from '../goal-completion-evaluator';
+import { resetGoalContinuationOnUserMessage } from '../goal-continuation';
 import {
   extractEvalRetryDelayMs,
   GOAL_EVAL_DISPATCH_MAX_RETRIES,
@@ -1381,6 +1383,36 @@ describe('GoalLoopController — the board hears when the loop stops acting (.pr
     return { controller, seen };
   }
 
+  // Review #1502 — a run that injects nothing (here a judge failure that arms a retry) is cleared by the queue drain's
+  // push alone.
+  it('a run that injects nothing pushes once it drained: the last push sees the loop not acting', async () => {
+    const session = makeSession(makeGoal());
+    const seen: boolean[] = [];
+    const controller: GoalLoopController = new GoalLoopController({
+      registry: {
+        getSessionByKey: () => session,
+        saveSessions: () => {},
+        broadcastSessionUpdate: () => seen.push(controller.isActing(SESSION_KEY)),
+      },
+      requestCoordinator: { isRequestActive: () => false },
+      turnHeld: () => false,
+      dispatcher: async () => {
+        throw new Error(POOL_RATE_LIMIT_ERR);
+      },
+      injectContinuation: async () => undefined,
+      postNotice: async () => undefined,
+      scheduleEvalRetry: () => undefined,
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      fallbackModel: () => ({ model: 'claude-sonnet-4' }),
+    });
+    controller.onTurnSettled(SESSION_KEY);
+    await controller.settled(SESSION_KEY);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(session.goal?.evalBackoffUntil).toEqual(expect.any(Number));
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen[seen.length - 1]).toBe(false);
+  });
+
   it('the last push of a run that injected comes after the run drained and the injection settled', async () => {
     let release!: () => void;
     const started = new Promise<void>((resolve) => {
@@ -1408,7 +1440,7 @@ describe('GoalLoopController — the gate reads the goal phase (.prd/39 D2, A4)'
     const session = makeSession(goal);
     const dispatched: number[] = [];
     const notices: string[] = [];
-    const dms: Array<{ text: string; decisionId?: string }> = [];
+    const dms: string[] = [];
     const controller = new GoalLoopController({
       registry: { getSessionByKey: () => session, saveSessions: () => {} },
       requestCoordinator: { isRequestActive: () => false },
@@ -1422,9 +1454,8 @@ describe('GoalLoopController — the gate reads the goal phase (.prd/39 D2, A4)'
         notices.push(text);
         return undefined;
       },
-      postOwnerDm: async (_user, text, blocks) => {
-        const raw = JSON.stringify(blocks);
-        dms.push({ text, decisionId: /"decisionId":"([^"]+)"/.exec(raw.replace(/\\"/g, '"'))?.[1] });
+      postOwnerDm: async (_user, text) => {
+        dms.push(text);
         return { channel: 'D1', ts: '9.9' };
       },
       logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -1452,6 +1483,42 @@ describe('GoalLoopController — the gate reads the goal phase (.prd/39 D2, A4)'
     expect(r.dms).toHaveLength(1);
     expect(r.goal.capDecisionId).toBe('round-1');
     expect(r.goal.capDmRef).toEqual({ channel: 'D1', ts: '9.9' });
+  });
+
+  // Review #1493 (P2) — a legacy round gets its id before its DM goes out, and the id is saved first: a restart after
+  // Slack took the DM (or a DM that failed) must not hand the same question a different id than its buttons carry.
+  it('A4: a legacy round without an id is saved with its new id before the DM is attempted', async () => {
+    const goal = makeGoal({ continuationCount: 10, maxContinuations: 10, capDmPendingAt: 5 });
+    const session = makeSession(goal);
+    const savedIds: Array<string | undefined> = [];
+    const events: string[] = [];
+    const controller = new GoalLoopController({
+      registry: {
+        getSessionByKey: () => session,
+        saveSessions: () => {
+          savedIds.push(goal.capDecisionId);
+          events.push(`save:${goal.capDecisionId ?? '-'}`);
+        },
+      },
+      requestCoordinator: { isRequestActive: () => false },
+      turnHeld: () => false,
+      dispatcher: async () => JSON.stringify({ completed: false, reason: 'not yet', remaining: ['x'] }),
+      injectContinuation: async () => undefined,
+      postNotice: async () => undefined,
+      postOwnerDm: async () => {
+        events.push(`dm:${goal.capDecisionId ?? '-'}`);
+        throw new Error('slack down');
+      },
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      fallbackModel: () => ({ model: 'claude-sonnet-4' }),
+    });
+    controller.onTurnSettled(SESSION_KEY, { cause: 'kick' });
+    await controller.settled(SESSION_KEY);
+    expect(goal.capDecisionId).toEqual(expect.any(String));
+    expect(savedIds).toContain(goal.capDecisionId);
+    // Saved first (review #1503): the save carrying the new id comes before the DM attempt.
+    expect(events.indexOf(`save:${goal.capDecisionId}`)).toBeGreaterThanOrEqual(0);
+    expect(events.indexOf(`save:${goal.capDecisionId}`)).toBeLessThan(events.indexOf(`dm:${goal.capDecisionId}`));
   });
 
   it('a goal whose opening has not reached the model is not judged', async () => {
@@ -1494,10 +1561,17 @@ describe('GoalLoopController — a commit during a judge re-judges exactly once 
 
     controller.onTurnSettled(SESSION_KEY);
     await vi.waitFor(() => expect(dispatched).toBe(1));
-    // `goal max 20` commits: the epoch moves, one kick is enqueued.
+    // `goal max 20` commits through the one commit path (review #1495): the epoch moves, one kick is enqueued.
     goal.maxContinuations = 20;
-    goal.epoch = (goal.epoch ?? 0) + 1;
-    controller.onTurnSettled(SESSION_KEY, { cause: 'kick' });
+    commitGoalChange(
+      session,
+      SESSION_KEY,
+      { drive: 'kick' },
+      {
+        saveSessions: () => {},
+        kick: (key) => controller.onTurnSettled(key, { cause: 'kick' }),
+      },
+    );
     releases[0]();
     await vi.waitFor(() => expect(dispatched).toBe(2));
     releases[1]();
@@ -1532,6 +1606,28 @@ describe('GoalLoopController — stopped is recorded (.prd/39 D8, A6 · A7)', ()
     expect(dispatched).toBe(1);
   });
 
+  // Review #1499 — reopening an exhausted goal gives it a fresh retry budget: stopGoal ended the streak, so the next
+  // transient judge failure arms a retry instead of stopping the goal at once.
+  it('A7: an exhausted goal reopened by a person retries its next transient failure, it does not stop again', async () => {
+    const h = makeHarness({
+      dispatcher: async () => {
+        throw new Error(POOL_RATE_LIMIT_ERR);
+      },
+      goal: { evalDispatchRetryCount: GOAL_EVAL_DISPATCH_MAX_RETRIES },
+    });
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(h.goal.phase).toMatchObject({ kind: 'stopped', why: 'judge-failed' });
+
+    resetGoalContinuationOnUserMessage({ goal: h.goal });
+    expect(h.goal.phase).toBeUndefined();
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(h.goal.phase).toBeUndefined();
+    expect(h.goal.evalBackoffUntil).toEqual(expect.any(Number));
+    expect(h.goal.evalDispatchRetryCount).toBe(1);
+  });
+
   it('A7: the continuation could not start → stopped(start-failed)', async () => {
     const goal = makeGoal({ continuationCount: 1 });
     const session = makeSession(goal);
@@ -1550,6 +1646,62 @@ describe('GoalLoopController — stopped is recorded (.prd/39 D8, A6 · A7)', ()
     controller.onTurnSettled(SESSION_KEY);
     await controller.settled(SESSION_KEY);
     await vi.waitFor(() => expect(goal.phase).toMatchObject({ kind: 'stopped', why: 'start-failed' }));
+  });
+
+  // Review #1499 (P1) — a late failure belongs to the drive that launched it. A person's message (epoch +1) or a new
+  // goal in the slot while the old injection was pending: its rejection must not stop the newer run.
+  function lateFailureRig() {
+    const goal = makeGoal({ continuationCount: 1 });
+    const session = makeSession(goal);
+    let reject!: (err: Error) => void;
+    const notices: string[] = [];
+    const controller = new GoalLoopController({
+      registry: { getSessionByKey: () => session, saveSessions: () => {} },
+      requestCoordinator: { isRequestActive: () => false },
+      turnHeld: () => false,
+      dispatcher: async () => JSON.stringify({ completed: false, reason: 'not yet', remaining: ['x'] }),
+      injectContinuation: () =>
+        new Promise<void>((_resolve, rej) => {
+          reject = rej;
+        }),
+      postNotice: async (_channel, _thread, text) => {
+        notices.push(text);
+        return undefined;
+      },
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      fallbackModel: () => ({ model: 'claude-sonnet-4' }),
+    });
+    return { goal, session, controller, notices, reject: (e: Error) => reject(e) };
+  }
+
+  it('A7 fence: a person moved the goal (epoch +1) while the injection was pending — its late failure stops nothing', async () => {
+    const r = lateFailureRig();
+    r.controller.onTurnSettled(SESSION_KEY);
+    await r.controller.settled(SESSION_KEY);
+    await vi.waitFor(() => expect(r.controller.isActing(SESSION_KEY)).toBe(true));
+    r.goal.epoch = (r.goal.epoch ?? 0) + 1; // resetGoalContinuationOnUserMessage
+    r.notices.length = 0;
+    r.reject(new Error('dispatch refused'));
+    await vi.waitFor(() => expect(r.controller.isActing(SESSION_KEY)).toBe(false));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(r.goal.phase).toBeUndefined();
+    // Nor does the person hear that their newer run failed (review #1503).
+    expect(r.notices).toEqual([]);
+  });
+
+  it('A7 fence: another goal took the slot while the injection was pending — the late failure leaves it running', async () => {
+    const r = lateFailureRig();
+    r.controller.onTurnSettled(SESSION_KEY);
+    await r.controller.settled(SESSION_KEY);
+    await vi.waitFor(() => expect(r.controller.isActing(SESSION_KEY)).toBe(true));
+    const next = makeGoal({ goalId: 'g-next', epoch: r.goal.epoch });
+    r.session.goal = next;
+    r.notices.length = 0;
+    r.reject(new Error('dispatch refused'));
+    await vi.waitFor(() => expect(r.controller.isActing(SESSION_KEY)).toBe(false));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(next.phase).toBeUndefined();
+    expect(r.notices).toEqual([]);
   });
 
   it('A6: shutdown starts while the continuation notice posts → nothing injected, the continuation given back', async () => {

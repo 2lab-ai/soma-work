@@ -346,6 +346,40 @@ describe('SessionInitializer — bot-thread migration copies goal (#1082)', () =
     expect(botSession.goal.epoch).toBe(6);
   });
 
+  // Review #1497 — the question the old thread asked is retired where it was posted: the round with its DM ref goes
+  // to the host's retirer (production `retireGoalCapDecision`, which rewrites that DM without buttons).
+  it('hands the posted cap round, DM ref and all, to the retirer', async () => {
+    // The package's own module instance (its CJS `require`), the one the migration calls — not the test's ESM copy.
+    const { setGoalCapDecisionRetirer } =
+      require('@soma/slack/goal/machine') as typeof import('@soma/slack/goal/machine');
+    const retired: Array<{ id?: string; ref?: unknown }> = [];
+    setGoalCapDecisionRetirer((g) => {
+      retired.push({ id: g.capDecisionId, ref: g.capDmRef });
+      g.capDmPendingAt = undefined;
+      g.capDecisionId = undefined;
+      g.capDmRef = undefined;
+    });
+    try {
+      const original = makeOriginalSession({
+        goal: makeGoal({
+          capDmPendingAt: 7,
+          capDecisionId: 'round-old',
+          capDmRef: { channel: 'D-owner', ts: '9.9' },
+        } as Partial<SessionGoal>),
+      });
+      await migrate(original);
+      expect(retired).toEqual([{ id: 'round-old', ref: { channel: 'D-owner', ts: '9.9' } }]);
+      expect(botSession.goal.capDmRef).toBeUndefined();
+    } finally {
+      setGoalCapDecisionRetirer((g) => {
+        g.capDmPendingAt = undefined;
+        g.capDecisionId = undefined;
+        g.capDmRef = undefined;
+        g.stall = undefined;
+      });
+    }
+  });
+
   it('does NOT carry the runtime stash goalLastTurnText across migration', async () => {
     const original = makeOriginalSession({
       goal: makeGoal(),

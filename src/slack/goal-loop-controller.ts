@@ -456,7 +456,11 @@ export class GoalLoopController {
     const capAsk = capAskOf(goal);
     if (capAsk) {
       if (!capAsk.dmRef && !this.deps.turnHeld(sessionKey) && goal) {
-        openGoalCapDecision(goal, this.now()); // a legacy round without an id gets one for its buttons
+        // A legacy round without an id gets one for its buttons — saved before the DM goes out, so a restart after
+        // Slack took it (or a DM that failed) keeps the id its buttons carry.
+        const hadId = !!goal.capDecisionId;
+        openGoalCapDecision(goal, this.now());
+        if (!hadId && goal.capDecisionId) this.persist();
         const dm = await this.postCapDecisionDm(sessionKey, session, goal, goal.lastEvalReason ?? '');
         logger.info('Goal loop run — the cap question is open; its undelivered DM was sent again', { sessionKey, dm });
       } else {
@@ -1287,6 +1291,9 @@ export class GoalLoopController {
     // forward on 'continue'; if it throws the loop silently stalls, so
     // escalate to error + an actionable notice.
     this.injecting.add(sessionKey);
+    // A late failure belongs to this drive only: a person's message (epoch +1) or another goal in the slot meanwhile
+    // owns the session now, and its run must not be stopped by this one's rejection (review #1499).
+    const launchedEpoch = activeGoal.epoch ?? 0;
     void this.deps
       .injectContinuation(syntheticEvent, { sessionKey, session })
       // Settles once the continuation's turn holds the slot or ran (handleMessage), or failed to start.
@@ -1296,14 +1303,19 @@ export class GoalLoopController {
       })
       .catch(async (err: unknown) => {
         const injectErr = err instanceof Error ? err.message : String(err);
+        const live = this.deps.registry.getSessionByKey(sessionKey)?.goal;
+        const stillThisDrive = this.epochStillValid(live, { goalId: activeGoal.goalId, epoch: launchedEpoch });
+        if (!stillThisDrive || !live || live.status !== 'active') {
+          this.deps.logger.info('Goal continuation injection failed after the goal moved on — nothing to stop', {
+            sessionKey,
+            error: injectErr,
+          });
+          return;
+        }
         this.deps.logger.error('Goal continuation injection failed — loop stalled', { sessionKey, error: injectErr });
         // .prd/39 D8 (X7) — recorded, not only announced: stopped(start-failed) until a person opens it again.
-        const live = this.deps.registry.getSessionByKey(sessionKey)?.goal;
-        if (live && live.goalId === activeGoal.goalId && live.status === 'active') {
-          stopGoal(live, 'start-failed', this.now());
-          this.persist();
-          this.deps.registry.broadcastSessionUpdate?.();
-        }
+        stopGoal(live, 'start-failed', this.now());
+        this.persist();
         try {
           await this.postLooseNotice(
             session,

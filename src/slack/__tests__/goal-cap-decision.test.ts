@@ -178,6 +178,52 @@ describe('answerGoalCapDecision — one answer path for both surfaces', () => {
     expect(updates[0].text).toContain('중단');
   });
 
+  // Review #1498 · #1494 — the stop answer holds the goal in the slot with its why (D6); the answer moves the epoch
+  // through bumpEpoch, which ends a retry window; a save that fails puts every one of those back.
+  it('a Stop answer holds the goal in place (cap-stop), moves the epoch and ends the retry window', () => {
+    const g = pendingGoal({ epoch: 4, evalBackoffUntil: 9_999, evalRetryReason: 'pool busy' });
+    const result = answerGoalCapDecision({
+      session: session(g),
+      sessionKey: KEY,
+      goalId: 'goal-1',
+      decisionId: g.capDecisionId,
+      actor: 'U-owner',
+      decision: 'cancel',
+      surface: 'dashboard',
+      save: vi.fn(),
+    });
+    expect(result.ok).toBe(true);
+    expect(g.status).toBe('paused');
+    expect(g.holdWhy).toBe('cap-stop');
+    expect(g.epoch).toBe(5);
+    expect(g.evalBackoffUntil).toBeUndefined();
+    expect(g.evalRetryReason).toBeUndefined();
+  });
+
+  it('an answer whose save fails is undone whole: epoch, retry window, the open round, active with no hold', () => {
+    const g = pendingGoal({ epoch: 4, evalBackoffUntil: 9_999, evalRetryReason: 'pool busy' });
+    const round = { id: g.capDecisionId, at: g.capDmPendingAt, ref: g.capDmRef };
+    const result = answerGoalCapDecision({
+      session: session(g),
+      sessionKey: KEY,
+      goalId: 'goal-1',
+      decisionId: g.capDecisionId,
+      actor: 'U-owner',
+      decision: 'cancel',
+      surface: 'dashboard',
+      save: () => {
+        throw new Error('disk full');
+      },
+    });
+    expect(result).toEqual({ ok: false, reason: 'unavailable' });
+    expect(g.status).toBe('active');
+    expect(g.holdWhy).toBeUndefined();
+    expect(g.epoch).toBe(4);
+    expect(g.evalBackoffUntil).toBe(9_999);
+    expect(g.evalRetryReason).toBe('pool busy');
+    expect({ id: g.capDecisionId, at: g.capDmPendingAt, ref: g.capDmRef }).toEqual(round);
+  });
+
   it('a Slack answer also queues a durable DM rewrite (its respond() can fail) and pushes the board (T2)', async () => {
     const g = pendingGoal();
     const result = answerGoalCapDecision({
