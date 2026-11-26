@@ -983,7 +983,7 @@ describe('D12 — an open menu holds its surface still', () => {
 });
 
 // ── the page ──
-describe('the page loads the element; the inline menu is gone', () => {
+describe('the page loads the element', () => {
   it('model-picker.js is a module script next to the other elements, served from the installed library', () => {
     expect(HEAD).toContain(`<script type="module" src="/dashboard/ui/model-picker.js?v=\${UI_LIB_VERSION}"></script>`);
     const dir = uiLibDistDir();
@@ -1000,40 +1000,6 @@ describe('the page loads the element; the inline menu is gone', () => {
   it('the slot takes no box and hands the element the dashboard tokens', () => {
     expect(STYLE).toContain('.mp-slot { display: contents; }');
     expect(STYLE).toMatch(/\.ui-tok \{[^}]*--ui-ib-seg: var\(--ib-seg\)/);
-  });
-
-  it('no inline menu: its renderer, state, body host, styles and folds are gone', () => {
-    for (const gone of [
-      'mpOpen',
-      'mpClose',
-      'mpRepaint',
-      'mpPlace',
-      'mpHost',
-      'mpMenuKey',
-      'mpWatch',
-      'renderModelMenu',
-      'renderEffortControl',
-      '_mp',
-      'MP_EFFORT_SHORT',
-      'MP_ROLL_MS',
-      'MP_WATCH_MS',
-    ]) {
-      expect(declarationCount(gone), gone).toBe(0);
-    }
-    expect(TEMPLATE).not.toContain("'mp-menu'");
-    expect(STYLE).not.toContain('.mp-pop');
-    expect(STYLE).not.toContain('.mp-trigger');
-    expect(STYLE).not.toContain('--mp-well');
-    for (const gone of [
-      'cfb-model-toggle',
-      'pc-toggle',
-      'pc-pick',
-      'toggleCardModel',
-      '_cardModelOpen',
-      'cb-model-select',
-    ]) {
-      expect(TEMPLATE.includes(gone), gone).toBe(false);
-    }
   });
 
   // Moved to the library (@2lab.ai/ui src/components/model-picker/model-picker.test.ts), which owns them now:

@@ -93,8 +93,6 @@ describe('settings page shell', () => {
     // the kit sheet comes before the page sheet, the tokens after it
     expect(html.indexOf('<style id="ui-kit">')).toBeLessThan(html.indexOf('<style>'));
     expect(html.indexOf('<style>')).toBeLessThan(html.indexOf('<style id="ui-tokens">'));
-    // the old hand-made bar is gone
-    expect(html).not.toMatch(/class="(back|theme|who|tabs|brand-mark)"/);
   });
 
   it('the app bar gets brand, links (설정 current), account, theme + palette and the sound choice (the head script owns the theme)', () => {
@@ -199,11 +197,7 @@ describe('tone pass P9 — the settings page speaks the dashboard language', () 
     return at < 0 ? '' : css.slice(at + 1, css.indexOf('}', at) + 1);
   };
 
-  it('no emoji or hand-drawn glyph entities in the shell; the bar and its theme toggle are the element', () => {
-    expect(html).not.toContain('&#x26A1;');
-    expect(html).not.toMatch(/&larr;|&#x1F512;|&#x2715;/);
-    expect(SETTINGS_CLIENT_JS).not.toMatch(/&#x1F512;|&#x2715;/);
-    expect(css).not.toContain('.topbar h1');
+  it('the bar and the tabs are the elements: the bar holds its height until defined; the tab list keeps the page measure', () => {
     expect(css).toContain('ui-app-bar:not(:defined) { display: block; height: var(--topbar-h); }');
     expect(css).toContain(
       '.settings-tabs::part(list) { box-sizing: border-box; width: 100%; max-width: 1080px; margin: 0 auto; padding: 8px 20px 0; }',
@@ -228,11 +222,6 @@ describe('tone pass P9 — the settings page speaks the dashboard language', () 
     expect(outside).not.toMatch(/#[0-9a-f]{3,6}\b|rgba?\(/i);
     expect(css).toContain('dialog::backdrop { background: var(--scrim);');
     expect(css).toContain('@starting-style { dialog[open] { opacity: 0; transform: scale(0.97); } }');
-  });
-
-  it('기억 tab: no page-list, field or day-view styles of its own — <ui-knowledge-pages> and <ui-episode-log> draw them', () => {
-    for (const gone of ['.pages-list', '.pages-detail', '.ep-bar', '.ep-entry', '.ep-add'])
-      expect(css, gone).not.toContain(gone);
   });
 });
 
@@ -450,7 +439,6 @@ describe('side nav and filter — <ui-settings-nav> (M-03)', () => {
     expect(html).toContain('<div id="pref-body"><div class="ui-notice" role="status">불러오는 중…</div></div>');
     expect(html).toContain(`import { applySettingsFilter } from '/dashboard/ui/settings-nav.js?v=${UI_LIB_VERSION}';`);
     expect(html).toContain(`<script type="module" src="/dashboard/ui/setting-row.js?v=${UI_LIB_VERSION}"></script>`);
-    expect(html).not.toMatch(/id="pref-filter"|id="pref-modified"|class="row/);
   });
 });
 

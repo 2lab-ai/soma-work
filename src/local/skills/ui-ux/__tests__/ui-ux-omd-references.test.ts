@@ -58,8 +58,12 @@ describe('local:ui-ux — oh-my-design reference set (format design-md-v3)', () 
     expect(ix.upstream.repo).toBe('https://github.com/kwakseongjae/oh-my-design');
     expect(ix.upstream.commit).toMatch(/^[0-9a-f]{40}$/);
     expect(readFileSync(resolve(OMD, 'UPSTREAM'), 'utf8').trim()).toBe(ix.upstream.commit);
-    // Pinned upstream c71ca8d has exactly 521 design-md references; a re-sync must update this number.
-    if (ix.upstream.commit.startsWith('c71ca8d')) expect(ix.references.length).toBe(521);
+    // How many design-md references each pinned upstream commit has. A re-sync adds its commit and count here,
+    // so the pin cannot lapse silently.
+    const referencesAt: Record<string, number> = { c71ca8d: 521 };
+    const pinned = referencesAt[ix.upstream.commit.slice(0, 7)];
+    expect(pinned, `re-synced to ${ix.upstream.commit}: add its reference count to referencesAt`).toBeDefined();
+    expect(ix.references.length).toBe(pinned);
     expect(ix.references.length).toBeGreaterThanOrEqual(500);
     const names = ix.references.map((e) => e.name);
     expect(new Set(names).size).toBe(names.length);

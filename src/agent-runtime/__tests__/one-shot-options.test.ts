@@ -80,20 +80,6 @@ describe('buildOneShotOptions', () => {
     expect(logger.warn).toHaveBeenCalledWith('MyHelper stderr', { data: 'hello' });
   });
 
-  it('forwards the env reference (no clone) so caller-mutations still leak — same as inline code', () => {
-    // The pre-builder inline code passed `env` by reference. Preserving
-    // that exactly avoids any GC behaviour change in the SDK child-process
-    // env propagation path.
-    const env: Record<string, string | undefined> = { K: 'V' };
-    const opts = buildOneShotOptions({
-      model: 'm',
-      systemPrompt: 'sys',
-      env,
-      logger: { warn: vi.fn() },
-      stderrLabel: 'X',
-    });
-    expect(opts.extensions?.claudeCode?.env).toBe(env);
-  });
   it('forwards an effort only when one is given (aux tier: grok low / medium)', () => {
     const base = { model: 'm', systemPrompt: 'sys', env: {}, logger: { warn: vi.fn() }, stderrLabel: 'X' };
     expect(buildOneShotOptions({ ...base, effort: 'low' }).extensions?.claudeCode?.effort).toBe('low');

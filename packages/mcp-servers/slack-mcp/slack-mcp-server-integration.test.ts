@@ -2,18 +2,14 @@ import { describe, expect, it, vi } from 'vitest';
 import { fetchMessagesBefore, fetchThreadSlice, getTotalCount } from './helpers/thread-fetcher.js';
 
 /**
- * Integration tests for get_thread_messages with a mocked Slack API.
- *
- * getTotalCount, fetchThreadSlice and fetchMessagesBefore are the real exports of
- * helpers/thread-fetcher.ts. SlackMcpServer itself is not exported and starts on import, so
- * handleArrayMode below restates its offset/limit clamping and has_more arithmetic on top of the
- * real helpers.
- *
- * Covers:
- * - Array mode with mocked conversations.replies
- * - Legacy mode (fetchMessagesBefore)
- * - Offset/limit boundary semantics
+ * The thread-fetching helpers behind get_thread_messages (helpers/thread-fetcher.ts), run against a
+ * mocked conversations.replies:
  * - getTotalCount success/failure paths
+ * - fetchThreadSlice offset/limit slicing and paging
+ * - fetchMessagesBefore (legacy mode) with the root kept in front
+ *
+ * The tool's own clamping, has_more and mode choice are driven through the server's MCP handlers in
+ * slack-mcp-contract.test.ts.
  */
 
 type SlackClient = Parameters<typeof getTotalCount>[0];
@@ -27,31 +23,6 @@ interface MockSlackClient {
 const asSlack = (mock: MockSlackClient): SlackClient => mock as unknown as SlackClient;
 
 const silentLogger = { warn: vi.fn() };
-
-// Restates SlackMcpServer.handleArrayMode (private) over the real helpers.
-async function handleArrayMode(
-  slack: MockSlackClient,
-  channel: string,
-  threadTs: string,
-  args: { offset?: number; limit?: number },
-) {
-  const offset = Math.max(args.offset ?? 0, 0);
-  const limit = Math.min(Math.max(args.limit ?? 10, 1), 50);
-  const totalCount = await getTotalCount(asSlack(slack), channel, threadTs, silentLogger);
-  const clampedOffset = Math.min(offset, Math.max(totalCount - 1, 0));
-  const messages = await fetchThreadSlice(asSlack(slack), channel, threadTs, clampedOffset, limit, totalCount);
-  const hasMore = clampedOffset + messages.length < totalCount;
-
-  return {
-    thread_ts: threadTs,
-    channel,
-    total_count: totalCount,
-    offset: clampedOffset,
-    returned: messages.length,
-    messages,
-    has_more: hasMore,
-  };
-}
 
 // ── Test fixtures ────────────────────────────────────────────────
 
@@ -191,103 +162,6 @@ describe('fetchThreadSlice — array mode core', () => {
   });
 });
 
-// ── handleArrayMode integration tests ────────────────────────────
-
-describe('handleArrayMode — full integration', () => {
-  it('default args (no offset/limit) returns first 10 messages', async () => {
-    const thread = makeThread(20);
-    const slack = createMockSlack(thread);
-    const result = await handleArrayMode(slack, 'C123', '1700000000.000000', {});
-    expect(result.total_count).toBe(21);
-    expect(result.offset).toBe(0);
-    expect(result.returned).toBe(10);
-    expect(result.has_more).toBe(true);
-    expect(result.messages[0].ts).toBe('1700000000.000000'); // root
-  });
-
-  it('offset=0, limit=1 returns root only with has_more=true', async () => {
-    const thread = makeThread(5);
-    const slack = createMockSlack(thread);
-    const result = await handleArrayMode(slack, 'C123', '1700000000.000000', { offset: 0, limit: 1 });
-    expect(result.returned).toBe(1);
-    expect(result.messages[0].ts).toBe('1700000000.000000');
-    expect(result.has_more).toBe(true);
-    expect(result.total_count).toBe(6);
-  });
-
-  it('offset=1, limit=5 skips root', async () => {
-    const thread = makeThread(5);
-    const slack = createMockSlack(thread);
-    const result = await handleArrayMode(slack, 'C123', '1700000000.000000', { offset: 1, limit: 5 });
-    expect(result.returned).toBe(5);
-    expect(result.messages[0].ts).toBe('1700000001.000000'); // first reply
-    expect(result.has_more).toBe(false); // 1 + 5 = 6 = total
-  });
-
-  it('last page has has_more=false', async () => {
-    const thread = makeThread(3);
-    const slack = createMockSlack(thread);
-    const result = await handleArrayMode(slack, 'C123', '1700000000.000000', { offset: 2, limit: 10 });
-    expect(result.returned).toBe(2); // messages at index 2 and 3
-    expect(result.has_more).toBe(false);
-  });
-
-  it('offset beyond total_count is clamped', async () => {
-    const thread = makeThread(3);
-    const slack = createMockSlack(thread);
-    const result = await handleArrayMode(slack, 'C123', '1700000000.000000', { offset: 100, limit: 5 });
-    // total=4, offset clamped to 3 (last valid index)
-    expect(result.offset).toBe(3);
-    expect(result.returned).toBe(1); // only the last message
-  });
-
-  it('negative offset is clamped to 0', async () => {
-    const thread = makeThread(3);
-    const slack = createMockSlack(thread);
-    const result = await handleArrayMode(slack, 'C123', '1700000000.000000', { offset: -5, limit: 2 });
-    expect(result.offset).toBe(0);
-    expect(result.returned).toBe(2);
-  });
-
-  it('limit=0 is clamped to 1', async () => {
-    const thread = makeThread(3);
-    const slack = createMockSlack(thread);
-    const result = await handleArrayMode(slack, 'C123', '1700000000.000000', { offset: 0, limit: 0 });
-    expect(result.returned).toBe(1); // limit clamped to 1
-  });
-
-  it('limit>50 is clamped to 50', async () => {
-    const thread = makeThread(100);
-    const slack = createMockSlack(thread);
-    const result = await handleArrayMode(slack, 'C123', '1700000000.000000', { offset: 0, limit: 999 });
-    expect(result.returned).toBe(50); // clamped
-  });
-
-  it('root-only thread (no replies)', async () => {
-    const thread = makeThread(0);
-    const slack = createMockSlack(thread);
-    const result = await handleArrayMode(slack, 'C123', '1700000000.000000', { offset: 0, limit: 10 });
-    expect(result.total_count).toBe(1);
-    expect(result.returned).toBe(1);
-    expect(result.has_more).toBe(false);
-    expect(result.messages[0].text).toBe('Root');
-  });
-
-  it('getTotalCount failure returns empty result gracefully', async () => {
-    const slack: MockSlackClient = {
-      conversations: {
-        replies: vi.fn(async () => {
-          throw new Error('Slack down');
-        }),
-      },
-    };
-    const result = await handleArrayMode(slack, 'C123', '1700000000.000000', { offset: 0, limit: 10 });
-    expect(result.total_count).toBe(0);
-    expect(result.returned).toBe(0);
-    expect(result.has_more).toBe(false);
-  });
-});
-
 // ── fetchMessagesBefore (legacy mode) tests ──────────────────────
 
 describe('fetchMessagesBefore — legacy mode', () => {
@@ -380,63 +254,5 @@ describe('fetchMessagesBefore — legacy mode', () => {
     // root + 3 replies = 4 total, all fit in count=50
     expect(messages).toHaveLength(4);
     expect(rootWasInjected).toBe(false);
-  });
-
-  it('has_more boundary: no false positive when root injected fills exact count', async () => {
-    // Thread: root + 2 replies. before=2. sliced = [r1, r2], root injected → length 3.
-    // But effective length (3-1=2) === before(2), so hasMore should correctly detect boundary.
-    const thread = makeThread(2);
-    const slack = createMockSlack(thread);
-    const { messages, rootWasInjected } = await fetchMessagesBefore(
-      asSlack(slack),
-      'C123',
-      '1700000000.000000',
-      '1700000002.000000',
-      2,
-    );
-    const effectiveLen = rootWasInjected ? messages.length - 1 : messages.length;
-    // effectiveLen === before → hasMore should be true (could be more before)
-    // In this case there genuinely aren't more, but the heuristic conservatively says true at boundary.
-    // The key fix: it does NOT say hasMore just because root was injected.
-    expect(effectiveLen).toBe(2);
-  });
-});
-
-// ── Mode detection tests ─────────────────────────────────────────
-
-describe('Mode detection logic', () => {
-  function detectMode(args: {
-    offset?: number;
-    limit?: number;
-    anchor_ts?: string;
-    before?: number;
-    after?: number;
-  }): 'array' | 'legacy' {
-    const isLegacy = args.anchor_ts !== undefined || args.before !== undefined || args.after !== undefined;
-    return isLegacy ? 'legacy' : 'array';
-  }
-
-  it('empty args → array mode', () => {
-    expect(detectMode({})).toBe('array');
-  });
-
-  it('offset/limit only → array mode', () => {
-    expect(detectMode({ offset: 5, limit: 10 })).toBe('array');
-  });
-
-  it('anchor_ts → legacy mode', () => {
-    expect(detectMode({ anchor_ts: '123' })).toBe('legacy');
-  });
-
-  it('before only → legacy mode', () => {
-    expect(detectMode({ before: 10 })).toBe('legacy');
-  });
-
-  it('after only → legacy mode', () => {
-    expect(detectMode({ after: 5 })).toBe('legacy');
-  });
-
-  it('mixed offset + before → legacy mode (legacy takes precedence)', () => {
-    expect(detectMode({ offset: 0, before: 10 })).toBe('legacy');
   });
 });

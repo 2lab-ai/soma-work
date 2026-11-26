@@ -57,7 +57,8 @@ describe('llmuxAccountsToUsage', () => {
 
   it('a window without data stays unmeasured', () => {
     const [view] = llmuxAccountsToUsage([account({ seven_day: null, scoped_limits: [] })], NOW_MS);
-    expect(view.windows.every((x) => x.remaining === undefined)).toBe(true);
+    // The window stays on the list, without a reading (not dropped, not measured).
+    expect(view.windows).toEqual([{ label: '7d' }]);
   });
 });
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyUsage, createUsageTopicBinding, renderUsageCard } from '../usage-topic';
+import { applyUsage, renderUsageCard } from '../usage-topic';
 
 describe('usage-topic.renderUsageCard', () => {
   it('renders a header + context describing every usage subcommand', async () => {
@@ -41,14 +41,5 @@ describe('usage-topic.applyUsage', () => {
     const r = await applyUsage({ userId: 'U1', value: 'anything' });
     expect(r.ok).toBe(false);
     expect(r.summary).toMatch(/설정 항목이 없|변경/);
-  });
-});
-
-describe('createUsageTopicBinding', () => {
-  it('exposes topic id + apply + renderCard', () => {
-    const b = createUsageTopicBinding();
-    expect(b.topic).toBe('usage');
-    expect(typeof b.apply).toBe('function');
-    expect(typeof b.renderCard).toBe('function');
   });
 });

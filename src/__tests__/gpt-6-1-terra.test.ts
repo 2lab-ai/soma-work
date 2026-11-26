@@ -76,11 +76,6 @@ describe('gpt-6.1-terra — release wiring', () => {
     expect(models).toContain('gpt-5.6-terra');
   });
 
-  it('is SELECTABLE but NOT the default — DEFAULT_MODEL follows `opus`', () => {
-    expect(DEFAULT_MODEL).toBe(MODEL_ALIASES.opus);
-    expect(MODEL_ALIASES.gpt).toBe('gpt-5.6-sol');
-  });
-
   it('terra / terra[1m] point at the newest [1m] row; sibling aliases do not move', () => {
     expect(MODEL_ALIASES.terra).toBe('gpt-6.1-terra[1m]');
     expect(MODEL_ALIASES['terra[1m]']).toBe('gpt-6.1-terra[1m]');

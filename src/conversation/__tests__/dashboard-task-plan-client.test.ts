@@ -93,13 +93,7 @@ describe('U1 — the composer’s 작업 계획 switch (T1)', () => {
       plan: false,
     });
   });
-  it('is the composer’s own day / night switch beside 작업 시작 (ui 0.26.0 data.mode), not a row above it', () => {
-    // The destination row no longer holds it; nothing else draws a second 작업 계획 switch.
-    const row = PAGE.slice(PAGE.indexOf('id="nt-dest"'), PAGE.indexOf('</div>', PAGE.indexOf('id="nt-dest"')));
-    expect(row).not.toContain('nt-plan');
-    expect(PAGE).not.toContain('id="nt-plan-wrap"');
-    expect(PAGE).not.toContain('id="nt-plan"');
-    expect(clientFn('ntRender')).not.toContain('planWrap');
+  it('is the composer’s own day / night switch beside 작업 시작 (ui 0.26.0 data.mode)', () => {
     // On: the send button reads 계획 시작 (night); off: 작업 시작 (day).
     const data = (state: unknown) =>
       load<{ ntComposerData(): any }>(['ntComposerData', 'cmTriggersFor'], {

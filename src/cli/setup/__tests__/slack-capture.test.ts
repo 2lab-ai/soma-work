@@ -368,6 +368,7 @@ describe('parseCaptureHelperArgv', () => {
       parseCaptureHelperArgv(['--socket', SOCKET_PATH, '--nonce', 'f'.repeat(10)]);
       expect.unreachable('a malformed challenge must be refused');
     } catch (err) {
+      expect(err).toBeInstanceOf(SlackCaptureOptionsError);
       expect((err as Error).message).not.toContain('f'.repeat(10));
     }
   });
@@ -395,6 +396,7 @@ describe('parseCaptureHelperArgv', () => {
       parseCaptureHelperArgv(['xoxb-SENTINELARGVLEAK0002']);
       expect.unreachable('a positional argument must be refused');
     } catch (err) {
+      expect(err).toBeInstanceOf(SlackCaptureOptionsError);
       expect((err as Error).message).not.toContain('SENTINELARGVLEAK0002');
     }
   });
@@ -1028,21 +1030,25 @@ describe('error safety against a hostile peer', () => {
   });
 
   it('keeps every error toJSON a value-free projection', async () => {
+    // Built with frame() so each frame carries the nonce and reaches its own validation path
+    // (a frame without the nonce is dropped as an unknown sender before any check runs).
     const cases: Array<readonly unknown[]> = [
       [],
-      [{ version: 2, botToken: BOT_TOKEN, appToken: APP_TOKEN }],
-      [{ version: 1, botToken: BOT_TOKEN, appToken: 'xoxp-not-an-app-token-000000' }],
+      [frame({ version: 2 })],
+      [frame({ appToken: 'xoxp-not-an-app-token-000000' })],
     ];
     for (const frames of cases) {
       const host = primedHost(frames);
-      try {
-        await captureSlackRuntimeTokens(host, SOCKET_PATH, baseOptions(recorder()));
-      } catch (err) {
-        const json = (err as { toJSON: () => { name: string; summary: string } }).toJSON();
-        expect(typeof json.name).toBe('string');
-        expect(typeof json.summary).toBe('string');
-        expect(() => assertSecretFree(json)).not.toThrow();
-      }
+      // Every case must fail: a capture that resolved would skip the checks below.
+      const err = await captureSlackRuntimeTokens(host, SOCKET_PATH, baseOptions(recorder())).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(SlackCaptureError);
+      const json = (err as { toJSON: () => { name: string; summary: string } }).toJSON();
+      expect(typeof json.name).toBe('string');
+      expect(typeof json.summary).toBe('string');
+      expect(() => assertSecretFree(json)).not.toThrow();
     }
   });
 });
@@ -1362,20 +1368,23 @@ describe('token carriers', () => {
   });
 
   it('keeps tokens out of errors and call records on every failure path', async () => {
+    // frame() carries the nonce, so the wrong-prefix and wrong-version paths really run.
     const cases: Array<readonly unknown[]> = [
       [],
-      [{ version: 1, botToken: BOT_TOKEN, appToken: 'xoxb-wrong-kind-of-token-000000' }],
-      [{ version: 9, botToken: BOT_TOKEN, appToken: APP_TOKEN }],
+      [frame({ appToken: 'xoxb-wrong-kind-of-token-000000' })],
+      [frame({ version: 9 })],
     ];
 
     for (const frames of cases) {
       const host = primedHost(frames);
-      try {
-        await captureSlackRuntimeTokens(host, SOCKET_PATH, baseOptions(recorder()));
-      } catch (err) {
-        expectClean('error message', (err as Error).message);
-        expectClean('error json', (err as { toJSON?: () => unknown }).toJSON?.() ?? {});
-      }
+      // Every case must fail: a capture that resolved would skip the error checks.
+      const err = await captureSlackRuntimeTokens(host, SOCKET_PATH, baseOptions(recorder())).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(SlackCaptureError);
+      expectClean('error message', (err as Error).message);
+      expectClean('error json', (err as SlackCaptureError).toJSON());
       expectClean('calls', host.calls);
       expectClean('raw calls', host.unsafeRawCalls());
     }

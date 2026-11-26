@@ -153,42 +153,6 @@ describeWithCredentials('ClaudeHandler Integration (real SDK)', () => {
     expect(result.text.toLowerCase()).toContain('effort-low-ok');
   }, 60_000);
 
-  // effort=max requires API key, not available for Claude.ai subscribers
-  // This test documents the behavior and verifies our stderr capture works
-  it('should capture stderr when effort=max fails on Claude.ai subscription', async () => {
-    const session = createMockSession({
-      model: 'claude-opus-4-20250514',
-      effort: 'max',
-    });
-    const abortController = new AbortController();
-
-    let crashed = false;
-    try {
-      const stream = handler.streamQuery(
-        'Say "max-test" and nothing else.',
-        session,
-        abortController,
-        '/tmp',
-        INTEGRATION_SLACK,
-        INTEGRATION_KEY,
-      );
-      await collectStream(stream);
-    } catch (error: any) {
-      if (error.message?.includes('exited with code')) {
-        crashed = true;
-      } else {
-        throw error;
-      }
-    }
-
-    // On Claude.ai subscription: max is not available → expect crash
-    // On API key: max works → expect success
-    // Either way the test passes (documenting the behavior)
-    if (crashed) {
-      console.warn('⚠️  effort=max not available (Claude.ai subscription) — stderr captured correctly');
-    }
-  }, 60_000);
-
   it('should work with effort=high on Opus', async () => {
     const session = createMockSession({
       model: 'claude-opus-4-20250514',

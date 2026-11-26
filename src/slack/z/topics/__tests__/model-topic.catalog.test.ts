@@ -12,7 +12,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { modelCatalog } from '../../../../model-catalog';
 import { AVAILABLE_MODELS } from '../../../../user-settings-store';
-import { FEATURED_ALIASES, renderModelCard } from '../model-topic';
+import { renderModelCard } from '../model-topic';
 
 const GROK = {
   id: 'grok-4.5',
@@ -131,11 +131,5 @@ describe('renderModelCard — catalog models', () => {
     for (const id of AVAILABLE_MODELS) {
       expect(ids).toContain(`z_setting_model_set_${id}`);
     }
-  });
-});
-
-describe('FEATURED_ALIASES — grok', () => {
-  it("includes 'grok-4.7' (the llmux grok pin) as the featured grok model", () => {
-    expect([...FEATURED_ALIASES]).toContain('grok-4.7');
   });
 });

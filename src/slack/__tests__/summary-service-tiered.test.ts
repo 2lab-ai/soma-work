@@ -18,7 +18,6 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   type ExecutiveSummaryMode,
   type ForkExecutor,
-  SUMMARY_PROMPT,
   SummaryService,
   type SummarySessionInfo,
   selectExecutiveSummaryMode,
@@ -208,12 +207,6 @@ describe('Executive Summary — tiered (HA)', () => {
       const prompt = service.buildPrompt(makeSession());
       expect(prompt).toMatch(/do not reclassify|host[- ]selected/i);
     });
-
-    it('always preserves the global SUMMARY_PROMPT rules (backward compat)', () => {
-      const service = new SummaryService();
-      const prompt = service.buildPrompt(makeSession());
-      expect(prompt).toContain(SUMMARY_PROMPT);
-    });
   });
 
   describe('Per-mode template content', () => {
@@ -253,13 +246,9 @@ describe('Executive Summary — tiered (HA)', () => {
         makeSession({
           links: { pr: prLink(7) },
           linkHistory: { issues: [], prs: [prLink(7)], docs: [] },
-        }).toString === undefined
-          ? makeSession({
-              links: { pr: prLink(7) },
-              linkHistory: { issues: [], prs: [prLink(7)], docs: [] },
-            })
-          : makeSession(),
+        }),
       );
+      expect(p).toMatch(/Active ES mode:\s*issue/i);
       const lower = p.toLowerCase();
       expect(lower).toMatch(/file path|file:|files? (edited|changed|touched)/);
       expect(lower).toMatch(/command|commit/);

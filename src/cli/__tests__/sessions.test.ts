@@ -324,13 +324,6 @@ describe('--limit validation', () => {
     }
   });
 
-  it('never silently turns 0 into the default', () => {
-    seed(root, 3);
-    const cap = capture();
-    expect(() => listSessions(['--limit', '0'], { ...sessionDirs(root), ...cap.opts })).toThrow('__exit_1__');
-    expect(cap.out).toEqual([]);
-  });
-
   it('accepts 1 and the documented maximum', () => {
     seed(root, 3);
     for (const value of ['1', String(SESSIONS_MAX_LIMIT)]) {

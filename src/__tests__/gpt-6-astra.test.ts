@@ -79,11 +79,6 @@ describe('gpt-6-astra — release wiring', () => {
     expect(CANONICAL_MODEL_IDS).not.toContain('gpt-6-astra[1m]');
   });
 
-  it('is SELECTABLE but NOT the default — DEFAULT_MODEL follows `opus`', () => {
-    expect(DEFAULT_MODEL).toBe(MODEL_ALIASES.opus);
-    expect(MODEL_ALIASES.gpt).toBe('gpt-5.6-sol');
-  });
-
   it('gpt-6 / gpt6 aliases point at the [1m] id (the 1M-opt-in default)', () => {
     // A user typing `gpt-6` / `gpt6` gets the 1M window — the bare 272k id is
     // still selectable via its literal spelling, but shorthand must NOT

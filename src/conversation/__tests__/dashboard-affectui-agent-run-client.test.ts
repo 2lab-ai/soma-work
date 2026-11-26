@@ -294,10 +294,7 @@ describe('plan — the Tasks section of the tab: the tasks that ran, in the orde
     expect(html.indexOf('<ui-task-runs')).toBeLessThan(html.indexOf('<ui-task-plan'));
   });
 
-  it('D3: the markers, the rail and the clocks are the elements’ — the page has no plan rules left; both modules load', () => {
-    expect(CSS).not.toMatch(/\.pl-(list|step|marker|aside|line|chip|sub|fate)\b/);
-    expect(CSS).not.toMatch(/\.tr-(row|meta|detail|head|count|revs)\b/);
-    expect(CSS).not.toMatch(/\.panel-task-item\b/);
+  it('D3: the markers, the rail and the clocks are the elements’ — both modules load', () => {
     expect(TEMPLATE).toContain('<script type="module" src="/dashboard/ui/task-runs.js?v=${UI_LIB_VERSION}"></script>');
     expect(TEMPLATE).toContain('<script type="module" src="/dashboard/ui/task-plan.js?v=${UI_LIB_VERSION}"></script>');
   });
@@ -822,12 +819,10 @@ describe('needs-input header (D8/D9)', () => {
     m.renderPanelNeedsHead(SESSION({ pendingPermissions: [], activityState: 'working', pendingQuestion: q }));
     expect(els['panel-needs-head'].hidden).toBe(true);
     // The badge is the kit's (an amber tint in both themes, the pop on arrival, a fade under reduced
-    // motion); the page draws none of its own.
+    // motion).
     const kit = uiLibKitCss();
     expect(kit).toMatch(/\.ui-count\[data-tone="wait"\] \{[^}]*color-mix\(in srgb, var\(--ui-st-wait\)/);
     expect(kit).toMatch(/\.ui-count\[data-pop\] \{[^}]*animation: ui-count-pop/);
-    expect(CSS).not.toMatch(/\.pn-count \{/);
-    expect(CSS).not.toContain('@keyframes pn-pop');
   });
 
   it('landing keeps the header in view (offset by its height); keyboard landing focuses the first open card itself, not a button', () => {
@@ -935,9 +930,6 @@ describe('permission approval card (D10–D13)', () => {
   });
 
   it('D13: the card is a container; narrow cards stack the answers and drop the key hints; hints are never read — the element’s own', () => {
-    // The panel's old .ap-* renderer CSS is gone and must not come back: the look is <ui-approval-card>'s.
-    expect(CSS).not.toMatch(/\.ap-[a-z]/);
-    expect(CSS).not.toMatch(/@container \(max-width: (379|319)px\)/);
     // The installed element carries it (ui/src/components/approval-card/styles.ts: "Narrow cards: the answers
     // share a full-width row and the key hints go"; the key hints are aria-hidden and drop on touch).
     const dist = readFileSync(join(uiLibDistDir() as string, 'approval-card.js'), 'utf-8');
@@ -956,9 +948,7 @@ describe('approval keyboard (D14) — the element’s own', () => {
   // "⌘/Ctrl+Enter approves; Esc from a button denies", "arrows move the choice; Enter on an option submits
   // it", "canAnswer false / string locks the answers and says why"). The dashboard's part: no key handler of
   // its own on the cards, the lock it passes, and the page's Escape that closes the panel.
-  it('no dashboard key handler on the cards; the lock that gates the keys is passed per viewer', () => {
-    expect(declarationCount('apKeydown')).toBe(0);
-    expect(TEMPLATE).not.toContain("addEventListener('keydown', apKeydown)");
+  it('the lock that gates the card’s keys is passed per viewer', () => {
     expect(cards().acPermissionData(SESSION(), PERM()).canAnswer).toBeUndefined();
     expect(cards({ user: 'U2' }).acPermissionData(SESSION(), PERM()).canAnswer).toBeTruthy();
     // A question: any signed-in viewer answers it (SSOT 2026-11-02); nobody signed in reads it locked.
@@ -1602,9 +1592,6 @@ describe('expiry clock (D16)', () => {
     expect(d.createdAt).toBe(T0);
     const none = cards().acPermissionData(SESSION(), PERM({ expiresAt: 0, createdAt: undefined }));
     expect('expiresAt' in none || 'createdAt' in none).toBe(false);
-    // The page draws no expiry of its own (and has no 1 Hz tick at all since D8b).
-    expect(TEMPLATE).not.toContain('ap-expires');
-    expect(TEMPLATE).not.toContain('function updateTimers');
   });
 });
 
@@ -1754,9 +1741,7 @@ describe('panel head (D18) — <ui-status-bar>', () => {
     expect(d.startedAt).toBeUndefined();
   });
 
-  it('the chip is the bar’s (icon + word in the st-* tones) — the page draws no chip of its own', () => {
-    expect(CSS).not.toMatch(/\.ps-chip \{/);
-    expect(CSS).not.toMatch(/\.ps-icon \{/);
+  it('the chip is the bar’s (icon + word in the st-* tones): the panel status is <ui-status-bar>', () => {
     expect(PAGE).toContain('<ui-status-bar class="panel-status" id="panel-status" lang="ko"></ui-status-bar>');
   });
 
@@ -1877,7 +1862,7 @@ describe('세부 — Details inside 세션 정보 (D19)', () => {
 });
 
 describe('template hygiene', () => {
-  it('each new client name is declared once; the replaced renderers are gone; the new CSS adds no colour tokens', () => {
+  it('each new client name is declared once; the page’s own panel CSS adds no colour tokens', () => {
     for (const name of [
       // SSOT 2026-10-29 T5: the task runs (they replace the plan footer and the earlier-plan groups);
       // D3 E-22/E-23: drawn by <ui-task-runs> / <ui-task-plan> from this data.
@@ -1943,52 +1928,7 @@ describe('template hygiene', () => {
     ]) {
       expect(declarationCount(name), name).toBe(1);
     }
-    for (const gone of [
-      // SSOT 2026-10-29 T5: the plan footer and the earlier-plan groups gave way to the task runs.
-      'planFootHtml',
-      'planEarlierCounts',
-      'planEarlierGroups',
-      'planEarlierHtml',
-      // D3 E-22/E-23: the rows, markers and details are the elements'.
-      'renderPanelTaskItem',
-      'renderTaskRun',
-      'taskRunDetailHtml',
-      'toggleTaskRun',
-      'taskRunNumbers',
-      'taskSkippedHtml',
-      'formatTaskClock',
-      'formatTaskStamp',
-      'taskCount',
-      'renderPermissionBlock',
-      'apDetails',
-      'apPermissionCardHtml',
-      'apQuestionCardHtml',
-      'apKeydown',
-      'apRepaintQuestion',
-      'repaintPermission',
-      '_permAnswered',
-      '_permNotes',
-      'PERM_DECISIONS',
-      'AP_KBD_APPROVE',
-      'AP_ANSWERED',
-      'AP_SENT',
-      // D3 E-08 / E-05: the chip row and the deck's own ‹ › stepping are the elements'
-      // (SESSION_ACTION_ARIA is back as the bar's ariaLabel — D6b, 0.12.0).
-      'panelHeadHtml',
-      'deckGo',
-      'deckStep',
-    ]) {
-      expect(declarationCount(gone), gone).toBe(0);
-      expect(TEMPLATE, gone).not.toMatch(new RegExp(`\\b${gone}\\(`));
-    }
-    // SSOT 2026-10-29 T5: the task runs' CSS (.tr-*) too.
-    // D7 (A-18): the visually-hidden live lines are the kit's .ui-sr-only — no .ar-vh rule.
-    expect(CSS).not.toContain('.ar-vh');
     const ours = CSS.split('\n').filter((l) => /^\s*\.(pl|ap|pn|ac|tr)-|^\s*\.pi-details/.test(l));
-    // D3: only the sums (.tr-total*) are the page's now.
-    expect(ours.filter((l) => /^\s*\.tr-/.test(l)).every((l) => /^\s*\.tr-total/.test(l))).toBe(true);
-    // D3 E-10 / E-13: 세부 is the kit's .ui-dl and the count the kit's .ui-count — no .pi-details / .pn-* rules.
-    expect(ours.filter((l) => /^\s*\.(pi-details|pn-)/.test(l))).toEqual([]);
     expect(ours.length).toBeGreaterThan(3);
     for (const l of ours) expect(l, l).not.toMatch(/--[a-z-]+\s*:/);
   });

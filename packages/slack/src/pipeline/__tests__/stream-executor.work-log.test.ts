@@ -956,18 +956,6 @@ describe('recordConversationWorkLog — dropped-entry warnings are throttled pro
     ]);
   });
 
-  it('the reset seam cancels a pending summary', () => {
-    recordConversationWorkLog('conv-a', { kind: 'notice', text: 'x' });
-    recordConversationWorkLog('conv-b', { kind: 'tool', text: 'y' });
-    expect(vi.getTimerCount()).toBe(1);
-
-    resetWorkLogDropWarningsForTests();
-
-    expect(vi.getTimerCount()).toBe(0);
-    vi.advanceTimersByTime(10 * INTERVAL);
-    expect(drops()).toHaveLength(1);
-  });
-
   it('the summary timer is unref-ed (hasRef() === false): reporting never keeps the process alive', () => {
     // A real Node timer, so `hasRef()` is the runtime's own answer.
     vi.useRealTimers();

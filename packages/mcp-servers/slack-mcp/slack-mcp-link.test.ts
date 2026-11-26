@@ -1,11 +1,9 @@
 /**
  * send_link — post a URL the session served or published into the thread, so the daemon records it as a
- * session artifact (SSOT 2026-11-09 T3). The helpers are pure; the tool's wiring is checked on the source,
- * like the other slack-mcp contract tests.
+ * session artifact (SSOT 2026-11-09 T3). The helpers are pure; the tool itself (and send_file's url) is
+ * driven through the server's MCP handlers in slack-mcp-contract.test.ts.
  */
 
-import * as fs from 'node:fs/promises';
-import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { formatLinkMessage, type LinkClient, postLink, validateLinkUrl } from './helpers/link.js';
 
@@ -55,15 +53,6 @@ describe('review gate — comment and served pages', () => {
     expect(
       formatLinkMessage({ url: 'https://a.example/', title: 't', comment: 'see <https://evil.example|here> & more' }),
     ).toBe('see &lt;https://evil.example|here&gt; &amp; more\n🔗 <https://a.example/|t>');
-  });
-
-  it('send_file takes the URL the session serves the file at, checks it and echoes it', async () => {
-    const s = await fs.readFile(path.resolve(__dirname, 'slack-mcp-server.ts'), 'utf-8');
-    const sendFile = s.slice(s.indexOf("name: 'send_file'"), s.indexOf("name: 'send_media'"));
-    expect(sendFile).toMatch(/url: \{\s*type: 'string'/);
-    expect(s).toMatch(/handleSendFile[\s\S]*?validateLinkUrl\(args\.url\)[\s\S]*?uploaded: true/);
-    const desc = s.slice(s.indexOf("name: 'send_link'"), s.indexOf('inputSchema', s.indexOf("name: 'send_link'")));
-    expect(desc).toContain('send_file with url');
   });
 });
 
@@ -126,26 +115,5 @@ describe('postLink — what send_link does, run against a stub Slack client', ()
       /comment is too long/,
     );
     expect(posted).toEqual([]);
-  });
-});
-
-describe('send_link tool wiring', () => {
-  const source = () => fs.readFile(path.resolve(__dirname, 'slack-mcp-server.ts'), 'utf-8');
-
-  it('is listed, requires url, posts with chat.postMessage and reports sent + ts', async () => {
-    const s = await source();
-    expect(s).toContain("name: 'send_link'");
-    expect(s).toMatch(/name: 'send_link'[\s\S]*?required: \['url'\]/);
-    expect(s).toMatch(/handleSendLink[\s\S]*?postLink\(/);
-    expect(s).toContain("case 'send_link':");
-  });
-
-  it('tells the model when to use it: served or published URLs land in the dashboard’s artifacts', async () => {
-    const s = await source();
-    const desc = s.slice(s.indexOf("name: 'send_link'"), s.indexOf('inputSchema', s.indexOf("name: 'send_link'")));
-    expect(desc).toMatch(/serve|served/);
-    expect(desc).toMatch(/artifact/i);
-    // Files go with send_file / send_media, not as a link to a local path.
-    expect(desc).toMatch(/send_file|send_media/);
   });
 });

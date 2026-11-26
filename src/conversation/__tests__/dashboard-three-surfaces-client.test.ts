@@ -722,6 +722,7 @@ describe('panel header — <ui-status-bar>: the session status, its time and its
 
   it('a reader who does not own it, or a sibling instance, gets a locked action that says why', () => {
     const ro = head(card({ ownerId: 'U9' }), 'working');
+    expect(ro.actions.map((a) => a.id)).toEqual(['stop']);
     for (const a of ro.actions) expect(a.disabled, a.id).toBe('read only');
     const sib = head(card({ environment: { instanceName: 'other', host: 'h', port: 1 } }), 'working', {
       SELF_INSTANCE_NAME: 'me',
@@ -734,6 +735,7 @@ describe('panel header — <ui-status-bar>: the session status, its time and its
 
   it('a write in flight is busy in the bar (Stop / Close / Trash; Star and 살리기 together)', () => {
     const d = head(card(), 'working', { _busy: { 'inst::C1:t1|action': true, 'inst::C1:t1|life': true } });
+    expect(d.actions.map((a) => a.id)).toEqual(['stop']);
     for (const a of d.actions) expect(a.busy, a.id).toBe(true);
   });
 
@@ -778,8 +780,6 @@ describe('panel header — <ui-status-bar>: the session status, its time and its
     expect(on).toContain('doAction(key, id)');
     expect(PAGE).toContain('<ui-status-bar class="panel-status" id="panel-status" lang="ko"></ui-status-bar>');
     expect(TEMPLATE).toContain('<script type="module" src="/dashboard/ui/status-bar.js?v=');
-    expect(TEMPLATE).not.toMatch(/\.ps-(row|chip|label|word|time|clock|dot|actions|slack) /);
-    expect(TEMPLATE).not.toMatch(/\.panel-status:empty/);
   });
 });
 
@@ -861,18 +861,14 @@ describe("panel goal — the editor is <ui-goal-card> here (D6b E-12), its draft
     expect(src).toContain('goalCardData(s, canEdit)');
     // The owner, or an admin in 관리자 모드, edits a live session's goals (SSOT 2026-11-02: viewerCanManage).
     expect(src).toMatch(/canEdit = !!s && viewerCanManage\(s\) && live && !isSiblingSession\(s\)/);
-    // The element morphs in place, so the page keeps no draft of its own (dashboard-goal-client.test.ts has the rest).
-    expect(src).not.toContain('captureGoalDraft');
   });
 
-  it("goal writes repaint the panel goal (the element shows busy, then the outcome); the completed goals fold is the element's", () => {
+  it('goal writes repaint the panel goal (the element shows busy, then the outcome)', () => {
     expect(clientFn('goalAction')).toContain('repaintPanelGoalFor(key)');
     expect(clientFn('setGoalError')).toContain('repaintPanelGoalFor(key)');
     expect(clientFn('repaintPanelGoalFor')).toContain('renderPanelGoal()');
     // The add's draft is cleared only on this session's live card — never another session's.
     expect(clientFn('addGoal')).toContain("card.getAttribute('data-goal-key') === key");
-    expect(TEMPLATE).not.toContain('goalHistoryToggle');
-    expect(TEMPLATE).not.toContain('cg-hx');
   });
 });
 
@@ -914,7 +910,6 @@ describe('one live path for the whole panel', () => {
       cmd.indexOf('</div>', cmd.indexOf('id="panel-controls"')),
     );
     expect(controls).not.toContain('cmd-steer');
-    expect(PAGE).not.toContain('id="cmd-input"');
     expect(clientFn('renderPanelComposer')).not.toMatch(/morphInnerHtml|innerHTML/);
   });
 
@@ -940,7 +935,6 @@ describe('one live path for the whole panel', () => {
     const at = ids.map((id) => scroll.indexOf(`id="${id}"`));
     expect(at.every((i) => i > 0)).toBe(true);
     expect([...at].sort((a, b) => a - b)).toEqual(at);
-    for (const gone of ['id="panel-meta"', 'id="panel-links"', 'id="panel-tokens"']) expect(PAGE).not.toContain(gone);
   });
 });
 
@@ -1558,9 +1552,6 @@ describe('the detail deck — the title opens a detail card, its card goes to on
     expect(toggle).not.toContain('deckDrop(');
     expect(wire.slice(wire.indexOf("'ui-detail'"), wire.indexOf("'ui-minimize'"))).toContain('openPanel(key);');
     expect(wire).not.toContain('panelSessionKey');
-    // closeDetailCard clicks no face any more.
-    expect(clientFn('closeDetailCard')).not.toContain('click()');
-    expect(TEMPLATE).not.toContain('function cardFaceOf(');
     // Escape (outside the viewer and the cron drawer) closes the front detail card.
     expect(TEMPLATE).toContain(
       // D1 (C-05): <ui-drawer> takes the key (preventDefault) before the page's listener; the panel leaves it be.
@@ -1568,7 +1559,6 @@ describe('the detail deck — the title opens a detail card, its card goes to on
     );
     // A cron run opens its session's detail card on its default (Chat), not on the 작업 로그.
     expect(TEMPLATE).toContain('closeCronDrawer(function() { openPanel(k); }); }');
-    expect(TEMPLATE).not.toContain('closeCronDrawer(); openPanel(k, true);');
   });
 
   it('renderDeckNav: ‹ n / m › only with two or more; the edges of up to two cards behind; gone sessions leave the deck', () => {
@@ -1647,7 +1637,6 @@ describe('the detail deck — the title opens a detail card, its card goes to on
     expect(TEMPLATE).toContain(
       '<ui-deck-nav class="panel-deck-peek" id="panel-deck-peek" peek="only" lang="ko" aria-hidden="true"></ui-deck-nav>',
     );
-    expect(TEMPLATE).not.toContain('.panel-deck-peek span');
     r.renderDeckNav(0);
     expect(els['panel-deck'].data).toBe(handed); // the same deck is not handed again
     expect(els['panel-deck-peek'].data).toBe(handed);
@@ -1685,8 +1674,6 @@ describe('the detail deck — the title opens a detail card, its card goes to on
     const after = cancelled;
     keyed.renderDeckNav(-1); // nothing left running: nothing more to stop
     expect(cancelled).toBe(after);
-    // No keyframe slide left in the CSS.
-    expect(TEMPLATE).not.toContain('@keyframes deck-in');
   });
 });
 
@@ -2136,7 +2123,6 @@ describe('interaction state survives live renders on both surfaces', () => {
     expect(TEMPLATE).toContain(
       "d.addEventListener('ui-close', function(e) { e.preventDefault(); closeDetailCard(); })",
     );
-    expect(PAGE).not.toContain('slide-panel-overlay');
   });
 });
 

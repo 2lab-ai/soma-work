@@ -837,18 +837,26 @@ describe('SessionRegistry persistence', () => {
 
   // === Issue #214: clearSessionId persists retry state cleanup to disk ===
 
-  it('clearSessionId calls saveSessions to persist cleanup', () => {
+  it('clearSessionId persists the cleanup: a restart brings back neither the cleared session id nor its retry state', () => {
     const registry = new SessionRegistry();
     const session = registry.createSession('U123', 'Tester', 'C_PERSIST', '171.P1');
     session.sessionId = 'session-persist';
     session.fileAccessRetryCount = 2;
     session.errorRetryCount = 1;
+    // A star keeps the record on disk after its session id is gone, so the reload shows what the clear wrote.
+    session.starred = true;
+    registry.saveSessions();
 
-    const saveSpy = vi.spyOn(registry as any, 'saveSessions');
     registry.clearSessionId('C_PERSIST', '171.P1');
+    // The file-access retry budget is not persisted: it is cleared on the live session.
+    expect(session.fileAccessRetryCount).toBe(0);
 
-    expect(saveSpy).toHaveBeenCalled();
-    saveSpy.mockRestore();
+    const reloaded = new SessionRegistry();
+    reloaded.loadSessions();
+    const restored = reloaded.getSession('C_PERSIST', '171.P1');
+    expect(restored).not.toBeUndefined();
+    expect(restored!.sessionId).toBeUndefined();
+    expect(restored!.errorRetryCount).toBe(0);
   });
 
   // === Issue #215: clearSessionId cancels pending retry timer ===

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { applyCwd, createCwdTopicBinding, renderCwdCard } from '../cwd-topic';
+import { applyCwd, renderCwdCard } from '../cwd-topic';
 
 describe('cwd-topic.renderCwdCard', () => {
   const origBase = process.env.BASE_DIRECTORY;
@@ -41,14 +41,5 @@ describe('cwd-topic.applyCwd', () => {
     const r = await applyCwd({ userId: 'U1', value: 'anything' });
     expect(r.ok).toBe(false);
     expect(r.summary).toContain('변경할 수 없');
-  });
-});
-
-describe('createCwdTopicBinding', () => {
-  it('exposes topic + apply + renderCard', () => {
-    const b = createCwdTopicBinding();
-    expect(b.topic).toBe('cwd');
-    expect(typeof b.apply).toBe('function');
-    expect(typeof b.renderCard).toBe('function');
   });
 });

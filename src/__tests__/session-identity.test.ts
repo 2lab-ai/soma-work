@@ -14,13 +14,7 @@ vi.mock('../env-paths', () => ({
   DATA_DIR: '/tmp/soma-work-session-identity-test',
 }));
 
-import {
-  buildLegacySessionKey,
-  buildWorkSessionKey,
-  DIRECT_THREAD_ID,
-  normalizeSessionKey,
-  WORK_TENANT_ID,
-} from '../session-identity';
+import { buildLegacySessionKey, buildWorkSessionKey, normalizeSessionKey } from '../session-identity';
 import { SessionRegistry } from '../session-registry';
 
 const TEST_DATA_DIR = '/tmp/soma-work-session-identity-test';
@@ -34,12 +28,6 @@ describe('buildWorkSessionKey', () => {
     expect(buildWorkSessionKey('C0ACM4320MQ')).toBe('work:C0ACM4320MQ:direct');
     expect(buildWorkSessionKey('C0ACM4320MQ', undefined)).toBe('work:C0ACM4320MQ:direct');
     expect(buildWorkSessionKey('C0ACM4320MQ', '')).toBe('work:C0ACM4320MQ:direct');
-  });
-
-  it('exposes the tenant and sentinel constants it is built from', () => {
-    const key = buildWorkSessionKey('C1');
-    expect(key.startsWith(`${WORK_TENANT_ID}:`)).toBe(true);
-    expect(key.endsWith(`:${DIRECT_THREAD_ID}`)).toBe(true);
   });
 });
 

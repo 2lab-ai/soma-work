@@ -260,23 +260,6 @@ describe('SlackBlockKitChannel — Rich Turn Notification', () => {
     });
   });
 
-  // Trace: Scenario 1, Section 2 — interface accepts rich fields
-  describe('TurnCompletionEvent interface', () => {
-    it('accepts all rich fields without type errors', () => {
-      const event: TurnCompletionEvent = makeRichEvent();
-      expect(event.persona).toBe('default');
-      expect(event.model).toBe('opus-4.6');
-      expect(event.startedAt).toBeInstanceOf(Date);
-      expect(event.contextUsagePercent).toBe(84.0);
-      expect(event.contextUsageDelta).toBe(-5.6);
-      expect(event.contextUsageTokens).toBe(160300);
-      expect(event.contextWindowSize).toBe(1000000);
-      expect(event.sevenDayUsage).toBe(55);
-      expect(event.sevenDayDelta).toBe(2);
-      expect(event.toolStats).toBeDefined();
-    });
-  });
-
   // Bug fix: tracks actual posted message ts, not threadTs (thread root)
   describe('CompletionMessageTracker integration', () => {
     it('tracks the posted notification message ts, not threadTs', async () => {

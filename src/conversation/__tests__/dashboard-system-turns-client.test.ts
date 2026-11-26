@@ -529,12 +529,6 @@ describe('C3b — the card’s /compact line on a narrow card never overflows; t
     );
   });
 
-  it('the old inline system row is gone (no renderer, no rules)', () => {
-    expect(TEMPLATE).not.toMatch(/\nfunction renderSysTurn\(/);
-    expect(TEMPLATE).not.toContain('.sys-row-in');
-    expect(TEMPLATE).not.toContain('container: sysrow');
-  });
-
   it('the overdue words sit after the times, so the ellipsis cuts them first', () => {
     const { cpProgressHtml } = load<{ cpProgressHtml(e: number, est: number): string }>(
       ['esc', 'cpClock', 'toNum', 'cpProgressHtml'],
@@ -1250,12 +1244,6 @@ describe('D4 — the page keeps a disclosure’s choice and paints its region ar
     };
     return { state, calls, el, fire };
   }
-
-  it('the page no longer toggles a disclosure itself: the 0.5.0 click workaround is gone', () => {
-    expect(INIT).not.toContain("addEventListener('click'");
-    expect(INIT).not.toContain('.toggle()');
-    expect(TEMPLATE).not.toContain('function dcSummaryHost(');
-  });
 
   it('a card’s system instruction keeps its choice; the completed goals fold inside <ui-goal-card> (D6b) — no page choice', () => {
     const s = setup();

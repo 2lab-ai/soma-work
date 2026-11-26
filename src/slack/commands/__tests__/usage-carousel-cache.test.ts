@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { defaultTabCache, TabCache, type TabCacheEntry } from '../usage-carousel-cache';
+import { TabCache, type TabCacheEntry } from '../usage-carousel-cache';
 
 // Trace: docs/current/plans/usage-card-dark/trace.md, Scenario 7
 
@@ -116,9 +116,5 @@ describe('TabCache', () => {
     const entry = makeEntry(Date.now() + 60_000);
     cache.set('msgDefault', entry);
     expect(cache.get('msgDefault')).toBe(entry);
-  });
-
-  it('defaultTabCache is a TabCache instance', () => {
-    expect(defaultTabCache).toBeInstanceOf(TabCache);
   });
 });

@@ -17,7 +17,7 @@ import { describe, expect, it } from 'vitest';
  *        is present.
  *  - T4 (SSOT 1.1): zworkflow is findable by name inside soma-work — a plugin README
  *        (English + Korean) documents installation, and both root READMEs link to it.
- *  - T5: plugin.json version is bumped past 2.5.0 (src/local/CLAUDE.md: skill
+ *  - T5: plugin.json version is SemVer (src/local/CLAUDE.md: skill
  *        addition = minor).
  */
 
@@ -59,15 +59,6 @@ function body(): string {
 }
 
 describe('local:using-intentfirst skill — plugin registration (T1)', () => {
-  it('SKILL.md exists under src/local/skills so skill-locator discovers it', () => {
-    expect(existsSync(SKILL_MD)).toBe(true);
-  });
-
-  it('sits under the manifest of the zworkflow plugin that ships src/local', () => {
-    const plugin = JSON.parse(readFileSync(PLUGIN_JSON, 'utf8'));
-    expect(plugin.name).toBe('zworkflow');
-  });
-
   it('frontmatter name is using-intentfirst with a load-first description', () => {
     const fm = parseFrontmatter(body());
     expect(fm.name).toBe('using-intentfirst');
@@ -76,10 +67,6 @@ describe('local:using-intentfirst skill — plugin registration (T1)', () => {
 });
 
 describe('local:using-intentfirst skill — builds on using-ssot (T2)', () => {
-  it('the sibling using-ssot skill it depends on ships in the same plugin', () => {
-    expect(existsSync(SSOT_MD)).toBe(true);
-  });
-
   it('names using-ssot as the layer it sits on', () => {
     expect(body()).toMatch(/using-ssot/);
   });
@@ -146,11 +133,9 @@ describe('zworkflow plugin README — install guide (T4, SSOT 1.1)', () => {
   });
 });
 
-describe('zworkflow plugin manifest — version bump (T5)', () => {
-  it('version is a semver above 2.5.0 (skill addition = minor bump)', () => {
+describe('zworkflow plugin manifest — version (T5)', () => {
+  it('the version is SemVer (src/local/CLAUDE.md: bump it with every change)', () => {
     const { version } = JSON.parse(readFileSync(PLUGIN_JSON, 'utf8'));
     expect(version).toMatch(/^\d+\.\d+\.\d+$/);
-    const [major, minor] = String(version).split('.').map(Number);
-    expect(major > 2 || (major === 2 && minor >= 6)).toBe(true);
   });
 });

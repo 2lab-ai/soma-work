@@ -8,16 +8,17 @@
  *   • auto   → non-dangerous Bash / native tools `allow`; a dangerous-rule hit
  *              becomes the new `classify` decision (the async hook then consults
  *              the safety classifier). Hard denies still win in every mode.
+ *
+ * legacy and bypass are pinned in tool-policy.test.ts ('allow / pass tier',
+ * 'precedence: deny > allow', 'ssh ban'); this file covers auto mode.
  */
 
-import * as os from 'node:os';
 import { describe, expect, it } from 'vitest';
 import { evaluateToolPolicy, type ToolPolicyContext } from '../policy/tool-policy';
 
 const USER = 'U0AUTOMODE1';
 const OTHER = 'U0OTHERUSR2';
 const SAFE = `/tmp/${USER}/x.txt`;
-const SENSITIVE = `${os.homedir()}/.ssh/id_rsa`;
 
 function ctx(mode: 'auto' | 'bypass' | 'legacy', over: Partial<ToolPolicyContext> = {}): ToolPolicyContext {
   return {
@@ -90,33 +91,5 @@ describe('evaluateToolPolicy — case-insensitive filesystem', () => {
   it('own /tmp dir in lowercase stays allowed', () => {
     const command = `cat /tmp/${USER.toLowerCase()}/x.txt`;
     expect(evaluateToolPolicy('Bash', { command }, ctx('auto')).decision).toBe('allow');
-  });
-});
-
-describe('evaluateToolPolicy — bypass mode (unsafe)', () => {
-  it('dangerous Bash → allow (no ask, no classify)', () => {
-    expect(evaluateToolPolicy('Bash', { command: 'rm -rf /tmp/dir' }, ctx('bypass')).decision).toBe('allow');
-  });
-
-  it('native tools → allow', () => {
-    expect(evaluateToolPolicy('Write', { file_path: SAFE }, ctx('bypass')).decision).toBe('allow');
-  });
-
-  it('hard deny still wins over bypass (sensitive Read)', () => {
-    expect(evaluateToolPolicy('Read', { file_path: SENSITIVE }, ctx('bypass')).decision).toBe('deny');
-  });
-});
-
-describe('evaluateToolPolicy — legacy mode', () => {
-  it('non-dangerous Bash → pass (defer to SDK prompt = old accept/reject)', () => {
-    expect(evaluateToolPolicy('Bash', { command: 'ls' }, ctx('legacy')).decision).toBe('pass');
-  });
-
-  it('native tool → pass (SDK prompts)', () => {
-    expect(evaluateToolPolicy('Write', { file_path: SAFE }, ctx('legacy')).decision).toBe('pass');
-  });
-
-  it('hard deny still wins over legacy', () => {
-    expect(evaluateToolPolicy('Bash', { command: 'ssh host' }, ctx('legacy')).decision).toBe('deny');
   });
 });

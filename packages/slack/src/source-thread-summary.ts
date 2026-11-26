@@ -104,12 +104,6 @@ function escapeMrkdwn(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-/** Escape mrkdwn special chars, then truncate to max length without splitting HTML entities. */
-function safeText(text: string, max: number): string {
-  const escaped = escapeMrkdwn(text);
-  return safeTruncate(escaped, max);
-}
-
 /** Strip Slack special tokens from fallback text. */
 function stripSlackTokens(text: string): string {
   return text.replace(/<[^>]+>/g, '');
@@ -455,9 +449,6 @@ export async function reportSourceThreadResult(
     return false;
   }
 }
-
-// Re-export for testing
-export { buildLinkSection as _buildLinkSection, safeText as _safeText };
 
 function hasOneMSuffix(model: string): boolean {
   return /\[1m\]$/i.test(model);

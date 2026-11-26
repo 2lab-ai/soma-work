@@ -352,7 +352,6 @@ describe('top-bar defaults: one <ui-model-picker> sets the default model and eff
     const off = pickEnv({ _tdAlsoSession: false });
     await off.pickDefault('effort', 'high');
     expect(off.env.changeEffort).not.toHaveBeenCalled();
-    expect(clientFn('pickDefault')).not.toContain('postEffortSwitch');
   });
 
   // trinity R2 (fable P3): the session's writer answers with the level the session ended on — a level picked in the
@@ -413,7 +412,6 @@ describe('top-bar chips stay clickable while a session panel is open (T6, review
     const chips = zIndexOf('.topbar .topbar-defaults');
     expect(panel).toBe(100);
     expect(chips).toBeGreaterThan(panel);
-    expect(DASHBOARD_TS).not.toContain('.slide-panel-overlay');
   });
 
   it('a model outside the session switch list is saved as the default only (a representative nickname is required)', () => {

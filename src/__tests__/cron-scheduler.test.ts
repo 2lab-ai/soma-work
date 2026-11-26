@@ -561,21 +561,30 @@ describe('CronScheduler — Immediate tick on start', () => {
     tmpFile = path.join(os.tmpdir(), `cron-sched-b2-${Date.now()}.json`);
   });
 
-  it('B2: start() invokes tick() synchronously before returning', () => {
+  it('B2: start() fires a due job at once, not a poll interval later', async () => {
     const storage = new CronStorage(tmpFile);
-    const { deps } = createMockDeps(storage);
+    storage.addJob({
+      name: 'boot-fire',
+      expression: '* * * * *',
+      prompt: 'Fire at start',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: 'thread-b2',
+    });
+    const { deps, injectedMessages } = createMockDeps(storage);
+    deps.sessionRegistry.createSession('U123', 'TestUser', 'C456', 'thread-b2');
+    deps.sessionRegistry.transitionToMain('C456', 'thread-b2', 'default');
+    deps.sessionRegistry.setActivityState('C456', 'thread-b2', 'idle');
 
     const scheduler = new CronScheduler(deps);
-    // Spy on tick to verify it's called during start()
-    const tickSpy = vi.spyOn(scheduler, 'tick').mockResolvedValue(undefined);
-
     scheduler.start();
-
-    // tick() should have been called exactly once — synchronously during start()
-    expect(tickSpy).toHaveBeenCalledTimes(1);
-
-    scheduler.stop();
-    tickSpy.mockRestore();
+    try {
+      // The poll interval is 60 s: a fire within this wait can only be the tick start() runs itself.
+      await vi.waitFor(() => expect(injectedMessages).toHaveLength(1), { timeout: 2_000 });
+      expect(injectedMessages[0].text).toContain('[cron:boot-fire]');
+    } finally {
+      scheduler.stop();
+    }
   });
 });
 

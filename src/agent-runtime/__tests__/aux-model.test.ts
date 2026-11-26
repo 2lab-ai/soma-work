@@ -138,13 +138,6 @@ describe('auxModelFor — aliases resolve at call time', () => {
     expect(auxModelFor('sonnet', { mainModel: 'claude-opus-5-5[1m]' }).model).toBe(before);
   });
 
-  it('every tier alias goes through resolveModelInput on each call', () => {
-    const spy = vi.spyOn(userSettingsStore, 'resolveModelInput');
-    auxModelFor('haiku', { mainModel: 'gpt-6.1-sol[1m]' });
-    auxModelFor('haiku', { mainModel: 'gpt-6.1-sol[1m]' });
-    expect(spy.mock.calls.filter(([input]) => input === 'luna')).toHaveLength(2);
-  });
-
   it('a `grok` alias that resolves (e.g. the llmux catalog overlay) is used', () => {
     const real = userSettingsStore.resolveModelInput.bind(userSettingsStore);
     vi.spyOn(userSettingsStore, 'resolveModelInput').mockImplementation((input: string) =>

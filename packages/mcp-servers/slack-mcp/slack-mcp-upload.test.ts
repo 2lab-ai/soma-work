@@ -52,7 +52,8 @@ describe('validateFilePath — real filesystem', () => {
   });
 
   it('rejects path with .. segments', async () => {
-    const traversal = path.join(tmpDir, '..', '..', 'etc', 'passwd');
+    // The raw string, not path.join: join would normalise the `..` away before the validator sees it.
+    const traversal = `${tmpDir}/../../etc/passwd`;
     await expect(validateFilePath(traversal)).rejects.toThrow(/traversal|restricted/i);
   });
 
@@ -80,6 +81,21 @@ describe('validateFilePath — real filesystem', () => {
     await fs.writeFile(realFile, 'real');
     await fs.symlink(realFile, linkFile);
     await expect(validateFilePath(linkFile)).rejects.toThrow('Symlinks not allowed');
+  });
+
+  it('takes a file of exactly 1 GB and refuses one byte more', async () => {
+    // Sparse files: the size is set without writing a gigabyte.
+    const atCap = path.join(tmpDir, 'at-cap.bin');
+    const overCap = path.join(tmpDir, 'over-cap.bin');
+    await fs.writeFile(atCap, '');
+    await fs.truncate(atCap, 1_073_741_824);
+    await fs.writeFile(overCap, '');
+    await fs.truncate(overCap, 1_073_741_825);
+
+    expect((await validateFilePath(atCap)).size).toBe(1_073_741_824);
+    await expect(validateFilePath(overCap)).rejects.toThrow(
+      'File too large: 1073741825 bytes. Maximum: 1073741824 bytes (1GB)',
+    );
   });
 });
 

@@ -1852,10 +1852,12 @@ describe('#739 — 받아쓰기 through the server’s Whisper when this device 
 
   it('the device engine stays the default', async () => {
     const fake = serverFake();
-    const { api } = page({ engine: FakeRec, server: fake.start });
+    // A fresh recogniser class: FakeRec.made would still hold an earlier test's recogniser.
+    const { api } = page({ engine: recClass(null), server: fake.start });
     await api.ntDictateStart();
     expect(fake.start).not.toHaveBeenCalled();
-    expect(FakeRec.made.length).toBeGreaterThan(0);
+    expect(FakeRec.made).toHaveLength(1);
+    expect(FakeRec.made[0].starts).toBe(1);
   });
 });
 

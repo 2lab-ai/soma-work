@@ -118,7 +118,7 @@ function resetMockStore(): void {
 }
 
 import { isAdminUser } from '../../../../admin-utils';
-import { applyCct, createCctTopicBinding, renderCctCard } from '../cct-topic';
+import { applyCct, renderCctCard } from '../cct-topic';
 
 function actionIds(blocks: any[]): string[] {
   const out: string[] = [];
@@ -163,19 +163,6 @@ describe('cct-topic.renderCctCard', () => {
     // Card-level Refresh stays for non-admin (non-force, throttle-respecting).
     expect(ids).toContain('cct_refresh_card');
     // Trailing cancel chrome row is still emitted.
-    expect(ids).toContain('z_setting_cct_cancel');
-  });
-
-  it('admin card does NOT emit legacy z_setting_cct_set_<name> buttons (card v2 follow-up)', async () => {
-    resetMockStore();
-    vi.mocked(isAdminUser).mockReturnValue(true);
-    const { blocks } = await renderCctCard({ userId: 'U1', issuedAt: 2 });
-    const ids = actionIds(blocks);
-    // Legacy back-compat buttons removed in the card v2 follow-up — the
-    // text `/z cct set <name>` grammar still routes via `applyCct`.
-    expect(ids).not.toContain('z_setting_cct_set_cct1');
-    expect(ids).not.toContain('z_setting_cct_set_cct2');
-    expect(ids).not.toContain('z_setting_cct_set_next');
     expect(ids).toContain('z_setting_cct_cancel');
   });
 
@@ -265,8 +252,8 @@ describe('cct-topic.renderCctCard', () => {
     vi.mocked(isAdminUser).mockReturnValue(true);
     const { blocks } = await renderCctCard({ userId: 'U1', issuedAt: 4 });
     const ids = actionIds(blocks);
-    expect(ids).not.toContain('z_setting_cct_set_cct1');
-    expect(ids).not.toContain('z_setting_cct_set_ops-api');
+    expect(ids).toContain('cct_refresh_card'); // the card's controls did render
+    expect(ids.filter((id) => id.startsWith('z_setting_cct_set_'))).toEqual([]);
   });
 
   // ── T9c: Z3 — api_key slot rows are hidden from the card ──
@@ -412,15 +399,6 @@ describe('cct-topic.applyCct', () => {
     // Final sanity: the active slot must be a cct arm, never api_key.
     const finalActive = mockStore.slots.find((s) => s.keyId === mockStore.activeKeyId);
     expect(finalActive?.kind).toBe('cct');
-  });
-});
-
-describe('createCctTopicBinding', () => {
-  it('exposes topic + apply + renderCard', () => {
-    const b = createCctTopicBinding();
-    expect(b.topic).toBe('cct');
-    expect(typeof b.apply).toBe('function');
-    expect(typeof b.renderCard).toBe('function');
   });
 });
 

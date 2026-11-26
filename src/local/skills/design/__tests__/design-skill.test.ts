@@ -35,10 +35,6 @@ function parseFrontmatter(md: string): Record<string, string> {
 }
 
 describe('local:design skill — RED contract', () => {
-  it('SKILL.md exists', () => {
-    expect(existsSync(SKILL_MD)).toBe(true);
-  });
-
   it('SKILL.md frontmatter has name: design and an HTML-focused design description', () => {
     const md = readFileSync(SKILL_MD, 'utf8');
     const fm = parseFrontmatter(md);

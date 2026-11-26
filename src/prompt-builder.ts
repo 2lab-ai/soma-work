@@ -321,14 +321,6 @@ export class PromptBuilder {
   }
 
   /**
-   * Clear workflow prompt cache (useful for development/hot-reload)
-   */
-  clearCache(): void {
-    this.workflowPromptCache.clear();
-    this.logger.debug('Cleared workflow prompt cache');
-  }
-
-  /**
    * Load persona content from file
    */
   loadPersona(personaName: string): string | undefined {

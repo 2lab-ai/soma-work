@@ -1,6 +1,14 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { spawn } from 'child_process';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { A2tService } from '../a2t-service';
 import type { A2tStatus } from '../types';
+
+// The real spawn runs; the mock only records what the worker was handed.
+vi.mock('child_process', async (importOriginal) => {
+  const real = await importOriginal<typeof import('child_process')>();
+  const spawn = vi.fn(real.spawn);
+  return { ...real, default: { ...real, spawn }, spawn };
+});
 
 describe('A2tService — status management', () => {
   it('starts in not_initialized state', () => {
@@ -69,20 +77,31 @@ describe('A2tService — status management', () => {
     expect(cfg.enabled).toBe(true);
   });
 
-  it('accepts custom config', () => {
+  it('initialize() enforces the configured memory floor, not the default', async () => {
+    const floor = new A2tService({ minMemoryMb: 999_999_999 });
+    await expect(floor.initialize()).rejects.toThrow('999999999MB required');
+  });
+
+  it('initialize() hands the worker the configured model, device, compute type and memory floor', async () => {
+    vi.mocked(spawn).mockClear();
     const service = new A2tService({
       model: 'tiny',
       device: 'cuda',
       computeType: 'float16',
-      minMemoryMb: 500,
-      pythonPath: '/usr/bin/python3.11',
+      minMemoryMb: 1,
+      pythonPath: '/nonexistent/custom-python3',
     });
-    const cfg = (service as any).config;
-    expect(cfg.model).toBe('tiny');
-    expect(cfg.device).toBe('cuda');
-    expect(cfg.computeType).toBe('float16');
-    expect(cfg.minMemoryMb).toBe(500);
-    expect(cfg.pythonPath).toBe('/usr/bin/python3.11');
+    await expect(service.initialize()).rejects.toThrow("Python not found at '/nonexistent/custom-python3'");
+
+    expect(vi.mocked(spawn)).toHaveBeenCalledTimes(1);
+    const [command, , options] = vi.mocked(spawn).mock.calls[0];
+    expect(command).toBe('/nonexistent/custom-python3');
+    expect(options.env).toMatchObject({
+      A2T_MODEL: 'tiny',
+      A2T_DEVICE: 'cuda',
+      A2T_COMPUTE_TYPE: 'float16',
+      A2T_MIN_MEMORY_MB: '1',
+    });
   });
 
   it('initialize() rejects when memory insufficient', async () => {

@@ -31,10 +31,9 @@ describe('SummaryTimer — countdown tick callback', () => {
     vi.useRealTimers();
   });
 
-  it('exposes a static COUNTDOWN_INTERVAL_MS (default 60 000ms / 1 minute)', () => {
+  it('defaults COUNTDOWN_INTERVAL_MS to 1 minute (60 000ms)', () => {
     // Default 1-minute cadence per Z's spec ("1분마다 업데이트").
-    expect(SummaryTimer.COUNTDOWN_INTERVAL_MS).toBeTypeOf('number');
-    expect(SummaryTimer.COUNTDOWN_INTERVAL_MS).toBeGreaterThan(0);
+    expect(SummaryTimer.COUNTDOWN_INTERVAL_MS).toBe(60_000);
   });
 
   it('defaults DELAY_MS to 5 minutes (300 000ms)', () => {
@@ -122,15 +121,6 @@ describe('SummaryTimer — countdown tick callback', () => {
     vi.advanceTimersByTime(SummaryTimer.COUNTDOWN_INTERVAL_MS);
     // Interval survived the throw — second tick fired.
     expect(tick).toHaveBeenCalledTimes(2);
-  });
-
-  it('omitting the tick parameter is allowed (no interval armed)', () => {
-    const cb = vi.fn();
-    // Legacy 2-argument signature must still work for callers that don't
-    // care about the countdown.
-    expect(() => timer.start('s', cb)).not.toThrow();
-    vi.advanceTimersByTime(SummaryTimer.DELAY_MS + 1);
-    expect(cb).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -73,7 +73,8 @@ describe('MEMORY command dispatch', () => {
     const r = run({ op: 'page_remove', type: 'concepts', slug: 'c' });
     expect(r.ok).toBe(true);
     const g = run({ op: 'page_get', type: 'concepts', slug: 'c' });
-    if (g.ok) expect((g.payload as { ok: boolean }).ok).toBe(false);
+    expect(g.ok).toBe(true);
+    if (g.ok) expect(g.payload).toEqual({ ok: false, message: 'Page not found' });
   });
 
   it('errors without user context', () => {

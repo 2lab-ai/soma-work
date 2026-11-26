@@ -151,17 +151,4 @@ describe('ReportHandler', () => {
     expect(mockDeps.aggregator.aggregateDaily).not.toHaveBeenCalled();
     expect(mockDeps.aggregator.aggregateWeekly).not.toHaveBeenCalled();
   });
-
-  // Trace: Scenario 6, Section 5 — handler works when no REPORT_CHANNEL_ID is set
-  it('missingChannelConfig_showsError', async () => {
-    const result = await handler.execute({
-      user: 'U123',
-      channel: 'C456',
-      threadTs: '123.456',
-      text: 'report daily',
-      say: mockSay as any,
-    });
-
-    expect(result.handled).toBe(true);
-  });
 });

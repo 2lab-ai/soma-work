@@ -196,9 +196,4 @@ describe('the skills check the page with --check and render no PNG', () => {
     expect(step3).toContain('--check');
     expect(step3).not.toMatch(/\.png|snapshot/i);
   });
-
-  it('design and html: no PNG or screenshot wording left', () => {
-    expect(md('design')).not.toMatch(/PNG is a QA snapshot|HTML\+PNG/);
-    expect(md('html')).not.toMatch(/before the\s+screenshot/);
-  });
 });

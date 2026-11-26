@@ -213,7 +213,8 @@ describe('instance-registry: startHeartbeatLoop', () => {
       // Wait long enough for the interval to fire at least once more
       await new Promise((r) => setTimeout(r, 120));
       const second = JSON.parse(await fs.readFile(join(tempDir, '33000.json'), 'utf8'));
-      expect(second.lastSeen).toBeGreaterThanOrEqual(firstSeen);
+      // Refreshed: a later write, not the kick-off one read twice.
+      expect(second.lastSeen).toBeGreaterThan(firstSeen);
     } finally {
       clearInterval(handle);
     }

@@ -331,15 +331,6 @@ describe('T5 — expanded card: the 산출물 strip', () => {
       /<ui-file-card class="art-card" variant="tile" playable lang="ko" data-art-cid="c" data-art-id="A3"/,
     );
     expect(out).not.toContain('data-art-play');
-    for (const gone of [
-      'function toggleArtAudio(',
-      'function artAudioMark(',
-      'function artAudioPlaying(',
-      'var _artAudio',
-    ]) {
-      expect(TEMPLATE, gone).not.toContain(gone);
-    }
-    expect(TEMPLATE).not.toMatch(/\.art-play\b/);
     // The remote file's tile is marked; its card's meta line says 'Slack에만 있음' (artFileItem).
     expect(out).toContain('<div class="art-tile is-remote">');
   });
@@ -397,7 +388,6 @@ describe('D2 — the tiles and chips are @2lab.ai/ui <ui-file-card>, answered by
     expect(clientFn('openArtifactViewer')).toContain(
       "v.open(artViewerItems(cid, list), at, opener && typeof opener.focus === 'function' ? opener : null);",
     );
-    expect(TEMPLATE).not.toContain("opener.shadowRoot.querySelector('button')");
     for (const mod of ['file-card', 'hovercard', 'artifact-viewer']) {
       expect(TEMPLATE).toContain(`<script type="module" src="/dashboard/ui/${mod}.js?v=\${UI_LIB_VERSION}"></script>`);
     }
@@ -495,31 +485,7 @@ describe('T2 — hover peek: @2lab.ai/ui <ui-hovercard>, one card for every tile
       '<ui-hovercard id="art-peek" for="ui-file-card[data-art-id], .ib-chip[data-art], .mg-tile[data-mk]" width="360"></ui-hovercard>',
     );
     // The element owns the hover intent, the grace, the swap, keyboard focus, Esc, a press, the scroll-away and
-    // the placement: the page keeps no timers, no positioning and no listeners of its own for the peek — and, since
-    // 0.12.0, no renderer and no rules for its inside (D4 G5-3).
-    for (const gone of [
-      'ART_PEEK_DELAY_MS',
-      'ART_PEEK_CLOSE_MS',
-      'function showArtPeek(',
-      'function hideArtPeek(',
-      'function artHandleKey(',
-      'var _artPeek',
-      'role="tooltip"',
-      'function renderArtPeekBody(',
-      'function artPeekFillDoc(',
-      'ART_PEEK_LINES',
-      '.art-peek-media',
-      '.art-peek-foot',
-      'art-doc-loading',
-      'ART_GLYPH',
-      'function artGlyph(',
-      'function artMeta(',
-      'function artKindLabel(',
-      'function artFormatSize(',
-    ]) {
-      expect(TEMPLATE, gone).not.toContain(gone);
-    }
-    expect(TEMPLATE).not.toMatch(/\.art-peek \{/);
+    // the placement (D4 G5-3); the page answers its ui-open / ui-closed.
     expect(TEMPLATE).toContain('#art-peek { --ui-hovercard-z: 1000; }');
     expect(TEMPLATE).toContain("peek.addEventListener('ui-open', onArtPeekOpen);");
     expect(TEMPLATE).toContain("peek.addEventListener('ui-closed', onArtPeekClosed);");
@@ -704,23 +670,8 @@ describe('T3 — the viewer: @2lab.ai/ui <ui-artifact-viewer tiles="none"> over 
       artViewItem(cid: string, a: Art): Record<string, unknown>;
     }>([...BASE_FNS, 'umMissingReason', 'artViewItem'], BASE_VARS, { _artDocCache: docs });
 
-  it('is one element with no tiles of its own; the page keeps no dialog, no body renderer, no keys', () => {
+  it('is one element with no tiles of its own', () => {
     expect(TEMPLATE).toContain('<ui-artifact-viewer id="art-viewer" tiles="none" lang="ko"></ui-artifact-viewer>');
-    for (const gone of [
-      '<dialog id="art-modal"',
-      'function renderArtModalBody(',
-      'function renderArtModal(',
-      'function artModalStep(',
-      'function closeArtifactModal(',
-      'function artModalClosed(',
-      'function openArtifactModal(',
-      'function dialogCloseSoftly(',
-      'function dialogKeep(',
-      'var _artModal',
-    ]) {
-      expect(TEMPLATE, gone).not.toContain(gone);
-    }
-    expect(TEMPLATE).not.toMatch(/\.art-modal\b|\.art-full-(img|imgwrap|audio|video|meta|doc)\b/);
   });
 
   it('the item the viewer pages: url, size, time; a document carries its text once fetched', () => {
@@ -754,7 +705,7 @@ describe('T3 — the viewer: @2lab.ai/ui <ui-artifact-viewer tiles="none"> over 
     ).toHaveLength(1);
   });
 
-  it("D6b (0.12.0, D4 G5-1 / G5-2): the model's html runs its scripts in the element's frame (items[].scripts — never a user's upload); a stored pdf is framed (items[].frame); the page slots no body", () => {
+  it("D6b (0.12.0, D4 G5-1 / G5-2): the model's html runs its scripts in the element's frame (items[].scripts — never a user's upload); a stored pdf is framed (items[].frame)", () => {
     expect(api().artViewItem('c', html)).toMatchObject({ scripts: true });
     expect(api().artViewItem('c', { ...html, source: 'user_upload' })).not.toHaveProperty('scripts');
     expect(api().artViewItem('c', { ...html, stored: false })).not.toHaveProperty('scripts');
@@ -768,25 +719,10 @@ describe('T3 — the viewer: @2lab.ai/ui <ui-artifact-viewer tiles="none"> over 
       expect(api().artViewItem('c', a)).not.toHaveProperty('scripts');
       expect(api().artViewItem('c', a)).not.toHaveProperty('frame');
     }
-    // No slot, no page body, no rules for it; the viewer is listened to on ui-view alone (nothing to put in before
-    // a body renders) and let go of on ui-closed — every close, after the exit (D4 G5-4), not the person's ui-close
-    // with a timer of the page's.
-    for (const gone of [
-      'function artViewerPreview(',
-      'function artViewerSlot(',
-      'slot="preview"',
-      '.art-viewer-preview',
-      'art-full-frame',
-      'ui-before-view',
-      "viewer.addEventListener('ui-close'",
-      '}, 240);',
-    ]) {
-      expect(TEMPLATE, gone).not.toContain(gone);
-    }
+    // The viewer is listened to on ui-view and let go of on ui-closed — every close, after the exit (D4 G5-4).
     expect(TEMPLATE).toContain("viewer.addEventListener('ui-view', function(e) { syncArtViewer(e.detail); });");
     expect(TEMPLATE).toContain("viewer.addEventListener('ui-closed', function() {");
     expect(TEMPLATE).toContain("if (!artViewerIsOpen()) _artViewer = { cid: null, scope: 'conversation', list: [] };");
-    expect(clientFn('openArtifactViewer')).not.toContain('artViewerSlot');
   });
 
   it('P2: a document shown before its text is here is fetched once (the request under way is shared) and the list handed back with it', async () => {
@@ -913,16 +849,6 @@ describe('T3 — the viewer: @2lab.ai/ui <ui-artifact-viewer tiles="none"> over 
     expect(clientFn('ntIsTypingTarget')).toContain(
       "document.querySelector('dialog[open], ui-dialog[open]') || artViewerIsOpen()",
     );
-  });
-});
-
-describe("T1 — markdown answers are the viewer's document: one renderer, the library's", () => {
-  it('the page keeps no markdown renderer or document styles of its own for artifacts', () => {
-    for (const gone of ['function renderMarkdownDoc(', 'function mdInline(', 'function fillArtDocs(']) {
-      expect(TEMPLATE, gone).not.toContain(gone);
-    }
-    expect(TEMPLATE).not.toMatch(/\.md-doc\b/);
-    expect(TEMPLATE).not.toMatch(/\.art-text\b/);
   });
 });
 

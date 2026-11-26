@@ -431,23 +431,6 @@ describe('the page loads <ui-agent-steering> from the dashboard origin', () => {
     expect(steer).toBe(
       '<ui-agent-steering id="cmd-steer" lang="ko"><ui-composer id="pc-composer" slot="composer" lang="ko"><div class="panel-controls" id="panel-controls" slot="end" aria-label="이 세션의 모델과 추론 강도"></div></ui-composer>',
     );
-    // The page's own tools, chips, recorder and error line are gone with their code.
-    for (const id of ['pc-attach', 'pc-image', 'pc-mic', 'pc-attachments', 'pc-recorder', 'pc-error', 'pc-file-input'])
-      expect(TEMPLATE, id).not.toContain(`id="${id}"`);
-    for (const gone of [
-      'pcAddFiles',
-      'pcAddBlob',
-      'pcRemoveFile',
-      'pcRenderFiles',
-      'pcToggleRecording',
-      'pcStopRecording',
-      'pcFinishRecording',
-      'pcHeldFiles',
-      'pcSetError',
-      'ntPickRecorderMime',
-      'ntStamp',
-    ])
-      expect(declarationCount(gone), gone).toBe(0);
   });
 
   it('the installed @2lab.ai/ui carries agent-steering.js and its chunks (flat names the route serves)', () => {
@@ -455,7 +438,10 @@ describe('the page loads <ui-agent-steering> from the dashboard origin', () => {
     expect(dir).toBeTruthy();
     const file = join(dir as string, 'agent-steering.js');
     expect(existsSync(file)).toBe(true);
-    for (const imp of readFileSync(file, 'utf-8').match(/from\s*"\.\/([^"]+)"/g) ?? []) {
+    const imports = readFileSync(file, 'utf-8').match(/from\s*"\.\/([^"]+)"/g) ?? [];
+    // The element ships in chunks: a build whose imports this pattern no longer finds would check nothing.
+    expect(imports.length).toBeGreaterThan(0);
+    for (const imp of imports) {
       const name = /"\.\/([^"]+)"/.exec(imp)?.[1] as string;
       expect(UI_LIB_FILE.test(name), name).toBe(true);
       expect(existsSync(join(dir as string, name)), name).toBe(true);
@@ -470,11 +456,5 @@ describe('the page loads <ui-agent-steering> from the dashboard origin', () => {
     expect(major > 0 || minor >= 33, pkg.version).toBe(true);
     const lib = readFileSync(join(dir as string, 'agent-steering.js'), 'utf-8');
     for (const part of ['as-dock', 'as-pop', 'as-scrim']) expect(lib, part).toContain(part);
-  });
-
-  it('the old composer is gone: no textarea, Send button, key handler or autosize of the page’s own', () => {
-    for (const gone of ['pcKeydown', 'pcAutosize', 'pcEnterAction', 'sendRetry'])
-      expect(declarationCount(gone), gone).toBe(0);
-    expect(TEMPLATE).not.toMatch(/id="cmd-input"|id="cmd-send"|id="cmd-hint"|\.btn-send\b|\.panel-command-row\b/);
   });
 });

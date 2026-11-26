@@ -2,6 +2,17 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ConversationSession } from '../../types';
 import { type EffortSwitchDeps, EffortSwitchError, switchSessionEffort } from '../effort-switch';
 
+/** The status a refused switch carries; `undefined` when the switch went through (so a refusal cannot be skipped). */
+function refusalStatus(attempt: () => unknown): number | undefined {
+  try {
+    attempt();
+  } catch (e) {
+    expect(e).toBeInstanceOf(EffortSwitchError);
+    return (e as EffortSwitchError).statusCode;
+  }
+  return undefined;
+}
+
 // SSOT T1 — the dashboard changes a session's reasoning effort (one click on the
 // card or at the top of the session panel). The switch only touches the session
 // (the `%effort` scope); the next turn's SDK call reads `session.effort`.
@@ -53,26 +64,16 @@ describe('switchSessionEffort', () => {
 
   it('rejects an unknown level with 400', () => {
     expect(() => switchSessionEffort('C1:t1', 'ultra', deps(session()))).toThrow(EffortSwitchError);
-    try {
-      switchSessionEffort('C1:t1', 'turbo', deps(session()));
-    } catch (e) {
-      expect((e as EffortSwitchError).statusCode).toBe(400);
-    }
+    expect(refusalStatus(() => switchSessionEffort('C1:t1', 'turbo', deps(session())))).toBe(400);
   });
 
   it('rejects a missing session with 404 and a terminated one with 409', () => {
-    const missing = () => switchSessionEffort('C1:t1', 'low', deps(undefined));
-    expect(missing).toThrow(EffortSwitchError);
-    try {
-      missing();
-    } catch (e) {
-      expect((e as EffortSwitchError).statusCode).toBe(404);
-    }
-    try {
-      switchSessionEffort('C1:t1', 'low', deps(session({ terminated: true } as Partial<ConversationSession>)));
-    } catch (e) {
-      expect((e as EffortSwitchError).statusCode).toBe(409);
-    }
+    expect(refusalStatus(() => switchSessionEffort('C1:t1', 'low', deps(undefined)))).toBe(404);
+    expect(
+      refusalStatus(() =>
+        switchSessionEffort('C1:t1', 'low', deps(session({ terminated: true } as Partial<ConversationSession>))),
+      ),
+    ).toBe(409);
   });
 });
 

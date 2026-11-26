@@ -23,12 +23,6 @@ afterEach(() => {
 });
 
 describe('DEFAULT_UI_SURFACES', () => {
-  it('defines all three surfaces', () => {
-    expect(DEFAULT_UI_SURFACES.threadheader).toBeDefined();
-    expect(DEFAULT_UI_SURFACES.turnend).toBeDefined();
-    expect(DEFAULT_UI_SURFACES.dashboardheader).toBeDefined();
-  });
-
   it('every default field is present in its surface registry', () => {
     for (const surface of ['threadheader', 'turnend', 'dashboardheader'] as const) {
       const cfg = DEFAULT_UI_SURFACES[surface]!;

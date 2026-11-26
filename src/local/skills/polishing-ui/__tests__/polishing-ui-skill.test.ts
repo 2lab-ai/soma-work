@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
@@ -21,12 +21,6 @@ function threshold(src: string, preset: 'desktop' | 'mobile', key: string): numb
 }
 
 describe('local:polishing-ui skill — contract', () => {
-  it('ships SKILL.md, the numbers reference, the audit script and the sources note', () => {
-    for (const rel of ['SKILL.md', 'reference/apple-metrics.md', 'scripts/audit.mjs', 'LICENSES/NOTICE.md']) {
-      expect(existsSync(resolve(SKILL_ROOT, rel)), rel).toBe(true);
-    }
-  });
-
   it('frontmatter names the skill and says when to use it', () => {
     const fm = frontmatter(read('SKILL.md'));
     expect(fm.name).toBe('polishing-ui');

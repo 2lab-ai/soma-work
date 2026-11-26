@@ -30,13 +30,13 @@ import { buildSessionKeyFromInput, parseSessionKey } from 'soma-lib';
  * app-side `SCHEDULER_TENANT_ID` convention) so keys stay disjoint from
  * soma's `default`/`cron` tenants if the repos ever share storage.
  */
-export const WORK_TENANT_ID = 'work';
+const WORK_TENANT_ID = 'work';
 
 /**
  * Thread segment used when a session is not bound to a Slack thread
  * (channel-level session). Carried over verbatim from the legacy key format.
  */
-export const DIRECT_THREAD_ID = 'direct';
+const DIRECT_THREAD_ID = 'direct';
 
 /**
  * Build the canonical session key for a channel/thread pair.

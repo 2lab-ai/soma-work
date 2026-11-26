@@ -50,7 +50,6 @@ describe('auth pages — a host of @2lab.ai/ui <ui-auth-card>, rendered by the l
     for (const copied of ['authCardMarkup', 'STRINGS', 'safeLink', 'uiLibShadowCss', 'shadowrootmode']) {
       expect(src).not.toContain(copied);
     }
-    expect(uiLib).not.toHaveProperty('uiLibShadowCss');
   });
 
   describe('/login', () => {

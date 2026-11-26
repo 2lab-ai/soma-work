@@ -97,24 +97,7 @@ describe('기억 tab shell', () => {
     expect(css).not.toMatch(/--(bg|surface|text|accent|yellow|st-wait): #/);
   });
 
-  it('the inline 개인 메모리 renderer is gone: no chips, tray, cards or .mm-* styles of its own', () => {
-    const html = renderSettingsPage();
-    for (const gone of [
-      'id="l1-chips"',
-      'id="l1-foot"',
-      'id="l1-undo"',
-      'id="l1-total"',
-      'class="mm',
-      '.mm-',
-      '.meter-line',
-      'renderL1Card',
-      'l1TrayHold',
-    ]) {
-      expect(html, gone).not.toContain(gone);
-    }
-  });
-
-  it('지식 페이지 and 관찰 기록 are the library elements too (M-05, M-06): no inline list, editor or day view', async () => {
+  it('지식 페이지 and 관찰 기록 are the library elements too (M-05, M-06)', async () => {
     const html = renderSettingsPage();
     const { UI_LIB_VERSION, uiLibDistDir } = await import('../ui-lib');
     expect(html).toContain(
@@ -124,18 +107,6 @@ describe('기억 tab shell', () => {
     for (const file of ['knowledge-pages.js', 'episode-log.js']) {
       expect(html).toContain(`<script type="module" src="/dashboard/ui/${file}?v=${UI_LIB_VERSION}"></script>`);
       expect(existsSync(join(uiLibDistDir() as string, file))).toBe(true);
-    }
-    for (const gone of [
-      'id="mem-page-list"',
-      'id="mem-page-detail"',
-      'id="mem-ep-body"',
-      'id="mem-ep-new"',
-      '.pages-grid',
-      '.ep-entry',
-      'renderDay',
-      'renderPageEditor',
-    ]) {
-      expect(html, gone).not.toContain(gone);
     }
   });
 
@@ -963,28 +934,12 @@ describe('지식 페이지 — the element’s source mode for the whole markdow
     expect(kp.data.page).toMatchObject({ revision: 'r6', source: 'MINE' });
   });
 
-  it('every page carries its source for the element’s 원문 mode; the tab keeps no box, toggle or recovery box of its own', async () => {
+  it('every page carries its source for the element’s 원문 mode', async () => {
     const { kp } = memEnv({ fetch: rawFetch([pageAnswer()]) });
     kp.fire('ui-select', { id: 'agent/review' });
     await tick();
     expect(kp.data.page).toMatchObject({ source: '# 리뷰\n' });
     expect(kp.data.page.sourceOnly).toBeUndefined();
-    for (const gone of [
-      'pageRawMode',
-      'renderPageRaw',
-      'keepRawDraft',
-      'savePageRaw',
-      'overwritePageRaw',
-      'deletePageRaw',
-      'kp-raw',
-      'kp-tools',
-      'pg-raw',
-      'memRecover',
-      'mem-recover',
-      'readOnly',
-    ])
-      expect(MEMORY_CLIENT_JS, gone).not.toContain(gone);
-    expect(renderSettingsPage()).not.toMatch(/kp-raw|kp-tools|mem-recover/);
   });
 
   it('a source page is deleted through the element’s ui-delete (its two presses) with the revision it was loaded with', async () => {

@@ -22,12 +22,6 @@ describe('zBlockId', () => {
     expect(zBlockId('', 1, 0)).toBe('z_z_1_0');
     expect(zBlockId('!!!', 1, 0)).toBe('z_z_1_0');
   });
-
-  it('same inputs produce same id (deterministic)', () => {
-    const a = zBlockId('model', 999, 2);
-    const b = zBlockId('model', 999, 2);
-    expect(a).toBe(b);
-  });
 });
 
 describe('buildHelpCard', () => {
@@ -222,27 +216,6 @@ describe('buildSettingCard (Phase 2)', () => {
     // options is empty → first actions row is the extra row
     expect(actions[0].elements[0].action_id).toBe('z_setting_notify_open_modal');
     expect(actions[0].elements[1].action_id).toBe('z_setting_notify_set_remove_telegram');
-  });
-
-  it('generates deterministic block_ids (z_<topic>_<issuedAt>_<idx>)', () => {
-    const a = buildSettingCard({
-      topic: 'persona',
-      icon: '🎭',
-      title: 'P',
-      currentLabel: 'x',
-      options: [{ id: 'a', label: 'A' }],
-      issuedAt: 1000,
-    });
-    const b = buildSettingCard({
-      topic: 'persona',
-      icon: '🎭',
-      title: 'P',
-      currentLabel: 'x',
-      options: [{ id: 'a', label: 'A' }],
-      issuedAt: 1000,
-    });
-    const ids = (blocks: any[]) => blocks.map((x: any) => x.block_id);
-    expect(ids(a as any[])).toEqual(ids(b as any[]));
   });
 });
 

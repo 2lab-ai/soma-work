@@ -71,11 +71,6 @@ function findRuntimeSdkImports(src: string): string[] {
 }
 
 describe('agent-runtime boundary (ADR 0002, pass 1)', () => {
-  it('exposes runOneShotText from the public surface', async () => {
-    const mod = await import('../index');
-    expect(typeof mod.runOneShotText).toBe('function');
-  });
-
   it.each(ONE_SHOT_HELPERS)('%s does not import the Claude Code SDK runtime', (relPath) => {
     const src = readRepoFile(relPath);
     const offenders = findRuntimeSdkImports(src);

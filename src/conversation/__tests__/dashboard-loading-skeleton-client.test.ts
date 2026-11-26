@@ -313,10 +313,7 @@ describe('[T2] board — skeleton until the first board paints', () => {
   it('the served board starts loading: the element is handed load "loading", three empty columns, no announcement', () => {
     const inbox = between(PAGE, '<section class="inbox ui-tok" id="inbox"', '</section>');
     expect(inbox).toContain('<ui-agent-inbox id="kanban" class="kanban" view="board" lang="ko"></ui-agent-inbox>');
-    // Skeleton cards, counts and empty hints are the element's: the page serves none of its own.
-    for (const gone of ['class="col-skel"', 'class="sk-card"', 'id="count-', 'class="col-empty"']) {
-      expect(inbox, gone).not.toContain(gone);
-    }
+    // Skeleton cards, counts and empty hints are the element's.
     const kanban = el('kanban');
     const wired: unknown[] = [];
     serve(kanban, wired);
@@ -906,15 +903,6 @@ describe('[T2] stats strip — skeleton bars, started in parallel with the board
     expect(PAGE).toContain(
       '<ui-stat-strip id="stats-grid" class="stats-grid" lang="ko"><span id="stat-merge-lines"></span><span id="stat-workflows" class="stat-wf"></span></ui-stat-strip>',
     );
-    for (const gone of [
-      'class="stat-card"',
-      'id="stat-turns"',
-      'id="stat-prs"',
-      'id="stat-merged"',
-      'stat-commits-hidden',
-    ]) {
-      expect(PAGE, gone).not.toContain(gone);
-    }
     const m = load<{
       statsStripData(): { metrics: StripMetric[] };
       statCardsData(): { layout: string; metrics: StripMetric[] };
@@ -937,9 +925,8 @@ describe('[T2] stats strip — skeleton bars, started in parallel with the board
   });
 
   it('a load: the bar over the kept value, then one write with the answer — the element rolls (from: last), no hand-off', () => {
-    // 0.10.0 keeps a figure's value under its loading bar (metrics[].from: 'last'), so the page no longer hands
-    // the old value back first (D2-GAPS G2-1's landStripFigures is gone).
-    expect(TEMPLATE).not.toContain('landStripFigures');
+    // 0.10.0 keeps a figure's value under its loading bar (metrics[].from: 'last'), so the page does not hand
+    // the old value back first.
     const d = fakeDocument(['stats-strip', 'stats-grid', 'stat-merge-lines', 'stat-workflows']);
     const strip = d.byId['stats-strip'];
     const writes: StripMetric[][] = [];
@@ -1076,17 +1063,15 @@ describe('[T2] stats strip — skeleton bars, started in parallel with the board
     expect(d.byId['chart-merge'].data).toMatchObject({ bars: [], empty: '통계를 불러오지 못했어요', loading: false });
   });
 
-  it('stats no longer wait for the board: both start at init', () => {
+  it('stats do not wait for the board: both start at init', () => {
     const init = TEMPLATE.slice(TEMPLATE.lastIndexOf('// ── Init ──'));
-    expect(init).not.toContain('loadSessions().then(function() { loadStats(); });');
     expect(init).toMatch(/\nloadSessions\(\);\nloadStats\(\);\n/);
   });
 });
 
 describe('[T3] session panel — turn-shaped skeleton instead of "Loading..."', () => {
-  it('openPanel no longer prints "Loading..."; 지시와 답변 is handed loading (the element’s turn skeletons, busy) until the turns land', () => {
+  it('지시와 답변 is handed loading (the element’s turn skeletons, busy) until the turns land', () => {
     const body = clientFn('openPanel');
-    expect(body).not.toContain('Loading...');
     // SSOT 2026-10-29: the opening marks 지시와 답변's data as loading; the tab paints from it (convPaint).
     expect(body).toContain("_panelTurnsMsg = s.conversationId ? 'loading' : 'unrecorded';");
     const sets: Record<string, unknown>[] = [];
@@ -1150,9 +1135,6 @@ describe('[T3] session panel — turn-shaped skeleton instead of "Loading..."', 
         { id: 't2', role: 'user' },
       ],
     });
-    // The inline skeleton renderer and its styles are gone (the element's own skeleton turns).
-    expect(TEMPLATE).not.toMatch(/\nfunction turnsSkeletonHtml\(/);
-    expect(TEMPLATE).not.toContain('.sk-turn');
   });
 });
 
@@ -1184,13 +1166,10 @@ describe('[T3] expanded card — 지시/응답 skeleton instead of a "불러오�
 
 describe('[T3] skeleton motion and accessibility', () => {
   // D7 (K-02): the pulse is the kit's (.ui-skeleton in ui-kit.css: opacity only, --i staggers, still under reduced
-  // motion); the page keeps no skeleton rule or keyframe of its own.
+  // motion).
   const KIT = uiLibKitCss();
 
   it('the pulse is compositor-only (opacity) and staggered — the kit’s', () => {
-    expect(CSS).not.toContain('@keyframes sk-pulse');
-    expect(CSS).not.toMatch(/^\.sk \{/m);
-    expect(CSS).not.toContain('.sk-line');
     const kf = between(KIT, '@keyframes ui-sk-pulse', '}\n');
     expect(kf).toContain('opacity');
     expect(kf).not.toMatch(/background|width|height|transform/);

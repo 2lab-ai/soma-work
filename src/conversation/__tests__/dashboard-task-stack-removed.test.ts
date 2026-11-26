@@ -3,14 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 /**
  * #855 — the separate dashboard-task stack is gone: every task is a Slack thread.
  *
- *   D1 the task setters are gone (command, answer, queue, launcher, notice failures); the epic
- *      flag comes from its own small provider (`setDashboardEpicTasks`). The plan handler and the
- *      TodoWrite task accessor stay.
  *   D2 no route branches on a dashboard task: a session still carrying the old mark is sent like
  *      any other (its command reaches the Slack command handler, never a 501 "task handler").
- *   D3 the new-task context carries the epic flag only for an owner who turned it on, and the
- *      epic switch is refused (403) for anyone else — through the new flag provider.
- *   D4 the dashboard-task destination stays gone (410).
+ *   (The 410 for the old destination and the epic flag are pinned by dashboard-one-kind-of-session N1–N3.)
  */
 
 const mockConfig = {
@@ -45,7 +40,7 @@ vi.mock('../../session-archive', () => ({
 }));
 vi.mock('../../admin-utils', () => ({ isAdminUser: (id: string) => id === 'U_ADMIN' }));
 
-describe('Dashboard — the dashboard-task stack is removed (#855)', () => {
+describe('Dashboard — every task is a Slack thread (#855)', () => {
   let injectWebServer: any;
   let stopWebServer: any;
   let dashboard: any;
@@ -93,21 +88,6 @@ describe('Dashboard — the dashboard-task stack is removed (#855)', () => {
     'content-type': 'application/json',
   });
 
-  it('D1 — the task setters are gone; the epic flag provider, the plan handler and the task accessor are there', () => {
-    for (const gone of [
-      'setDashboardTaskLauncher',
-      'setDashboardTaskCommandHandler',
-      'setDashboardTaskAnswerHandler',
-      'setDashboardTaskQueueHandler',
-      'setTaskNoticeFailureProvider',
-    ]) {
-      expect(dashboard[gone], gone).toBeUndefined();
-    }
-    expect(typeof dashboard.setDashboardEpicTasks).toBe('function');
-    expect(typeof dashboard.setDashboardTaskPlanHandler).toBe('function');
-    expect(typeof dashboard.setDashboardTaskAccessor).toBe('function');
-  });
-
   it('D2 — a session still carrying the old mark is an ordinary session: its command goes to the Slack handler', async () => {
     const key = 'work:C1:500.001';
     const sessions = new Map<string, any>([
@@ -129,66 +109,5 @@ describe('Dashboard — the dashboard-task stack is removed (#855)', () => {
     expect(sent).toHaveLength(1);
     expect(sent[0][0]).toBe(key);
     expect(sent[0][1]).toBe('계속해');
-  });
-
-  it('D3 — the epic flag rides the context for an owner who turned it on; the epic switch is 403 for anyone else', async () => {
-    dashboard.setDashboardEpicTasks((userId: string) => userId === 'U_EPIC');
-    const plain = await signIn('U_PLAIN');
-    const ctxPlain = await injectWebServer({
-      method: 'GET',
-      url: '/api/dashboard/new-task/context',
-      headers: { cookie: plain.cookie },
-    });
-    expect(ctxPlain.statusCode).toBe(200);
-    expect(JSON.parse(ctxPlain.body).context.epicTasks).toBeUndefined();
-    const epicOwner = await signIn('U_EPIC');
-    const ctxEpic = await injectWebServer({
-      method: 'GET',
-      url: '/api/dashboard/new-task/context',
-      headers: { cookie: epicOwner.cookie },
-    });
-    expect(JSON.parse(ctxEpic.body).context).toMatchObject({ epicTasks: true });
-
-    const submission = {
-      requestId: 'req-epic-0123456',
-      prompt: '로그인 전부 고쳐',
-      model: 'opus',
-      effort: 'high',
-      channelId: 'C1',
-      autogoal: false,
-      autoz: false,
-      plan: false,
-      epic: true,
-      attachments: [],
-    };
-    const refused = await injectWebServer({
-      method: 'POST',
-      url: '/api/dashboard/new-task',
-      headers: json(plain),
-      payload: submission,
-    });
-    expect(refused.statusCode).toBe(403);
-    expect(slackProvider.start).not.toHaveBeenCalled();
-
-    const launched = await injectWebServer({
-      method: 'POST',
-      url: '/api/dashboard/new-task',
-      headers: json(epicOwner),
-      payload: { ...submission, requestId: 'req-epic-0123457' },
-    });
-    expect(launched.statusCode).toBe(200);
-    expect(slackProvider.start).toHaveBeenCalledTimes(1);
-    expect(slackProvider.start.mock.calls[0][1]).toMatchObject({ epic: true });
-  });
-
-  it('D4 — the dashboard-task destination stays gone (410)', async () => {
-    const res = await injectWebServer({
-      method: 'POST',
-      url: '/api/dashboard/new-task',
-      headers: json(await signIn()),
-      payload: { requestId: 'req-task-0123456', destination: 'task', prompt: 'x' },
-    });
-    expect(res.statusCode).toBe(410);
-    expect(slackProvider.start).not.toHaveBeenCalled();
   });
 });

@@ -109,10 +109,9 @@ describe('TurnRunner', () => {
       sessionKey,
     });
 
-    // Should not throw
-    await runner.begin('turn-1');
-    await runner.finish(makeTurnResult());
-    await runner.fail(new Error('test'));
+    await expect(runner.begin('turn-1')).resolves.toBeUndefined();
+    await expect(runner.finish(makeTurnResult())).resolves.toBeUndefined();
+    await expect(runner.fail(new Error('test'))).resolves.toBeUndefined();
   });
 
   // Trace: S4, Section 5 — finish without begin is safe
@@ -123,7 +122,6 @@ describe('TurnRunner', () => {
       sessionKey,
     });
 
-    // Should not throw
-    await runner.finish(makeTurnResult());
+    await expect(runner.finish(makeTurnResult())).resolves.toBeUndefined();
   });
 });

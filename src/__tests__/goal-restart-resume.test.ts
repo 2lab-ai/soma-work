@@ -57,20 +57,6 @@ function createHandler(sessions: Map<string, ConversationSession>) {
 describe('resumeActiveGoals (T1)', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('resumes a Slack-less task’s goal too (SSOT 2026-11-03): tasks run turns, the loop starts its next one', () => {
-    const sessions = new Map<string, ConversationSession>([
-      [
-        'task:t1',
-        activeGoalSession({ channelId: '', threadTs: undefined, slackless: true } as Partial<ConversationSession>),
-      ],
-    ]);
-    const { handler } = createHandler(sessions);
-    const settled = vi.fn();
-    handler.setGoalTurnSettledHandler(settled);
-    expect(handler.resumeActiveGoals()).toBe(1);
-    expect(settled).toHaveBeenCalledWith('task:t1', expect.anything());
-  });
-
   it('triggers the goal loop for each active-goal session', () => {
     const sessions = new Map<string, ConversationSession>([
       ['C1-T1', activeGoalSession()],

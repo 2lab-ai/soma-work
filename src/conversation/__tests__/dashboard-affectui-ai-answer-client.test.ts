@@ -1026,7 +1026,7 @@ describe('a subagent’s 지시와 답변 — the same element, two turns', () =
   });
 });
 
-describe('the page loads the element; the inline renderer is gone', () => {
+describe('the page loads the element', () => {
   it('ai-answer.js is a module script next to the other elements, served from the installed library', () => {
     expect(HEAD).toContain(`<script type="module" src="/dashboard/ui/ai-answer.js?v=\${UI_LIB_VERSION}"></script>`);
     const dir = uiLibDistDir();
@@ -1047,74 +1047,6 @@ describe('the page loads the element; the inline renderer is gone', () => {
     expect(TEMPLATE).toContain('<div class="psec psec-el ui-tok" id="psec-conv" slot="conv">');
     expect(TEMPLATE).toContain('<ui-conversation class="panel-conv" id="panel-conv" lang="ko"></ui-conversation>');
     expect(CSS).toMatch(/\.ui-tok \{[^}]*--ui-surface-raised: var\(--surface-raised\)/);
-  });
-
-  it('D3 — the inline turn renderer, its answer slots and their styles are gone', () => {
-    for (const gone of [
-      'renderTurn',
-      'renderSysTurn',
-      'turnsSkeletonHtml',
-      'ansSlotHtml',
-      'ansPaint',
-      'ansLoad',
-      'ansSummaryTitle',
-      'attachRawToggleHandlers',
-      'decorateAnswerTurns',
-      'decoratePanelTurns',
-      'ansPendingHtml',
-      'syncAnsPending',
-      'ansTookLabel',
-      'ansTookFor',
-      'updateTurnInPanel',
-      'paintConvTab',
-      'agentConvHtml',
-      'BOT_AVATAR_SVG',
-      'SYS_AVATAR_SVG',
-    ]) {
-      expect(declarationCount(gone), gone).toBe(0);
-    }
-    for (const cls of [
-      '.turn-answer',
-      '.ans-lite',
-      '.ans-took',
-      '.turn-raw',
-      '.panel-turns',
-      '.sk-turn',
-      '.sys-turn',
-    ]) {
-      expect(CSS, cls).not.toContain(cls);
-    }
-    expect(TEMPLATE).not.toContain("document.addEventListener('ui-retry'");
-    expect(TEMPLATE).not.toContain('panel-turns');
-  });
-
-  it('no inline answer card: its renderer, listeners and styles are gone', () => {
-    for (const gone of [
-      'ansUnesc',
-      'ansKey',
-      'ansDecode',
-      'ansParens',
-      'ansLinkifyText',
-      'ansLinkify',
-      'ansSourceOf',
-      'ansCiteHtml',
-      'ansSourcesHtml',
-      'renderAnswer',
-      'ansStateHtml',
-      'renderAnswerCard',
-      'ansCopyText',
-      'ansLight',
-      'ansBind',
-      'copyAnswer',
-    ]) {
-      expect(declarationCount(gone), gone).toBe(0);
-    }
-    expect(TEMPLATE).not.toContain('ansBind(');
-    expect(TEMPLATE).not.toContain('data-ans-retry');
-    for (const cls of ['.ans-card', '.ans-src', '.ans-cite', '.ans-foot', '.ans-shimmer', '.ans-dot', '.ans-label']) {
-      expect(CSS, cls).not.toContain(cls);
-    }
-    expect(CSS).not.toMatch(/@keyframes ans-|@container ans/);
   });
 });
 

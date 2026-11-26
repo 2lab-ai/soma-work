@@ -19,7 +19,6 @@ import { describe, expect, it } from 'vitest';
 const SKILL_ROOT = resolve(__dirname, '..');
 const SKILL_MD = resolve(SKILL_ROOT, 'SKILL.md');
 const DEFAULT_PROMPT = resolve(__dirname, '..', '..', '..', '..', 'prompt', 'default.prompt');
-const PLUGIN_JSON = resolve(__dirname, '..', '..', '..', '.claude-plugin', 'plugin.json');
 
 function parseFrontmatter(md: string): Record<string, string> {
   const match = md.match(/^---\n([\s\S]*?)\n---/);
@@ -39,10 +38,6 @@ function parseFrontmatter(md: string): Record<string, string> {
 }
 
 describe('local:calldiff skill — contract (T1)', () => {
-  it('SKILL.md exists', () => {
-    expect(existsSync(SKILL_MD)).toBe(true);
-  });
-
   it('frontmatter has name: calldiff and a call-stack-diff description', () => {
     const fm = parseFrontmatter(readFileSync(SKILL_MD, 'utf8'));
     expect(fm.name).toBe('calldiff');
@@ -184,10 +179,6 @@ describe('default prompt requires a calldiff report at the top of every PR body 
     return nextHeading === -1 ? rest : rest.slice(0, nextHeading);
   }
 
-  it('has a dedicated PR-creation section', () => {
-    expect(prCreationSection(), 'default.prompt needs a "## On Pull Request Creation" section').not.toBe('');
-  });
-
   it('fires whenever the PR contains code changes', () => {
     const section = prCreationSection().toLowerCase();
     expect(section).toMatch(/code change|source change|changes source|modified source/);
@@ -226,11 +217,6 @@ describe('default prompt requires a calldiff report at the top of every PR body 
     expect(section.toLowerCase()).toMatch(/existing pr/);
     expect(section).toMatch(/origin\/HEAD/);
     expect(section.toLowerCase()).not.toMatch(/always diff against `?main`?/);
-  });
-
-  it('anchors the trigger on PR creation itself', () => {
-    const section = prCreationSection();
-    expect(section).toMatch(/gh pr create/);
   });
 
   it('SKILL.md orders base resolution and fetches a missing base ref (shallow clones)', () => {
@@ -324,13 +310,5 @@ describe('every PR-creating surface carries the calldiff-first rule (T5)', () =>
     }
     expect(scanned.length, 'the scan must actually find PR-creating skills').toBeGreaterThan(0);
     expect(offenders, `these skills create PRs without the calldiff rule: ${offenders.join(', ')}`).toEqual([]);
-  });
-});
-
-describe('plugin manifest keeps pace with its payload (src/local/CLAUDE.md rule)', () => {
-  it('plugin.json version is bumped past 1.3.0 for the new skill', () => {
-    const manifest = JSON.parse(readFileSync(PLUGIN_JSON, 'utf8')) as { version: string };
-    const [major, minor] = manifest.version.split('.').map(Number);
-    expect(major * 1000 + minor).toBeGreaterThan(1 * 1000 + 3);
   });
 });

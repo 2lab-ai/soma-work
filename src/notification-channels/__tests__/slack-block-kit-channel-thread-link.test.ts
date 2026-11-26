@@ -112,26 +112,4 @@ describe('SlackBlockKitChannel — thread-surface deeplink', () => {
       expect(text).toMatch(/<https:\/\/example\.slack\.com\/archives\/C456\/p1700000000000111\|[^>]*>/);
     });
   });
-
-  describe('minimal theme', () => {
-    // Minimal is intentionally bare and is a single context line — we accept
-    // either omitting the link OR squeezing it onto the same line. Test that
-    // *if* the link is present it carries the right URL; otherwise pass.
-    it('either includes a valid thread permalink or none (minimal theme is allowed to skip it)', async () => {
-      const { userSettingsStore } = await import('../../user-settings-store');
-      (userSettingsStore.getUserSessionTheme as any).mockReturnValueOnce('minimal');
-      const api = createMockSlackApi();
-      const channel = new SlackBlockKitChannel(api);
-      await channel.send(makeEvent());
-
-      const blocks = api.postMessage.mock.calls[0][2].attachments[0].blocks;
-      const text = joinAllText(blocks);
-      const linkMatch = text.match(/<(https:\/\/example\.slack\.com\/archives\/C456\/p1700000000000111)\|/);
-      if (linkMatch) {
-        expect(linkMatch[1]).toContain('archives/C456');
-      }
-      // Minimal must always have the original status emoji/label content.
-      expect(text.length).toBeGreaterThan(0);
-    });
-  });
 });

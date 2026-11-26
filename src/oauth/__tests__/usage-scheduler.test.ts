@@ -76,9 +76,11 @@ describe('UsageRefreshScheduler (M1-S1)', () => {
     const args = tm.fetchUsageForAllAttached.mock.calls[0][0];
     // #644 review #6 — don't rely on a permissive `objectContaining` here:
     // assert the positive contract (timeoutMs is forwarded) AND the negative
-    // contract (force is absent) at the first-tick boundary. The INVARIANT
-    // test below re-asserts `not.toHaveProperty('force')` for documentation
-    // weight; this one catches a regression at the most-run path.
+    // contract (force is absent) at the first-tick boundary.
+    // INVARIANT (Anthropic DDoS guard): the args MUST NOT carry `force` at all —
+    // not even `force: false`, which a later author could read as meaningful and
+    // flip. A `force: true` would bypass every slot's `nextUsageFetchAllowedAt`
+    // gate and hammer Anthropic.
     expect(args.timeoutMs).toBe(2_000);
     expect(args).not.toHaveProperty('force');
   });
@@ -198,28 +200,5 @@ describe('UsageRefreshScheduler (M1-S1)', () => {
     expect(tm.fetchUsageForAllAttached).toHaveBeenCalledTimes(3);
     release();
     await pending;
-  });
-
-  it('INVARIANT: scheduler tick never forwards force:true (Anthropic DDoS guard)', async () => {
-    const { clock, fireTick } = makeFakeClock();
-    const tm = makeTm();
-    const s = new UsageRefreshScheduler(tm, {
-      intervalMs: 5 * 60_000,
-      timeoutMs: 2_000,
-      enabled: true,
-      clock,
-    });
-    s.start();
-    fireTick();
-    await Promise.resolve();
-    await Promise.resolve();
-    const args = tm.fetchUsageForAllAttached.mock.calls[0][0];
-    // The args object MUST NOT carry `force` at all. Earlier the test also
-    // accepted `force: false` as "defensive", but that's a footgun: a future
-    // author reading the scheduler could read `force: false` as meaningful
-    // and flip it to `force: true` to "fix" something. The scheduler contract
-    // is simpler — never pass the key. A `force: true` would bypass every
-    // slot's `nextUsageFetchAllowedAt` gate and hammer Anthropic.
-    expect(args).not.toHaveProperty('force');
   });
 });

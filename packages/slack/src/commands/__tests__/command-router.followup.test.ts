@@ -124,11 +124,6 @@ describe('CommandRouter.classifyText / isCommand — follow-up ingress', () => {
     }
   });
 
-  it('reuses the SAME handler instances the router routes with', () => {
-    router.classifyText('cwd');
-    expect(cwdHandler.canHandle).toHaveBeenCalledWith('cwd', undefined);
-  });
-
   it('treats empty text as nothing to classify', () => {
     expect(router.classifyText('')).toBe('instruction');
     expect(router.isCommand('')).toBe(false);

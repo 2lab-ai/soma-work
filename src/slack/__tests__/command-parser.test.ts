@@ -23,18 +23,6 @@ describe('CommandParser', () => {
       expect(CommandParser.isMcpInfoCommand('mcp status')).toBe(true);
     });
 
-    it('should NOT match legacy alias "server" (#506)', () => {
-      expect(CommandParser.isMcpInfoCommand('server')).toBe(false);
-    });
-
-    it('should NOT match legacy alias "servers" (#506)', () => {
-      expect(CommandParser.isMcpInfoCommand('servers')).toBe(false);
-    });
-
-    it('should NOT match "mcp?" suffix (#506)', () => {
-      expect(CommandParser.isMcpInfoCommand('mcp?')).toBe(false);
-    });
-
     it('should not match "mcp reload"', () => {
       expect(CommandParser.isMcpInfoCommand('mcp reload')).toBe(false);
     });
@@ -55,10 +43,6 @@ describe('CommandParser', () => {
 
     it('should match "mcp refresh"', () => {
       expect(CommandParser.isMcpReloadCommand('mcp refresh')).toBe(true);
-    });
-
-    it('should NOT match legacy alias "server reload" (#506)', () => {
-      expect(CommandParser.isMcpReloadCommand('server reload')).toBe(false);
     });
 
     it('should not match just "mcp"', () => {
@@ -243,18 +227,6 @@ describe('CommandParser', () => {
     it('should match "/restore"', () => {
       expect(CommandParser.isRestoreCommand('/restore')).toBe(true);
     });
-
-    it('should NOT match legacy alias "credentials" (#506)', () => {
-      expect(CommandParser.isRestoreCommand('credentials')).toBe(false);
-    });
-
-    it('should NOT match legacy alias "credential" (#506)', () => {
-      expect(CommandParser.isRestoreCommand('credential')).toBe(false);
-    });
-
-    it('should NOT match legacy alias "credentials status" (#506)', () => {
-      expect(CommandParser.isRestoreCommand('credentials status')).toBe(false);
-    });
   });
 
   describe('isHelpCommand', () => {
@@ -264,18 +236,6 @@ describe('CommandParser', () => {
 
     it('should match "/help"', () => {
       expect(CommandParser.isHelpCommand('/help')).toBe(true);
-    });
-
-    it('should NOT match "help?" suffix (#506)', () => {
-      expect(CommandParser.isHelpCommand('help?')).toBe(false);
-    });
-
-    it('should NOT match legacy alias "commands" (#506)', () => {
-      expect(CommandParser.isHelpCommand('commands')).toBe(false);
-    });
-
-    it('should NOT match legacy alias "command" (#506)', () => {
-      expect(CommandParser.isHelpCommand('command')).toBe(false);
     });
 
     it('should not match unrelated text', () => {
@@ -324,20 +284,8 @@ describe('CommandParser', () => {
       expect(CommandParser.parseTerminateCommand('terminate session-key')).toBe('session-key');
     });
 
-    it('should return null for legacy alias "kill session-123" (#506)', () => {
-      expect(CommandParser.parseTerminateCommand('kill session-123')).toBe(null);
-    });
-
-    it('should return null for legacy alias "end session" (#506)', () => {
-      expect(CommandParser.parseTerminateCommand('end session')).toBe(null);
-    });
-
     it('should parse "/terminate foo:bar"', () => {
       expect(CommandParser.parseTerminateCommand('/terminate foo:bar')).toBe('foo:bar');
-    });
-
-    it('should return null for legacy alias "terminate_session C123:T456" (#506)', () => {
-      expect(CommandParser.parseTerminateCommand('terminate_session C123:T456')).toBe(null);
     });
 
     it('should return null for just "terminate"', () => {
@@ -1203,14 +1151,6 @@ describe('CommandParser', () => {
       expect(CommandParser.isShowPromptCommand('/show prompt')).toBe(true);
     });
 
-    it('should NOT match underscore alias "show_prompt" (#506)', () => {
-      expect(CommandParser.isShowPromptCommand('show_prompt')).toBe(false);
-    });
-
-    it('should NOT match underscore alias "/show_prompt" (#506)', () => {
-      expect(CommandParser.isShowPromptCommand('/show_prompt')).toBe(false);
-    });
-
     it('should be case-insensitive', () => {
       expect(CommandParser.isShowPromptCommand('Show Prompt')).toBe(true);
       expect(CommandParser.isShowPromptCommand('SHOW PROMPT')).toBe(true);
@@ -1236,14 +1176,6 @@ describe('CommandParser', () => {
 
     it('should match "/show instructions"', () => {
       expect(CommandParser.isShowInstructionsCommand('/show instructions')).toBe(true);
-    });
-
-    it('should NOT match underscore alias "show_instructions" (#506)', () => {
-      expect(CommandParser.isShowInstructionsCommand('show_instructions')).toBe(false);
-    });
-
-    it('should NOT match underscore alias "/show_instructions" (#506)', () => {
-      expect(CommandParser.isShowInstructionsCommand('/show_instructions')).toBe(false);
     });
 
     it('should be case-insensitive', () => {

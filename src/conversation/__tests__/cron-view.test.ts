@@ -65,9 +65,25 @@ describe('buildCronJobsView — where a run that opened no session went', () => 
     expect(dm.postedUrl).toBeUndefined();
   });
 
-  it('no link when the job has no thread or no link can be built', () => {
+  it('no link when the job has no thread (even where a link could be built)', () => {
+    const asked: unknown[] = [];
     const [view] = buildCronJobsView({
       jobs: [{ ...JOB, target: 'thread' }],
+      history: [record('2026-11-13T09:00:00.000Z', { executionPath: 'thread_reply' })],
+      nowMs: Date.parse('2026-11-14T00:00:00.000Z'),
+      findSession: () => undefined,
+      threadUrl: (channel, ts) => {
+        asked.push(ts);
+        return `https://slack.example/archives/${channel}/p${String(ts)}`;
+      },
+    });
+    expect(view.runs[0].postedUrl).toBeUndefined();
+    expect(asked).toEqual([]);
+  });
+
+  it('no link when no link can be built for the job’s thread', () => {
+    const [view] = buildCronJobsView({
+      jobs: [threadJob],
       history: [record('2026-11-13T09:00:00.000Z', { executionPath: 'thread_reply' })],
       nowMs: Date.parse('2026-11-14T00:00:00.000Z'),
       findSession: () => undefined,

@@ -583,10 +583,7 @@ describe('T3 — the model picker on the composer’s row, left of Send, through
       '<ui-composer id="pc-composer" slot="composer" lang="ko"><div class="panel-controls" id="panel-controls" slot="end" aria-label="이 세션의 모델과 추론 강도"></div></ui-composer>',
     );
   });
-  it('the page reads nothing in the composer’s shadow DOM: no measuring, no docked box', () => {
-    expect(TEMPLATE).not.toContain('syncPickerDock');
-    expect(TEMPLATE).not.toContain('data-pick-dock');
-    expect(TEMPLATE).not.toMatch(/--pd-[lrth]/);
+  it('the page reads nothing in the composer’s shadow DOM', () => {
     expect(TEMPLATE).not.toMatch(/shadowRoot\.querySelector\('\.cp-(bar|end|tools)'\)/);
   });
   it('a new card’s composer takes the controls with it (the picker element and its state move, not a copy)', () => {
@@ -623,7 +620,7 @@ describe('T3 — the model picker on the composer’s row, left of Send, through
     expect(oldComp.children).toEqual([]);
     expect(replaced).toEqual([made.find((n) => n.id === 'cmd-steer')]);
   });
-  it('the controls sit on the row: one line, the note floats above the picker; no "이 세션" label', () => {
+  it('the controls sit on the row: one line, the note floats above the picker', () => {
     const r = cssRule('#panel-controls');
     expect(r).toContain('position: relative;');
     expect(r).toContain('flex-wrap: nowrap;');
@@ -635,7 +632,6 @@ describe('T3 — the model picker on the composer’s row, left of Send, through
     expect(cssRule('#panel-controls ui-model-picker')).toContain('min-width: 0;');
     // Narrower than even the compact trigger (320px, four tools): its content clips inside the button, never over Send.
     expect(cssRule('#panel-controls ui-model-picker::part(trigger)')).toContain('overflow: hidden;');
-    expect(clientFn('renderPanelControls')).not.toContain('pc-scope');
   });
   it('the controls’ repaint fits the picker to the row (syncPickerFit), and so does a resize of the composer', () => {
     expect(clientFn('renderPanelControls')).toMatch(/mpHydrate\(el\);\n\s*syncPickerFit\(\);/);
