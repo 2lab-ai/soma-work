@@ -785,6 +785,7 @@ describe('C6 — the inbox card: 지시 / 응답', () => {
     'ioSkillsHtml',
     'ioInstructionHtml',
     'ioCompactOutHtml',
+    'sentAwaitsStart',
     'renderCardIo',
     'fetchCardIo',
   ];
@@ -805,7 +806,7 @@ describe('C6 — the inbox card: 지시 / 응답', () => {
       },
     };
     const session = { key: 'k1', conversationId: CID, activityState: opts.working ? 'working' : 'idle' };
-    const a = load<CardApi>(IO_FNS, [...SYS_VARS, '_ioOpen'], {
+    const a = load<CardApi>(IO_FNS, [...SYS_VARS, '_ioOpen', 'SENT_AWAIT_MS'], {
       panelConvId: 'other',
       _artCache: {},
       renderTurnArtifacts: () => '',
@@ -819,6 +820,7 @@ describe('C6 — the inbox card: 지시 / 응답', () => {
       _sessionCache: { k1: session },
       refreshCard,
       Date: FrozenDate,
+      _sentAwait: {},
       ...(opts.extra || {}),
     });
     return { ...a, html: () => a.renderCardIo(session), setInterval, refreshCard, session };
@@ -936,6 +938,17 @@ describe('C6 — the inbox card: 지시 / 응답', () => {
     expect(out).toContain('<span class="cp-pct">25%</span>');
     expect(out).not.toContain('응답 작성 중');
     expect(c.setInterval).toHaveBeenCalledTimes(1);
+  });
+
+  it('Z 2026-11-26 — an instruction sent from this browser reads 응답 작성 중 before the session turns working', () => {
+    const typed = user('리포트 고쳐줘', PERSON);
+    expect(card(typed).html()).toContain('<div class="io-text is-muted">응답 없음</div>');
+    const sent = card(typed, { extra: { _sentAwait: { k1: { at: NOW - 1_000, fin: 0 } } } }).html();
+    expect(sent).toContain('<div class="io-text is-muted">응답 작성 중…</div>');
+    // The turn ran and ended after the send: the card says what it has.
+    const ended = card(typed, { extra: { _sentAwait: { k1: { at: NOW - 1_000, fin: 0 } } } });
+    Object.assign(ended.session, { finishedAt: NOW });
+    expect(ended.html()).toContain('<div class="io-text is-muted">응답 없음</div>');
   });
 
   it('/compact done: the 응답 is its result; the facts in the 지시 row', () => {

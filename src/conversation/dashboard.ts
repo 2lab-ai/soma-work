@@ -18033,7 +18033,8 @@ function renderCardIo(s) {
     outHtml = replyHtml;
   } else if (d.partial) {
     outHtml = '<div class="io-text is-muted">응답을 불러오지 못했습니다</div>';
-  } else if (s.activityState === 'working') {
+  } else if (s.activityState === 'working' || sentAwaitsStart(s.key, s, Date.now())) {
+    // Working, or an instruction sent from here whose turn has not started yet (Z 2026-11-26).
     outHtml = '<div class="io-text is-muted">응답 작성 중…</div>';
   } else {
     outHtml = '<div class="io-text is-muted">응답 없음</div>';
@@ -24371,9 +24372,10 @@ function convPaint() {
     loading: msg === 'loading' || !!_panelTurnsLoading,
     // D12 — the writing row: the session works and the latest turn is the instruction. Not while 입력 필요 is the
     // last turn: the agent waits on the reader, and the ask stays the chat's last message (SSOT 2026-11-13).
-    // The writing row's orb follows the agent's last tool (convPendingOf, 2026-11-21).
+    // The writing row's orb follows the agent's last tool (convPendingOf, 2026-11-21). An instruction sent from here
+    // shows the row at once, before the session turns working (sentAwaitsStart, Z 2026-11-26).
     pending:
-      !needs && ansPendingShow(s, panelConvId, last ? last.role : '')
+      !needs && ansPendingShow(s, panelConvId, last ? last.role : '', panelSessionKey)
         ? typeof convPendingOf === 'function'
           ? convPendingOf(s && s.agentRoot && s.agentRoot.lastTool, s && s.agentRoot && s.agentRoot.lastToolAt, last && last.timestamp)
           : true
@@ -24600,8 +24602,40 @@ function convPendingOf(lastTool, lastToolAt, since) {
   var fresh = since === undefined || (at > 0 && at >= (Number(since) || 0));
   return { activity: orbActivityOf(fresh ? lastTool : '') };
 }
-function ansPendingShow(s, convId, lastRole) {
-  return !!(s && convId && s.conversationId === convId && s.activityState === 'working' && lastRole === 'user');
+// Sent, not started yet (Z 2026-11-26): an instruction this browser sent to a card no turn was running on shows the
+// writing row at once. The session turns working only after the server echoed the words to Slack, let them through
+// the task queue and set the turn up — until then the chat showed the instruction with nothing under it. Session
+// key → { at: when it was sent (this browser's clock), fin: the session's finishedAt then (the server's) }; marked by
+// sendCommand, cleared when no turn will come from the send.
+var SENT_AWAIT_MS = 180000;
+var _sentAwait = Object.create(null);
+function sentAwaitMark(key) {
+  if (!key) return;
+  var s = _sessionCache[key];
+  _sentAwait[key] = { at: Date.now(), fin: Number(s && s.finishedAt) || 0 };
+  // Overdue, the row leaves on its own: nothing else repaints an idle card.
+  setTimeout(function() {
+    convPaintSoon();
+    if (_cardHost[key]) refreshCard(key);
+  }, SENT_AWAIT_MS + 50);
+}
+function sentAwaitClear(key) {
+  if (key) delete _sentAwait[key];
+}
+// The send still waits for its turn: not answered (the caller checks the latest turn), no turn ran and ended after it
+// (finishedAt — the switch to idle — moved since the send; compared with itself, never with this browser's clock), the
+// session does not ask its reader, the person's task queue does not hold it (its card waits in 개인별 큐), and it is
+// not overdue.
+function sentAwaitsStart(key, s, now) {
+  var a = key ? _sentAwait[key] : null;
+  if (!a || !s) return false;
+  var done = (Number(s.finishedAt) || 0) > (a.fin || 0) || s.activityState === 'waiting' || !!s.userQueue || now - a.at > SENT_AWAIT_MS;
+  if (done) delete _sentAwait[key];
+  return !done;
+}
+function ansPendingShow(s, convId, lastRole, key) {
+  if (!(s && convId && s.conversationId === convId && lastRole === 'user')) return false;
+  return s.activityState === 'working' || sentAwaitsStart(key, s, Date.now());
 }
 // One-time wiring: the element's requests (older page, try again) and, once its
 // module has loaded, a paint of what it was handed before it could render.
@@ -25073,6 +25107,8 @@ async function sendCommand(text, ref, files) {
   var optimisticId = 'optimistic-' + Date.now();
   optimisticId += '-' + Math.random().toString(36).slice(2, 8); // two tabs in the same ms never share a ref (#785)
   const shown = msg + (list.length ? (msg ? '\\n' : '') + '📎 ' + list.map(function(f) { return f.name; }).join(', ') : '');
+  // Idle: the writing row shows under it at once, until the turn this starts takes over (Z 2026-11-26, sentAwaitsStart).
+  if (!running) sentAwaitMark(sendingSessionKey);
   appendTurnToPanel({
     id: optimisticId,
     role: 'user',
@@ -25110,9 +25146,14 @@ async function sendCommand(text, ref, files) {
   } finally {
     _pcInFlight--;
   }
-  if (awaitsOwner) dashToast({ title: '작업 소유자의 승인을 기다려요', description: '소유자가 승인하면 실행됩니다 — 소유자에게 DM과 대시보드로 요청했어요', tone: 'wait' });
+  if (awaitsOwner) {
+    // No turn starts before the owner approves: nothing is being written yet.
+    sentAwaitClear(sendingSessionKey);
+    dashToast({ title: '작업 소유자의 승인을 기다려요', description: '소유자가 승인하면 실행됩니다 — 소유자에게 DM과 대시보드로 요청했어요', tone: 'wait' });
+  }
   if (answeredInThread) {
     // The turn shown at once (idle) or the note's row (running) would wait for a turn that never comes.
+    sentAwaitClear(sendingSessionKey);
     if (optimisticId) dropTurnFromPanel(optimisticId);
     if (ref) el.setItemState(ref, 'cancelled');
     dashToast(pcThreadAnswerToast(_sessionCache[sendingSessionKey]));
@@ -25123,6 +25164,7 @@ async function sendCommand(text, ref, files) {
     delete _pcFailed[ref];
   }
   // Only the card that sent it changes: a late answer never touches the card opened meanwhile.
+  if (why) sentAwaitClear(sendingSessionKey); // not sent: no turn will come from it
   if (panelSessionKey !== sendingSessionKey) return !why;
   // The session left the board meanwhile (archived, a folded day): fail closed. The next live
   // render that finds it again re-applies its real state (the mode cache is cleared).
