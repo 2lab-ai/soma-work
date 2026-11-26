@@ -1628,6 +1628,31 @@ describe('SlackHandler — follow-up queue host', () => {
         expect(handler.goalBoardRuntimeOf(SESSION_KEY).resumePending).toBe(false);
       });
 
+      // Review #1502 — a card patch never moves a card between columns; only a full board push does. A goal's card the
+      // board put in RUNNING while its run held the slot gets a full push once the run let the slot go, seeing it
+      // no longer driven — otherwise it stayed in RUNNING until some other session's push.
+      it('S6 (PR10): the run letting its slot go pushes the whole board, read after the release', async () => {
+        registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+        const seen: boolean[] = [];
+        claudeHandler.broadcastSessionUpdate.mockImplementation(() =>
+          seen.push(handler.goalBoardRuntimeOf(SESSION_KEY).driven),
+        );
+        const { settle } = await startBusyTurn();
+        seen.length = 0;
+        await settle();
+        await tick();
+        expect(seen).toContain(false);
+      });
+
+      it('S6 (PR10): a run of a session with no goal in flight does not push the whole board at its release', async () => {
+        registrySession.goal = undefined;
+        const { settle } = await startBusyTurn();
+        claudeHandler.broadcastSessionUpdate.mockClear();
+        await settle();
+        await tick();
+        expect(claudeHandler.broadcastSessionUpdate).not.toHaveBeenCalled();
+      });
+
       it('A26: a follow-up queued at the goal turn end runs first; the driver fires once, after the queue drained', async () => {
         registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
         const order: string[] = [];

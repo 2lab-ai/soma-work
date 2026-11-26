@@ -294,6 +294,8 @@ export function advanceGoalQueue(
 function rebaseGoalAsActive(goal: SessionGoalState, priorEpoch: number | undefined): void {
   goal.status = 'active';
   goal.holdWhy = undefined; // D6 — no longer held
+  // S3 — it starts running again: a stop it carried (loaded, or set before it was held) is not its phase any more.
+  goal.phase = undefined;
   goal.continuationCount = 0;
   goal.epoch = Math.max(goal.epoch ?? 0, priorEpoch ?? 0) + 1;
   goal.updatedAt = Date.now();

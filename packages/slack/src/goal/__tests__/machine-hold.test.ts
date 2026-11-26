@@ -5,6 +5,7 @@
 import { describe, expect, it } from 'vitest';
 import { pauseCurrentGoalHoldingQueue, resumePausedGoal, settleLoadedPhase, storedGoal } from '../machine';
 import type { SessionGoal } from '../model';
+import { phaseOf } from '../read';
 
 const goal = (goalId: string, over: Partial<SessionGoal> = {}): SessionGoal => ({
   goalId,
@@ -29,6 +30,20 @@ describe('goal/machine — the slot hold (D6)', () => {
     resumePausedGoal(session, 'a');
     expect(session.goal?.status).toBe('active');
     expect(session.goal?.holdWhy).toBeUndefined();
+  });
+
+  // Review #1498 (P1) — a goal loaded stopped, held in the slot and resumed runs: its stored stop is not carried back.
+  it('a loaded stopped goal, held and resumed, runs — the stored stop does not come back', () => {
+    const loaded = settleLoadedPhase(
+      JSON.parse(JSON.stringify(storedGoal(goal('s', { phase: { kind: 'stopped', why: 'judge-failed', at: 5 } })))),
+    );
+    expect(phaseOf(loaded)).toMatchObject({ kind: 'stopped' });
+    const session = { goal: loaded, goalQueue: [goal('q', { status: 'queued' })] };
+    pauseCurrentGoalHoldingQueue(session);
+    resumePausedGoal(session, 's');
+    expect(session.goal?.status).toBe('active');
+    expect(session.goal?.phase).toBeUndefined();
+    expect(phaseOf(session.goal)).toEqual({ kind: 'running' });
   });
 
   it('the why survives a save and load under the same fingerprint, and lapses when an older version moved it', () => {
