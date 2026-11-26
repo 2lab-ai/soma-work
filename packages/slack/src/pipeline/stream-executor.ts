@@ -7548,9 +7548,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         return this.deps.actionHandlers.formsAnswered?.(context.sessionKey, formIds) === true ? 'answered' : undefined;
       }
       if (result.reason === 'post-failed') {
-        // #1474 — answered before the failed chunk (a typed reply to the chunks already up): no fallback question for
-        // an answered one (round 15, astra).
-        const answered = this.deps.actionHandlers.formsAnswered?.(context.sessionKey, formIds) === true;
+        // #1474 — the whole question answered before the failed chunk (a typed reply to the chunks already up took
+        // every form of it): no fallback question for an answered one (round 15, astra). One chunk answered by a
+        // click is not the whole question: the fallback still asks it (round 16, astra/grok).
+        const answered =
+          formIds.length > 0 &&
+          formIds.every((fId) => this.deps.actionHandlers.formsAnswered?.(context.sessionKey, [fId]) === true);
         for (const fId of formIds) {
           this.deps.actionHandlers.deletePendingForm(fId);
         }

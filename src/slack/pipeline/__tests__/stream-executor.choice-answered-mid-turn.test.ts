@@ -85,7 +85,26 @@ function createSession(): any {
   };
 }
 
-function askingStream() {
+/** Seven questions: a split form of two chunks (six per form). */
+const askSevenResult = JSON.stringify({
+  type: 'model_command_result',
+  commandId: 'ASK_USER_QUESTION',
+  ok: true,
+  payload: {
+    question: {
+      type: 'user_choices',
+      title: 'E2E',
+      questions: Array.from({ length: 7 }, (_, i) => ({
+        id: `q${i + 1}`,
+        question: `Q${i + 1}`,
+        choices: [{ id: '1', label: 'a' }],
+        recommendedChoiceId: '1',
+      })),
+    },
+  },
+});
+
+function askingStream(result: string = askResult) {
   return async function* () {
     yield {
       type: 'assistant',
@@ -95,7 +114,7 @@ function askingStream() {
     };
     yield {
       type: 'user',
-      message: { content: [{ type: 'tool_result', tool_use_id: 'tool_ask', content: askResult }] },
+      message: { content: [{ type: 'tool_result', tool_use_id: 'tool_ask', content: result }] },
     };
     yield { type: 'result', subtype: 'success', total_cost_usd: 0, usage: {} };
   };
@@ -441,6 +460,33 @@ describe('end of turn after ASK_USER_QUESTION', () => {
     expect(say).not.toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining('선택') }));
     expect(session.actionPanel?.pendingQuestion).toBeUndefined();
     expect(states(deps)).not.toContain('waiting');
+  });
+
+  // #1474 round 16 (astra/grok): one chunk answered by a click before a later chunk fails is not the whole question —
+  // the fallback still asks it, and the session waits.
+  it('control — a chunk that fails after only one chunk was answered still sends the fallback question', async () => {
+    const session = createSession();
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const deps = createDeps(session, askingStream(askSevenResult));
+    let answeredForm: string | undefined;
+    deps.threadPanel.askUserForm = vi
+      .fn()
+      .mockImplementation(async (turnId: string, _chunks: any[], formIds: string[], question: any, _a: any, s: any) => {
+        s.actionPanel = s.actionPanel ?? {};
+        s.actionPanel.pendingChoice = { turnId, kind: 'multi', choiceTs: 'form_ts', formIds: [...formIds], question };
+        s.actionPanel.waitingForChoice = true;
+        answeredForm = formIds[0]; // a click answered the first chunk only
+        return { ok: false, reason: 'post-failed', postedTs: ['form_ts'], failedIndex: 1, error: new Error('slack') };
+      });
+    deps.actionHandlers.formsAnswered = vi.fn((_key: string, ids: readonly string[]) => ids.includes(answeredForm!));
+    const fallback = vi
+      .spyOn(StreamExecutor.prototype as any, 'sendCommandChoiceFallback')
+      .mockResolvedValue(undefined);
+
+    await new StreamExecutor(deps).execute(params(session, say));
+
+    expect(fallback).toHaveBeenCalledTimes(1);
+    fallback.mockRestore();
   });
 
   it('T2 — an answer landing during the end-of-turn status write is not re-opened', async () => {
