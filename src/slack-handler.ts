@@ -25,7 +25,7 @@ import {
 import { FOLLOWUP_RESTART_FREEZE_REASON, type FollowupQueueView } from '@soma/slack/followup-queue-blocks';
 import { FollowupQueueStore } from '@soma/slack/followup-queue-store';
 import { stopGoal } from '@soma/slack/goal/machine';
-import { slotGoalInFlight, slotHoldOf } from '@soma/slack/goal/read';
+import { phaseOf, slotGoalInFlight, slotHoldOf } from '@soma/slack/goal/read';
 import { OutputFlag } from '@soma/slack/output-flags';
 import { isLocalSlashCommand, shouldForwardAsLocalSlashCommand } from '@soma/slack/pipeline/local-slash-command';
 import { runWithTimeout } from '@soma/slack/pipeline/stream-executor-cleanup-helpers';
@@ -162,6 +162,7 @@ import {
 } from './slack/handoff-budget';
 import { buildCompactHooks } from './slack/hooks/compact-hooks';
 import { InputProcessor, type MessageEvent, SessionInitializer, StreamExecutor } from './slack/pipeline';
+import { RestartRecovery } from './slack/restart-recovery';
 import { requestSecretUse } from './slack/secret-use-request';
 import {
   advanceGoalQueue,
@@ -642,21 +643,8 @@ export class SlackHandler {
    * never touches a run that is already in flight.
    */
   private followupShutdownPreparing?: boolean;
-  /**
-   * Sessions whose turn the last shutdown cut short (`wasWorkingAtShutdown`),
-   * recorded by `notifyCrashRecovery` before it clears that marker and read
-   * once by `resumeActiveGoals`: a cut goal turn gives its continuation back.
-   */
-  private restartCutSessionKeys = new Set<string>();
-  /**
-   * Cut sessions `notifyCrashRecovery` resumed with the restart prompt, read
-   * once by `resumeActiveGoals`: the resume turn carries the session, so the
-   * goal loop is not kicked for it (one turn, never two) — it runs when that
-   * turn settles.
-   */
-  private restartResumedSessionKeys = new Set<string>();
-  /** `resumeActiveGoals` has run since boot — see {@link handBackFailedRestartResume}. */
-  private restartGoalPassRan = false;
+  /** .prd/39 S5 — restart recovery state: the cut and resumed records and the boot phase (`restart-recovery.ts`). */
+  private readonly recovery = new RestartRecovery();
   /**
    * Sessions whose queue holds a row a host-side cut left `uncertain` (a
    * restart, an auto-compact stop) and whose conversation is about to be
@@ -8660,7 +8648,7 @@ export class SlackHandler {
         });
         continue;
       }
-      if (isWorking) this.restartCutSessionKeys.add(session.sessionKey);
+      if (isWorking) this.recovery.cut.add(session.sessionKey);
 
       // #351: an idle session whose error auto-retry is still pending is
       // resumed by resumePendingErrorRetries — say when, instead of asking the
@@ -8719,7 +8707,7 @@ export class SlackHandler {
           ownerId: session.ownerId,
           activeGoal: this.claudeHandler.getSessionByKey?.(session.sessionKey)?.goal?.status === 'active',
         });
-        this.restartResumedSessionKeys.add(session.sessionKey);
+        this.recovery.resumed.add(session.sessionKey);
         // #351 no-double-resume: this resume supersedes a pending error
         // auto-retry, so drop its marker before resumePendingErrorRetries
         // can re-arm it as a second turn.
@@ -8814,8 +8802,8 @@ export class SlackHandler {
     // One owner per refund, whatever the order (#961 review, astra).
     if (
       live.goal?.status === 'active' &&
-      !this.restartGoalPassRan &&
-      this.restartResumedSessionKeys.delete(sessionKey)
+      this.recovery.bootPhase === 'recovering' &&
+      this.recovery.resumed.delete(sessionKey)
     ) {
       this.logger.info('Restart resume never started its turn — the startup goal pass resumes the goal', {
         sessionKey,
@@ -8874,7 +8862,7 @@ export class SlackHandler {
    * resumed.
    *
    * Except a session whose cut turn `notifyCrashRecovery` already resumed
-   * with the restart prompt (`restartResumedSessionKeys`): that turn carries
+   * with the restart prompt (`recovery.resumed`): that turn carries
    * it and may be running, so it is neither forced idle nor kicked — the loop
    * judges when it settles — and it keeps its continuation, since the resume
    * replaces the cut turn. Must be called AFTER `notifyCrashRecovery`.
@@ -8899,6 +8887,7 @@ export class SlackHandler {
     let refunded = 0;
     let leftToRestartResume = 0;
     let leftToLiveTurn = 0;
+    let stoppedByPerson = 0;
     for (const [sessionKey, session] of this.claudeHandler.getAllSessions()) {
       // Repair a stranded queue (defense for the eval-complete crash window):
       // if the current goal is genuinely closed (completed) or absent but goals
@@ -8924,6 +8913,21 @@ export class SlackHandler {
         this.logger.info('Goal resume skipped — session halted by a safeguards flag', { sessionKey });
         continue;
       }
+      // .prd/39 D13 (X18) — a person stopped this session after its last turn began: the stop is the last word across
+      // the restart. Recorded stopped(person-stopped) (an idle card with a stop chip); no kick, no refund.
+      if (typeof session.personStoppedWorkAt === 'number') {
+        if (phaseOf(session.goal)?.kind !== 'stopped') stopGoal(session.goal, 'person-stopped');
+        stoppedByPerson++;
+        this.logger.info('Goal left stopped after restart — a person stopped it', { sessionKey });
+        continue;
+      }
+      // A goal already stopped (judge-failed, start-failed, resume-failed, person-stopped) waits for a person.
+      if (phaseOf(session.goal)?.kind === 'stopped') continue;
+      // .prd/39 D13 (X19) — the opening has not reached the model: the first turn starts the goal, not the loop.
+      if (phaseOf(session.goal)?.kind === 'opening') {
+        this.logger.info('Goal resume left to its opening turn', { sessionKey });
+        continue;
+      }
       // A stall judged on no turn text is not a real stall: a turn the restart
       // cut short was taken for "the same failure" (2026-11-02, before the loop
       // stopped judging empty turns). End it — its question is withdrawn and
@@ -8939,7 +8943,7 @@ export class SlackHandler {
       // carries the session, and it may already be running — never force it
       // idle, never kick a second turn beside it; the loop judges when the
       // resume turn settles.
-      const resumedByRestart = this.restartResumedSessionKeys.has(sessionKey);
+      const resumedByRestart = this.recovery.resumed.has(sessionKey);
       // A turn that started after boot (a person's message, a host turn) is running now: this pass runs about 25 s
       // after boot, behind crash recovery. Its `working` is live, not left by the old process — forcing it idle put
       // a running session in the done column for its whole turn (2026-11-26, 1795677176.047669). That turn carries
@@ -8974,7 +8978,7 @@ export class SlackHandler {
       // resumes itself (`resumedByRestart`) is replaced by that resume, so it
       // keeps its continuation — refunding too would buy an extra turn on the
       // same budget (#961 review). A resume that never starts refunds on hand-back.
-      const cutTurn = !resumedByRestart && (this.restartCutSessionKeys.has(sessionKey) || falseStall);
+      const cutTurn = !resumedByRestart && (this.recovery.cut.has(sessionKey) || falseStall);
       if (cutTurn && session.goal.continuationCount > 0 && !capDecisionOpen) {
         session.goal.continuationCount -= 1;
         refunded++;
@@ -9032,10 +9036,15 @@ export class SlackHandler {
     }
     // Read once: a later pass (no restart in between) refunds nothing and kicks
     // a session the restart resumed like any other.
-    this.restartCutSessionKeys.clear();
-    this.restartResumedSessionKeys.clear();
-    this.restartGoalPassRan = true;
-    if (forcedIdle > 0 || repaired > 0 || retriesClaimed > 0 || stallsEnded > 0 || refunded > 0) {
+    this.recovery.passRan();
+    if (
+      forcedIdle > 0 ||
+      repaired > 0 ||
+      retriesClaimed > 0 ||
+      stallsEnded > 0 ||
+      refunded > 0 ||
+      stoppedByPerson > 0
+    ) {
       this.claudeHandler.saveSessions();
     }
     if (resumed > 0 || repaired > 0 || leftToRestartResume > 0 || leftToLiveTurn > 0) {

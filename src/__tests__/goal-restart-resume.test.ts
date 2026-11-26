@@ -152,7 +152,7 @@ describe('resumeActiveGoals (T1)', () => {
     const { handler } = createHandler(sessions);
     const settled = vi.fn();
     handler.setGoalTurnSettledHandler(settled);
-    (handler as any).restartGoalPassRan = true;
+    (handler as any).recovery.passRan();
     (handler as any).followupDispatcher = { isBusy: (key: string) => key === 'C1-T1', liveTurnEpoch: () => 1 };
 
     (handler as any).handBackFailedRestartResume('C1-T1');
@@ -170,13 +170,49 @@ describe('resumeActiveGoals (T1)', () => {
     const { handler } = createHandler(sessions);
     const settled = vi.fn();
     handler.setGoalTurnSettledHandler(settled);
-    (handler as any).restartGoalPassRan = true;
+    (handler as any).recovery.passRan();
 
     (handler as any).handBackFailedRestartResume('C1-T1');
 
     expect(cut.activityState).toBe('idle');
     expect(goal.continuationCount).toBe(3);
     expect(settled).toHaveBeenCalledWith('C1-T1', { cause: 'kick' });
+  });
+
+  /**
+   * .prd/39 D13 · X18 — a person stopped this session after its last turn began (the stop is saved with the session):
+   * the restart does not roll the goal again. It is recorded stopped(person-stopped); no kick, no refund.
+   */
+  it('X18: leaves a goal a person stopped as stopped(person-stopped) — not kicked, not refunded', () => {
+    const stoppedByPerson = activeGoalSession({ activityState: 'idle', personStoppedWorkAt: 123 } as any);
+    const goal = stoppedByPerson.goal as NonNullable<ConversationSession['goal']>;
+    goal.continuationCount = 4;
+    const sessions = new Map<string, ConversationSession>([['C1-T1', stoppedByPerson]]);
+    const { handler } = createHandler(sessions);
+    const settled = vi.fn();
+    handler.setGoalTurnSettledHandler(settled);
+    (handler as any).recovery.cut.add('C1-T1');
+
+    expect(handler.resumeActiveGoals()).toBe(0);
+
+    expect(settled).not.toHaveBeenCalled();
+    expect(goal.continuationCount).toBe(4);
+    expect((goal as any).phase).toMatchObject({ kind: 'stopped', why: 'person-stopped' });
+  });
+
+  /** .prd/39 D13 · X19 — a goal whose opening has not reached the model is the first turn's to start, not the loop's. */
+  it('X19: leaves a goal whose first turn has not started to that turn — no kick, no resume mark', () => {
+    const opening = activeGoalSession({ activityState: 'idle' });
+    (opening.goal as any).openingPending = true;
+    const sessions = new Map<string, ConversationSession>([['C1-T1', opening]]);
+    const { handler } = createHandler(sessions);
+    const settled = vi.fn();
+    handler.setGoalTurnSettledHandler(settled);
+
+    expect(handler.resumeActiveGoals()).toBe(0);
+
+    expect(settled).not.toHaveBeenCalled();
+    expect((handler as any).followupResumeMark.has('C1-T1')).toBe(false);
   });
 
   it('takes the old process’s pending error retry from a session whose turn already runs', () => {
@@ -209,7 +245,7 @@ describe('resumeActiveGoals (T1)', () => {
     const sessions = new Map<string, ConversationSession>([['C1-T1', running]]);
     const { handler } = createHandler(sessions);
     handler.setGoalTurnSettledHandler(vi.fn());
-    (handler as any).restartCutSessionKeys = new Set(['C1-T1']);
+    (handler as any).recovery.cut.add('C1-T1');
     (handler as any).requestCoordinator.setController('C1-T1', new AbortController());
 
     handler.resumeActiveGoals();
@@ -433,7 +469,7 @@ describe('resumeActiveGoals (T1)', () => {
     goal.continuationCount = 10;
     const { handler, claudeHandler } = createHandler(new Map([['C1-T1', cut]]));
     // Cut, but not resumed by crash recovery (e.g. its notice failed): the loop's turn replaces it.
-    (handler as any).restartCutSessionKeys = new Set(['C1-T1']);
+    (handler as any).recovery.cut.add('C1-T1');
     const settled = vi.fn();
     handler.setGoalTurnSettledHandler(settled);
 
@@ -488,7 +524,7 @@ describe('resumeActiveGoals (T1)', () => {
     const goal = cut.goal as NonNullable<ConversationSession['goal']>;
     goal.continuationCount = 6;
     const { handler } = createHandler(new Map([['C1-T1', cut]]));
-    (handler as any).restartCutSessionKeys = new Set(['C1-T1']);
+    (handler as any).recovery.cut.add('C1-T1');
     handler.setGoalTurnSettledHandler(vi.fn());
     handler.resumeActiveGoals();
     handler.resumeActiveGoals();
@@ -554,7 +590,7 @@ describe('resumeActiveGoals (T1)', () => {
       }),
     };
     // The 10th continuation was the turn the restart cut.
-    (handler as any).restartCutSessionKeys = new Set(['C1-T1']);
+    (handler as any).recovery.cut.add('C1-T1');
     const settled = vi.fn();
     handler.setGoalTurnSettledHandler(settled);
 
@@ -616,7 +652,7 @@ describe('resumeActiveGoals (T1)', () => {
     goal.lastEvalReason = 'no output';
     goal.stall = { stallId: 's1', stalledAt: 1, reason: 'no output', actions: ['a', 'b', 'c'], confidence: 0.97 };
     const { handler } = createHandler(new Map([['C1-T1', stalled]]));
-    (handler as any).restartCutSessionKeys = new Set(['C1-T1']);
+    (handler as any).recovery.cut.add('C1-T1');
     handler.setGoalTurnSettledHandler(vi.fn());
 
     handler.resumeActiveGoals();
