@@ -224,7 +224,7 @@ RecoveryRecord = { raw: { activityState, wasWorkingAtShutdown, personStopped }, 
 |---|---|---|
 | D1 | "턴이 도는가"는 `turnHeld`(실행 단계 `preparing`·`running` ∨ 컨트롤러), "세션이 구동되는가"는 `driven` 하나로 답한다. `activityState`는 루프 · 복구 게이트에서 빠진다 | 가장 이른 시계(슬롯)를 보되 끝난 턴의 정리(`settling`)는 빼야 턴 끝 트리거가 산다. X1 · X2 · PR #1458 계열 |
 | D2 | 루프 게이트 = 슬롯의 active goal ∧ 단계 ∈ {`running`, `retrying`} ∧ ¬`turnHeld` ∧ ¬주인 질문 ∧ ¬호스트 대기(자동 압축 예외 유지) ∧ ¬중단 잠금 ∧ ¬종료 중. `retrying`은 남은 창이면 재시도를 다시 걸고, 창이 지났으면 판정한다 | 게이트가 cap 질문을 모르던 X4를 단계가 막는다. 재시작 뒤 재시도 재무장 경로를 잃지 않는다 |
-| D3 | 로드는 디스크 원본을 복구 레코드에 담은 **뒤** 표시용 `activityState`를 레코드에서 정한다(S5). 강제 `idle` 직접 쓰기 4곳은 `releaseRecovered` · 멈춘 준비의 정리 둘로 줄고, 둘 다 이름 있는 전이다 | 크래시 입력 보존 · 재개 대기 표시 · 크론 차단을 유지하면서 프록시를 없앤다 |
+| D3 | 로드는 디스크 원본을 복구 레코드에 담은 **뒤** 표시용 `activityState`를 레코드에서 정한다(S5). 재시작 게이트용 강제 `idle` 쓰기 2곳(재시작 패스 · 인계)은 `releaseRecovered` 하나로 바뀐다. 멈춘 준비의 정리(`releaseStoppedPreparation`)와 `/new` 리셋의 `idle`은 이유가 달라 그대로 남고, 이름 있는 전이로 둔다 | 크래시 입력 보존 · 재개 대기 표시 · 크론 차단을 유지하면서 프록시를 없앤다 |
 | D4 | "판정 중"(`pendingEval`)은 저장하지 않는다 — S4의 런타임 상태다 | 로드마다 지워지던 필드. 소유자 확인이 10곳에 흩어져 있었다 |
 | D5 | 완료된 goal은 슬롯에서 내려가 히스토리에만 있다. 표면("최근 완료")은 **같은 PR**에서 히스토리를 읽게 바뀐다 | 이중 저장(X13)과 이중 집계를 없앤다 |
 | D6 | "슬롯의 paused"는 **hold** `{why}` 하나의 뜻이고 만드는 길도 하나(`holdCurrentGoal`)다. 첫 턴 취소는 `hold(opening-cancelled)` → 삭제의 두 단계를 유지한다: 다음 goal의 첫 턴 승인이 실패하거나 중간에 죽어도 취소된 goal은 hold로 남아 다시 돌지 않는다 | 만드는 곳마다 필드가 달랐다(38 §2.3). 취소 안전장치는 지금 계약을 그대로 이름 붙인 것 |
