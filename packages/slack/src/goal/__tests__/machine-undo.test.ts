@@ -63,4 +63,15 @@ describe('restoreGoalState — an undo does not revive a retired question (X8)',
     expect(capAskOf(session.goal)).toMatchObject({ roundId: 'round-1', openedAt: 5 });
     expect(session.goal?.capDmRef).toEqual({ channel: 'D1', ts: '1.1' });
   });
+
+  // Review #1508 — the stall half of the same rule.
+  it('a stall question the change did not touch comes back as it was', () => {
+    const stalled = goal('s', { stall, continuationCount: 1 });
+    const session = { goal: stalled };
+    const before = snapshotGoalState(session);
+    stalled.objective = 'edited';
+    restoreGoalState(session, before);
+    expect(session.goal?.objective).toBe('s');
+    expect(stallAskOf(session.goal)).toEqual({ kind: 'stall', stall });
+  });
 });
