@@ -2135,6 +2135,8 @@ export class SessionRegistry {
       goalHistory: migrateLegacyGoalArray(archived.goalHistory),
       // Paused goals wait for their owner across sleep and archive (SSOT 2026-11-06).
       goalPaused: migrateLegacyGoalArray(archived.goalPaused),
+      // The queue too (.prd/39 D11, X11): a queued goal waits for the one ahead of it, not for the archive to drop it.
+      goalQueue: migrateLegacyGoalArray(archived.goalQueue),
       taskLedger: sanitizeTaskLedger(archived.taskLedger),
       agents: loseRunningAgents(sanitizeAgentRegistry(archived.agents), Date.now()),
       taskUsage: restoreTaskUsage({ taskUsage: archived.taskUsage, sessionId: archived.sessionId }),
@@ -3368,6 +3370,10 @@ export class SessionRegistry {
     // decision, stall) end with it.
     endGoalCapDecision(session.goal);
     session.goal = undefined;
+    // .prd/39 D11 (X10) — the queue and the shelf belong to the old conversation too; left behind, the next restart's
+    // stranded-queue repair promoted the old queued goal into the new conversation. The history stays.
+    session.goalQueue = undefined;
+    session.goalPaused = undefined;
     // #829 — the follow-up and the card TL;DR were the old conversation's verdict; the new one is decided by
     // its own summary.
     session.followUp = undefined;

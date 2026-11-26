@@ -66,3 +66,68 @@ describe('SessionRegistry — paused goals across archive and revive', () => {
     ]);
   });
 });
+
+const goalOf = (goalId: string, status: 'active' | 'queued' | 'paused' | 'complete') => ({
+  goalId,
+  objective: goalId,
+  status,
+  createdAt: 1,
+  updatedAt: 1,
+  createdBy: 'U1',
+  continuationCount: 0,
+  maxContinuations: 10,
+});
+
+/**
+ * .prd/39 D11 · A11 (X11) — the archive keeps the queue too: a queued goal waits for the goal ahead of it, and a revive
+ * must not lose it. (#32ccac71 fixed only the paused goals.)
+ */
+describe('SessionRegistry — queued goals across archive and revive (X11)', () => {
+  beforeEach(() => {
+    if (fs.existsSync(TEST_DATA_DIR)) fs.rmSync(TEST_DATA_DIR, { recursive: true });
+    fs.mkdirSync(path.join(TEST_DATA_DIR, 'archives'), { recursive: true });
+  });
+
+  it('the archive keeps the queued goals and a revive puts them back, still queued', () => {
+    const reg = new SessionRegistry();
+    const session = reg.createSession('U1', 'User', 'C901', '1700000010.000100');
+    const key = reg.getSessionKey('C901', '1700000010.000100');
+    session.sessionId = 'sid-queued';
+    session.goalQueue = [goalOf('q1', 'queued')];
+    reg.saveSessions();
+    reg.terminateSession(key);
+
+    const dir = path.join(TEST_DATA_DIR, 'archives');
+    const file = fs.readdirSync(dir).find((f) => f.endsWith('.json'));
+    const archived = JSON.parse(fs.readFileSync(path.join(dir, file as string), 'utf8'));
+    expect(archived.goalQueue).toEqual([expect.objectContaining({ goalId: 'q1', status: 'queued' })]);
+
+    expect(reg.restoreArchivedSession(archived, `/tmp/U1/session_queued_${process.pid}`)).toMatchObject({ ok: true });
+    expect(reg.getSession('C901', '1700000010.000100')?.goalQueue).toEqual([
+      expect.objectContaining({ goalId: 'q1', status: 'queued' }),
+    ]);
+  });
+});
+
+/**
+ * .prd/39 D11 · A10 (X10) — `/new` (and `/renew`) start a fresh conversation: the slot, the queue and the shelf are
+ * cleared, the history stays. Before, only the slot was cleared, so the next restart's stranded-queue repair promoted
+ * the old conversation's queued goal into the new one.
+ */
+describe('SessionRegistry — /new clears the queue and the shelf (X10)', () => {
+  it('leaves no goal in the slot, the queue or the shelf; keeps the history', () => {
+    const reg = new SessionRegistry();
+    const session = reg.createSession('U1', 'User', 'C902', '1700000011.000100');
+    session.goal = goalOf('a', 'active');
+    session.goalQueue = [goalOf('b', 'queued')];
+    session.goalPaused = [goalOf('p', 'paused')];
+    session.goalHistory = [goalOf('h', 'complete')];
+
+    expect(reg.resetSessionContext('C902', '1700000011.000100')).toBe(true);
+
+    expect(session.goal).toBeUndefined();
+    expect(session.goalQueue ?? []).toEqual([]);
+    expect(session.goalPaused ?? []).toEqual([]);
+    expect(session.goalHistory).toEqual([expect.objectContaining({ goalId: 'h' })]);
+  });
+});
