@@ -74,10 +74,10 @@ function makeHarness(opts: { verdict: GoalEvalVerdict; ledger?: TaskLedger; goal
   const controller = new GoalLoopController({
     registry: {
       getSessionByKey: () => session,
-      getActivityStateByKey: () => 'idle',
       saveSessions: () => undefined,
     },
     requestCoordinator: { isRequestActive: () => false },
+    turnHeld: () => false,
     dispatcher,
     injectContinuation: async (event) => {
       injected.push(event);

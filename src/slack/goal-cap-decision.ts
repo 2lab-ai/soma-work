@@ -32,6 +32,8 @@
 import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import { atomicWriteJson, readJsonWithBackup } from '@soma/common/atomic-json';
+import { bumpEpoch } from '@soma/slack/goal/machine';
+import { capAskOf } from '@soma/slack/goal/read';
 import { DATA_DIR } from '../env-paths';
 import { Logger } from '../logger';
 import type { ConversationSession, SessionGoal } from '../types';
@@ -89,7 +91,7 @@ export const GOAL_CAP_DECISION_SUPERSEDED_TEXT =
 
 /** True while the goal waits on its owner's cap decision. */
 export function isGoalCapDecisionPending(goal: SessionGoal | undefined): goal is SessionGoal {
-  return !!goal && goal.status === 'active' && goal.capDmPendingAt !== undefined;
+  return capAskOf(goal) !== undefined;
 }
 
 /**
@@ -192,22 +194,27 @@ export function answerGoalCapDecision(args: AnswerGoalCapDecisionArgs): GoalCapD
     capDmRef: goal.capDmRef,
     continuationCount: goal.continuationCount,
     status: goal.status,
+    holdWhy: goal.holdWhy,
     updatedAt: goal.updatedAt,
     epoch: goal.epoch,
+    evalBackoffUntil: goal.evalBackoffUntil,
+    evalRetryReason: goal.evalRetryReason,
     systemPrompt: session.systemPrompt,
   };
   endDecision(goal);
   if (decision === 'continue') {
     goal.continuationCount = 0;
     goal.status = 'active';
+    goal.holdWhy = undefined;
   } else {
     goal.status = 'paused';
+    goal.holdWhy = 'cap-stop'; // D6 — held in place by the owner's answer
   }
   goal.updatedAt = args.now ?? Date.now();
   // The same invalidation every goal-state change applies: an in-flight
   // completion eval discards its verdict, and the next turn rebuilds the
   // `<session-goal>` block.
-  goal.epoch = (goal.epoch ?? 0) + 1;
+  bumpEpoch(goal);
   session.systemPrompt = undefined;
   try {
     args.save();
@@ -219,8 +226,11 @@ export function answerGoalCapDecision(args: AnswerGoalCapDecisionArgs): GoalCapD
     goal.capDmRef = before.capDmRef;
     goal.continuationCount = before.continuationCount;
     goal.status = before.status;
+    goal.holdWhy = before.holdWhy;
     goal.updatedAt = before.updatedAt;
     goal.epoch = before.epoch;
+    goal.evalBackoffUntil = before.evalBackoffUntil;
+    goal.evalRetryReason = before.evalRetryReason;
     session.systemPrompt = before.systemPrompt;
     if (rewrite) withdrawDmSync(rewrite);
     logger.error('Goal cap decision refused — the sessions could not be saved', {

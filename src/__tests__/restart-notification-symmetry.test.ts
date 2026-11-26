@@ -701,3 +701,74 @@ describe('Restart symmetry: notifyCrashRecovery routes auto-resume via shouldAut
     expect(handleMessageSpy).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * .prd/39 S5 · D3 · D16 — the load keeps the disk's word in the recovery record, then sets the display from that
+ * record: a session the boot resumes reads working (and keeps cron and the user-task queue off it), a session whose
+ * question is open reads waiting, every other one reads idle. A stale `working` no longer waits for the restart pass
+ * to be forced idle — and nothing in the loop reads it.
+ */
+describe('Load: the display comes from the recovery record (.prd/39 D3 · D16)', () => {
+  const row = (over: Record<string, unknown>) => ({
+    ownerId: 'U1',
+    userId: 'U1',
+    channelId: 'C-load',
+    sessionId: 'sess-load',
+    isActive: true,
+    lastActivity: new Date().toISOString(),
+    state: 'MAIN',
+    ...over,
+  });
+  const load = (rows: unknown[]) => {
+    fs.writeFileSync(path.join(TEST_DIR, 'sessions.json'), JSON.stringify(rows));
+    const registry = new SessionRegistry();
+    registry.loadSessions();
+    return registry;
+  };
+
+  it('a working the shutdown said was not working loads idle; the record keeps the disk value', () => {
+    const registry = load([
+      row({
+        key: 'C-load-1',
+        threadTs: 'ts-1',
+        activityState: 'working',
+        shutdownNotificationSent: true,
+        wasWorkingAtShutdown: false,
+        shutdownNotifiedAt: Date.now(),
+      }),
+    ]);
+    expect(registry.getSession('C-load', 'ts-1')?.activityState).toBe('idle');
+    const record = registry.getCrashRecoveredSessions()[0];
+    expect(record.activityState).toBe('working');
+    expect(record.shouldAutoResume).toBe(false);
+  });
+
+  it('a session the boot resumes loads working, though the disk said idle', () => {
+    const registry = load([
+      row({
+        key: 'C-load-2',
+        threadTs: 'ts-2',
+        activityState: 'idle',
+        shutdownNotificationSent: true,
+        wasWorkingAtShutdown: true,
+        shutdownNotifiedAt: Date.now(),
+      }),
+    ]);
+    expect(registry.getSession('C-load', 'ts-2')?.activityState).toBe('working');
+    expect(registry.getCrashRecoveredSessions()[0].shouldAutoResume).toBe(true);
+  });
+
+  it('waiting stays waiting only with an open question', () => {
+    const registry = load([
+      row({
+        key: 'C-load-3',
+        threadTs: 'ts-3',
+        activityState: 'waiting',
+        actionPanel: { waitingForChoice: true, pendingQuestion: { type: 'user_choice', question: 'q?', choices: [] } },
+      }),
+      row({ key: 'C-load-4', threadTs: 'ts-4', activityState: 'waiting', actionPanel: { waitingForChoice: false } }),
+    ]);
+    expect(registry.getSession('C-load', 'ts-3')?.activityState).toBe('waiting');
+    expect(registry.getSession('C-load', 'ts-4')?.activityState).toBe('idle');
+  });
+});

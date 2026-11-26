@@ -17,6 +17,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { loopDrives, phaseOf } from '@soma/slack/goal/read';
 import { Logger } from '../logger';
 import type { EffortLevel } from '../user-settings-store';
 import { retireGoalCapDecision } from './goal-cap-decision';
@@ -433,43 +434,44 @@ export function decideGoalEvalOutcome(
   return { action: 'continue' };
 }
 
-/** Runtime conditions the idle-settle goal driver sees when a session
- *  transitions to idle. */
+/**
+ * What the loop gate sees (.prd/39 D1 · D2). Both answers come from their owners, never from the display word
+ * `activityState`: a value loaded from disk or written by the host neither opens nor closes the gate.
+ */
 export interface GoalIdleDriverState {
   /** `session.goal`, or undefined when no goal is set. */
   goal: import('../types').SessionGoal | undefined;
-  /** `requestCoordinator.isRequestActive(sessionKey)` — a work turn is
-   *  still in flight (or a fresh user turn just started). */
-  requestActive: boolean;
-  /** `registry.getActivityStateByKey(sessionKey)`. */
-  activityState: string | undefined;
+  /**
+   * `SessionOccupancy.turnHeld` — a run is preparing (it holds the slot before its controller exists) or running
+   * (a controller, or the turn runtime reported working). A run settling after its turn ended does not hold it: the
+   * turn-end trigger fires right then.
+   */
+  turnHeld: boolean;
+  /** `SessionOccupancy.ownerQuestionOpen` — the action panel waits for the owner's choice or holds a question. */
+  ownerQuestionOpen: boolean;
 }
 
 /**
- * Decide whether the idle-settle goal driver may run an eval right now.
+ * Decide whether the goal driver may judge right now.
  *
- * This is the gate that prevents the production failure where the
- * continuation loop evaluated + injected while a real work turn was
- * still running, superseding (killing) it and spinning on empty output.
- * The driver acts ONLY when the session has genuinely settled to idle
- * with no in-flight request — i.e. the model's work turn has actually
- * ended (the user's "턴이 종료될 때까지는 기다려야지").
+ * The driver acts only when no turn is held — it never judges beside a turn that is starting or running, and never
+ * supersedes one — and the owner is not being asked something (their answer runs as a turn that drives the loop).
  *
- * All four must hold:
- *   1. an active goal exists,
+ * All must hold:
+ *   1. the goal is active and in a phase the loop drives — running or retrying (`phaseOf`, D2),
  *   2. no eval is already in flight (`pendingEval`),
- *   3. no request is active (no live/fresh turn to step on),
- *   4. activity state is `'idle'`.
+ *   3. no turn is held,
+ *   4. no owner question is open.
  *
  * Pure — the driver owns stamping `pendingEval`, eval, and injection.
  */
 export function shouldRunGoalIdleDriver(state: GoalIdleDriverState): boolean {
-  const { goal, requestActive, activityState } = state;
-  if (!goal || goal.status !== 'active') return false;
-  if (goal.pendingEval) return false;
-  // A stalled goal waits for the owner's answer (or any message from them).
-  if (goal.stall) return false;
-  if (requestActive) return false;
-  if (activityState !== 'idle') return false;
+  const { goal, turnHeld, ownerQuestionOpen } = state;
+  // D2 — the loop drives a running goal and a retrying one; an opening waits for its first turn, a question (cap or
+  // stall) waits for the owner's answer (or any message from them).
+  if (!loopDrives(phaseOf(goal))) return false;
+  if (goal?.pendingEval) return false;
+  if (turnHeld) return false;
+  if (ownerQuestionOpen) return false;
   return true;
 }

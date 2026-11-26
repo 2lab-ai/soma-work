@@ -929,6 +929,11 @@ describe('SessionRegistry persistence', () => {
     const session = writer.createSession('U123', 'Tester', 'C391', '171.391b');
     session.sessionId = 'session-391b';
     session.activityState = 'waiting';
+    // Waiting on an open question (.prd/39 D3: the load keeps waiting only while the question is open).
+    session.actionPanel = {
+      waitingForChoice: true,
+      pendingQuestion: { type: 'user_choice', question: 'q?', choices: [] },
+    } as any;
     session.state = 'MAIN';
 
     writer.saveSessions();

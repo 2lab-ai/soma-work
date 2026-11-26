@@ -11,6 +11,7 @@ import {
   type GoalActionValue,
 } from '../goal-blocks';
 import { answerGoalCapDecision, type GoalCapDecision, goalCapDecisionResolvedText } from '../goal-cap-decision';
+import { commitGoalChange } from '../goal-commit';
 import { HostGoalActionError, type HostGoalActionResult } from '../goal-host-actions';
 import { getHostGoalActionHandler, resumeGoalLoop } from '../goal-loop-resume';
 import { retireGoalStall } from '../goal-stall';
@@ -78,14 +79,16 @@ export class GoalActionHandler {
       // admitted through the follow-up fence (SSOT 2026-10-21). A completed
       // (history) goal has nothing to start and is removed locally below.
       const hostAction = getHostGoalActionHandler();
+      // Where the line was shown (X14); a message from before the field falls back to the click-time place.
       const expect =
-        session.goal?.goalId === value.goalId
+        value.place ??
+        (session.goal?.goalId === value.goalId
           ? 'current'
           : session.goalQueue?.some((g) => g.goalId === value.goalId)
             ? 'queued'
             : session.goalPaused?.some((g) => g.goalId === value.goalId)
               ? 'paused'
-              : undefined;
+              : undefined);
       if (hostAction && expect) {
         try {
           const outcome = await hostAction(
@@ -269,11 +272,6 @@ export class GoalActionHandler {
 
       goal.objective = objective;
       goal.updatedAt = Date.now();
-      // Bump the intent epoch so an in-flight completion eval for the OLD
-      // objective resolves into a discard (M1). Drop the cached system prompt
-      // so the new objective is injected into the next turn.
-      goal.epoch = (goal.epoch ?? 0) + 1;
-      session.systemPrompt = undefined;
       // codex review #5: the prior turn's output (runtime stash + persisted
       // mirror + eval-cache) was evidence for the OLD objective — clear it so
       // the first eval for the new objective starts from real, fresh evidence
@@ -286,14 +284,22 @@ export class GoalActionHandler {
       goal.lastEvalSummaryHash = undefined;
       // A stall was about the old objective: it ends (its question is retracted).
       retireGoalStall(goal);
-      this.ctx.claudeHandler.saveSessions();
+      // .prd/39 D9 — the epoch moves (an in-flight judge for the OLD objective is discarded, a retry window ends), the
+      // prompt rebuilds with the new objective, the change is saved and shown; the active goal is driven again.
+      const isActive = session.goal?.goalId === goal.goalId && goal.status === 'active';
+      commitGoalChange(
+        session,
+        value.sessionKey,
+        { goal, drive: isActive ? 'kick' : 'none' },
+        {
+          saveSessions: () => this.ctx.claudeHandler.saveSessions(),
+          broadcastSessionUpdate: () => this.ctx.claudeHandler.broadcastSessionUpdate?.(),
+          kick: (key) => resumeGoalLoop(key),
+        },
+      );
 
       await ack({ response_action: 'clear' });
 
-      // If this is the active goal, re-drive the loop against the new objective.
-      if (session.goal?.goalId === goal.goalId && goal.status === 'active') {
-        resumeGoalLoop(value.sessionKey);
-      }
       if (value.channel) {
         await this.ctx.slackApi
           .postSystemMessage(value.channel, `✏️ Goal 업데이트됨: ${formatGoalObjectiveForSlack(objective)}`, {

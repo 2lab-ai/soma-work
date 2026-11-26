@@ -88,7 +88,6 @@ function makeHarness(opts: {
   const controller = new GoalLoopController({
     registry: {
       getSessionByKey: () => session,
-      getActivityStateByKey: () => 'idle',
       saveSessions: () => {
         saves += 1;
       },
@@ -96,6 +95,7 @@ function makeHarness(opts: {
     requestCoordinator: {
       isRequestActive: () => requestActive,
     },
+    turnHeld: () => requestActive,
     dispatcher,
     injectContinuation: async (event) => {
       injected.push(event);
@@ -457,7 +457,10 @@ describe('GoalLoopController', () => {
     expect(h.goal.continuationCount).toBe(2);
   });
 
-  it('S9: at the cap a kick reuses the verdict, but a NEW turn with the same output is judged (it may be the repeat a stall needs)', async () => {
+  // .prd/39 D2 · A4 — at the cap the goal asks its owner (asking(cap)): neither a kick nor a later turn (a host turn
+  // does not end the round) judges it again. Below the cap a new turn with the same output is still judged (goal-stall
+  // "S9: the same text after a new turn below the cap runs the evaluator").
+  it('S9: at the cap the question is open — a kick and a later turn judge nothing more', async () => {
     let dispatchCount = 0;
     const h = makeHarness({
       goal: { continuationCount: 10, maxContinuations: 10 },
@@ -473,10 +476,10 @@ describe('GoalLoopController', () => {
     h.controller.onTurnSettled(SESSION_KEY, { cause: 'kick' });
     await h.controller.settled(SESSION_KEY);
     expect(dispatchCount).toBe(1);
-    // A real turn that printed the same thing: only the evaluator can call it a repeat.
+    // A later turn while the owner is asked: the question is the one way on.
     h.controller.onTurnSettled(SESSION_KEY, { cause: 'turn' });
     await h.controller.settled(SESSION_KEY);
-    expect(dispatchCount).toBe(2);
+    expect(dispatchCount).toBe(1);
     expect(h.injected).toHaveLength(0);
   });
 
@@ -831,7 +834,6 @@ describe('GoalLoopController — dashboard visibility of loop steps', () => {
     const controller = new GoalLoopController({
       registry: {
         getSessionByKey: () => session,
-        getActivityStateByKey: () => 'idle',
         saveSessions: () => undefined,
         broadcastSessionUpdate: () => {
           pushes.push({
@@ -842,6 +844,7 @@ describe('GoalLoopController — dashboard visibility of loop steps', () => {
         },
       },
       requestCoordinator: { isRequestActive: () => false },
+      turnHeld: () => false,
       dispatcher,
       injectContinuation: async () => undefined,
       postNotice: async () => undefined,
@@ -1120,8 +1123,9 @@ describe('GoalLoopController — a pause that lands while the continuation notic
     const injected: SyntheticMessageEvent[] = [];
     const notices: string[] = [];
     const controller = new GoalLoopController({
-      registry: { getSessionByKey: () => session, getActivityStateByKey: () => 'idle', saveSessions: () => {} },
+      registry: { getSessionByKey: () => session, saveSessions: () => {} },
       requestCoordinator: { isRequestActive: () => false },
+      turnHeld: () => false,
       dispatcher: async () => JSON.stringify(verdict),
       injectContinuation: async (event) => {
         injected.push(event);
@@ -1287,5 +1291,291 @@ describe('GoalLoopController — environment work the host runs (env run queue)'
     await h.controller.settled(SESSION_KEY);
     expect(dispatched).toBe(0);
     expect(h.injected).toHaveLength(0);
+  });
+});
+
+/**
+ * .prd/39 D1 · D2 — the loop gate asks the turn occupancy, not the display word. A turn is held while its run is
+ * preparing or running (the slot, the controller, the turn runtime's own report); the owner question is the action
+ * panel's. `activityState` read from disk or written by the host does not open or close the gate.
+ */
+describe('GoalLoopController — the loop gate reads turnHeld and the owner question (.prd/39 D1 · D2)', () => {
+  function rig(opts: { turnHeld?: boolean; activityState?: string; panel?: Record<string, unknown> } = {}) {
+    const goal = makeGoal();
+    const session = makeSession(goal);
+    if (opts.panel) (session as any).actionPanel = opts.panel;
+    // The display word on the session itself too (review #1490): a gate that read it would see the stale value.
+    if (opts.activityState) (session as any).activityState = opts.activityState;
+    const dispatched: string[] = [];
+    const held: Array<[string, string]> = [];
+    const controller = new GoalLoopController({
+      registry: {
+        getSessionByKey: () => session,
+        // What the old gate read. The new gate does not — a stale value here proves nothing either way.
+        getActivityStateByKey: () => opts.activityState ?? 'idle',
+        saveSessions: () => {},
+      } as any,
+      requestCoordinator: { isRequestActive: () => false },
+      turnHeld: () => opts.turnHeld === true,
+      holdForTurn: (key: string, cause: string) => held.push([key, cause]),
+      dispatcher: async (args: { userPrompt: string }) => {
+        dispatched.push(args.userPrompt);
+        return JSON.stringify({ completed: false, reason: 'not yet', remaining: ['x'] });
+      },
+      injectContinuation: async () => undefined,
+      postNotice: async () => undefined,
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      fallbackModel: () => ({ model: 'claude-sonnet-4' }),
+    } as any);
+    return { controller, dispatched, held, goal };
+  }
+
+  it('A1: a run holds the slot before its controller exists (preparing) — no judge; the drive waits for that turn', async () => {
+    const r = rig({ turnHeld: true });
+    r.controller.onTurnSettled(SESSION_KEY, { cause: 'kick' });
+    await r.controller.settled(SESSION_KEY);
+    expect(r.dispatched).toHaveLength(0);
+    expect(r.held).toEqual([[SESSION_KEY, 'kick']]);
+  });
+
+  it('a stale working (loaded from disk, no run, no report) does not hold the gate', async () => {
+    const r = rig({ turnHeld: false, activityState: 'working' });
+    r.controller.onTurnSettled(SESSION_KEY);
+    await r.controller.settled(SESSION_KEY);
+    expect(r.dispatched).toHaveLength(1);
+    expect(r.held).toEqual([]);
+  });
+
+  it('an open owner question holds the gate whatever the display word says', async () => {
+    const r = rig({ turnHeld: false, activityState: 'idle', panel: { waitingForChoice: true } });
+    r.controller.onTurnSettled(SESSION_KEY);
+    await r.controller.settled(SESSION_KEY);
+    expect(r.dispatched).toHaveLength(0);
+    expect(r.held).toEqual([]);
+  });
+});
+
+/**
+ * .prd/39 S6 (PR10) — the board reads "the loop acts" (`isActing`) from memory, so the loop pushes the board when it
+ * stops acting: after its run drains and after a continuation it injected settles. Without that the last push was
+ * made mid-run (driven → RUNNING) and the card stayed there.
+ */
+describe('GoalLoopController — the board hears when the loop stops acting (.prd/39 S6)', () => {
+  function rig(inject: () => Promise<void>) {
+    const session = makeSession(makeGoal());
+    const seen: boolean[] = [];
+    const controller: GoalLoopController = new GoalLoopController({
+      registry: {
+        getSessionByKey: () => session,
+        saveSessions: () => {},
+        broadcastSessionUpdate: () => seen.push(controller.isActing(SESSION_KEY)),
+      },
+      requestCoordinator: { isRequestActive: () => false },
+      turnHeld: () => false,
+      dispatcher: async () => JSON.stringify({ completed: false, reason: 'not yet', remaining: ['x'] }),
+      injectContinuation: inject,
+      postNotice: async () => undefined,
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      fallbackModel: () => ({ model: 'claude-sonnet-4' }),
+    });
+    return { controller, seen };
+  }
+
+  it('the last push of a run that injected comes after the run drained and the injection settled', async () => {
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const r = rig(() => started);
+    r.controller.onTurnSettled(SESSION_KEY);
+    await r.controller.settled(SESSION_KEY);
+    expect(r.controller.isActing(SESSION_KEY)).toBe(true); // the continuation has not taken the slot yet
+    release();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(r.controller.isActing(SESSION_KEY)).toBe(false);
+    expect(r.seen[r.seen.length - 1]).toBe(false);
+  });
+});
+
+/**
+ * .prd/39 D2 · A4 (X4) — the gate passes only the phases the loop drives: running and retrying. A goal asking its
+ * owner (the cap question) is not judged or announced again on a kick or a restart pass; a round whose DM never
+ * landed sends that same round's DM again, nothing else. A goal whose opening has not reached the model waits for it.
+ */
+describe('GoalLoopController — the gate reads the goal phase (.prd/39 D2, A4)', () => {
+  function rig(goalOver: Partial<SessionGoal>) {
+    const goal = makeGoal({ continuationCount: 10, maxContinuations: 10, lastEvalReason: '배포 남음', ...goalOver });
+    const session = makeSession(goal);
+    const dispatched: number[] = [];
+    const notices: string[] = [];
+    const dms: Array<{ text: string; decisionId?: string }> = [];
+    const controller = new GoalLoopController({
+      registry: { getSessionByKey: () => session, saveSessions: () => {} },
+      requestCoordinator: { isRequestActive: () => false },
+      turnHeld: () => false,
+      dispatcher: async () => {
+        dispatched.push(1);
+        return JSON.stringify({ completed: false, reason: 'not yet', remaining: ['x'] });
+      },
+      injectContinuation: async () => undefined,
+      postNotice: async (_c, _t, text) => {
+        notices.push(text);
+        return undefined;
+      },
+      postOwnerDm: async (_user, text, blocks) => {
+        const raw = JSON.stringify(blocks);
+        dms.push({ text, decisionId: /"decisionId":"([^"]+)"/.exec(raw.replace(/\\"/g, '"'))?.[1] });
+        return { channel: 'D1', ts: '9.9' };
+      },
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      fallbackModel: () => ({ model: 'claude-sonnet-4' }),
+    });
+    return { controller, goal, dispatched, notices, dms };
+  }
+
+  it('A4: a kick on a goal asking the cap question, its DM delivered — no judge, no notice, nothing sent', async () => {
+    const r = rig({ capDmPendingAt: 5, capDecisionId: 'round-1', capDmRef: { channel: 'D1', ts: '1.1' } });
+    r.controller.onTurnSettled(SESSION_KEY, { cause: 'kick' });
+    await r.controller.settled(SESSION_KEY);
+    expect(r.dispatched).toEqual([]);
+    expect(r.notices).toEqual([]);
+    expect(r.dms).toEqual([]);
+    expect(r.goal.evalAttemptCount ?? 0).toBe(0);
+  });
+
+  it('A4: a kick on a cap round whose DM never landed sends that round’s DM again — no judge, no notice', async () => {
+    const r = rig({ capDmPendingAt: 5, capDecisionId: 'round-1' });
+    r.controller.onTurnSettled(SESSION_KEY, { cause: 'kick' });
+    await r.controller.settled(SESSION_KEY);
+    expect(r.dispatched).toEqual([]);
+    expect(r.notices).toEqual([]);
+    expect(r.dms).toHaveLength(1);
+    expect(r.goal.capDecisionId).toBe('round-1');
+    expect(r.goal.capDmRef).toEqual({ channel: 'D1', ts: '9.9' });
+  });
+
+  it('a goal whose opening has not reached the model is not judged', async () => {
+    const r = rig({ openingPending: true, continuationCount: 0 });
+    r.controller.onTurnSettled(SESSION_KEY, { cause: 'kick' });
+    await r.controller.settled(SESSION_KEY);
+    expect(r.dispatched).toEqual([]);
+  });
+});
+
+/**
+ * .prd/39 A5 · D15 — a change committed while a judge is in flight (`goal max 20`): the commit moves the epoch and
+ * enqueues one kick. The judge in flight sees the moved epoch and discards its verdict; the kick behind it judges
+ * once more — exactly once. Nobody else re-judges on the discard (one owner).
+ */
+describe('GoalLoopController — a commit during a judge re-judges exactly once (A5)', () => {
+  it('discards the verdict of the moved epoch and judges once more behind the kick', async () => {
+    const goal = makeGoal({ continuationCount: 3, maxContinuations: 10 });
+    const session = makeSession(goal);
+    const releases: Array<() => void> = [];
+    let dispatched = 0;
+    const injected: unknown[] = [];
+    const controller = new GoalLoopController({
+      registry: { getSessionByKey: () => session, saveSessions: () => {} },
+      requestCoordinator: { isRequestActive: () => false },
+      turnHeld: () => false,
+      dispatcher: () => {
+        dispatched += 1;
+        return new Promise<string>((resolve) =>
+          releases.push(() => resolve(JSON.stringify({ completed: false, reason: 'not yet', remaining: ['x'] }))),
+        );
+      },
+      injectContinuation: async (event) => {
+        injected.push(event);
+      },
+      postNotice: async () => undefined,
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      fallbackModel: () => ({ model: 'claude-sonnet-4' }),
+    });
+
+    controller.onTurnSettled(SESSION_KEY);
+    await vi.waitFor(() => expect(dispatched).toBe(1));
+    // `goal max 20` commits: the epoch moves, one kick is enqueued.
+    goal.maxContinuations = 20;
+    goal.epoch = (goal.epoch ?? 0) + 1;
+    controller.onTurnSettled(SESSION_KEY, { cause: 'kick' });
+    releases[0]();
+    await vi.waitFor(() => expect(dispatched).toBe(2));
+    releases[1]();
+    await controller.settled(SESSION_KEY);
+
+    expect(dispatched).toBe(2);
+    expect(injected).toHaveLength(1);
+  });
+});
+
+/**
+ * .prd/39 D8 · A7 (X7) — a goal the loop can no longer drive is recorded as `stopped{why}`, not left `running` with
+ * only a notice: the gate stops driving it, the card can ask, and a restart keeps it. A6 (X6) — a host that starts
+ * shutting down while the continuation notice posts injects nothing and gives the continuation back.
+ */
+describe('GoalLoopController — stopped is recorded (.prd/39 D8, A6 · A7)', () => {
+  it('A7: the judge retries ran out → stopped(judge-failed); the next kick does not judge', async () => {
+    let dispatched = 0;
+    const h = makeHarness({
+      dispatcher: async () => {
+        dispatched += 1;
+        throw new Error(POOL_RATE_LIMIT_ERR);
+      },
+      goal: { evalDispatchRetryCount: GOAL_EVAL_DISPATCH_MAX_RETRIES },
+    });
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(h.goal.phase).toMatchObject({ kind: 'stopped', why: 'judge-failed' });
+
+    h.controller.onTurnSettled(SESSION_KEY, { cause: 'kick' });
+    await h.controller.settled(SESSION_KEY);
+    expect(dispatched).toBe(1);
+  });
+
+  it('A7: the continuation could not start → stopped(start-failed)', async () => {
+    const goal = makeGoal({ continuationCount: 1 });
+    const session = makeSession(goal);
+    const controller = new GoalLoopController({
+      registry: { getSessionByKey: () => session, saveSessions: () => {} },
+      requestCoordinator: { isRequestActive: () => false },
+      turnHeld: () => false,
+      dispatcher: async () => JSON.stringify({ completed: false, reason: 'not yet', remaining: ['x'] }),
+      injectContinuation: async () => {
+        throw new Error('dispatch refused');
+      },
+      postNotice: async () => undefined,
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      fallbackModel: () => ({ model: 'claude-sonnet-4' }),
+    });
+    controller.onTurnSettled(SESSION_KEY);
+    await controller.settled(SESSION_KEY);
+    await vi.waitFor(() => expect(goal.phase).toMatchObject({ kind: 'stopped', why: 'start-failed' }));
+  });
+
+  it('A6: shutdown starts while the continuation notice posts → nothing injected, the continuation given back', async () => {
+    const goal = makeGoal({ continuationCount: 2 });
+    const session = makeSession(goal);
+    let shuttingDown = false;
+    const injected: unknown[] = [];
+    const controller = new GoalLoopController({
+      registry: { getSessionByKey: () => session, saveSessions: () => {} },
+      requestCoordinator: { isRequestActive: () => false },
+      turnHeld: () => false,
+      dispatcher: async () => JSON.stringify({ completed: false, reason: 'not yet', remaining: ['x'] }),
+      injectContinuation: async (event) => {
+        injected.push(event);
+      },
+      postNotice: async () => {
+        shuttingDown = true; // the shutdown begins while the notice is in flight
+        return undefined;
+      },
+      isShuttingDown: () => shuttingDown,
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      fallbackModel: () => ({ model: 'claude-sonnet-4' }),
+    });
+    controller.onTurnSettled(SESSION_KEY);
+    await controller.settled(SESSION_KEY);
+    expect(injected).toEqual([]);
+    expect(goal.continuationCount).toBe(2);
   });
 });

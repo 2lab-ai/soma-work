@@ -22,6 +22,7 @@ import { parseFollowupQueueSnapshot } from '@soma/slack/followup-queue-store';
 import { getMetricsEmitter } from '../metrics/event-emitter';
 import { ChoiceActionHandler } from '../slack/actions/choice-action-handler';
 import { QueueHandler } from '../slack/commands/queue-handler';
+import { GoalLoopController } from '../slack/goal-loop-controller';
 import { ThreadSurface } from '../slack/thread-surface';
 import { SlackHandler } from '../slack-handler';
 import { userSettingsStore } from '../user-settings-store';
@@ -140,6 +141,8 @@ describe('SlackHandler — follow-up queue host', () => {
       setActivityStateByKey: vi.fn(),
       broadcastSessionUpdate: vi.fn(),
       setSteerSignals: vi.fn(),
+      setHoldReleaseGate: vi.fn(),
+      requestHoldRelease: vi.fn(),
     };
 
     const store = {
@@ -810,6 +813,41 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(startWithContinuation).toHaveBeenCalledTimes(2);
     });
 
+    // .prd/39 D8 · A28 — a person's stop of a goal turn is recorded (stopped(person-stopped)); a shutdown or a
+    // supersede only skip this drive — the restart or the new turn carries the goal on.
+    it.each([
+      ['user-stop', 'person-stopped'],
+      ['user-interrupted', 'person-stopped'],
+      ['shutdown', undefined],
+      ['supersede', undefined],
+    ])('a goal turn cut by %s leaves the goal %s', (reason, why) => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0, continuationCount: 1 };
+      handler.setGoalTurnSettledHandler(vi.fn());
+      handlerAny.followupSlotHeldGoalSessions = new Set([SESSION_KEY]);
+
+      handlerAny.releaseDeferredGoalDriver(SESSION_KEY, {
+        canDrain: true,
+        outcome: { result: 'interrupted', reason },
+      });
+
+      if (why) expect(registrySession.goal.phase).toMatchObject({ kind: 'stopped', why });
+      else expect(registrySession.goal.phase).toBeUndefined();
+    });
+
+    it("A7: the automatic resume failed again → stopped(resume-failed); a person's message opens it", async () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0, continuationCount: 1 };
+      handler.setGoalTurnSettledHandler(vi.fn());
+      handlerAny.followupSlotHeldGoalSessions = new Set([SESSION_KEY]);
+      handlerAny.goalErrorResumeSpent = new Set([SESSION_KEY]);
+
+      handlerAny.releaseDeferredGoalDriver(SESSION_KEY, { canDrain: true, outcome: { result: 'error' } });
+      expect(registrySession.goal.phase).toMatchObject({ kind: 'stopped', why: 'resume-failed' });
+
+      const { resetGoalContinuationOnUserMessage } = await import('../slack/goal-continuation');
+      resetGoalContinuationOnUserMessage(registrySession);
+      expect(registrySession.goal.phase).toBeUndefined();
+    });
+
     it('releases the held driver at an auto-compact stop boundary (drainable)', async () => {
       registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
       const goalDriver = vi.fn();
@@ -1345,6 +1383,272 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(own.goalDriverKickOnRelease.has(SESSION_KEY)).toBe(false);
       expect(own.goalTurnOrder?.has(SESSION_KEY) ?? false).toBe(false);
     });
+
+    /**
+     * .prd/39 S1 · A23–A26 — the baseline PR2 swaps the loop gate on. The run phase is read where the loop reads its
+     * gate today: at the turn-end trigger and at each driver fire. The turn runtime's reports are delivered the way the
+     * registry listener delivers them (`StreamExecutor`: `working` at the turn's start, `idle` at its end unless a
+     * continuation or a `/compact` replay follows); the dispatcher slot is the real one.
+     */
+    describe('turn occupancy at the goal turn end (.prd/39 S1, A23–A26 baseline)', () => {
+      const report = (state: 'working' | 'waiting' | 'idle') =>
+        handlerAny.occupancy.noteTurnActivity(SESSION_KEY, state);
+      const phaseNow = () => ({
+        phase: handlerAny.occupancy.runPhase(SESSION_KEY),
+        held: handlerAny.occupancy.turnHeld(SESSION_KEY),
+      });
+
+      it('wires the registry: its turn activity reports reach the occupancy, and a deleted session forgets them', () => {
+        let listener: ((key: string, state: string) => void) | undefined;
+        let beforeDelete: ((key: string, session: any, reason: string) => void) | undefined;
+        const registry = {
+          addTurnActivityListener: (l: typeof listener) => {
+            listener = l;
+            return () => {};
+          },
+          setBeforeSessionDelete: (cb: typeof beforeDelete) => {
+            beforeDelete = cb;
+          },
+        };
+        const store = { load: () => undefined, save: () => {}, recoveryWarning: undefined };
+        const own = new SlackHandler(
+          { client: {}, assistant: vi.fn() } as any,
+          { ...claudeHandler, getSessionRegistry: () => registry } as any,
+          {} as any,
+          { followupQueueStore: store },
+        ) as any;
+
+        listener?.(SESSION_KEY, 'working');
+        expect(own.occupancy.turnHeld(SESSION_KEY)).toBe(true);
+        beforeDelete?.(SESSION_KEY, registrySession, 'terminated');
+        expect(own.occupancy.turnHeld(SESSION_KEY)).toBe(false);
+      });
+
+      it('A23: a goal turn that left text ends while its run holds the slot — the trigger fires in settling; the continuation the busy slot drops is kicked once at the release', async () => {
+        const fired: Array<{ phase: string; held: boolean; opts: unknown }> = [];
+        handler.setGoalTurnSettledHandler((key: string, opts?: unknown) =>
+          fired.push({ ...phaseNow(), opts: opts ?? null }),
+        );
+        const { settle } = await startBusyTurn();
+        registrySession.goal = {
+          goalId: 'g1',
+          status: 'active',
+          objective: '릴리즈',
+          epoch: 0,
+          continuationCount: 2,
+          maxContinuations: 10,
+        };
+        expect(phaseNow()).toEqual({ phase: 'preparing', held: true });
+        report('working');
+        expect(phaseNow()).toEqual({ phase: 'running', held: true });
+
+        // The stream ends with text: the runtime reports idle, then `TurnRunner.finish` fires the trigger.
+        report('idle');
+        handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, ['배포 확인까지 끝냈습니다']);
+        expect(fired).toEqual([{ phase: 'settling', held: false, opts: null }]);
+
+        // Today: the eval's continuation lands on the still-held slot — dropped, its count given back…
+        registrySession.goal.continuationCount = 3;
+        await handler.handleMessage(goalContinuation({ goalContinuationSpent: { goalId: 'g1', epoch: 0 } }), say());
+        expect(registrySession.goal.continuationCount).toBe(2);
+        expect(startWithContinuation).toHaveBeenCalledTimes(1);
+        // …and the run's release kicks the driver once, with the slot free.
+        await settle();
+        expect(fired).toEqual([
+          { phase: 'settling', held: false, opts: null },
+          { phase: 'none', held: false, opts: { cause: 'kick' } },
+        ]);
+      });
+
+      it('A24: a goal turn that left no text — the driver fires once, after the run released the slot', async () => {
+        registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+        const fired: Array<{ phase: string; held: boolean }> = [];
+        handler.setGoalTurnSettledHandler(() => fired.push(phaseNow()));
+        const { settle } = await startBusyTurn();
+        report('working');
+
+        report('idle');
+        handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, []);
+        expect(phaseNow()).toEqual({ phase: 'settling', held: false });
+        expect(fired).toEqual([]);
+        await settle();
+
+        expect(fired).toEqual([{ phase: 'none', held: false }]);
+      });
+
+      it('A25: between the legs of one run the turn is held; only the last leg’s end fires the driver, once', async () => {
+        registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+        const fired: Array<{ phase: string; held: boolean }> = [];
+        handler.setGoalTurnSettledHandler(() => fired.push(phaseNow()));
+        const { settle } = await startBusyTurn();
+
+        const compactTurn = turnRunnerOfDispatch();
+        await compactTurn.begin('compact');
+        report('working');
+        // The `/compact` stream ends with its replay waiting: the runtime keeps `working` — between legs.
+        report('working');
+        expect(phaseNow()).toEqual({ phase: 'running', held: true });
+        const replay = turnRunnerOfDispatch();
+        await replay.begin('replay');
+        report('working');
+        report('idle');
+        await replay.finish(turnResult(['재실행된 지시를 끝냈습니다']));
+        await compactTurn.finish(turnResult([]));
+        await settle();
+
+        expect(fired).toEqual([{ phase: 'settling', held: false }]);
+        expect(registrySession.goalLastTurnText).toBe('재실행된 지시를 끝냈습니다');
+      });
+
+      /** The real loop controller on this handler: its gate asks the handler's occupancy (as `src/index.ts` wires it). */
+      function wireLoop(verdict: Record<string, unknown> = { completed: true, reason: 'done', remaining: [] }) {
+        const judged: string[] = [];
+        const injected: unknown[] = [];
+        const controller = new GoalLoopController({
+          registry: { getSessionByKey: () => registrySession, saveSessions: () => {} },
+          requestCoordinator: { isRequestActive: (key) => handlerAny.requestCoordinator.isRequestActive(key) },
+          turnHeld: (key) => handler.isTurnHeld(key),
+          holdForTurn: (key, cause) => handler.holdGoalDriverForTurn(key, cause),
+          dispatcher: async () => {
+            judged.push(handlerAny.occupancy.runPhase(SESSION_KEY));
+            return JSON.stringify(verdict);
+          },
+          injectContinuation: async (event) => {
+            injected.push(event);
+          },
+          postNotice: async () => undefined,
+          logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+          fallbackModel: () => ({ model: 'claude-sonnet-4' }),
+        });
+        handler.setGoalTurnSettledHandler((key: string, opts?: { cause?: 'turn' | 'kick' }) =>
+          controller.onTurnSettled(key, opts),
+        );
+        return { controller, judged, injected };
+      }
+
+      it('A23 (PR2): the loop starts judging at the turn end, while its run still settles on the slot', async () => {
+        registrySession.goal = {
+          goalId: 'g1',
+          status: 'active',
+          objective: '릴리즈',
+          epoch: 0,
+          continuationCount: 0,
+          maxContinuations: 10,
+        };
+        const { controller, judged } = wireLoop();
+        const { settle } = await startBusyTurn();
+        report('working');
+        report('idle');
+        handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, ['배포 확인까지 끝냈습니다']);
+        await controller.settled(SESSION_KEY);
+
+        expect(judged).toEqual(['settling']);
+        await settle();
+      });
+
+      it('A1 (PR2): a kick while a run prepares on the slot does not judge beside it; the run’s release drives it once', async () => {
+        registrySession.goal = {
+          goalId: 'g1',
+          status: 'active',
+          objective: '릴리즈',
+          epoch: 0,
+          continuationCount: 0,
+          maxContinuations: 10,
+        };
+        registrySession.goalLastTurnText = '이전 턴의 결과';
+        const { controller, judged } = wireLoop();
+        const { settle } = await startBusyTurn(); // the slot is held; no controller, no report yet — preparing
+        expect(handlerAny.occupancy.runPhase(SESSION_KEY)).toBe('preparing');
+
+        handlerAny.goalTurnSettledHandler(SESSION_KEY, { cause: 'kick' });
+        await controller.settled(SESSION_KEY);
+        expect(judged).toEqual([]);
+
+        // That run never started a turn (a command answered without one): its release drives the held kick.
+        await settle();
+        await controller.settled(SESSION_KEY);
+        expect(judged).toEqual(['none']);
+      });
+
+      // Review #1490 — a kick held for the slot is taken over by the turn that then ends with text: one judge, one
+      // continuation, nothing replayed at the release (an incomplete verdict keeps the goal active, so a replay shows).
+      it('A1 (PR2): a held kick is taken over by the turn that ends with text — one judge, one continuation', async () => {
+        registrySession.goal = {
+          goalId: 'g1',
+          status: 'active',
+          objective: '릴리즈',
+          epoch: 0,
+          continuationCount: 0,
+          maxContinuations: 10,
+        };
+        const { controller, judged, injected } = wireLoop({ completed: false, reason: 'not yet', remaining: ['x'] });
+        const { settle } = await startBusyTurn();
+        handlerAny.goalTurnSettledHandler(SESSION_KEY, { cause: 'kick' });
+        await controller.settled(SESSION_KEY);
+        expect(judged).toEqual([]);
+
+        report('working');
+        report('idle');
+        handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, ['이번 턴의 결과']);
+        await controller.settled(SESSION_KEY);
+        await settle();
+        await controller.settled(SESSION_KEY);
+
+        expect(judged).toEqual(['settling']);
+        expect(injected).toHaveLength(1);
+      });
+
+      // .prd/39 S6 (PR10) — the dashboard places a card by what the host holds in memory: a turn on the slot before the
+      // display says working (X1), a goal drive deferred until the slot frees (H6), a restart resume not yet run (S5).
+      it('S6 (PR10): the board probe reads the held turn, the deferred drive and the pending restart resume', async () => {
+        registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+        expect(handler.goalBoardRuntimeOf(SESSION_KEY)).toEqual({
+          turnHeld: false,
+          driven: false,
+          resumePending: false,
+        });
+
+        const { settle } = await startBusyTurn(); // preparing: the display still reads idle
+        expect(handler.goalBoardRuntimeOf(SESSION_KEY)).toEqual({ turnHeld: true, driven: true, resumePending: false });
+        await settle();
+        expect(handler.goalBoardRuntimeOf(SESSION_KEY)).toEqual({
+          turnHeld: false,
+          driven: false,
+          resumePending: false,
+        });
+
+        // A drive the turn end deferred until the follow-ups drained: someone will act, the card is not DONE.
+        (handlerAny.followupDeferredGoalSessions ??= new Set<string>()).add(SESSION_KEY);
+        expect(handler.goalBoardRuntimeOf(SESSION_KEY).driven).toBe(true);
+        handlerAny.followupDeferredGoalSessions.delete(SESSION_KEY);
+
+        handlerAny.recovery.resumed.add(SESSION_KEY);
+        expect(handler.goalBoardRuntimeOf(SESSION_KEY).resumePending).toBe(true);
+        handlerAny.recovery.passRan();
+        expect(handler.goalBoardRuntimeOf(SESSION_KEY).resumePending).toBe(false);
+      });
+
+      it('A26: a follow-up queued at the goal turn end runs first; the driver fires once, after the queue drained', async () => {
+        registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+        const order: string[] = [];
+        handler.setGoalTurnSettledHandler(() => order.push(`driver:${handlerAny.occupancy.runPhase(SESSION_KEY)}`));
+        const { settle } = await startBusyTurn();
+        report('working');
+        await handler.handleMessage(message({ ts: '333.444', text: '사람 후속 지시' }), say());
+        startWithContinuation.mockImplementationOnce(async () => {
+          order.push('follow-up');
+          return { hasPendingChoice: false };
+        });
+
+        report('idle');
+        handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, ['turn text']);
+        expect(order).toEqual([]);
+        await settle();
+        await tick();
+
+        expect(order).toEqual(['follow-up', 'driver:none']);
+      });
+    });
   });
 
   /**
@@ -1763,6 +2067,29 @@ describe('SlackHandler — follow-up queue host', () => {
       );
 
       expect(registrySession.goal).toMatchObject({ objective: '도슨트북 커버 고쳐줘', status: 'active' });
+    });
+
+    // .prd/39 D12 · A15 (X15) — a goal the owner paused waits on the shelf: a chat line is not a new goal beside it.
+    it('does not start a goal while the shelf holds one', async () => {
+      vi.spyOn(userSettingsStore, 'getUserAutoGoalEnabled').mockReturnValue(true);
+      registrySession.goalPaused = [
+        {
+          goalId: 'p1',
+          objective: '쉬는 목표',
+          status: 'paused',
+          createdAt: 1,
+          updatedAt: 1,
+          createdBy: 'U_OWNER',
+          continuationCount: 0,
+          maxContinuations: 10,
+        },
+      ];
+      try {
+        await handler.handleMessage(message({ ts: '444.556', text: '오늘 점심 뭐 먹지' }), say());
+        expect(registrySession.goal).toBeUndefined();
+      } finally {
+        registrySession.goalPaused = undefined;
+      }
     });
   });
 
@@ -4004,6 +4331,135 @@ describe('SlackHandler — follow-up queue host', () => {
         await settle();
       });
     }
+
+    /**
+     * #1472 — such a command can only run once the turn ends. It asks the turn
+     * to end a hold it keeps only for background work, and the gate the host
+     * gave the turn answers yes while it heads the line.
+     */
+    it('a queued `$skill` asks the running turn to end its background hold, and heads the gate', async () => {
+      const steerTurn = withLiveTurn();
+      const { settle } = await startBusyTurn();
+      const gate = claudeHandler.setHoldReleaseGate.mock.calls[0][0] as (key: string) => boolean;
+      expect(gate(SESSION_KEY)).toBe(false);
+
+      await handler.handleMessage(message({ ts: '333.444', text: '$autoz 이거 해줘' }), say());
+
+      expect(steerTurn).not.toHaveBeenCalled();
+      expect(claudeHandler.requestHoldRelease).toHaveBeenCalledWith(SESSION_KEY);
+      expect(gate(SESSION_KEY)).toBe(true);
+      await settle();
+    });
+
+    it('a plain message never ends a hold, and a `$skill` behind it does not jump it', async () => {
+      // The turn refuses the push: the plain message stays queued at the head of the line.
+      withLiveTurn(false);
+      const { settle } = await startBusyTurn();
+      const gate = claudeHandler.setHoldReleaseGate.mock.calls[0][0] as (key: string) => boolean;
+
+      await handler.handleMessage(message({ ts: '333.444', text: 'PR 이것도 하고 그 다음 것도 해줘' }), say());
+      expect(claudeHandler.requestHoldRelease).not.toHaveBeenCalled();
+      expect(gate(SESSION_KEY)).toBe(false);
+
+      await handler.handleMessage(message({ ts: '333.555', text: '$autoz 이거 해줘' }), say());
+      // Asked, but the head of the line is the plain message: the gate says no.
+      expect(gate(SESSION_KEY)).toBe(false);
+      await settle();
+    });
+
+    it('a gate that cannot classify the head row says no instead of throwing', async () => {
+      withLiveTurn(false);
+      const { settle } = await startBusyTurn();
+      const gate = claudeHandler.setHoldReleaseGate.mock.calls[0][0] as (key: string) => boolean;
+      await handler.handleMessage(message({ ts: '333.444', text: '$autoz 이거 해줘' }), say());
+      expect(gate(SESSION_KEY)).toBe(true);
+
+      handlerAny.commandRouter.classifyText = vi.fn(() => {
+        throw new Error('classifier exploded');
+      });
+
+      expect(gate(SESSION_KEY)).toBe(false);
+      await settle();
+    });
+
+    it('a `Send now` already replacing the run keeps the gate shut', async () => {
+      withLiveTurn(false);
+      const { settle } = await startBusyTurn();
+      const gate = claudeHandler.setHoldReleaseGate.mock.calls[0][0] as (key: string) => boolean;
+      await handler.handleMessage(message({ ts: '333.444', text: '$autoz 이거 해줘' }), say());
+      expect(gate(SESSION_KEY)).toBe(true);
+
+      // A row reserved by a `Send now`: that dispatch is the session's next run.
+      const queue = handlerAny.followupQueue;
+      const original = queue.list.bind(queue);
+      queue.list = (key: string) => {
+        const rows = original(key);
+        return rows.length === 0 ? rows : [...rows, { ...rows[0], id: `${key}#99`, seq: 99, state: 'reserved' }];
+      };
+      try {
+        expect(gate(SESSION_KEY)).toBe(false);
+      } finally {
+        queue.list = original;
+      }
+      await settle();
+    });
+
+    it('a cancel or an edit that changes the head of the line asks the held turn again', async () => {
+      withLiveTurn(false);
+      const { settle } = await startBusyTurn();
+      const gate = claudeHandler.setHoldReleaseGate.mock.calls[0][0] as (key: string) => boolean;
+      await handler.handleMessage(message({ ts: '333.444', text: 'PR 이것도 하고 그 다음 것도 해줘' }), say());
+      await handler.handleMessage(message({ ts: '333.555', text: '$autoz 이거 해줘' }), say());
+      expect(gate(SESSION_KEY)).toBe(false);
+      claudeHandler.requestHoldRelease.mockClear();
+
+      // The person cancels the plain message: the command now heads the line.
+      const plain = items().find((item: any) => item.message.ts === '333.444');
+      handlerAny.getFollowupQueue().cancelItem(SESSION_KEY, plain.id, plain.epoch, '테스트가 취소했습니다');
+      handlerAny.followupActionDeps.onItemProcessed(SESSION_KEY, plain.id);
+      expect(claudeHandler.requestHoldRelease).toHaveBeenCalledWith(SESSION_KEY);
+      expect(gate(SESSION_KEY)).toBe(true);
+
+      // An edit of a queued row asks too.
+      claudeHandler.requestHoldRelease.mockClear();
+      await handlerAny.handleQueuedMessageEdit({
+        channel: CHANNEL,
+        ts: '333.555',
+        threadTs: THREAD_TS,
+        user: 'U_OWNER',
+        text: '$autoz 이거 고쳐서 해줘',
+      });
+      expect(claudeHandler.requestHoldRelease).toHaveBeenCalledWith(SESSION_KEY);
+
+      // So does an edit made from the dashboard.
+      claudeHandler.requestHoldRelease.mockClear();
+      const command = items().find((item: any) => item.message.ts === '333.555');
+      const res = await handler.handleDashboardFollowupAction({
+        sessionKey: SESSION_KEY,
+        itemId: command.id,
+        op: 'edit',
+        epoch: command.epoch,
+        turnEpoch: handlerAny.followupDispatcher.snapshot(SESSION_KEY).turnEpoch,
+        text: '$autoz 이거 다시 고쳐서 해줘',
+        actorUserId: 'U_OWNER',
+      });
+      expect(res.ok).toBe(true);
+      expect(claudeHandler.requestHoldRelease).toHaveBeenCalledWith(SESSION_KEY);
+      await settle();
+    });
+
+    it('a `$skill` from someone who may not interrupt the session does not end a hold', async () => {
+      withLiveTurn();
+      const { settle } = await startBusyTurn();
+      const gate = claudeHandler.setHoldReleaseGate.mock.calls[0][0] as (key: string) => boolean;
+      claudeHandler.canInterrupt.mockReturnValue(false);
+
+      await handler.handleMessage(message({ ts: '333.444', text: '$autoz 이거 해줘' }), say());
+
+      expect(gate(SESSION_KEY)).toBe(false);
+      claudeHandler.canInterrupt.mockReturnValue(true);
+      await settle();
+    });
 
     /**
      * #891 T2 — a dedicated `/compact` turn ends at the compaction's result. A

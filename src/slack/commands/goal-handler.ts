@@ -1,3 +1,5 @@
+import { reopenStoppedGoal } from '@soma/slack/goal/machine';
+import { capAskOf, placeOf, slotGoalInFlight, slotHoldOf } from '@soma/slack/goal/read';
 import { Logger } from '../../logger';
 import { validateSessionGoalObjective } from '../../prompt/session-goal-block';
 import type { ConversationSession, SessionGoal } from '../../types';
@@ -6,7 +8,7 @@ import { validateGoalMaxContinuations } from '../../user-settings-store';
 import { CommandParser } from '../command-parser';
 import { buildGoalStatusBlocks } from '../goal-blocks';
 import { retireGoalCapDecision } from '../goal-cap-decision';
-import { bumpGoalEpoch } from '../goal-continuation';
+import { commitGoalChange, type GoalChange } from '../goal-commit';
 import { resumeGoalLoop } from '../goal-loop-resume';
 import { heldTasksOf } from '../goal-task-gate';
 import {
@@ -146,10 +148,16 @@ export class GoalHandler implements CommandHandler {
     this.deps.userSettingsStore.setUserGoalMaxContinuations(ctx.user, value);
 
     const active = session?.goal;
-    if (active && (active.status === 'active' || active.status === 'paused')) {
+    if (active && session && slotGoalInFlight(session)) {
+      // D7 (X5) — a goal asking the cap question with the new budget above its count goes on: the question closes
+      // (its DM is rewritten) and the loop drives again. Below or at the count it keeps asking.
+      const capAsk = capAskOf(active);
+      if (capAsk && value > active.continuationCount) retireGoalCapDecision(active);
       active.maxContinuations = value;
       active.updatedAt = Date.now();
-      this.persistGoalChange(session as ConversationSession);
+      // An active goal is driven (I5): a judge in flight discards its verdict on the moved epoch and judges once
+      // more behind this kick; an open question is left asking.
+      this.persistGoalChange(session as ConversationSession, { drive: 'kick' });
       await this.deps.slackApi.postSystemMessage(
         ctx.channel,
         `🔢 Goal will now auto-continue up to *${value}* turns (was the ${DEFAULT_GOAL_MAX_CONTINUATIONS} default). Applied to the current goal and saved as your default.`,
@@ -338,10 +346,34 @@ export class GoalHandler implements CommandHandler {
   ): Promise<CommandResult> {
     const shelf = session.goalPaused ?? [];
     const current = session.goal;
-    const slotPaused = current?.status === 'paused' ? current : undefined;
+    const slotPaused = slotHoldOf(session);
 
     if (index === undefined && current?.status === 'active' && current.stall) {
       return this.resumeStalledGoal(channel, threadTs, session, current);
+    }
+    // .prd/39 D8 · D12 — a stopped goal (judge-failed, start-failed, resume-failed, person-stopped) runs again.
+    if (index === undefined && current && reopenStoppedGoal(current)) {
+      this.persistGoalChange(session, { drive: 'kick' });
+      await this.deps.slackApi.postSystemMessage(
+        channel,
+        `▶️ The current goal had stopped — it runs again: ${formatGoalObjectiveForSlack(current.objective)}`,
+        { threadTs },
+      );
+      return { handled: true };
+    }
+    // .prd/39 D12 (X16) — a goal asking the cap question goes on the way the question's ✅ does: its budget back, the
+    // question closed (DM rewritten), the loop driven. It used to answer "already running".
+    if (index === undefined && current && capAskOf(current)) {
+      retireGoalCapDecision(current);
+      current.continuationCount = 0;
+      current.updatedAt = Date.now();
+      this.persistGoalChange(session, { drive: 'kick' });
+      await this.deps.slackApi.postSystemMessage(
+        channel,
+        `▶️ The current goal had used its ${current.maxContinuations}-turn auto-continuation budget — its budget is back and it runs again: ${formatGoalObjectiveForSlack(current.objective)}`,
+        { threadTs },
+      );
+      return { handled: true };
     }
     if (shelf.length === 0 && !slotPaused) {
       if (!current) await this.postNoGoal(channel, threadTs);
@@ -454,6 +486,16 @@ export class GoalHandler implements CommandHandler {
   ): Promise<CommandResult> {
     if (!session.goal) {
       await this.postNoGoal(channel, threadTs);
+      return { handled: true };
+    }
+    // .prd/39 D12 (X13) — a goal that is already complete keeps the record of how it ended (the evaluator's verdict,
+    // or an earlier `goal done`); a second close-out would rewrite it as a direct completion.
+    if (placeOf(session, session.goal) === 'slot-complete') {
+      await this.deps.slackApi.postSystemMessage(
+        channel,
+        '✅ The current goal is already complete — nothing changed. Set a new goal to continue.',
+        { threadTs },
+      );
       return { handled: true };
     }
     const snapshot = admitOpening ? snapshotGoalState(session) : undefined;
@@ -648,17 +690,14 @@ export class GoalHandler implements CommandHandler {
     }
   }
 
-  private persistGoalChange(session: ConversationSession): void {
-    // Every user-driven goal mutation advances the intent epoch so an
-    // in-flight completion eval resolves into a discard, never an apply,
-    // against the state the user just changed (M1). `clear` leaves no goal
-    // to bump — the eval's epoch guard catches that via the missing goal.
-    if (session.goal) bumpGoalEpoch(session.goal);
-    session.systemPrompt = undefined;
-    this.deps.claudeHandler.saveSessions();
-    // Goal state is on the dashboard card (status, queue, a scheduled
-    // re-check the bump just dropped) — push it now, not at the next poll.
-    this.deps.claudeHandler.broadcastSessionUpdate?.();
+  /** Commit a goal change (.prd/39 D9): epoch, prompt, save, dashboard, and the drive it owes. */
+  private persistGoalChange(session: ConversationSession, change: GoalChange = { drive: 'none' }): void {
+    const sessionKey = this.deps.claudeHandler.getSessionKey(session.channelId, session.threadTs);
+    commitGoalChange(session, sessionKey, change, {
+      saveSessions: () => this.deps.claudeHandler.saveSessions(),
+      broadcastSessionUpdate: () => this.deps.claudeHandler.broadcastSessionUpdate?.(),
+      kick: (key) => resumeGoalLoop(key),
+    });
   }
 
   private async postNoGoal(channel: string, threadTs: string): Promise<void> {

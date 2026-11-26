@@ -110,6 +110,45 @@ describe('GoalActionHandler — delete (S1)', () => {
  * as the dashboard — the promoted goal starts with its opening turn admitted
  * through the follow-up fence, not with a bare loop kick.
  */
+/**
+ * .prd/39 D12 · A14 (X14) — a 🗑️ on an old `goal` message's queued line, clicked after that goal was promoted, asks
+ * the host for the place the line was shown (`queued`); the host answers that the list changed, and the goal that
+ * runs now stays. Computed at click time, the place read `current` and deleted the running goal.
+ */
+describe('GoalActionHandler — delete asks for the place the line was shown (X14)', () => {
+  it('a queued line clicked after its goal was promoted asks for queued, not current', async () => {
+    const session = makeSession({ goal: makeGoal({ goalId: 'g-promoted' }) });
+    const hostAction = vi.fn().mockRejectedValue(new HostGoalActionError(409, 'The goal list changed — refresh'));
+    getHostGoalActionHandlerMock.mockReturnValue(hostAction);
+    const { handler } = makeHandler(session);
+    const respond = vi.fn().mockResolvedValue(undefined);
+    const shownQueued = {
+      user: { id: 'U-owner' },
+      actions: [
+        {
+          value: encodeGoalActionValue({
+            sessionKey: SESSION_KEY,
+            goalId: 'g-promoted',
+            channel: 'C1',
+            threadTs: 'T1',
+            place: 'queued',
+          }),
+        },
+      ],
+    };
+
+    await handler.handleDelete(shownQueued, respond);
+
+    expect(hostAction).toHaveBeenCalledWith(
+      SESSION_KEY,
+      { action: 'delete', goalId: 'g-promoted', expect: 'queued' },
+      'U-owner',
+    );
+    expect(session.goal?.goalId).toBe('g-promoted');
+    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining('changed') }));
+  });
+});
+
 describe('GoalActionHandler — delete through the host goal action', () => {
   it('delegates deleting the current goal with expect=current and never mutates locally', async () => {
     const session = makeSession({
@@ -406,5 +445,36 @@ describe('GoalActionHandler — the DM and the dashboard card are one request (T
 
     expect(session.goal?.status).toBe('active');
     expect(respond).toHaveBeenCalledWith(expect.objectContaining({ text: '❌ goal 소유자만 응답할 수 있습니다.' }));
+  });
+});
+
+/**
+ * .prd/39 I4 · X9 — every intent change moves the epoch through one `bumpEpoch`, which also ends the judge retry
+ * window. The objective edit bumped inline and left the window: the retry armed for the old epoch never fires, and
+ * the card kept advertising a re-check that never runs.
+ */
+describe('GoalActionHandler — the objective edit moves the epoch through bumpEpoch (X9)', () => {
+  it('ends a waiting judge retry window with the epoch it moves', async () => {
+    const session = makeSession({
+      goal: makeGoal({ continuationCount: 2, epoch: 3, evalBackoffUntil: Date.now() + 60_000, evalRetryReason: '429' }),
+    });
+    const { handler } = makeHandler(session);
+    const ack = vi.fn().mockResolvedValue(undefined);
+    const view = {
+      private_metadata: encodeGoalActionValue({
+        sessionKey: SESSION_KEY,
+        goalId: 'goal-1',
+        channel: 'C1',
+        threadTs: 'T1',
+      }),
+      state: { values: { goal_update_block: { goal_update_input: { value: '새 목표: 배포까지' } } } },
+    };
+
+    await handler.handleUpdateSubmit(ack, { user: { id: 'U-owner' }, view });
+
+    expect(session.goal?.objective).toBe('새 목표: 배포까지');
+    expect(session.goal?.epoch).toBe(4);
+    expect(session.goal?.evalBackoffUntil).toBeUndefined();
+    expect(session.goal?.evalRetryReason).toBeUndefined();
   });
 });

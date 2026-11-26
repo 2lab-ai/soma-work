@@ -14,6 +14,7 @@ import {
   sanitizePendingRewind,
   sanitizeRewindRedo,
 } from '@soma/slack/context-anchor';
+import { bumpEpoch, settleCompletedSlot, storedGoal } from '@soma/slack/goal/machine';
 import { LOG_VERBOSITY_MASK_VERSION, upgradeLegacyVerbosityMask } from '@soma/slack/output-flags';
 import { endGoalCapDecision } from '@soma/slack/session-goal';
 import { canonicalLinkUrl } from '@soma/slack/session-link-capture';
@@ -77,6 +78,7 @@ import {
   migrateLegacyGoalArray,
   stampActiveLegGoalOwner,
 } from './slack/session-goal-lifecycle';
+import { SessionOccupancy } from './slack/session-occupancy';
 import {
   applyPlanWrite,
   consumeEpicEvents,
@@ -630,6 +632,15 @@ export interface IncidentResultOwed {
 }
 
 /**
+ * .prd/39 S5 — the display word a loaded session starts with, read off its recovery record: the run the boot
+ * resumes is working, an open question is waiting, anything else is idle. The disk's own word stays in the record.
+ */
+export function loadedActivityState(record: { resumePending: boolean; questionOpen: boolean }): ActivityState {
+  if (record.resumePending) return 'working';
+  return record.questionOpen ? 'waiting' : 'idle';
+}
+
+/**
  * A restored incident session, settled from its own markers. No process
  * survives a restart, so an attempt without its finished marker was cut by it.
  * The ordinary crash record is not the test: `working` is not always saved, a
@@ -854,6 +865,28 @@ export class SessionRegistry {
    */
   setActivityStateChangeCallback(callback: () => void): void {
     this.onActivityStateChangeCallback = callback;
+  }
+
+  /**
+   * Listen to the turn runtime's activity reports (`setActivityState` / `setActivityStateByKey`), repeats included.
+   * The turn occupancy (`src/slack/session-occupancy.ts`) keeps them in memory as its run-phase marks; a value read
+   * from disk or written outside these two setters is never reported. Returns the unsubscribe function.
+   */
+  addTurnActivityListener(listener: (sessionKey: string, state: ActivityState) => void): () => void {
+    this.turnActivityListeners.add(listener);
+    return () => this.turnActivityListeners.delete(listener);
+  }
+
+  private readonly turnActivityListeners = new Set<(sessionKey: string, state: ActivityState) => void>();
+
+  private noteTurnActivity(sessionKey: string, state: ActivityState): void {
+    for (const listener of this.turnActivityListeners) {
+      try {
+        listener(sessionKey, state);
+      } catch (err) {
+        this.logger.debug('Turn activity listener failed', { sessionKey, state, error: err });
+      }
+    }
   }
 
   /**
@@ -2061,7 +2094,7 @@ export class SessionRegistry {
     // it instead of acting on the old object. Its lease went with that object.
     const goal = migrateLegacyGoal(archived.goal);
     if (goal) {
-      goal.epoch = (goal.epoch ?? 0) + 1;
+      bumpEpoch(goal);
       goal.pendingEval = undefined;
     }
     const session: ConversationSession = {
@@ -2102,6 +2135,8 @@ export class SessionRegistry {
       goalHistory: migrateLegacyGoalArray(archived.goalHistory),
       // Paused goals wait for their owner across sleep and archive (SSOT 2026-11-06).
       goalPaused: migrateLegacyGoalArray(archived.goalPaused),
+      // The queue too (.prd/39 D11, X11): a queued goal waits for the one ahead of it, not for the archive to drop it.
+      goalQueue: migrateLegacyGoalArray(archived.goalQueue),
       taskLedger: sanitizeTaskLedger(archived.taskLedger),
       agents: loseRunningAgents(sanitizeAgentRegistry(archived.agents), Date.now()),
       taskUsage: restoreTaskUsage({ taskUsage: archived.taskUsage, sessionId: archived.sessionId }),
@@ -2139,6 +2174,7 @@ export class SessionRegistry {
       pendingUserText: null,
       pendingEventContext: null,
     };
+    settleCompletedSlot(session); // .prd/39 D5 — a completed goal lives in the history only
     this.putSession(key, session);
     this.logger.info('Archived session restored from the dashboard', {
       sessionKey: key,
@@ -2169,6 +2205,8 @@ export class SessionRegistry {
   setActivityState(channelId: string, threadTs: string | undefined, state: ActivityState): void {
     const session = this.getSession(channelId, threadTs);
     if (!session) return;
+    // Every report of the turn runtime, a repeat included — the turn occupancy marks the run it belongs to.
+    this.noteTurnActivity(this.getSessionKey(channelId, threadTs), state);
     if (session.activityState === state) return; // No-op for duplicate transitions
 
     const leftWaiting = session.activityState === 'waiting';
@@ -2215,6 +2253,7 @@ export class SessionRegistry {
     sessionKey = normalizeSessionKey(sessionKey);
     const session = this.getSessionByKey(sessionKey);
     if (!session) return;
+    this.noteTurnActivity(sessionKey, state); // every report, a repeat included (see setActivityState)
     if (session.activityState === state) return;
 
     const leftWaiting = session.activityState === 'waiting';
@@ -3332,6 +3371,10 @@ export class SessionRegistry {
     // decision, stall) end with it.
     endGoalCapDecision(session.goal);
     session.goal = undefined;
+    // .prd/39 D11 (X10) — the queue and the shelf belong to the old conversation too; left behind, the next restart's
+    // stranded-queue repair promoted the old queued goal into the new conversation. The history stays.
+    session.goalQueue = undefined;
+    session.goalPaused = undefined;
     // #829 — the follow-up and the card TL;DR were the old conversation's verdict; the new one is decided by
     // its own summary.
     session.followUp = undefined;
@@ -3962,7 +4005,7 @@ export class SessionRegistry {
             // User SSOT instructions (persisted)
             instructions: session.instructions,
             // Host-managed session goal (persisted)
-            goal: session.goal,
+            goal: storedGoal(session.goal), // .prd/39 D4 — never the judge's lease
             // Multi-goal queue + completed history (persisted so the queue
             // survives a restart — T1/T2).
             goalQueue: session.goalQueue,
@@ -4711,6 +4754,7 @@ export class SessionRegistry {
         const restored = this.restoredTaskId(serialized.taskId, this.sessions.get(derivedKey));
         session.taskId = restored.taskId;
         if (restored.minted) mintedTaskIdCount++;
+        settleCompletedSlot(session); // .prd/39 D5 — a completed goal lives in the history only
         this.putSession(derivedKey, session);
         loaded++;
 
@@ -4729,6 +4773,7 @@ export class SessionRegistry {
           }
         }
 
+        let resumeOnBoot = false;
         // Decide whether to enqueue this session for restart/crash recovery.
         //
         // Priority 1 — graceful-shutdown marker (`shutdownNotificationSent`).
@@ -4756,7 +4801,8 @@ export class SessionRegistry {
             sessionKey: derivedKey,
             title: serialized.title,
             workflow: serialized.workflow,
-            shouldAutoResume: !sleptOnLoad && serialized.wasWorkingAtShutdown === true && !personStopped,
+            shouldAutoResume: (resumeOnBoot =
+              !sleptOnLoad && serialized.wasWorkingAtShutdown === true && !personStopped),
             ...(stoppedAgents.length > 0 ? { stoppedAgents } : {}),
           });
         } else if (!sleptOnLoad && serialized.activityState && serialized.activityState !== 'idle') {
@@ -4769,10 +4815,18 @@ export class SessionRegistry {
             sessionKey: derivedKey,
             title: serialized.title,
             workflow: serialized.workflow,
-            shouldAutoResume: serialized.activityState === 'working' && !stoppedByPerson,
+            shouldAutoResume: (resumeOnBoot = serialized.activityState === 'working' && !stoppedByPerson),
             ...(stoppedAgents.length > 0 ? { stoppedAgents } : {}),
           });
         }
+        // .prd/39 S5 · D3 · D16 — the recovery record above keeps the disk's word; the display comes from the record.
+        // A session the boot resumes reads working (cron and the user-task queue stay off it until its resume turn
+        // takes over); a session whose question is open reads waiting; every other one reads idle. Crash recovery
+        // resumes neither an incident thread nor a safeguards-halted one. No goal or loop code reads this word.
+        session.activityState = loadedActivityState({
+          resumePending: resumeOnBoot && !session.incidentRequest && !session.safeguardHalt,
+          questionOpen: SessionOccupancy.ownerQuestionOpen(session),
+        });
       }
 
       this.logger.info(`Loaded ${loaded} sessions from file (${sessionsArray.length - loaded} expired)`);

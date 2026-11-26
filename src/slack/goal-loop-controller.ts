@@ -63,9 +63,12 @@ import { gateGoalVerdictOnTasks, goalTaskListLines, heldByWaitingGoals, taskGate
 
 export { GOAL_SUMMARY_PERSIST_MAX };
 
+import { stopGoal } from '@soma/slack/goal/machine';
+import { capAskOf } from '@soma/slack/goal/read';
 import { goalStallRollbackOffer, openGoalStall, trackGoalFirstFailure } from './goal-stall';
 import { advanceGoalQueue, formatGoalObjectiveForSlack } from './session-goal';
 import { announceSessionNotice, recordSessionNotice } from './session-notice';
+import { SessionOccupancy } from './session-occupancy';
 
 /** Default ceiling for a single completion eval before it is aborted. */
 const DEFAULT_GOAL_EVAL_TIMEOUT_MS = 120_000;
@@ -119,7 +122,6 @@ export interface GoalLoopLogger {
 /** Session-registry surface the controller needs. */
 export interface GoalLoopRegistry {
   getSessionByKey(sessionKey: string): ConversationSession | undefined;
-  getActivityStateByKey(sessionKey: string): string | undefined;
   saveSessions(): void;
   /**
    * Push the dashboard board. Called after every loop-state change (eval
@@ -146,6 +148,18 @@ export interface GoalLoopRequestCoordinator {
 export interface GoalLoopControllerDeps {
   registry: GoalLoopRegistry;
   requestCoordinator: GoalLoopRequestCoordinator;
+  /**
+   * .prd/39 S1 · D1 — is a turn held here (`SessionOccupancy.turnHeld`): a run preparing or running. The loop gate
+   * reads this, not the display word `activityState`.
+   */
+  turnHeld: (sessionKey: string) => boolean;
+  /**
+   * The gate found the turn held: the drive waits for that turn. The host keeps it for the run's slot release (a
+   * turn that ends with text drives at its end and takes this over), so a run that never starts a turn — a command
+   * answered without one, a preparation a person stopped — still releases the drive. A turn held outside a slot
+   * drives at its own end.
+   */
+  holdForTurn?: (sessionKey: string, cause: GoalLoopTrigger) => void;
   /** Runs the eval dispatch (production: `ClaudeHandler.dispatchOneShot`). */
   dispatcher: GoalEvalDispatcher;
   /**
@@ -362,28 +376,104 @@ export class GoalLoopController {
       .finally(() => {
         // Drop the queue entry once drained so the map doesn't grow without
         // bound. A new trigger re-seeds it.
-        if (this.queues.get(sessionKey) === next) this.queues.delete(sessionKey);
+        if (this.queues.get(sessionKey) === next) {
+          this.queues.delete(sessionKey);
+          this.noteStoppedActing(sessionKey);
+        }
       });
     this.queues.set(sessionKey, next);
   }
 
+  /**
+   * .prd/39 S6 — the board reads {@link isActing} from memory (`driven`): the push a step made mid-run showed the card
+   * RUNNING, so the loop pushes again once it stops acting, or the card would stay there.
+   */
+  private noteStoppedActing(sessionKey: string): void {
+    if (this.isActing(sessionKey)) return;
+    try {
+      this.deps.registry.broadcastSessionUpdate?.();
+    } catch (err: unknown) {
+      this.deps.logger.warn('Goal loop board push failed', {
+        sessionKey,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
+   * Send the cap round's DM to the owner — once per round: a round whose DM landed (`capDmRef`) sends nothing
+   * (codex review #1). The answer may come from the dashboard while the post is in flight: a late DM is rewritten
+   * at once instead of offering buttons (`recordGoalCapDm`).
+   */
+  private async postCapDecisionDm(
+    sessionKey: string,
+    session: ConversationSession,
+    activeGoal: SessionGoal,
+    reason: string,
+  ): Promise<'sent' | 'failed' | 'skipped'> {
+    const { logger } = this.deps;
+    if (!this.deps.postOwnerDm || activeGoal.capDmRef) return 'skipped';
+    const decisionId = activeGoal.capDecisionId as string;
+    const blocks = buildCapDecisionDmBlocks({
+      value: {
+        sessionKey,
+        goalId: activeGoal.goalId,
+        channel: session.channelId,
+        threadTs: session.threadTs,
+        decisionId,
+      },
+      objective: activeGoal.objective,
+      maxContinuations: activeGoal.maxContinuations,
+      reason,
+      formatObjective: formatGoalObjectiveForSlack,
+    });
+    try {
+      const posted = await this.deps.postOwnerDm(activeGoal.createdBy, '⏳ Goal 계속 진행할까요?', blocks);
+      const ref = dmRefOf(posted);
+      if (ref && recordGoalCapDm(activeGoal, decisionId, ref) === 'recorded') this.persist();
+      return 'sent';
+    } catch (err: unknown) {
+      logger.warn('Failed to DM goal owner the cap decision — the dashboard card still asks', {
+        sessionKey,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return 'failed';
+    }
+  }
+
   /** One eval (+ maybe one continuation) for a settled session. */
   private async runOnce(sessionKey: string, cause: GoalLoopTrigger = 'turn'): Promise<void> {
-    const { registry, requestCoordinator, logger } = this.deps;
+    const { registry, logger } = this.deps;
     const session = registry.getSessionByKey(sessionKey);
     const goal = session?.goal;
     if (this.deps.isShuttingDown?.()) {
       logger.info('Goal loop run skipped — the host is shutting down; the restart resumes the goal', { sessionKey });
       return;
     }
-    if (
-      !session ||
-      !shouldRunGoalIdleDriver({
-        goal,
-        requestActive: requestCoordinator.isRequestActive(sessionKey),
-        activityState: registry.getActivityStateByKey(sessionKey),
-      })
-    ) {
+    if (!session) return;
+    // .prd/39 A4 (X4) — the owner is being asked whether to keep going: no judge and no notice again. A round whose
+    // DM never landed sends that same round's DM; the dashboard card asks either way.
+    const capAsk = capAskOf(goal);
+    if (capAsk) {
+      if (!capAsk.dmRef && !this.deps.turnHeld(sessionKey) && goal) {
+        openGoalCapDecision(goal, this.now()); // a legacy round without an id gets one for its buttons
+        const dm = await this.postCapDecisionDm(sessionKey, session, goal, goal.lastEvalReason ?? '');
+        logger.info('Goal loop run — the cap question is open; its undelivered DM was sent again', { sessionKey, dm });
+      } else {
+        logger.info('Goal loop run skipped — the cap question is open', { sessionKey, cause });
+      }
+      return;
+    }
+    const turnHeld = this.deps.turnHeld(sessionKey);
+    if (!shouldRunGoalIdleDriver({ goal, turnHeld, ownerQuestionOpen: SessionOccupancy.ownerQuestionOpen(session) })) {
+      // Held only by the turn: that turn (or its run's release) drives the loop again — never a judge beside it.
+      if (turnHeld && shouldRunGoalIdleDriver({ goal, turnHeld: false, ownerQuestionOpen: false })) {
+        logger.info('Goal loop run held — a turn is starting or running; it drives the loop when it ends', {
+          sessionKey,
+          cause,
+        });
+        this.deps.holdForTurn?.(sessionKey, cause);
+      }
       return;
     }
     const activeGoal = session.goal!;
@@ -710,40 +800,9 @@ export class GoalLoopController {
         this.persist();
         this.deps.registry.broadcastSessionUpdate?.();
       }
-      const decisionId = activeGoal.capDecisionId as string;
-      // The DM goes out once per round: a round whose DM never landed (no ref)
-      // retries it on the next cap trigger (codex review #1).
-      let dmSent = false;
-      let dmFailed = false;
-      if (this.deps.postOwnerDm && !activeGoal.capDmRef) {
-        const blocks = buildCapDecisionDmBlocks({
-          value: {
-            sessionKey,
-            goalId: activeGoal.goalId,
-            channel: session.channelId,
-            threadTs: session.threadTs,
-            decisionId,
-          },
-          objective: activeGoal.objective,
-          maxContinuations: activeGoal.maxContinuations,
-          reason: verdict.reason,
-          formatObjective: formatGoalObjectiveForSlack,
-        });
-        try {
-          const posted = await this.deps.postOwnerDm(activeGoal.createdBy, '⏳ Goal 계속 진행할까요?', blocks);
-          dmSent = true;
-          const ref = dmRefOf(posted);
-          // The answer may have come from the dashboard while the post was in
-          // flight: a late DM is rewritten at once instead of offering buttons.
-          if (ref && recordGoalCapDm(activeGoal, decisionId, ref) === 'recorded') this.persist();
-        } catch (err: unknown) {
-          dmFailed = true;
-          logger.warn('Failed to DM goal owner the cap decision — the dashboard card still asks', {
-            sessionKey,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
-      }
+      const dm = await this.postCapDecisionDm(sessionKey, session, activeGoal, verdict.reason);
+      const dmSent = dm === 'sent';
+      const dmFailed = dm === 'failed';
       if (dmSent) {
         await this.postResultNotice(
           session,
@@ -780,6 +839,19 @@ export class GoalLoopController {
           : `🔄 Goal not yet complete (eval-model verdict).\n*Reason:* ${verdict.reason}\n*Remaining:*\n${remaining}`,
     );
 
+    // .prd/39 A6 (X6) — the host began shutting down while the notice posted: inject nothing (the stopping host would
+    // refuse it and tell a person to resend what they never sent) and give the continuation back; the restart's
+    // recovery resumes the goal.
+    if (this.deps.isShuttingDown?.()) {
+      if (activeGoal.continuationCount > 0) {
+        activeGoal.continuationCount -= 1;
+        this.persist();
+      }
+      logger.info('Goal continuation not injected — the host is shutting down; the restart resumes the goal', {
+        sessionKey,
+      });
+      return;
+    }
     // Never supersede a turn that started during the eval. A live request
     // means a user (or already-running) turn owns the slot — defer; the
     // next turn-settled trigger re-runs the loop.
@@ -1096,11 +1168,11 @@ export class GoalLoopController {
         this.armEvalRetry(sessionKey, snapshot, delayMs, cause);
         return;
       }
-      // Budget exhausted — reset the streak so a user nudge starts a fresh
-      // budget instead of landing straight back on the terminal notice.
-      live.evalDispatchRetryCount = undefined;
-      live.evalRetryReason = undefined;
+      // Budget exhausted (.prd/39 D8, X7): the goal is stopped(judge-failed) — the loop stops driving it, the card
+      // asks, a restart keeps it; a person's message or `goal resume` opens it with a fresh retry budget.
+      stopGoal(live, 'judge-failed', this.now());
       this.persist();
+      this.deps.registry.broadcastSessionUpdate?.();
     }
 
     void this.postLooseNotice(
@@ -1218,10 +1290,20 @@ export class GoalLoopController {
     void this.deps
       .injectContinuation(syntheticEvent, { sessionKey, session })
       // Settles once the continuation's turn holds the slot or ran (handleMessage), or failed to start.
-      .finally(() => this.injecting.delete(sessionKey))
+      .finally(() => {
+        this.injecting.delete(sessionKey);
+        this.noteStoppedActing(sessionKey);
+      })
       .catch(async (err: unknown) => {
         const injectErr = err instanceof Error ? err.message : String(err);
         this.deps.logger.error('Goal continuation injection failed — loop stalled', { sessionKey, error: injectErr });
+        // .prd/39 D8 (X7) — recorded, not only announced: stopped(start-failed) until a person opens it again.
+        const live = this.deps.registry.getSessionByKey(sessionKey)?.goal;
+        if (live && live.goalId === activeGoal.goalId && live.status === 'active') {
+          stopGoal(live, 'start-failed', this.now());
+          this.persist();
+          this.deps.registry.broadcastSessionUpdate?.();
+        }
         try {
           await this.postLooseNotice(
             session,

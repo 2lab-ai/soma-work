@@ -60,8 +60,9 @@ function harness(goal: SessionGoal, verdicts: GoalEvalVerdict[], anchors: string
   const notices: string[] = [];
   let i = 0;
   const controller = new GoalLoopController({
-    registry: { getSessionByKey: () => session, getActivityStateByKey: () => 'idle', saveSessions: () => undefined },
+    registry: { getSessionByKey: () => session, saveSessions: () => undefined },
     requestCoordinator: { isRequestActive: () => false },
+    turnHeld: () => false,
     dispatcher: async () => JSON.stringify(verdicts[Math.min(i++, verdicts.length - 1)]),
     injectContinuation: async () => undefined,
     postNotice: async (_channel: string, _threadTs: string | undefined, text: string) => {

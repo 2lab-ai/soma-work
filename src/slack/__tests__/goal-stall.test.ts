@@ -158,7 +158,7 @@ describe('shouldRunGoalIdleDriver — a stalled goal waits for the user', () => 
     const goal = makeGoal({
       stall: { stallId: 's1', stalledAt: 1, reason: 'r', actions: ['a', 'b', 'c'], confidence: 0.99 },
     });
-    expect(shouldRunGoalIdleDriver({ goal, requestActive: false, activityState: 'idle' })).toBe(false);
+    expect(shouldRunGoalIdleDriver({ goal, turnHeld: false, ownerQuestionOpen: false })).toBe(false);
   });
 });
 
@@ -206,10 +206,10 @@ function makeHarness(
   const controller = new GoalLoopController({
     registry: {
       getSessionByKey: () => session,
-      getActivityStateByKey: () => 'idle',
       saveSessions: () => undefined,
     },
     requestCoordinator: { isRequestActive: () => false },
+    turnHeld: () => false,
     dispatcher: async ({ userPrompt }) => {
       prompts.push(userPrompt);
       if (failures++ < (opts.failFirst ?? 0)) throw new Error('eval transport down');
@@ -327,7 +327,9 @@ describe('stall question — what the owner sees', () => {
 });
 
 describe('stall supersedes an open cap decision', () => {
-  it('a stall opened while the 10/10 decision is open ends that decision (one question, one way out)', async () => {
+  // .prd/39 D2 — the loop no longer judges while the cap question is open, so a stall cannot open beside it: the open
+  // question stays the one question (one way out).
+  it('a turn end while the 10/10 decision is open opens no stall — the open question stays the one question', async () => {
     const h = makeHarness(
       makeGoal({
         lastEvalReason: 'x',
@@ -339,9 +341,9 @@ describe('stall supersedes an open cap decision', () => {
     );
     h.controller.onTurnSettled(SESSION_KEY);
     await h.controller.settled(SESSION_KEY);
-    expect(h.goal.stall).toBeDefined();
-    expect(h.goal.capDmPendingAt).toBeUndefined();
-    expect(h.goal.capDecisionId).toBeUndefined();
+    expect(h.goal.stall).toBeUndefined();
+    expect(h.goal.capDmPendingAt).toBe(5);
+    expect(h.goal.capDecisionId).toBe('cap-round-1');
   });
 });
 

@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ConversationSession } from '../../../types';
+import { resumeGoalLoop } from '../../goal-loop-resume';
 import { GoalHandler } from '../goal-handler';
 import type { CommandContext, CommandDependencies } from '../types';
+
+// A spy that still calls the real bridge: other suites here wire it with `setGoalLoopResumeHandler`.
+vi.mock('../../goal-loop-resume', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../goal-loop-resume')>();
+  return { ...actual, resumeGoalLoop: vi.fn((key: string) => actual.resumeGoalLoop(key)) };
+});
 
 function makeCtx(overrides: Partial<CommandContext> = {}): CommandContext {
   return {
@@ -257,12 +264,15 @@ describe('GoalHandler', () => {
     session.goal!.pendingEval = { requestedAt: 1, turnId: 'T1' };
     session.goal!.lastEvalReason = 'stale eval gap';
     await handler.execute(makeCtx({ text: 'goal done' }));
-    expect(session.goal?.status).toBe('complete');
-    expect(session.goal?.completedAt).toBe(Date.now());
-    expect(session.goal?.completedBy).toBe('U123');
-    expect(session.goal?.completedVia).toBe('user');
-    expect(session.goal?.pendingEval).toBeUndefined();
-    expect(session.goal?.lastEvalReason).toBeUndefined();
+    // .prd/39 D5 — the completed goal left the slot; the history holds its record.
+    expect(session.goal).toBeUndefined();
+    const done = session.goalHistory?.[(session.goalHistory?.length ?? 0) - 1];
+    expect(done?.status).toBe('complete');
+    expect(done?.completedAt).toBe(Date.now());
+    expect(done?.completedBy).toBe('U123');
+    expect(done?.completedVia).toBe('user');
+    expect(done?.pendingEval).toBeUndefined();
+    expect(done?.lastEvalReason).toBeUndefined();
     expect(session.systemPrompt).toBeUndefined();
 
     session.systemPrompt = 'cached prompt';
@@ -551,5 +561,138 @@ describe('GoalHandler — goal clear ends an open stall (its question is retract
     } finally {
       setGoalStallRetiredListener(undefined);
     }
+  });
+});
+
+/**
+ * .prd/39 D7 · A5 (X5) — `goal max N` on a goal asking the cap question with N above its count closes the question
+ * (the DM is rewritten) and drives the loop again. Before, it raised the budget and bumped the epoch but nothing woke
+ * the loop and the question stayed open: the goal stopped where it was.
+ */
+describe('GoalHandler — goal max reopens a goal stopped at its cap (X5)', () => {
+  it('closes the open cap question and kicks the loop once', async () => {
+    const session = makeSession({
+      goal: {
+        goalId: 'g1',
+        objective: 'ship it',
+        status: 'active',
+        createdAt: 1,
+        updatedAt: 1,
+        createdBy: 'U123',
+        continuationCount: 10,
+        maxContinuations: 10,
+        capDmPendingAt: 5,
+        capDecisionId: 'round-1',
+        capDmRef: { channel: 'D1', ts: '1.1' },
+        epoch: 2,
+      },
+    });
+    vi.mocked(resumeGoalLoop).mockClear();
+
+    await new GoalHandler(makeDeps(session)).execute(makeCtx({ text: 'goal max 20' }));
+
+    expect(session.goal?.maxContinuations).toBe(20);
+    expect(session.goal?.capDmPendingAt).toBeUndefined();
+    expect(session.goal?.capDecisionId).toBeUndefined();
+    expect(session.goal?.epoch).toBe(3);
+    expect(resumeGoalLoop).toHaveBeenCalledTimes(1);
+    expect(resumeGoalLoop).toHaveBeenCalledWith('C123:171.001');
+  });
+
+  it('a running goal is kicked too: a judge in flight is discarded by the epoch and runs again once', async () => {
+    const session = makeSession({
+      goal: {
+        goalId: 'g1',
+        objective: 'ship it',
+        status: 'active',
+        createdAt: 1,
+        updatedAt: 1,
+        createdBy: 'U123',
+        continuationCount: 3,
+        maxContinuations: 10,
+      },
+    });
+    vi.mocked(resumeGoalLoop).mockClear();
+
+    await new GoalHandler(makeDeps(session)).execute(makeCtx({ text: 'goal max 20' }));
+
+    expect(resumeGoalLoop).toHaveBeenCalledTimes(1);
+  });
+});
+
+const activeGoalAt = (over: Record<string, unknown> = {}) =>
+  ({
+    goalId: 'g1',
+    objective: 'ship it',
+    status: 'active',
+    createdAt: 1,
+    updatedAt: 1,
+    createdBy: 'U123',
+    continuationCount: 10,
+    maxContinuations: 10,
+    epoch: 1,
+    ...over,
+  }) as NonNullable<ConversationSession['goal']>;
+
+/** .prd/39 D12 · A13 (X13) — `goal done` leaves a goal that is already complete as it was recorded. */
+describe('GoalHandler — goal done on a complete goal (X13)', () => {
+  it('does not overwrite the record of a goal the evaluator completed', async () => {
+    const session = makeSession({
+      goal: activeGoalAt({
+        status: 'complete',
+        completedAt: 50,
+        completedBy: 'eval-model',
+        completedVia: 'eval-model',
+        completionReason: 'all done by eval',
+      }),
+    });
+    const deps = makeDeps(session);
+
+    await new GoalHandler(deps).execute(makeCtx({ text: 'goal done' }));
+
+    expect(session.goal).toMatchObject({
+      status: 'complete',
+      completedAt: 50,
+      completedBy: 'eval-model',
+      completedVia: 'eval-model',
+      completionReason: 'all done by eval',
+    });
+    expect(deps.claudeHandler.saveSessions).not.toHaveBeenCalled();
+  });
+});
+
+/** .prd/39 D12 · A16 (X16) — `goal resume` on a goal stopped at its cap does what the cap question's ✅ does. */
+describe('GoalHandler — goal resume on a goal asking the cap question (X16)', () => {
+  it('gives the budget back, closes the question and drives the loop', async () => {
+    const session = makeSession({
+      goal: activeGoalAt({ capDmPendingAt: 5, capDecisionId: 'round-1', capDmRef: { channel: 'D1', ts: '1.1' } }),
+    });
+    vi.mocked(resumeGoalLoop).mockClear();
+    const deps = makeDeps(session);
+
+    await new GoalHandler(deps).execute(makeCtx({ text: 'goal resume' }));
+
+    expect(session.goal?.status).toBe('active');
+    expect(session.goal?.continuationCount).toBe(0);
+    expect(session.goal?.capDmPendingAt).toBeUndefined();
+    expect(resumeGoalLoop).toHaveBeenCalledTimes(1);
+    const calls = (deps.slackApi.postSystemMessage as ReturnType<typeof vi.fn>).mock.calls;
+    const posted = calls[calls.length - 1]?.[1] as string;
+    expect(posted).not.toContain('already running');
+  });
+});
+
+/** .prd/39 D8 · D12 — `goal resume` opens a stopped goal again and drives it. */
+describe('GoalHandler — goal resume on a stopped goal', () => {
+  it('clears stopped and kicks the loop', async () => {
+    const session = makeSession({
+      goal: activeGoalAt({ continuationCount: 2, phase: { kind: 'stopped', why: 'judge-failed', at: 5 } }),
+    });
+    vi.mocked(resumeGoalLoop).mockClear();
+
+    await new GoalHandler(makeDeps(session)).execute(makeCtx({ text: 'goal resume' }));
+
+    expect(session.goal?.phase).toBeUndefined();
+    expect(resumeGoalLoop).toHaveBeenCalledTimes(1);
   });
 });

@@ -12,6 +12,7 @@ import {
   type RunReport,
 } from '@soma/slack/followup-dispatcher';
 import {
+  FOLLOWUP_PENDING_DISPATCH_STATES,
   FOLLOWUP_REDELIVER_AFTER_RESTART_REASON,
   type FollowupContext,
   type FollowupItem,
@@ -23,6 +24,9 @@ import {
 } from '@soma/slack/followup-queue';
 import { FOLLOWUP_RESTART_FREEZE_REASON, type FollowupQueueView } from '@soma/slack/followup-queue-blocks';
 import { FollowupQueueStore } from '@soma/slack/followup-queue-store';
+import type { GoalBoardRuntime } from '@soma/slack/goal/board';
+import { stopGoal } from '@soma/slack/goal/machine';
+import { phaseOf, slotGoalInFlight, slotHoldOf } from '@soma/slack/goal/read';
 import { OutputFlag } from '@soma/slack/output-flags';
 import { isLocalSlashCommand, shouldForwardAsLocalSlashCommand } from '@soma/slack/pipeline/local-slash-command';
 import { runWithTimeout } from '@soma/slack/pipeline/stream-executor-cleanup-helpers';
@@ -159,6 +163,7 @@ import {
 } from './slack/handoff-budget';
 import { buildCompactHooks } from './slack/hooks/compact-hooks';
 import { InputProcessor, type MessageEvent, SessionInitializer, StreamExecutor } from './slack/pipeline';
+import { RestartRecovery } from './slack/restart-recovery';
 import { requestSecretUse } from './slack/secret-use-request';
 import {
   advanceGoalQueue,
@@ -178,6 +183,7 @@ import {
   undoPause,
 } from './slack/session-goal';
 import { announceSessionNotice, recordSessionNotice } from './slack/session-notice';
+import { SessionOccupancy } from './slack/session-occupancy';
 import { SourceThreadNewTask } from './slack/source-thread-new-task';
 import { type SessionFollowUp, SummaryService, setFollowUpListener } from './slack/summary-service';
 import { SummaryTimer } from './slack/summary-timer';
@@ -405,6 +411,8 @@ export class SlackHandler {
 
   // Concurrency and tracking
   private requestCoordinator: RequestCoordinator;
+  /** .prd/39 S1 — turn occupancy (run phase · turnHeld · driven). */
+  private readonly occupancy: SessionOccupancy;
   private toolTracker: ToolTracker;
 
   // Command routing
@@ -636,21 +644,8 @@ export class SlackHandler {
    * never touches a run that is already in flight.
    */
   private followupShutdownPreparing?: boolean;
-  /**
-   * Sessions whose turn the last shutdown cut short (`wasWorkingAtShutdown`),
-   * recorded by `notifyCrashRecovery` before it clears that marker and read
-   * once by `resumeActiveGoals`: a cut goal turn gives its continuation back.
-   */
-  private restartCutSessionKeys = new Set<string>();
-  /**
-   * Cut sessions `notifyCrashRecovery` resumed with the restart prompt, read
-   * once by `resumeActiveGoals`: the resume turn carries the session, so the
-   * goal loop is not kicked for it (one turn, never two) — it runs when that
-   * turn settles.
-   */
-  private restartResumedSessionKeys = new Set<string>();
-  /** `resumeActiveGoals` has run since boot — see {@link handBackFailedRestartResume}. */
-  private restartGoalPassRan = false;
+  /** .prd/39 S5 — restart recovery state: the cut and resumed records and the boot phase (`restart-recovery.ts`). */
+  private readonly recovery = new RestartRecovery();
   /**
    * Sessions whose queue holds a row a host-side cut left `uncertain` (a
    * restart, an auto-compact stop) and whose conversation is about to be
@@ -757,6 +752,18 @@ export class SlackHandler {
         this.noteSessionStop(sessionKey, reason);
       },
     });
+    // .prd/39 S1 — the one answer to "is a turn running here". Its deps read the dispatcher, the migration map and
+    // the goal loop probe at call time: those are built (or wired) later.
+    this.occupancy = new SessionOccupancy({
+      slotBusy: (key) => this.followupDispatcher?.isBusy(key) === true,
+      slotEpoch: (key) => this.followupDispatcher?.liveTurnEpoch(key),
+      migratedSlotOf: (key) => this.followupMigration?.byCanonical.get(key),
+      requestActive: (key) => this.requestCoordinator.isRequestActive(key),
+      loopActing: (key) => this.goalLoopActing?.(key) === true,
+    });
+    this.claudeHandler
+      ?.getSessionRegistry?.()
+      ?.addTurnActivityListener?.((key, state) => this.occupancy.noteTurnActivity(key, state));
     this.toolTracker = new ToolTracker();
     this.reactionManager = new ReactionManager(this.slackApi);
     this.contextWindowManager = new ContextWindowManager(this.slackApi);
@@ -1018,6 +1025,9 @@ export class SlackHandler {
       },
       inputReopened: (sessionKey) => this.onFollowupInputReopened(sessionKey),
     });
+    // #1472 — a turn held open only for background work asks this at each safe boundary: does a person's command
+    // wait at the head of the line, one that can never be pushed into the turn? Then the hold ends and the line runs.
+    this.claudeHandler.setHoldReleaseGate?.((sessionKey) => this.holdReleaseWanted(sessionKey));
     // Goal stall: a question whose round ended without an answer is retracted.
     setGoalStallRetiredListener((goal, stall, cause) => this.onGoalStallRetired(goal, stall, cause));
     // #917 — every Executive Summary verdict on a follow-up: a new one may ask its question, a gone one retracts it.
@@ -1355,6 +1365,8 @@ export class SlackHandler {
       // front of the ephemeral the user is waiting for.
       onItemProcessed: (sessionKey, itemId) => {
         void this.syncFollowupReactions(sessionKey, itemId);
+        // #1472 — a cancel can put a waiting command at the head of the line: the held turn asks its gate again.
+        this.claudeHandler.requestHoldRelease?.(this.canonicalFollowupKey(sessionKey));
       },
       // A goal's queued opening turn IS that goal's start: cancelling it means
       // cancelling the goal (see `onGoalOpeningCancelled`).
@@ -1435,6 +1447,7 @@ export class SlackHandler {
     this.goalDriverKickOnRelease?.delete(sessionKey);
     this.goalTurnOrder.delete(sessionKey);
     this.nestedAutoCompactStops.delete(sessionKey);
+    this.occupancy.forget(sessionKey);
   }
 
   /** #893 — the session's turn begin/end order, created on first use. */
@@ -3046,9 +3059,9 @@ export class SlackHandler {
           : userSettingsStore.getUserAutoGoalEnabled(event.user))
       ) {
         const fullSession = this.claudeHandler.getSessionByKey?.(sessionResult.sessionKey);
-        const inFlight =
-          !!fullSession?.goal && (fullSession.goal.status === 'active' || fullSession.goal.status === 'paused');
-        if (fullSession && !inFlight && !fullSession.goalQueue?.length) {
+        const inFlight = !!fullSession && slotGoalInFlight(fullSession) !== undefined;
+        // .prd/39 D12 (X15) — not beside a goal that waits: queued, or paused on the shelf by its owner.
+        if (fullSession && !inFlight && !fullSession.goalQueue?.length && !fullSession.goalPaused?.length) {
           const applied = enqueueOrActivateGoal(
             fullSession,
             effectiveText,
@@ -3829,10 +3842,7 @@ export class SlackHandler {
    * the queue held it.
    */
   isFollowupTurnBusy(sessionKey: string): boolean {
-    const dispatcher = this.followupDispatcher;
-    if (!dispatcher) return false;
-    const slotKey = this.followupMigration?.byCanonical.get(sessionKey);
-    return dispatcher.isBusy(sessionKey) || (slotKey !== undefined && dispatcher.isBusy(slotKey));
+    return this.occupancy.slotHeld(sessionKey);
   }
 
   /**
@@ -4599,8 +4609,7 @@ export class SlackHandler {
       );
     if (existing) return existing.state === 'dispatched' ? 'started' : 'queued';
 
-    const slotKey = this.followupMigration?.byCanonical.get(sessionKey);
-    const busy = () => dispatcher.isBusy(sessionKey) || (slotKey !== undefined && dispatcher.isBusy(slotKey));
+    const busy = () => this.occupancy.slotHeld(sessionKey);
     const wasBusy = busy();
     // The files the goal was added with (the dashboard's goal composer) ride every opening of THAT goal — started at
     // once, promoted from the queue or resumed — unless the message that set it carries its own.
@@ -5697,7 +5706,12 @@ export class SlackHandler {
       // authorization policy that throws here used to propagate out of
       // `enqueueFollowup` past the receipt, leaving the message stored and the
       // user told nothing at all.
-      if (!this.isSteerableText(event)) return 'queued';
+      if (!this.isSteerableText(event)) {
+        // #1472 — it can only run once the turn ends: a turn held open only for background work ends its hold for
+        // it at its next safe boundary (the turn re-asks `holdReleaseWanted` there, so this is only a nudge).
+        this.claudeHandler.requestHoldRelease?.(this.canonicalFollowupKey(sessionKey));
+        return 'queued';
+      }
 
       // Steering injects text into a turn someone else is running, so it takes
       // the SAME authorization `Send now` takes (`:3082`). Denied, the message
@@ -6198,6 +6212,8 @@ export class SlackHandler {
         this.logger.debug('Queued item edit refused', { sessionKey, itemId: item.id, reason: result.reason });
         return;
       }
+      // #1472 — an edit can turn the head of the line into a command: the held turn asks its gate again.
+      this.claudeHandler.requestHoldRelease?.(this.canonicalFollowupKey(sessionKey));
       await this.refreshFollowupSurface(sessionKey);
       return;
     }
@@ -6549,6 +6565,8 @@ export class SlackHandler {
     }
     const result = queue.editQueued(request.sessionKey, request.itemId, request.epoch, text);
     if (!result.ok) return { ok: false, status: 409, message: SlackHandler.dashboardEditRefusal(result.reason, item) };
+    // #1472 — an edit can turn the head of the line into a command: the held turn asks its gate again.
+    this.claudeHandler.requestHoldRelease?.(this.canonicalFollowupKey(request.sessionKey));
     await this.refreshFollowupSurface(request.sessionKey);
     return { ok: true };
   }
@@ -7272,6 +7290,18 @@ export class SlackHandler {
    * (the stop would read as not having worked). Set directly, as `handBackFailedRestartResume` does — the idle
    * transition's hooks (the goal loop, queued cron fires) would start work the person just stopped.
    */
+  /**
+   * .prd/39 S5 — restart recovery hands a session back to idle: the restart pass and the failed-resume hand-off.
+   * Written directly, without the idle transition's hooks (the goal loop's post-drain hook, queued cron fires): the
+   * caller decides what drives the session next (one kick, or nothing for a person's stop). Returns whether the
+   * display changed. The loop gate never reads it (D1).
+   */
+  private releaseRecovered(session: ConversationSession): boolean {
+    if ((session.activityState ?? 'idle') === 'idle') return false;
+    session.activityState = 'idle';
+    return true;
+  }
+
   private releaseStoppedPreparation(sessionKey: string, session: ConversationSession): void {
     // Only a stale `working`: a session waiting on its owner's answer keeps waiting (its NEEDS YOU).
     if (this.requestCoordinator.isRequestActive(sessionKey) || session.activityState !== 'working') return;
@@ -7573,10 +7603,7 @@ export class SlackHandler {
    */
   /** Does a dispatcher run hold this session's slot — under its key or the source key it migrated from? */
   private isFollowupSlotHeld(sessionKey: string): boolean {
-    const dispatcher = this.followupDispatcher;
-    if (!dispatcher) return false;
-    const slotKey = this.followupMigration?.byCanonical.get(sessionKey);
-    return dispatcher.isBusy(sessionKey) || (slotKey !== undefined && dispatcher.isBusy(slotKey));
+    return this.occupancy.slotHeld(sessionKey);
   }
 
   private shouldDeferGoalDriver(sessionKey: string): boolean {
@@ -7649,6 +7676,15 @@ export class SlackHandler {
     });
   }
 
+  /** .prd/39 D8 — record that the loop stops driving the session's active goal until a person opens it again. */
+  private stopLiveGoal(sessionKey: string, why: 'resume-failed' | 'person-stopped'): void {
+    const goal = this.claudeHandler?.getSessionByKey?.(sessionKey)?.goal;
+    if (goal?.status !== 'active') return;
+    stopGoal(goal, why);
+    this.claudeHandler.saveSessions?.();
+    this.claudeHandler.broadcastSessionUpdate?.();
+  }
+
   /** #948 — tell the thread why the goal stopped resuming, and how to go on. */
   private noticeGoalErrorResumeStopped(sessionKey: string): void {
     const session = this.claudeHandler?.getSessionByKey?.(sessionKey);
@@ -7693,7 +7729,14 @@ export class SlackHandler {
       if (this.shouldDeferGoalDriver(sessionKey)) {
         (this.followupDeferredGoalSessions ??= new Set<string>()).add(sessionKey);
       } else if (cut) {
-        this.logger.info('Goal driver not fired — the turn that left no text was cut by a stop', { sessionKey });
+        // .prd/39 D8 — a person's stop is the last word and is recorded: stopped(person-stopped), shown as a stop chip
+        // (not NEEDS YOU) and kept across a restart. A shutdown, a supersede or a session close only skip this drive.
+        const reason = report.outcome?.result === 'interrupted' ? report.outcome.reason : undefined;
+        if (reason === 'user-stop' || reason === 'user-interrupted') this.stopLiveGoal(sessionKey, 'person-stopped');
+        this.logger.info('Goal driver not fired — the turn that left no text was cut by a stop', {
+          sessionKey,
+          reason,
+        });
         return;
       } else if (failed && this.goalErrorResumeSpent?.has(sessionKey)) {
         // #948 — the automatic resume failed the same way. A turn that fails at
@@ -7701,6 +7744,7 @@ export class SlackHandler {
         // but the goal cap stops the next failure (dev 2026-11-05: 10 SIGKILLs
         // 9 s apart, three times). The error waits for a person.
         this.followupDeferredGoalSessions?.delete(sessionKey);
+        this.stopLiveGoal(sessionKey, 'resume-failed'); // .prd/39 D8 (X7) — recorded, kept across a restart
         this.logger.warn('Goal driver not fired — the automatic resume failed again; waiting for a person', {
           sessionKey,
           reason: (report.outcome as { reason?: string } | undefined)?.reason,
@@ -7741,6 +7785,51 @@ export class SlackHandler {
     const threadTs = session.threadRootTs || session.threadTs;
     const allowed = this.claudeHandler?.canInterrupt?.(session.channelId, threadTs, requestedBy) === true;
     return allowed ? { allowed: true } : { allowed: false, reason: `<@${requestedBy}> cannot interrupt this session` };
+  }
+
+  /**
+   * #1472 — does a person's command wait at the head of this session's line, one
+   * that can never be pushed into a running turn (`$<skill>`, `new`, `%model …`
+   * — {@link isSteerableText})? A turn held open only for background work then
+   * ends its hold at its next safe boundary, so the drain runs the line.
+   *
+   * The head is the row the drain at the run's end would claim (the canonical
+   * key, lowest `seq`). Only the head row and only a `queued` one: the line keeps its order, and a
+   * plain message refused by the turn waits for the re-offer, never for this
+   * (it would be delivered twice). Only an author who may interrupt the session
+   * (as `Send now` and steering ask) and whose row the drain would run now.
+   * Nothing while the drain is halted: ending the hold could not run the row.
+   */
+  private holdReleaseWanted(sessionKey: string): boolean {
+    const queue = this.followupQueue;
+    const dispatcher = this.followupDispatcher;
+    if (!queue || !dispatcher || this.followupReadFailed) return false;
+    // The line the drain at the run's end takes, in the order it takes it: the canonical key (rows a migrating turn
+    // parked live there too), by `seq` (`FollowupQueue.claimNext`).
+    const slotKey = this.boundFollowupSlot(sessionKey);
+    const keys = slotKey !== undefined ? [sessionKey, slotKey] : [sessionKey];
+    if (keys.some((key) => dispatcher.drainHalt(key))) return false;
+    try {
+      const rows = queue.list(sessionKey);
+      // A `Send now` is already replacing this run (its row is reserved or claimed): that dispatch is the next run.
+      if (keys.some((key) => queue.list(key).some((item) => FOLLOWUP_PENDING_DISPATCH_STATES.includes(item.state)))) {
+        return false;
+      }
+      const head = rows.filter((item) => item.state === 'queued').sort((a, b) => a.seq - b.seq)[0];
+      if (!head) return false;
+      const event = head.message as MessageEvent;
+      if (this.isSteerableText(event)) return false;
+      const author = event.user;
+      if (!author || !this.authorizeFollowupInterrupt(sessionKey, author).allowed) return false;
+      return this.authorizeFollowupDispatch(sessionKey, event, head.context).allowed;
+    } catch (error) {
+      // Not knowing is not a yes: the hold stays, and the drain still runs the row when the run ends.
+      this.logger.warn('Could not tell whether a waiting command should end the hold — it stays', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      });
+      return false;
+    }
   }
 
   /**
@@ -8560,7 +8649,7 @@ export class SlackHandler {
         });
         continue;
       }
-      if (isWorking) this.restartCutSessionKeys.add(session.sessionKey);
+      if (isWorking) this.recovery.cut.add(session.sessionKey);
 
       // #351: an idle session whose error auto-retry is still pending is
       // resumed by resumePendingErrorRetries — say when, instead of asking the
@@ -8619,7 +8708,7 @@ export class SlackHandler {
           ownerId: session.ownerId,
           activeGoal: this.claudeHandler.getSessionByKey?.(session.sessionKey)?.goal?.status === 'active',
         });
-        this.restartResumedSessionKeys.add(session.sessionKey);
+        this.recovery.resumed.add(session.sessionKey);
         // #351 no-double-resume: this resume supersedes a pending error
         // auto-retry, so drop its marker before resumePendingErrorRetries
         // can re-arm it as a second turn.
@@ -8714,19 +8803,20 @@ export class SlackHandler {
     // One owner per refund, whatever the order (#961 review, astra).
     if (
       live.goal?.status === 'active' &&
-      !this.restartGoalPassRan &&
-      this.restartResumedSessionKeys.delete(sessionKey)
+      this.recovery.bootPhase === 'recovering' &&
+      this.recovery.resumed.delete(sessionKey)
     ) {
       this.logger.info('Restart resume never started its turn — the startup goal pass resumes the goal', {
         sessionKey,
       });
       return;
     }
-    if (this.requestCoordinator.isRequestActive(sessionKey) || this.goalLoopActing?.(sessionKey) === true) return;
+    // .prd/39 A2 — a run in any phase (a person's message holds the slot before its controller exists) or the loop
+    // acting drives the session: nothing to hand back, and nothing to write over it.
+    if (this.occupancy.driven(sessionKey)) return;
     // No turn runs for it: a stale `working` must not stay (#989 review — a session without a goal
     // has no loop to free it, and is left for its user's next message).
-    const wasBusy = live.activityState !== 'idle';
-    if (wasBusy) live.activityState = 'idle';
+    const wasBusy = this.releaseRecovered(live);
     if (live.goal?.status !== 'active') {
       if (wasBusy) {
         this.claudeHandler.saveSessions();
@@ -8773,7 +8863,7 @@ export class SlackHandler {
    * resumed.
    *
    * Except a session whose cut turn `notifyCrashRecovery` already resumed
-   * with the restart prompt (`restartResumedSessionKeys`): that turn carries
+   * with the restart prompt (`recovery.resumed`): that turn carries
    * it and may be running, so it is neither forced idle nor kicked — the loop
    * judges when it settles — and it keeps its continuation, since the resume
    * replaces the cut turn. Must be called AFTER `notifyCrashRecovery`.
@@ -8798,6 +8888,7 @@ export class SlackHandler {
     let refunded = 0;
     let leftToRestartResume = 0;
     let leftToLiveTurn = 0;
+    let stoppedByPerson = 0;
     for (const [sessionKey, session] of this.claudeHandler.getAllSessions()) {
       // Repair a stranded queue (defense for the eval-complete crash window):
       // if the current goal is genuinely closed (completed) or absent but goals
@@ -8823,6 +8914,21 @@ export class SlackHandler {
         this.logger.info('Goal resume skipped — session halted by a safeguards flag', { sessionKey });
         continue;
       }
+      // .prd/39 D13 (X18) — a person stopped this session after its last turn began: the stop is the last word across
+      // the restart. Recorded stopped(person-stopped) (an idle card with a stop chip); no kick, no refund.
+      if (typeof session.personStoppedWorkAt === 'number') {
+        if (phaseOf(session.goal)?.kind !== 'stopped') stopGoal(session.goal, 'person-stopped');
+        stoppedByPerson++;
+        this.logger.info('Goal left stopped after restart — a person stopped it', { sessionKey });
+        continue;
+      }
+      // A goal already stopped (judge-failed, start-failed, resume-failed, person-stopped) waits for a person.
+      if (phaseOf(session.goal)?.kind === 'stopped') continue;
+      // .prd/39 D13 (X19) — the opening has not reached the model: the first turn starts the goal, not the loop.
+      if (phaseOf(session.goal)?.kind === 'opening') {
+        this.logger.info('Goal resume left to its opening turn', { sessionKey });
+        continue;
+      }
       // A stall judged on no turn text is not a real stall: a turn the restart
       // cut short was taken for "the same failure" (2026-11-02, before the loop
       // stopped judging empty turns). End it — its question is withdrawn and
@@ -8838,21 +8944,16 @@ export class SlackHandler {
       // carries the session, and it may already be running — never force it
       // idle, never kick a second turn beside it; the loop judges when the
       // resume turn settles.
-      const resumedByRestart = this.restartResumedSessionKeys.has(sessionKey);
+      const resumedByRestart = this.recovery.resumed.has(sessionKey);
       // A turn that started after boot (a person's message, a host turn) is running now: this pass runs about 25 s
       // after boot, behind crash recovery. Its `working` is live, not left by the old process — forcing it idle put
       // a running session in the done column for its whole turn (2026-11-26, 1795677176.047669). That turn carries
       // the session like a restart resume: not forced idle, not kicked; the loop judges when it settles. The follow-up
       // slot counts too: a dispatch holds it before its controller is set and between legs.
-      const liveTurn =
-        !resumedByRestart &&
-        (this.requestCoordinator.isRequestActive(sessionKey) || this.isFollowupSlotHeld(sessionKey));
-      const panel = session.actionPanel;
-      if (
-        !resumedByRestart &&
-        session.activityState === 'waiting' &&
-        (panel?.waitingForChoice === true || panel?.pendingQuestion)
-      ) {
+      // .prd/39 A3 — the loop acting (judging, or injecting its continuation) drives the session too: a second kick
+      // beside it posted "no change" and marked a follow-up resume the loop never made.
+      const liveTurn = !resumedByRestart && this.occupancy.driven(sessionKey);
+      if (!resumedByRestart && SessionOccupancy.ownerQuestionOpen(session)) {
         // Waiting on its user's answer is not a stale turn: no turn has to run
         // for the question to stay open. The answer runs as the user's turn and
         // its idle settle drives the loop. Forcing idle here ran the loop over
@@ -8861,12 +8962,9 @@ export class SlackHandler {
         this.logger.info('Goal resume held after restart — the session is waiting on its question', { sessionKey });
         continue;
       }
-      if (!resumedByRestart && !liveTurn && session.activityState !== 'idle') {
-        // Recovery: treat a stale persisted working state (or a waiting one
-        // with no question left) as idle.
-        session.activityState = 'idle';
-        forcedIdle++;
-      }
+      // Recovery: a stale persisted working state (or a waiting one with no question left) reads idle. The loop gate
+      // does not read it (.prd/39 D1) — this is the card's word only.
+      if (!resumedByRestart && !liveTurn && this.releaseRecovered(session)) forcedIdle++;
       // A turn the restart cut short never finished, so it does not spend the
       // continuation budget — otherwise every deploy costs each running goal
       // one of its turns, and a goal cut on its last one resumes straight into
@@ -8881,7 +8979,7 @@ export class SlackHandler {
       // resumes itself (`resumedByRestart`) is replaced by that resume, so it
       // keeps its continuation — refunding too would buy an extra turn on the
       // same budget (#961 review). A resume that never starts refunds on hand-back.
-      const cutTurn = !resumedByRestart && (this.restartCutSessionKeys.has(sessionKey) || falseStall);
+      const cutTurn = !resumedByRestart && (this.recovery.cut.has(sessionKey) || falseStall);
       if (cutTurn && session.goal.continuationCount > 0 && !capDecisionOpen) {
         session.goal.continuationCount -= 1;
         refunded++;
@@ -8939,10 +9037,15 @@ export class SlackHandler {
     }
     // Read once: a later pass (no restart in between) refunds nothing and kicks
     // a session the restart resumed like any other.
-    this.restartCutSessionKeys.clear();
-    this.restartResumedSessionKeys.clear();
-    this.restartGoalPassRan = true;
-    if (forcedIdle > 0 || repaired > 0 || retriesClaimed > 0 || stallsEnded > 0 || refunded > 0) {
+    this.recovery.passRan();
+    if (
+      forcedIdle > 0 ||
+      repaired > 0 ||
+      retriesClaimed > 0 ||
+      stallsEnded > 0 ||
+      refunded > 0 ||
+      stoppedByPerson > 0
+    ) {
       this.claudeHandler.saveSessions();
     }
     if (resumed > 0 || repaired > 0 || leftToRestartResume > 0 || leftToLiveTurn > 0) {
@@ -9222,6 +9325,40 @@ export class SlackHandler {
     return this.slackApi;
   }
 
+  /** .prd/39 S1 · D1 — the goal loop gate's question: is a turn preparing or running here. */
+  isTurnHeld(sessionKey: string): boolean {
+    return this.occupancy.turnHeld(sessionKey);
+  }
+
+  /**
+   * .prd/39 S6 — what the dashboard reads of this session's memory-only state to place its card: a turn held (S1 —
+   * the display may still read idle while a run prepares), someone driving it (S1 `driven`, or a goal drive the turn
+   * end deferred until the follow-ups drain or the slot frees), and a restart resume not yet run (S5).
+   */
+  goalBoardRuntimeOf(sessionKey: string): GoalBoardRuntime {
+    return {
+      turnHeld: this.occupancy.turnHeld(sessionKey),
+      driven:
+        this.occupancy.driven(sessionKey) ||
+        this.followupDeferredGoalSessions?.has(sessionKey) === true ||
+        this.followupSlotHeldGoalSessions?.has(sessionKey) === true,
+      resumePending: this.recovery.resumed.has(sessionKey),
+    };
+  }
+
+  /**
+   * The goal loop gate found the turn held (.prd/39 S4 — a judge that waits for the slot release). A run holding the
+   * slot drives the loop at its release: its turn end with text takes this over at once
+   * (`handleAssistantTurnCompleteForGoal`), and a run that never starts a turn — a command answered without one, a
+   * preparation a person stopped — still releases it. A kick stays a kick. A turn held outside a slot drives the loop
+   * at its own end.
+   */
+  holdGoalDriverForTurn(sessionKey: string, cause: 'turn' | 'kick'): void {
+    if (!this.occupancy.slotHeld(sessionKey)) return;
+    (this.followupSlotHeldGoalSessions ??= new Set<string>()).add(sessionKey);
+    if (cause === 'kick') (this.goalDriverKickOnRelease ??= new Set<string>()).add(sessionKey);
+  }
+
   /**
    * #929 — whether a host turn (a synthetic message) would start in this thread now rather than be dropped:
    * no request running and no follow-up dispatch slot held, under the thread's key or the key a bot-thread
@@ -9230,11 +9367,8 @@ export class SlackHandler {
   isHostTurnFree(channel: string, threadTs?: string): boolean {
     const sessionKey = this.resolveFollowupSessionKey({ channel, thread_ts: threadTs, ts: threadTs } as MessageEvent);
     if (!sessionKey) return false;
-    if (this.requestCoordinator.isRequestActive(sessionKey)) return false;
-    const dispatcher = this.followupDispatcher;
-    if (!dispatcher) return true;
-    const slotKey = this.followupMigration?.byCanonical.get(sessionKey);
-    return !dispatcher.isBusy(sessionKey) && !(slotKey !== undefined && dispatcher.isBusy(slotKey));
+    // No run holds the slot and no request runs — the same fence `handleMessage` applies to a synthetic event.
+    return this.occupancy.runPhase(sessionKey) === 'none';
   }
 
   /** Expose request coordinator for dashboard stop handler */
@@ -10280,7 +10414,7 @@ export class SlackHandler {
   /** Refuse a pause whose goal is not the running (or paused-in-place) current goal. */
   private assertGoalPausable(session: ConversationSession, goalId: string): void {
     const goal = session.goal;
-    if (!goal || goal.goalId !== goalId || (goal.status !== 'active' && goal.status !== 'paused')) {
+    if (!goal || goal.goalId !== goalId || !slotGoalInFlight(session)) {
       throw new HostGoalActionError(409, 'The current goal has changed — refresh and try again');
     }
   }
@@ -10289,7 +10423,8 @@ export class SlackHandler {
   private assertGoalResumable(session: ConversationSession, goalId: string): NonNullable<ConversationSession['goal']> {
     const shelved = session.goalPaused?.find((g) => g.goalId === goalId);
     if (shelved) return shelved;
-    if (session.goal?.goalId === goalId && session.goal.status === 'paused') return session.goal;
+    const hold = slotHoldOf(session);
+    if (hold?.goalId === goalId) return hold;
     throw new HostGoalActionError(409, 'That goal is no longer paused — refresh and try again');
   }
 
@@ -10351,6 +10486,7 @@ export class SlackHandler {
     if (!found) return;
     const { session, goal } = found;
     goal.status = 'paused';
+    goal.holdWhy = 'opening-cancelled'; // D6 — held until the delete below takes it out
     retireGoalCapDecision(goal);
     goal.updatedAt = Date.now();
     this.persistHostGoalMutation(session);

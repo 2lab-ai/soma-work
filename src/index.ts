@@ -1,3 +1,4 @@
+import { capAskOf } from '@soma/slack/goal/read';
 import { installConsoleRedaction } from './logger';
 
 installConsoleRedaction();
@@ -97,6 +98,7 @@ import {
   setDashboardFollowupHandler,
   setDashboardGoalDecisionHandler,
   setDashboardGoalHandler,
+  setDashboardGoalRuntime,
   setDashboardInstructionApprovals,
   setDashboardLifecycleHandler,
   setDashboardModelHandler,
@@ -917,6 +919,9 @@ async function start() {
 
     // Connect dashboard: session accessor + real-time WebSocket broadcast on state changes
     setDashboardSessionAccessor(() => claudeHandler.getAllSessions());
+    // .prd/39 S6 — the board places a card by what the host holds in memory (a turn held, a goal driven, a restart
+    // resume pending), not only by the display activity.
+    setDashboardGoalRuntime((sessionKey) => slackHandler.goalBoardRuntimeOf(sessionKey));
     claudeHandler.getSessionRegistry().setActivityStateChangeCallback(() => broadcastSessionUpdate());
     // Connect dashboard: the process monitor — each session's Claude Code process and every process under it on this
     // node (the card's CPU · 메모리 chip, the 프로세스 tab with pause · resume). Samples every 5 s while one is alive.
@@ -2551,7 +2556,6 @@ async function start() {
       const goalLoopController = new GoalLoopController({
         registry: {
           getSessionByKey: (key) => registry.getSessionByKey(key),
-          getActivityStateByKey: (key) => registry.getActivityStateByKey(key),
           saveSessions: () => registry.saveSessions(),
           // Loop steps happen while the session is idle — push each one so the
           // dashboard card leaves DONE while an eval runs or a retry waits.
@@ -2563,6 +2567,9 @@ async function start() {
           isRequestActive: (key) => requestCoordinator.isRequestActive(key),
           abortSession: (key, reason) => requestCoordinator.abortSession(key, reason),
         },
+        // .prd/39 D1 · D2 — the loop gate asks the turn occupancy; a drive held by a run's turn waits for its release.
+        turnHeld: (key) => slackHandler.isTurnHeld(key),
+        holdForTurn: (key, cause) => slackHandler.holdGoalDriverForTurn(key, cause),
         // The eval carries the session user's llmux key (`tenantUserId`), like the turns it judges.
         dispatcher: ({ systemPrompt, userPrompt, model, effort, abortController, cwd, tenantUserId }) =>
           claudeHandler.dispatchOneShot(userPrompt, systemPrompt, model, abortController, undefined, cwd, effort, {
@@ -2645,9 +2652,7 @@ async function start() {
       );
       // DM rewrites the previous process could not deliver.
       flushGoalCapDmSync((decisionId) =>
-        [...registry.getAllSessions().values()].some(
-          (s) => s.goal?.capDecisionId === decisionId && s.goal.capDmPendingAt !== undefined,
-        ),
+        [...registry.getAllSessions().values()].some((s) => capAskOf(s.goal)?.roundId === decisionId),
       );
       timing('Goal turn-settled driver installed');
     } catch (error) {
