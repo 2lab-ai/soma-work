@@ -554,22 +554,26 @@ describe('FileHandler.formatFilePrompt — a long text file is previewed and its
     }
   });
 
-  it('a copy that cannot be made falls back to the download path, still with the Read note', async () => {
-    // The copy is made next to the download: a directory the bot cannot write makes the copy's mkdtemp fail.
-    const dir = fsx.mkdtempSync(pathx.join(os.tmpdir(), 'fh-readonly-'));
-    const p = pathx.join(dir, 'slack-file-1-notes.txt');
-    fsx.writeFileSync(p, 'L'.repeat(10001), 'utf-8');
-    const f: ProcessedFile = { ...textFile('notes.txt', ''), path: p, tempPath: p, size: 10001 };
-    fsx.chmodSync(dir, 0o500);
-    try {
-      const out = await handler.formatFilePrompt([f], '');
-      expect(out).toContain(`Path: ${f.path}`);
-      expect(out).toMatch(/Read tool/);
-    } finally {
-      fsx.chmodSync(dir, 0o700);
-      fsx.rmSync(dir, { recursive: true, force: true });
-    }
-  });
+  // A directory the bot cannot write is how the copy is made to fail; root writes it anyway.
+  it.skipIf(process.getuid?.() === 0)(
+    'a copy that cannot be made falls back to the download path, still with the Read note',
+    async () => {
+      // The copy is made next to the download: a directory the bot cannot write makes the copy's mkdtemp fail.
+      const dir = fsx.mkdtempSync(pathx.join(os.tmpdir(), 'fh-readonly-'));
+      const p = pathx.join(dir, 'slack-file-1-notes.txt');
+      fsx.writeFileSync(p, 'L'.repeat(10001), 'utf-8');
+      const f: ProcessedFile = { ...textFile('notes.txt', ''), path: p, tempPath: p, size: 10001 };
+      fsx.chmodSync(dir, 0o500);
+      try {
+        const out = await handler.formatFilePrompt([f], '');
+        expect(out).toContain(`Path: ${f.path}`);
+        expect(out).toMatch(/Read tool/);
+      } finally {
+        fsx.chmodSync(dir, 0o700);
+        fsx.rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('an instruction that is only pasted text is not framed as files to analyse', async () => {
     const f = textFile('pasted-text-20261104-090507.txt', '이 스펙대로 구현해줘');
@@ -646,6 +650,31 @@ describe('FileHandler — where uploads are saved', () => {
       expect(fsx.existsSync(result.path)).toBe(false);
     } finally {
       served.close();
+    }
+  });
+
+  it("when the user's uploads directory cannot be made, the files are kept as metadata, never saved elsewhere", async () => {
+    const { DATA_DIR } = await import('../env-paths');
+    // A file where the user's data directory should be makes the directory impossible to create.
+    const blocker = pathx.join(DATA_DIR, 'U0UPLOAD03');
+    fsx.writeFileSync(blocker, 'not a directory');
+    try {
+      const out = await new FileHandler().downloadAndProcessFiles(
+        [
+          {
+            id: 'F3',
+            name: 'shot.png',
+            mimetype: 'image/png',
+            size: 10,
+            url_private_download: 'https://files.slack.com/x',
+          },
+        ],
+        'U0UPLOAD03',
+      );
+      expect(out).toHaveLength(1);
+      expect(out[0]).toMatchObject({ name: 'shot.png', path: '', unavailable: 'download_failed' });
+    } finally {
+      fsx.rmSync(blocker, { force: true });
     }
   });
 

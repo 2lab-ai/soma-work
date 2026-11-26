@@ -66,7 +66,15 @@ export class FileHandler {
   /** `userId`: whose uploads these are (see uploadsDirFor). */
   async downloadAndProcessFiles(files: any[], userId?: string): Promise<ProcessedFile[]> {
     const processedFiles: ProcessedFile[] = [];
-    const dir = this.prepareUploadsDir(uploadsDirFor(userId));
+    let dir: string;
+    try {
+      dir = this.prepareUploadsDir(uploadsDirFor(userId));
+    } catch (error) {
+      // Saving anywhere else would hand the session a path it cannot read (src/sandbox/tenant-read-boundary.ts):
+      // the files are kept as metadata only, and the turn says they could not be downloaded.
+      this.logger.error("Could not prepare the user's uploads directory", { error });
+      return files.map((file) => this.unavailableFile(file, 'download_failed'));
+    }
 
     for (const file of files) {
       try {
@@ -103,11 +111,11 @@ export class FileHandler {
     };
   }
 
-  /** The uploads directory, made private (0700), with kept text directories past their age removed. */
+  /** The uploads directory, made private (0700), with kept text directories past their age removed. Throws when it cannot be made. */
   private prepareUploadsDir(dir: string): string {
     if (dir === os.tmpdir()) return dir;
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     try {
-      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
       const now = Date.now();
       for (const name of fs.readdirSync(dir)) {
         if (!name.startsWith(KEPT_TEXT_PREFIX)) continue;
@@ -119,11 +127,10 @@ export class FileHandler {
           // Gone already, or not ours to remove: the next download tries again.
         }
       }
-      return dir;
     } catch (error) {
-      this.logger.warn("Could not prepare the user's uploads directory — saving to the OS temp dir", { error });
-      return os.tmpdir();
+      this.logger.warn('Could not list the uploads directory to remove old kept text', { error });
     }
+    return dir;
   }
 
   private async downloadFile(file: any, dir: string = os.tmpdir()): Promise<ProcessedFile | null> {

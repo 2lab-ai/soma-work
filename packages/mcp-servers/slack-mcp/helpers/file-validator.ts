@@ -76,11 +76,14 @@ export function getMediaType(ext: string): 'image' | 'audio' | 'video' | null {
  *   2. Path-segment traversal check
  *   3. Allowlisted root directory (/tmp only)
  *   4. Symlink rejection
- *   5. Regular-file check
+ *   5. Regular-file check, then — for a non-admin — the real path inside the session's own roots
  *   6. Readability check
  *   7. Size cap (1 GB)
  */
-export async function validateFilePath(filePath: string): Promise<{ resolvedPath: string; size: number }> {
+export async function validateFilePath(
+  filePath: string,
+  ownRoots: readonly string[] = [],
+): Promise<{ resolvedPath: string; size: number }> {
   if (!filePath) {
     throw new Error('file_path is required');
   }
@@ -115,6 +118,16 @@ export async function validateFilePath(filePath: string): Promise<{ resolvedPath
 
   if (!lstatResult.isFile()) {
     throw new Error(`Not a regular file: ${resolvedPath}`);
+  }
+
+  // A non-admin session uploads only from its own root, checked where the file really is (a link in a parent
+  // directory included): its reads stop there too (src/sandbox/tenant-read-boundary.ts).
+  if (ownRoots.length > 0) {
+    const real = await fs.realpath(resolvedPath);
+    const roots = await Promise.all(ownRoots.map((root) => fs.realpath(root).catch(() => path.resolve(root))));
+    if (!roots.some((root) => real === root || real.startsWith(root + path.sep))) {
+      throw new Error(`Upload restricted to your own folder (${ownRoots.join(', ')}). Rejected: ${resolvedPath}`);
+    }
   }
 
   try {

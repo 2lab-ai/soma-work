@@ -7,6 +7,7 @@ import {
   ensureClaudeTmpDir,
   type TenantReadBoundaryInput,
   tenantReadBoundary,
+  throughLink,
 } from '../tenant-read-boundary';
 
 const ROOT = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tenant-read-')));
@@ -42,6 +43,7 @@ const ownData = mk('opt/svc/dev/data/U1');
 const zwPlugin = mk('opt/svc/dev/plugins/zw');
 const envPlugin = mk('opt/svc/dev/plugins/envp');
 const grantedSkill = mk('opt/svc/dev/plugins/envp/skills/qa');
+const ungrantedSkill = mk('opt/svc/dev/plugins/envp/skills/deploy');
 const claudeDir = mk('opt/svc/dev/.claude');
 const snapshots = mk('opt/svc/dev/.claude/shell-snapshots');
 const userRoot = mk('tmp/U1');
@@ -55,8 +57,8 @@ function input(overrides: Partial<TenantReadBoundaryInput> = {}): TenantReadBoun
     home,
     tmpdir: path.join(ROOT, 'tmp'),
     writeRoots: [session, userRoot],
-    workingDirectory: session,
     installDir: install,
+    codeRoot: install,
     dataDir,
     ownDataDir: ownData,
     claudeConfigDir: claudeDir,
@@ -94,14 +96,43 @@ describe('tenantReadBoundary', () => {
     }
   });
 
+  it('the code is opened where the bot runs from, also when its configuration lives elsewhere', () => {
+    const configDir = mk('etc/svc');
+    const { denyRead, allowRead } = tenantReadBoundary(input({ installDir: configDir, codeRoot: install }));
+    expect(denyRead).toEqual(expect.arrayContaining([configDir, install]));
+    expect(allowRead).toEqual(expect.arrayContaining([dist, nodeModules]));
+    expect(allowRead).not.toContain(path.join(configDir, 'dist'));
+  });
+
   it('never re-opens a path denied on purpose: not the path, nothing inside it, nothing above it', () => {
-    const { allowRead } = tenantReadBoundary(input({ writeRoots: [session, userRoot, home] }));
+    const { allowRead, exemptPaths } = tenantReadBoundary(
+      input({ writeRoots: [session, userRoot, home], pluginPaths: [zwPlugin, envPlugin, ungrantedSkill] }),
+    );
     // The environment plugin (denied without a grant) is a plugin root, yet stays closed.
     expect(allowRead).not.toContain(envPlugin);
+    // A candidate inside it stays closed for both mechanisms.
+    expect(allowRead).not.toContain(ungrantedSkill);
+    expect(exemptPaths).not.toContain(ungrantedSkill);
     // A write root above a denied path (the home directory holds `.ssh`) is dropped, not re-opened.
     expect(allowRead).not.toContain(home);
-    // The skill a grant opens is for the file tools only: the shell keeps the plugin closed.
+    expect(exemptPaths).not.toContain(home);
+  });
+
+  it('a skill a grant opens is for the file tools only: the shell keeps the plugin closed', () => {
+    const { allowRead, exemptPaths } = tenantReadBoundary(input());
+    expect(exemptPaths).toContain(grantedSkill);
     expect(allowRead).not.toContain(grantedSkill);
+  });
+
+  it('a session folder replaced by a link to another user is not opened, and is reported', () => {
+    const swapped = path.join(userRoot, 'session_swapped');
+    fs.symlinkSync(otherRoot, swapped);
+    const { allowRead, exemptPaths, redirected } = tenantReadBoundary(input({ writeRoots: [swapped, userRoot] }));
+    expect(redirected).toEqual([swapped]);
+    expect(allowRead).not.toContain(otherRoot);
+    expect(exemptPaths).not.toContain(otherRoot);
+    expect(exemptPaths).not.toContain(swapped);
+    expect(allowRead).toContain(userRoot);
   });
 
   it('a grant root the session may write is readable by the shell and the file tools', () => {
@@ -128,18 +159,18 @@ describe('tenantReadBoundary', () => {
     expect(allowRead).not.toContain(path.join(home, '.rustup'));
   });
 
-  it('macOS: the shell lists use real paths, the file-tool exemptions both spellings of /tmp', () => {
+  it('macOS: real paths for the shell, both /tmp spellings for the file tools, Homebrew by runtime directory', () => {
     const fileSystem = {
       exists: () => true,
       realpath: (p: string) => (p === '/tmp' || p.startsWith('/tmp/') ? `/private${p}` : p),
     };
-    const { denyRead, allowRead, exemptPaths } = tenantReadBoundary({
+    const { denyRead, allowRead, exemptPaths, redirected } = tenantReadBoundary({
       platform: 'darwin',
       home: '/Users/svc',
       tmpdir: '/var/folders/ab/T',
       writeRoots: ['/tmp/U1/session_1', '/tmp/U1'],
-      workingDirectory: '/tmp/U1/session_1',
       installDir: '/opt/svc/dev',
+      codeRoot: '/opt/svc/dev',
       dataDir: '/opt/svc/dev/data',
       ownDataDir: '/opt/svc/dev/data/U1',
       claudeConfigDir: '/opt/svc/dev/.claude',
@@ -148,13 +179,41 @@ describe('tenantReadBoundary', () => {
       denied: ['/opt/svc/dev/secrets'],
       fileSystem,
     });
-    expect(denyRead).toEqual(expect.arrayContaining(['/Users', '/opt', '/private/tmp', '/private/var/folders']));
+    expect(denyRead).toEqual(
+      expect.arrayContaining(['/Users', '/opt', '/private/tmp', '/private/var/folders', '/private/var/tmp']),
+    );
     // `/tmp` itself is a link: denying it would close every `/tmp/...` spelling, the user's root included.
     expect(denyRead).not.toContain('/tmp');
+    // The OS's own `/tmp` link is not a planted one.
+    expect(redirected).toEqual([]);
     expect(allowRead).toEqual(
-      expect.arrayContaining(['/private/tmp/U1', '/private/tmp/U1/session_1', '/opt/homebrew']),
+      expect.arrayContaining([
+        '/private/tmp/U1',
+        '/private/tmp/U1/session_1',
+        '/opt/homebrew/bin',
+        '/opt/homebrew/Cellar',
+        '/opt/homebrew/etc/openssl@3',
+      ]),
     );
+    for (const closed of ['/opt/homebrew', '/opt/homebrew/var', '/opt/homebrew/etc']) {
+      expect(allowRead, closed).not.toContain(closed);
+    }
     expect(exemptPaths).toEqual(expect.arrayContaining(['/tmp/U1/plugin-copy', '/private/tmp/U1/plugin-copy']));
+  });
+});
+
+describe('throughLink', () => {
+  it('a path through a planted link is; the macOS root links and missing paths are not', () => {
+    const target = mk('tl/target');
+    const link = path.join(ROOT, 'tl', 'link');
+    fs.symlinkSync(target, link);
+    expect(throughLink(link, process.platform)).toBe(true);
+    expect(throughLink(path.join(link, 'below'), process.platform)).toBe(false); // not there
+    expect(throughLink(target, process.platform)).toBe(false);
+    const darwin = { exists: () => true, realpath: (p: string) => `/private${p}` };
+    expect(throughLink('/tmp/U1/session_1', 'darwin', darwin)).toBe(false);
+    expect(throughLink('/var/folders/x', 'darwin', darwin)).toBe(false);
+    expect(throughLink('/tmp/U1/session_1', 'linux', darwin)).toBe(true);
   });
 });
 
@@ -166,14 +225,17 @@ describe('ensureClaudeTmpDir', () => {
     expect(fs.statSync(dir as string).mode & 0o777).toBe(0o700);
   });
 
-  it('moves aside a link the session planted, and makes a real directory', () => {
+  it('moves aside a link the session planted and makes a real directory, leaving the target alone', () => {
     const root = mk('ct/b');
     const target = mk('ct/b-target');
+    fs.chmodSync(target, 0o755);
     fs.symlinkSync(target, path.join(root, CLAUDE_TMP_DIR_NAME));
     const dir = ensureClaudeTmpDir(root, () => 42) as string;
     expect(fs.lstatSync(dir).isDirectory()).toBe(true);
     expect(fs.lstatSync(dir).isSymbolicLink()).toBe(false);
     expect(fs.lstatSync(`${dir}.moved-42`).isSymbolicLink()).toBe(true);
+    // The link was never followed: its target keeps its mode.
+    expect(fs.statSync(target).mode & 0o777).toBe(0o755);
   });
 
   it('tightens the mode of a directory already there', () => {

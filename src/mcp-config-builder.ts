@@ -506,6 +506,10 @@ export class McpConfigBuilder {
         SOMA_DISPLAY_LANG: userSettingsStore.getUserDisplayLanguage(slackContext.user),
         ...(artifactIndex ? { SOMA_ARTIFACT_INDEX: artifactIndex } : {}),
         ...(uploads ? { SOMA_DOWNLOAD_DIR: path.join(uploads, 'thread-files') } : {}),
+        // A non-admin uploads only from its own root, as it reads only there.
+        ...(!isAdminUser(slackContext.user) && isSafePathSegment(slackContext.user)
+          ? { SOMA_UPLOAD_ROOTS: JSON.stringify([normalizeTmpPath(path.join('/tmp', slackContext.user))]) }
+          : {}),
       },
     };
   }

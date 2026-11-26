@@ -895,15 +895,35 @@ describe('sandbox: admin profile and write protection (env-access WU2, #1210)', 
       }
     });
 
-    it("the user's own data directory (memory, own skills, uploads) is readable by the file tools", async () => {
+    it("the user's own data directory (memory, own skills, uploads) is made first and readable", async () => {
       const own = path.join(DATA_DIR, SAFE_USER);
-      fs.mkdirSync(own, { recursive: true });
+      fs.rmSync(own, { recursive: true, force: true });
       try {
         const { options } = await withSettings(false, () => build(SAFE_USER));
+        // Made before the lists are built, so a thread file downloaded mid-turn is readable.
+        expect(fs.statSync(path.join(own, 'uploads')).mode & 0o777).toBe(0o700);
         expect((options.settings as ReadSettings).permissions?.blockReadsExemptPaths).toContain(own);
         expect((options.sandbox as ReadSandbox).filesystem?.allowRead).toContain(fs.realpathSync(own));
       } finally {
         fs.rmSync(own, { recursive: true, force: true });
+      }
+    });
+
+    it('a session folder reached through a link does not start', async () => {
+      const elsewhere = fs.mkdtempSync(path.join(WORK_DIR, 'elsewhere-'));
+      const link = path.join(WORK_DIR, `linked-session-${process.pid}`);
+      fs.symlinkSync(elsewhere, link);
+      try {
+        await expect(
+          withSettings(false, () =>
+            buildStreamOptions(
+              { queryEnv: {}, slackContext: makeSlackContext({ user: SAFE_USER }), workingDirectory: link },
+              makeDeps(),
+            ),
+          ),
+        ).rejects.toThrow(/reached through a link/);
+      } finally {
+        fs.unlinkSync(link);
       }
     });
 

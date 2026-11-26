@@ -83,6 +83,41 @@ describe('validateFilePath — real filesystem', () => {
   });
 });
 
+describe("validateFilePath — a non-admin's own root", () => {
+  let base: string;
+  let own: string;
+  let other: string;
+
+  beforeAll(async () => {
+    base = await fs.mkdtemp(path.join('/tmp', 'slack-mcp-roots-'));
+    own = path.join(base, 'own');
+    other = path.join(base, 'other');
+    await fs.mkdir(own, { recursive: true });
+    await fs.mkdir(other, { recursive: true });
+    await fs.writeFile(path.join(own, 'mine.png'), 'png');
+    await fs.writeFile(path.join(other, 'theirs.png'), 'png');
+    // A directory link inside the own root that points at another user's folder.
+    await fs.symlink(other, path.join(own, 'via-link'));
+  });
+
+  afterAll(async () => {
+    await fs.rm(base, { recursive: true, force: true });
+  });
+
+  it('accepts a file in the own root', async () => {
+    await expect(validateFilePath(path.join(own, 'mine.png'), [own])).resolves.toMatchObject({ size: 3 });
+  });
+
+  it("refuses another user's file, by its path or through a linked parent directory", async () => {
+    await expect(validateFilePath(path.join(other, 'theirs.png'), [own])).rejects.toThrow(/your own folder/);
+    await expect(validateFilePath(path.join(own, 'via-link', 'theirs.png'), [own])).rejects.toThrow(/your own folder/);
+  });
+
+  it('without roots (an admin) the /tmp rule alone applies', async () => {
+    await expect(validateFilePath(path.join(other, 'theirs.png'))).resolves.toMatchObject({ size: 3 });
+  });
+});
+
 // ── Media type validation ─────────────────────────────────────
 
 describe('Media type classification', () => {

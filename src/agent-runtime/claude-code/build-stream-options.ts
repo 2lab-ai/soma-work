@@ -70,7 +70,12 @@ import { extendSandboxWithGrant, loadDeploySandboxGrant } from '../../sandbox/de
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
 import { launchAllFrom, mcpLaunchDir, wrapPluginLaunchers } from '../../sandbox/mcp-launch-dir';
 import { projectConfigRoot } from '../../sandbox/project-config-root';
-import { ensureClaudeTmpDir, tenantReadBoundary } from '../../sandbox/tenant-read-boundary';
+import {
+  ensureClaudeTmpDir,
+  tenantReadBoundary,
+  throughLink,
+  userUploadsDir,
+} from '../../sandbox/tenant-read-boundary';
 import { checkSecretAccess } from '../../secrets/secret-access';
 import { loadServerToolsSection } from '../../secrets/secret-usage';
 import { ADMIN_ONLY_SERVER_TOOLS } from '../../server-tools-admin/catalog';
@@ -901,8 +906,9 @@ export async function buildStreamOptions(
     // wildcards, symbolic links — what step 6b's text check cannot see). OS-enforced read deny
     // of their directories, unless the all-environment-skills grant opens them.
     if (contextUser && !isAdminUser(contextUser)) {
-      const envRegistry = deps.getEnvSkillRegistry?.();
-      const denyRead = envRegistry ? envSkillSandboxDenyRead(envRegistry, contextUser) : [];
+      // Without the plugin manager's registry, the environment plugins are read from config.json (fail closed).
+      const envRegistry = deps.getEnvSkillRegistry?.() ?? envSkillRegistry(undefined, PLUGINS_DIR, CONFIG_FILE);
+      const denyRead = envSkillSandboxDenyRead(envRegistry, contextUser);
       if (denyRead.length > 0) {
         sandboxConfig.filesystem = {
           ...(sandboxConfig.filesystem ?? {}),
@@ -1101,7 +1107,7 @@ export async function buildStreamOptions(
   // Reads: a non-admin session reads its own work area and the code it runs, nothing else of the host
   // (`src/sandbox/tenant-read-boundary.ts`). Last, once the plugins and the write roots are final.
   if (!sandboxDisabled && options.sandbox && contextUser && sandboxUserDir && !isAdminUser(contextUser)) {
-    const envRegistry = deps.getEnvSkillRegistry?.();
+    const envRegistry = deps.getEnvSkillRegistry?.() ?? envSkillRegistry(undefined, PLUGINS_DIR, CONFIG_FILE);
     const scope = slackContext
       ? { channel: slackContext.channel, threadTs: slackContext.threadTs }
       : execCtx
@@ -1114,7 +1120,7 @@ export async function buildStreamOptions(
         userRoot: sandboxUserDir,
         workingDirectory,
         queryEnv,
-        grantedSkillDirs: envRegistry ? envSkillReadableSkillDirs(envRegistry, contextUser, scope) : [],
+        grantedSkillDirs: envSkillReadableSkillDirs(envRegistry, contextUser, scope),
       },
       logger,
     );
@@ -1139,17 +1145,31 @@ function applyTenantReadBoundary(
   },
   logger: BuildStreamOptionsDeps['logger'],
 ): void {
+  // A session folder the session replaced with a link would make the CLI treat where it points as the working
+  // directory: the session does not start.
+  if (input.workingDirectory && throughLink(input.workingDirectory, process.platform)) {
+    throw new Error(`The session folder is reached through a link; not starting: ${input.workingDirectory}`);
+  }
   const sandbox = options.sandbox as NonNullable<Options['sandbox']>;
   const filesystem = sandbox.filesystem ?? {};
   sandbox.filesystem = filesystem;
   const home = os.homedir();
+  // Made before the lists are built: a missing directory is not opened, and thread files land here mid-turn.
+  const uploads = userUploadsDir(DATA_DIR, input.user);
+  if (uploads) {
+    try {
+      fs.mkdirSync(uploads, { recursive: true, mode: 0o700 });
+    } catch (error) {
+      logger.warn("The user's uploads directory could not be made", { user: input.user, error });
+    }
+  }
   const boundary = tenantReadBoundary({
     platform: process.platform,
     home,
     tmpdir: os.tmpdir(),
     writeRoots: [...(input.workingDirectory ? [input.workingDirectory] : []), ...(filesystem.allowWrite ?? [])],
-    workingDirectory: input.workingDirectory,
     installDir: path.dirname(CONFIG_FILE),
+    codeRoot: path.resolve(__dirname, '..', '..', '..'),
     dataDir: DATA_DIR,
     ownDataDir: path.join(DATA_DIR, input.user),
     claudeConfigDir: input.queryEnv.CLAUDE_CONFIG_DIR || path.join(home, '.claude'),
@@ -1158,6 +1178,12 @@ function applyTenantReadBoundary(
     grantedSkillDirs: input.grantedSkillDirs,
     denied: filesystem.denyRead ?? [],
   });
+  if (boundary.redirected.length > 0) {
+    logger.warn('Write roots reached through a link are not opened for reading', {
+      user: input.user,
+      roots: boundary.redirected,
+    });
+  }
   filesystem.denyRead = [...(filesystem.denyRead ?? []), ...boundary.denyRead];
   filesystem.allowRead = [...(filesystem.allowRead ?? []), ...boundary.allowRead];
 

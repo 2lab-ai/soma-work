@@ -96,6 +96,18 @@ describe('McpConfigBuilder slack-mcp server', () => {
     );
   });
 
+  it('slack-mcp lets a non-admin upload only from its own root', async () => {
+    const builder = new McpConfigBuilder(createMockMcpManager());
+    const config = await builder.buildConfig({
+      channel: 'C123',
+      threadTs: '1700000000.000000',
+      mentionTs: '1700000010.000000',
+      user: 'U123',
+    });
+    const roots = JSON.parse(config.mcpServers?.['slack-mcp']?.env?.SOMA_UPLOAD_ROOTS ?? '[]');
+    expect(roots).toEqual([path.join('/tmp', 'U123')]);
+  });
+
   it('passes both work and source thread in SLACK_MCP_CONTEXT when bot migrates to new thread', async () => {
     const builder = new McpConfigBuilder(createMockMcpManager());
     // After bot-initiated thread migration:

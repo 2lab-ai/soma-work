@@ -22,6 +22,7 @@
  *   - SOMA_ARTIFACT_INDEX: the session's artifact index (read only) — an upload's version (#1074)
  *   - SOMA_DISPLAY_LANG: `ko` | `en` — the language of the version line in an upload's comment
  *   - SOMA_DOWNLOAD_DIR: where download_thread_file saves (the speaker's uploads directory); else the OS temp dir
+ *   - SOMA_UPLOAD_ROOTS: JSON array of the roots a non-admin session may upload from (send_file, send_media)
  */
 
 import { WebClient } from '@slack/web-api';
@@ -59,6 +60,17 @@ import type { GetThreadMessagesResult, SlackMcpContext } from './types.js';
 
 /** Allowed Slack file URL hosts — prevents token exfiltration to attacker-controlled domains */
 const ALLOWED_FILE_HOSTS = new Set(['files.slack.com', 'files-pri.slack.com', 'files-tmb.slack.com']);
+
+/** SOMA_UPLOAD_ROOTS (JSON array): the roots a non-admin session may upload from; empty for an admin. */
+function uploadRoots(): string[] {
+  try {
+    const roots = JSON.parse(process.env.SOMA_UPLOAD_ROOTS || '[]');
+    return Array.isArray(roots) ? roots.filter((r): r is string => typeof r === 'string' && r.length > 0) : [];
+  } catch {
+    // A value that does not parse closes uploads rather than opening them.
+    return ['/nonexistent-upload-root'];
+  }
+}
 
 /** #1074 — how an upload becomes a new version of an earlier one. */
 const ARTIFACT_KEY_NOTE = [
@@ -843,7 +855,7 @@ class SlackMcpServer extends BaseMcpServer {
     thread?: string;
     artifact_key?: string;
   }): Promise<ToolResult> {
-    const { resolvedPath, size } = await validateFilePath(args.file_path);
+    const { resolvedPath, size } = await validateFilePath(args.file_path, uploadRoots());
     const displayName = args.filename || path.basename(resolvedPath);
     const resolved = this.resolveThread(args.thread);
     // Checked before the upload, so a bad URL uploads nothing.
@@ -908,7 +920,7 @@ class SlackMcpServer extends BaseMcpServer {
     thread?: string;
     artifact_key?: string;
   }): Promise<ToolResult> {
-    const { resolvedPath, size } = await validateFilePath(args.file_path);
+    const { resolvedPath, size } = await validateFilePath(args.file_path, uploadRoots());
     const displayName = args.filename || path.basename(resolvedPath);
     const resolved = this.resolveThread(args.thread);
 
