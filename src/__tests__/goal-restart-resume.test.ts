@@ -122,16 +122,25 @@ describe('resumeActiveGoals (T1)', () => {
   });
 
   it('takes the old process’s pending error retry from a session whose turn already runs', () => {
-    const running = activeGoalSession({ activityState: 'working', pendingRetryAt: Date.now() + 60_000 } as any);
+    const running = activeGoalSession({
+      activityState: 'working',
+      sessionId: 'sdk-1',
+      pendingRetryAt: Date.now() + 60_000,
+      pendingRetrySessionId: 'sdk-1',
+    } as any);
     const sessions = new Map<string, ConversationSession>([['C1-T1', running]]);
     const { handler, claudeHandler } = createHandler(sessions);
     handler.setGoalTurnSettledHandler(vi.fn());
     (handler as any).requestCoordinator.setController('C1-T1', new AbortController());
 
+    // The boot order (src/index.ts): the goal pass, then the re-arm of the retries it left.
     handler.resumeActiveGoals();
+    const rearmed = handler.resumePendingErrorRetries();
 
-    // Re-armed by resumePendingErrorRetries, it would fire a second turn after the running one.
+    // Re-armed, the retry would fire a second turn after the running one.
     expect(running.pendingRetryAt).toBeUndefined();
+    expect(running.pendingRetryTimer).toBeUndefined();
+    expect(rearmed).toBe(0);
     expect(claudeHandler.saveSessions).toHaveBeenCalled();
   });
 
