@@ -1708,9 +1708,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         });
       }
       carriedChoice = session.actionPanel?.waitingForChoice === true && session.actionPanel?.pendingChoice !== undefined;
-      // #1474 — a carried question keeps the session waiting on it while the turn works, as a question asked mid-turn
-      // does (the card reads 작업 중 · 응답 필요, and the dashboard can answer it) (round 5, astra).
-      this.setActivity(session, sessionKey, channel, threadTs, carriedChoice ? 'waiting' : 'working');
+      // The turn works, carried question or not: `working` moves the activity clock an answer's give-back reads, and
+      // keeps a cron fire queued instead of injected into the running turn (round 6, fable). The carried question's
+      // bit stays up below, and the turn ends waiting on it.
+      this.setActivity(session, sessionKey, channel, threadTs, 'working');
       // Epoch-scoped like every other status write on this turn (#688): a
       // superseded turn's late working-state write must not overwrite the
       // newer turn's status.

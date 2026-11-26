@@ -497,6 +497,87 @@ describe('ChoiceActionHandler — recorded, handed on, then drawn (#1474)', () =
     expect(session.actionPanel.pendingQuestion).toBeUndefined();
   });
 
+  it('the dashboard answers the open chunks while the answered chunk’s turn still runs (round 6, astra)', async () => {
+    const multi = {
+      type: 'user_choices' as const,
+      questions: [
+        { id: 'qa', question: 'A?', choices: [{ id: '1', label: 'A' }] },
+        { id: 'qb', question: 'B?', choices: [{ id: '1', label: 'B' }] },
+      ],
+    };
+    session.actionPanel = {
+      waitingForChoice: true,
+      pendingQuestion: multi,
+      pendingChoice: { kind: 'multi', turnId: 'turn-1', formIds: ['form-a', 'form-b'] },
+    };
+    for (const [formId, ts, qid] of [
+      ['form-a', 'ts-a', 'qa'],
+      ['form-b', 'ts-b', 'qb'],
+    ] as const) {
+      formStore.set(formId, {
+        formId,
+        sessionKey: KEY,
+        channel: 'C1',
+        threadTs: 'root',
+        messageTs: ts,
+        turnId: 'turn-1',
+        questions: [multi.questions.find((q) => q.id === qid)],
+        selections: { [qid]: { choiceId: '1', label: 'A' } },
+        createdAt: Date.now(),
+      });
+    }
+    slackWrite.release();
+    const chunkTurn = deferred();
+    messageHandler.mockImplementationOnce(() => chunkTurn.promise); // chunk A's turn runs (its submit holds A)
+    const submittingA = handler.handleFormSubmit({
+      actions: [{ value: JSON.stringify({ formId: 'form-a', sessionKey: KEY }) }],
+      user: { id: 'U1' },
+      channel: { id: 'C1' },
+      message: { ts: 'ts-a' },
+    });
+    await Promise.resolve();
+
+    await handler.handleMultiChoiceFromDashboard(KEY, { qb: { choiceId: '1', label: 'B' } }, 'U1');
+
+    expect(messageHandler).toHaveBeenCalledTimes(2);
+    chunkTurn.release();
+    await submittingA;
+  });
+
+  it('a form selection whose edit waits while a typed reply answers the question does not raise it again', async () => {
+    session.actionPanel = { waitingForChoice: true, pendingQuestion: QUESTION, choiceMessageTs: 'form-ts' };
+    formStore.set('form-1', {
+      formId: 'form-1',
+      sessionKey: KEY,
+      channel: 'C1',
+      threadTs: 'root',
+      messageTs: 'form-ts',
+      questions: [{ id: 'q1', question: 'Q1?', choices: [{ id: '1', label: 'A' }] }],
+      selections: {},
+      createdAt: Date.now(),
+    });
+    const attachChoice = vi.fn(async () => {
+      session.actionPanel.waitingForChoice = true;
+    });
+    (handler as any).ctx.threadPanel.attachChoice = attachChoice;
+    const selecting = handler.handleMultiChoice({
+      actions: [
+        { value: JSON.stringify({ formId: 'form-1', sessionKey: KEY, questionId: 'q1', choiceId: '1', label: 'A' }) },
+      ],
+      user: { id: 'U1' },
+      channel: { id: 'C1' },
+      message: { ts: 'form-ts' },
+    });
+    await Promise.resolve();
+    // The owner's typed reply is recorded as the answer (SlackHandler.recordTypedAnswer): the question leaves.
+    session.actionPanel = {};
+    slackWrite.release();
+    await selecting;
+
+    expect(attachChoice).not.toHaveBeenCalled();
+    expect(session.actionPanel.waitingForChoice).toBeUndefined();
+  });
+
   it('a form selection whose edit waits while the dashboard answers does not raise the answered question again', async () => {
     const multi = {
       type: 'user_choices' as const,

@@ -555,7 +555,8 @@ export class ChoiceActionHandler {
     const targetMessageTs = this.resolveChoiceSyncMessageTs(pendingForm.sessionKey, messageTs, pendingForm.messageTs);
     for (const targetTs of targetMessageTs) {
       // #1474 — answered while an earlier edit waited: the rest would draw the answered form open again (round 4, grok).
-      if (!this.formStore.get(pendingForm.formId) || this.wasAnswered(pendingForm.sessionKey, pendingForm.formId)) return;
+      if (!this.formStore.get(pendingForm.formId) || this.wasAnswered(pendingForm.sessionKey, pendingForm.formId))
+        return;
       try {
         await this.ctx.slackApi.updateMessage(
           channel,
@@ -569,9 +570,9 @@ export class ChoiceActionHandler {
       }
     }
 
-    // #1474 — answered while the edits above waited in Slack's line (the dashboard, another chunk's last submit): the
-    // form is gone, and attaching it would raise the answered question's open bit again (round 3, astra).
-    if (!this.formStore.get(pendingForm.formId) || this.wasAnswered(pendingForm.sessionKey, pendingForm.formId)) return;
+    // #1474 — answered while the edits above waited in Slack's line (the dashboard, another chunk's last submit, a typed
+    // reply): the form or the question is gone, and attaching it would raise the answered question's open bit again.
+    if (this.isFormAnswered(pendingForm)) return;
     await this.ctx.threadPanel?.attachChoice(pendingForm.sessionKey, updatedPayload, pendingForm.messageTs);
   }
 
@@ -1190,6 +1191,10 @@ export class ChoiceActionHandler {
         (held.choice !== undefined && held.choice === panel?.pendingChoice);
       if (!sameQuestion) continue;
       if (formId !== undefined && held.formId !== undefined && held.formId !== formId) continue;
+      // #1474 — a chunk already off the record (answered, its turn still running) holds nothing the rest is answered
+      // by: the dashboard answers the chunks still open (round 6, astra).
+      const record = panel?.pendingChoice;
+      if (held.formId !== undefined && record?.kind === 'multi' && !record.formIds.includes(held.formId)) continue;
       return true;
     }
     return false;
@@ -1577,9 +1582,18 @@ export class ChoiceActionHandler {
     await this.ctx.slackApi.postEphemeral(channel, userId, ANSWER_TAKEN_TEXT).catch(() => undefined);
   }
 
-  /** #1474 — is any of these cards or forms of the session already answered? (`FormActionHandler` asks too.) */
+  /**
+   * #1474 — is any of these cards or forms of the session already answered, or is nothing open on the session any
+   * more (a typed reply answered it)? (`FormActionHandler` asks too.)
+   */
   isAnswered(sessionKey: string, ...marks: (string | undefined)[]): boolean {
-    return this.wasAnswered(sessionKey, ...marks);
+    const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
+    return this.wasAnswered(sessionKey, ...marks) || (session !== undefined && nothingOpen(session));
+  }
+
+  /** #1474 — the form left the store, was answered, or its session has nothing open any more. */
+  private isFormAnswered(form: PendingChoiceFormData): boolean {
+    return !this.formStore.get(form.formId) || this.isAnswered(form.sessionKey, form.formId);
   }
 
   private wasAnswered(sessionKey: string, ...marks: (string | undefined)[]): boolean {

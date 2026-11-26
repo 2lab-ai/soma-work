@@ -2293,6 +2293,8 @@ export class SlackHandler {
     'dm input not allowed for non-admin',
     'incident-owned thread: ordinary message dropped',
     'nothing to process',
+    'dm rejected after routing',
+    'session initialization halted',
   ]);
 
   /** The `blocked` reason of a turn that ended on the person's question — the ASK pause (A8). */
@@ -2659,11 +2661,18 @@ export class SlackHandler {
     const deferSkillFire = !event.synthetic && (!preRouteSession || preRouteSession.sessionId === undefined);
 
     // Step 2: Route commands
-    let routed: Awaited<ReturnType<InputProcessor['routeCommand']>> = verbatimPrompt
-      ? // Already routed by the `/z` command that produced it — the same result
-        // the channel path gets straight from `GoalHandler`.
-        { handled: true, continueWithPrompt: event.text ?? '', verbatimPrompt: true }
-      : await this.inputProcessor.routeCommand(event, wrappedSay, { deferSkillFire });
+    // #1474 — an answer is never routed as a command, but an auto-compact the turn that asked armed still runs before
+    // it (the routing is where it intercepts) (round 6, astra).
+    const answerMeetsCompact =
+      event.questionAnswer === true &&
+      event.routeContext?.verbatimPrompt !== true &&
+      this.claudeHandler.getSession?.(channel, originalThreadTs)?.autoCompactPending === true;
+    let routed: Awaited<ReturnType<InputProcessor['routeCommand']>> =
+      verbatimPrompt && !answerMeetsCompact
+        ? // Already routed by the `/z` command that produced it — the same result
+          // the channel path gets straight from `GoalHandler`.
+          { handled: true, continueWithPrompt: event.text ?? '', verbatimPrompt: true }
+        : await this.inputProcessor.routeCommand(event, wrappedSay, { deferSkillFire });
     routed = await this.ensureGoalOpeningPrompt(event, routed, channel, originalThreadTs);
     const {
       handled,
@@ -3185,8 +3194,10 @@ export class SlackHandler {
       // the session — or, for one chunk of a form, only that chunk is. What is open now (the form's other chunks, or
       // a question the model asked since) is not this message's to close.
       const answerRecorded = event.questionAnswer === true;
+      // Words answer a question; a file alone does not (round 6, grok — as `answersOpenQuestion`).
+      const answersWithWords = userWord && !answerRecorded && effectiveText.trim().length > 0;
       const hasPendingChoice = sessionResult.session.actionPanel?.waitingForChoice === true;
-      if (hasPendingChoice && userWord && !answerRecorded) {
+      if (hasPendingChoice && answersWithWords) {
         await this.threadPanel?.clearChoice(sessionResult.sessionKey);
         // Treat direct user message as completing manual input from choice UI.
         this.claudeHandler.setActivityStateByKey(sessionResult.sessionKey, 'working');
@@ -3198,7 +3209,7 @@ export class SlackHandler {
       // question: a host turn (synthetic, or a post-compaction replay of one —
       // `routeContext.hostTurn`) and a maintenance turn (`/compact`, forwarded
       // to the SDK as a local slash command) — `userWord` above.
-      if (userWord && !answerRecorded && sessionResult.session.actionPanel?.pendingQuestion) {
+      if (answersWithWords && sessionResult.session.actionPanel?.pendingQuestion) {
         sessionResult.session.actionPanel.pendingQuestion = undefined;
       }
       // #911 — and the drain the question paused reopens with it.
