@@ -152,6 +152,8 @@ describe('Dashboard — work item goal list (SSOT T2/T3)', () => {
           continuationCount: 2,
           maxContinuations: 10,
           lastEvalReason: '테스트가 아직 없다',
+          // .prd/39 S3 — the phase the goal line names (PR10).
+          phase: { kind: 'running' },
         },
         queue: [
           { goalId: 'g2', objective: '두번째' },

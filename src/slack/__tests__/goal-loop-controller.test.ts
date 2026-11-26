@@ -1304,6 +1304,8 @@ describe('GoalLoopController — the loop gate reads turnHeld and the owner ques
     const goal = makeGoal();
     const session = makeSession(goal);
     if (opts.panel) (session as any).actionPanel = opts.panel;
+    // The display word on the session itself too (review #1490): a gate that read it would see the stale value.
+    if (opts.activityState) (session as any).activityState = opts.activityState;
     const dispatched: string[] = [];
     const held: Array<[string, string]> = [];
     const controller = new GoalLoopController({
@@ -1350,6 +1352,48 @@ describe('GoalLoopController — the loop gate reads turnHeld and the owner ques
     await r.controller.settled(SESSION_KEY);
     expect(r.dispatched).toHaveLength(0);
     expect(r.held).toEqual([]);
+  });
+});
+
+/**
+ * .prd/39 S6 (PR10) — the board reads "the loop acts" (`isActing`) from memory, so the loop pushes the board when it
+ * stops acting: after its run drains and after a continuation it injected settles. Without that the last push was
+ * made mid-run (driven → RUNNING) and the card stayed there.
+ */
+describe('GoalLoopController — the board hears when the loop stops acting (.prd/39 S6)', () => {
+  function rig(inject: () => Promise<void>) {
+    const session = makeSession(makeGoal());
+    const seen: boolean[] = [];
+    const controller: GoalLoopController = new GoalLoopController({
+      registry: {
+        getSessionByKey: () => session,
+        saveSessions: () => {},
+        broadcastSessionUpdate: () => seen.push(controller.isActing(SESSION_KEY)),
+      },
+      requestCoordinator: { isRequestActive: () => false },
+      turnHeld: () => false,
+      dispatcher: async () => JSON.stringify({ completed: false, reason: 'not yet', remaining: ['x'] }),
+      injectContinuation: inject,
+      postNotice: async () => undefined,
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      fallbackModel: () => ({ model: 'claude-sonnet-4' }),
+    });
+    return { controller, seen };
+  }
+
+  it('the last push of a run that injected comes after the run drained and the injection settled', async () => {
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const r = rig(() => started);
+    r.controller.onTurnSettled(SESSION_KEY);
+    await r.controller.settled(SESSION_KEY);
+    expect(r.controller.isActing(SESSION_KEY)).toBe(true); // the continuation has not taken the slot yet
+    release();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(r.controller.isActing(SESSION_KEY)).toBe(false);
+    expect(r.seen[r.seen.length - 1]).toBe(false);
   });
 });
 

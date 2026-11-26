@@ -35,6 +35,13 @@ import { t, tr } from '@soma/common/i18n';
 import { type FollowupItem, type FollowupItemState, isFollowupDelivered } from '@soma/slack/followup-queue';
 import type { FollowupQueueView } from '@soma/slack/followup-queue-blocks';
 import { CommandParser } from '@soma/slack/command-parser';
+import {
+  type GoalBoardPlace,
+  type GoalBoardRuntime,
+  type GoalCardPhase,
+  goalBoardPlace,
+  goalCardPhase,
+} from '@soma/slack/goal/board';
 import { sumLiveUsage } from '@soma/slack/live-usage';
 import { livePendingModelSwitch } from '@soma/slack/model-switch';
 import { plainTldrLine } from '@soma/slack/summary-service';
@@ -548,6 +555,12 @@ export interface KanbanSession {
    */
   autoResume?: KanbanAutoResume;
   /**
+   * .prd/39 S6 · D14 — the column the goal gives this card when the board's own rules leave it in DONE: RUNNING while a
+   * turn holds it, a restart resume is pending or the loop drives its goal; NEEDS YOU while the goal asks the owner or
+   * the loop stopped it. The board applies it only in place of DONE. Absent otherwise.
+   */
+  goalBoard?: GoalBoardPlace;
+  /**
    * .prd/36 D8 — where the session stands with the host: its work-queue entry waits (`queued` — the card is tinted
    * apart, 큐 대기), it holds a running entry (`running`), or an environment hand-off it asked for runs (`env`). The
    * board puts an idle one in `working`, never DONE or NEEDS YOU. Absent otherwise.
@@ -832,6 +845,8 @@ export interface KanbanGoal {
     lastEvalReason?: string;
     /** The loop stopped: the goal failed again for the same reason; the owner was asked what to do next. */
     stalled?: { at: number; reason: string; actions: string[] };
+    /** .prd/39 S3 — the slot goal's phase (or its hold), as the goal line names it. */
+    phase?: GoalCardPhase;
   };
   queue: Array<{ goalId: string; objective: string }>;
   /** Goals the owner paused, oldest first (SSOT 2026-11-06) — they hold nothing back; each can be resumed. */
@@ -1819,6 +1834,28 @@ export function setDashboardTaskAccessor(fn: TaskAccessor): void {
   _getTasksFn = fn;
 }
 
+/**
+ * .prd/39 S1 · S5 — what the host knows about a session in memory only (a turn held, someone driving it, a restart
+ * resume pending), by registry key. Wired in index.ts to the Slack handler. Unset: nothing is held or driven.
+ */
+type GoalRuntimeProbe = (sessionKey: string) => GoalBoardRuntime;
+let _goalRuntimeFn: GoalRuntimeProbe | null = null;
+const NO_GOAL_RUNTIME: GoalBoardRuntime = { turnHeld: false, driven: false, resumePending: false };
+
+export function setDashboardGoalRuntime(fn: GoalRuntimeProbe | null): void {
+  _goalRuntimeFn = fn;
+}
+
+function goalRuntimeOf(key: string): GoalBoardRuntime {
+  if (!_goalRuntimeFn) return NO_GOAL_RUNTIME;
+  try {
+    return _goalRuntimeFn(key);
+  } catch (error) {
+    logger.warn('Goal runtime probe failed — the card reads nothing held or driven', { key, error });
+    return NO_GOAL_RUNTIME;
+  }
+}
+
 // ── Action callbacks ───────────────────────────────────────────────
 
 /**
@@ -2733,6 +2770,7 @@ function goalToKanban(s: any): KanbanGoal | undefined {
                   },
                 }
               : {}),
+            ...cardPhaseOf(goal),
           }
         : undefined,
     queue: queue
@@ -2753,6 +2791,10 @@ function goalToKanban(s: any): KanbanGoal | undefined {
 }
 
 const GOAL_REASON_MAX = 1000;
+function cardPhaseOf(goal: any): { phase?: GoalCardPhase } {
+  const phase = goalCardPhase(goal);
+  return phase ? { phase } : {};
+}
 function finiteNumber(v: unknown): number | undefined {
   return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
 }
@@ -3100,6 +3142,8 @@ const CUSTOM_CHOICE_ID = '직접입력';
 
 function sessionToKanban(key: string, s: any): KanbanSession {
   const autoResume = deriveAutoResume(s, Date.now());
+  // .prd/39 S6 — the goal's column, for the board to use only where its own rules say DONE.
+  const goalBoard = goalBoardPlace(s, goalRuntimeOf(key));
   // .prd/36 D8 — the session waits on the host: a work-queue entry, or an environment hand-off it asked for.
   const queueWait = hostWaitFor(s?.channelId, s?.threadTs);
   const userQueue = userQueueOfSession(key);
@@ -3171,11 +3215,16 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     tokenUsage: tokenUsageOf(s),
     sessionOutputTokens: sessionOutputTokensOf(s),
     doneAt: liveDoneAt(s),
-    waitingSince: planAsks(s) ? (s.taskPlan?.updatedAt ?? liveWaitingSince(s, asks)) : liveWaitingSince(s, asks),
+    waitingSince:
+      (planAsks(s) ? (s.taskPlan?.updatedAt ?? liveWaitingSince(s, asks)) : liveWaitingSince(s, asks)) ??
+      (goalBoard?.col === 'waiting' ? goalBoard.at : undefined),
     finishedAt: liveFinishedAt(s),
     ...modelFields(s),
     ...contextFields(s),
-    tasks: normalizeTaskProgress(taskView?.current, sessionHasCurrentTask(s, autoResume) || queueWait !== undefined),
+    tasks: normalizeTaskProgress(
+      taskView?.current,
+      sessionHasCurrentTask(s, autoResume) || queueWait !== undefined || goalBoard?.col === 'working',
+    ),
     earlierTasks: taskView?.earlier.length ? taskView.earlier : undefined,
     tasksOutside: taskView?.outside,
     botName: _botDisplayName || undefined,
@@ -3233,6 +3282,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
         }
       : {}),
     ...(autoResume ? { autoResume } : {}),
+    ...(goalBoard ? { goalBoard } : {}),
     ...(queueWait ? { queueWait } : {}),
     ...(userQueue ? { userQueue } : {}),
     ...(instructionStages.length ? { instructionStages } : {}),
@@ -3507,6 +3557,9 @@ function placeOnBoard(board: KanbanBoard, kanban: KanbanSession, session: { stat
       // re-check) is unfinished work — RUNNING, not DONE.
       // So is one that waits on the host — its work-queue entry, or a hand-off it asked for (.prd/36 D8).
       if (kanban.autoResume || kanban.queueWait) board.working.push(kanban);
+      // .prd/39 S6 (D14) — what the board's rules left in DONE, the goal places: held or driven → RUNNING, a question
+      // or the loop's stop → NEEDS YOU.
+      else if (kanban.goalBoard) board[kanban.goalBoard.col].push(kanban);
       else board.idle.push(kanban);
       break;
   }
@@ -3533,9 +3586,14 @@ function bundledChildrenOf(epic: { taskId?: string; ownerId?: string }): Array<[
   return out;
 }
 
-/** What the board shows a card doing: an idle card with an armed automatic resume is at work. */
+/**
+ * What the board shows a card doing: an idle card with an armed automatic resume is at work; one the goal places
+ * (S6) reads as its column — the same rule as {@link placeOnBoard}'s DONE branch.
+ */
 function shownActivity(card: KanbanSession): ConversationSession['activityState'] {
-  return card.activityState === 'idle' && (card.autoResume || card.queueWait) ? 'working' : card.activityState;
+  if (card.activityState !== 'idle') return card.activityState;
+  if (card.autoResume || card.queueWait) return 'working';
+  return card.goalBoard?.col ?? card.activityState;
 }
 
 /** E4 ⑧ (D11) — an epic's bundle: its view and its children's cards (every card of an epic carries it). */
@@ -14362,11 +14420,15 @@ function cardOf(s, col) {
   } else if (col === 'waiting') {
     card.status = 'waiting';
     if (toNum(s.waitingSince) > 0) card.since = toNum(s.waitingSince);
+    // .prd/39 S6 — the goal put it here (its question, the loop's stop): say which.
+    if (s.goalBoard && s.goalBoard.col === 'waiting' && s.activityState !== 'waiting') card.statusText = GOAL_BOARD_LABELS[s.goalBoard.why] || '';
   } else if (col === 'working') {
     card.status = 'running';
     var leg = Number(s.activeLegStartedAtMs) || 0;
     if (leg) card.since = leg;
     if (acc) card.elapsedMs = acc;
+    // .prd/39 S6 — RUNNING with no turn of its own yet: a turn starting, a restart resume, the goal loop driving it.
+    if (s.goalBoard && s.goalBoard.col === 'working' && s.activityState !== 'working') card.statusText = GOAL_BOARD_LABELS[s.goalBoard.why] || '';
   } else if (col === 'closed') {
     card.status = 'idle';
     card.statusText = s.terminated ? STRINGS.statusArchived : STRINGS.statusSleeping;
@@ -14943,6 +15005,8 @@ function rootStatusOf(s, col) {
   if (col === 'closed') return 'sleeping';
   if (col === 'waiting' || (s && s.activityState === 'waiting')) return 'waiting';
   if (pendingAutoResume(s || {}, col)) return 'resuming';
+  // .prd/39 S6 — RUNNING because a turn is held or the loop drives its goal (goalBoard), while the display reads idle.
+  if (col === 'working' && s && s.goalBoard && s.activityState !== 'working') return 'running';
   var act = s ? s.activityState : '';
   if (act === 'working') return 'running';
   if (act === 'sleeping') return 'sleeping';
@@ -18443,7 +18507,11 @@ function cardGoalLine(s, col, canEdit) {
       + '<span class="cgl-text is-muted">' + what + '</span>'
       + '<button type="button" class="cgl-go"' + go + '>' + (editable ? 'goal 추가 &rarr;' : '보기 &rarr;') + '</button></div>';
   }
-  var bits = '<span class="ui-status cg-status"' + (GOAL_STATUS_TONE[cur.status] ? ' data-tone="' + GOAL_STATUS_TONE[cur.status] + '"' : '') + '>' + esc(GOAL_STATUS_LABELS[cur.status] || cur.status) + '</span>';
+  // .prd/39 S3 — the chip names the phase (or the hold) the server read; a card from an older server has the status only.
+  var ph = cur.phase;
+  var chipText = (ph && (GOAL_PHASE_LABELS[ph.kind + ':' + ph.why] || GOAL_PHASE_LABELS[ph.kind])) || GOAL_STATUS_LABELS[cur.status] || cur.status;
+  var chipTone = (ph && GOAL_PHASE_TONE[ph.kind]) || GOAL_STATUS_TONE[cur.status];
+  var bits = '<span class="ui-status cg-status"' + (chipTone ? ' data-tone="' + chipTone + '"' : '') + '>' + esc(chipText) + '</span>';
   if (cur.status === 'active' && toNum(cur.maxContinuations) > 0) {
     bits += '<span class="cgl-n" title="자동 이어하기 횟수 / 상한">' + toNum(cur.continuationCount) + '/' + toNum(cur.maxContinuations) + '</span>';
   }
@@ -19642,6 +19710,11 @@ function repaintPanelControlsFor(key) {
 // the host layer has no complete (D3 G4-1), so the card never offers it.
 var GOAL_STATUS_LABELS = { active: '진행 중', paused: '일시정지', complete: '완료' };
 var GOAL_STATUS_TONE = { active: 'run', paused: 'wait', complete: 'done' };
+// .prd/39 S3 — the slot goal's phase as the chip names it (server KanbanGoal current.phase, GoalCardPhase): 'kind' or 'kind:why'.
+var GOAL_PHASE_LABELS = { opening: '시작 중', running: '진행 중', retrying: '판정 재시도', 'asking:cap': '계속할까요?', 'asking:stall': '답을 기다림', stopped: '멈춤', 'stopped:judge-failed': '멈춤 · 판정 실패', 'stopped:start-failed': '멈춤 · 시작 실패', 'stopped:resume-failed': '멈춤 · 재개 실패', hold: '일시정지' };
+var GOAL_PHASE_TONE = { opening: 'run', running: 'run', retrying: 'wait', asking: 'wait', stopped: 'wait', hold: 'wait' };
+// .prd/39 S6 — why the goal placed a card the board's rules left in DONE (server KanbanSession.goalBoard.why).
+var GOAL_BOARD_LABELS = { turn: '턴 시작 중', resume: '재시작 뒤 이어서 시작', driven: '목표 이어가는 중', cap: '목표 이어하기 한도 — 계속할까요?', stall: '목표가 같은 이유로 막힘 — 답을 기다림', 'judge-failed': '목표 멈춤 — 완료 판정 실패', 'start-failed': '목표 멈춤 — 이어하기 시작 실패', 'resume-failed': '목표 멈춤 — 재개 실패' };
 // The goal mark (P7): the 2lab icon set's target glyph, not the bullseye emoji.
 var GOAL_SVG = '<i data-ui-icon="target"></i>';
 var GOAL_VIA_LABELS = { user: '직접 완료', 'eval-model': '평가 모델 완료' };
@@ -26106,6 +26179,9 @@ function epicChildCol(c) {
   if (c.activityState === 'waiting') return 'waiting';
   // An idle child with an armed automatic resume is at work, as the server reads it (shownActivity).
   if (c.activityState === 'working' || (c.activityState === 'idle' && c.autoResume)) return 'working';
+  // .prd/39 S6 — what the rules above leave idle the goal places, as the server does (goalBoard): held or driven →
+  // working, a question to the owner or the loop's stop → waiting.
+  if (c.activityState === 'idle' && c.goalBoard && (c.goalBoard.col === 'working' || c.goalBoard.col === 'waiting')) return c.goalBoard.col;
   return 'idle';
 }
 // E4 ⑨b — the epic's plan as <ui-task-plan> data: an issue node is a step, its sub nodes nested under it.

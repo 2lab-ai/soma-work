@@ -71,11 +71,60 @@ Persist a `SessionGoal` on `ConversationSession`:
   - `lastEvalReason?: string` — verbatim verdict from the last `completed=false` eval; injected into the next continuation
   - `evalAttemptCount?: number`
   - `epoch?: number` — monotonic intent epoch. Bumped by every goal mutation (set / pause / resume / done / clear) and by every real (non-synthetic) user message. The completion eval captures it at dispatch and discards its verdict if the epoch moved while the eval was in flight, so a stale verdict can never apply against state the user already moved past (`GoalLoopController` M1).
+  - `phase?` / `phaseFp?` — the stored S3 phase and the fingerprint (`{epoch, updatedAt, continuationCount}`) it was
+    written under. The load keeps a phase with no legacy form (`stopped`) only under a matching fingerprint and
+    recomputes the others from the legacy fields, so a build that does not know `phase` cannot leave a stale one (D17).
+  - `holdWhy?: 'cap-stop' | 'dashboard-stop' | 'opening-cancelled' | 'owner-pause'` — why a goal is held in the slot (D6).
   - `lastAssistantTurnSummary?: string` — persisted, bounded (≤16k chars) mirror of the runtime-only `session.goalLastTurnText`. Survives a restart so the eval on the next post-restart turn-settled trigger has real evidence; the runtime stash takes precedence when present. Not a crash-replay mechanism.
 
 The objective must be trimmed, non-empty, and at most 4,000 Unicode characters.
 
 Legacy goals serialized before this followup (lacking the ralph-loop fields) are migrated on load by `SessionRegistry.migrateLegacyGoal`, which back-fills `continuationCount=0`, `maxContinuations=10`, and zeroed counters.
+
+## States (.prd/39 — explicit state machines)
+
+The goal code used to keep six state machines in loose fields and sets that each path read differently (.prd/38 H1–H6;
+bugs X1–X19). Each is now named, has one module that reads it and one that moves it, and a contract test
+(`src/__tests__/goal-state-boundary.contract.test.ts`) fails when code outside that module touches it.
+
+```
+S1 turn occupancy — src/slack/session-occupancy.ts (memory only)
+   RunPhase: none ─dispatch takes the slot─▶ preparing ─controller / turn reports working─▶ running
+             running ─last leg ends idle|waiting─▶ settling ─run releases the slot─▶ none
+   turnHeld = preparing | running            driven = RunPhase ≠ none ∨ the goal loop acts (judge · inject)
+   The loop gate asks turnHeld + the owner question, never the display word activityState (D1 · D2).
+
+S2 place — @soma/slack/goal/read placeOf (stored)
+   slot-active ─pause / cap stop / dashboard stop with a queue / cancelled opening─▶ slot-hold {holdWhy}
+   slot-active ─complete / delete─▶ history | gone, and the queue head is promoted (I5)
+   queue ─promote─▶ slot-active        shelf (goalPaused) ─resume─▶ slot-active | queue
+   A completed goal lives in the history only (D5).
+
+S3 phase of the slot's active goal — goal/read phaseOf, moved only by goal/machine + goal-cap-decision
+   opening ─first turn reaches the model─▶ running
+   running ─judge dispatch failed─▶ retrying ─window passed─▶ running
+   running ─continuationCount reached max─▶ asking(cap) ─yes / goal max─▶ running ─no─▶ slot-hold(cap-stop)
+   running ─same failure twice─▶ asking(stall) ─answer─▶ running
+   running|retrying ─retries spent / injection failed / resume failed─▶ stopped{judge-failed|start-failed|resume-failed}
+   running ─a person stops the turn─▶ stopped{person-stopped}
+   stopped ─a person's message / goal resume─▶ running (fresh retry budget)
+   The loop drives running and retrying only (loopDrives).
+
+S4 loop driver — GoalLoopController (memory only): one serial run per session; a judge or an injection waits for a held
+   turn (holdGoalDriverForTurn) and runs once at the release; no continuation goes out once shutdown began.
+
+S5 restart recovery — src/slack/restart-recovery.ts (memory only)
+   BootPhase: recovering (cut · resumed records) ─startup goal pass─▶ live
+   The load computes the display from the record (resume pending → working, open question → waiting, else idle).
+
+S6 board column — @soma/slack/goal/board goalBoardPlace (projection, never stored), applied only where the
+   dashboard's own rules say DONE:
+   turnHeld | restart resume pending → RUNNING · asking | stopped{loop} → NEEDS YOU · driven → RUNNING · else DONE
+```
+
+Every change that moves a goal's meaning (objective, cap, place, phase) bumps its epoch through `bumpEpoch` — the one
+path, which also clears a retry window (I4). A goal command or goal button ends through `commitGoalChange`
+(`src/slack/goal-commit.ts`: save, push, and kick the loop when the change asks for it).
 
 ## Prompt Injection
 
@@ -264,7 +313,8 @@ A goal command is the user changing the goal list, not a follow-up for the runni
 
 The dashboard work item (expanded card) shows the session's goal list and lets the owner change it (requested 2026-10-21).
 
-- **Read.** `KanbanSession.goal = { current?: { goalId, objective, status: active|paused|complete, continuationCount, maxContinuations, lastEvalReason? }, queue: [{ goalId, objective }], completedCount }`, built by `goalToKanban` in `src/conversation/dashboard.ts`. The card renders the objective, a status badge, `N/max` auto-continuations, what the last eval said is missing, the queued goals in start order and the completed count.
+- **Read.** `KanbanSession.goal = { current?: { goalId, objective, status: active|paused|complete, continuationCount, maxContinuations, lastEvalReason?, phase? }, queue: [{ goalId, objective }], completedCount }`, built by `goalToKanban` in `src/conversation/dashboard.ts`. The card renders the objective, a chip that names the phase (`phase`, `goalCardPhase` — 시작 중 · 진행 중 · 판정 재시도 · 계속할까요? · 답을 기다림 · 멈춤 (+ why) · 일시정지), `N/max` auto-continuations, what the last eval said is missing, the queued goals in start order and the completed count.
+- **Column (S6, D14).** `KanbanSession.goalBoard` is `goalBoardPlace(session, runtime)`; the runtime (`turnHeld`, `driven`, `resumePending`) is the Slack handler's memory, read through `setDashboardGoalRuntime` (`SlackHandler.goalBoardRuntimeOf`). The board uses it only where its own rules put the card in DONE: a goal the loop drives or a turn still starting sits in RUNNING (it sat in DONE with a 진행 중 chip before, X17), a cap or stall question and a stop the loop made (`judge-failed` · `start-failed` · `resume-failed`) sit in NEEDS YOU with the reason as the status line, a person's stop stays in DONE. The loop pushes the board again when it stops acting (its run drained, its continuation settled).
 - **Write.** `POST /api/dashboard/session/:key/goal` with `{ action: 'add', objective, attachments? }`, `{ action: 'delete', goalId, expect: 'current' | 'queued' }`, `{ action: 'move', goalId, to }` or `{ action: 'edit', goalId, objective }` (2026-11-26), behind the dashboard auth, CSRF and owner gate (`resolveSelfActionKeyAndOwner`). The handler is `SlackHandler.handleHostGoalAction`; refusals are `HostGoalActionError` with the HTTP status: 400 invalid objective, 403 the author would be refused by the drain (`authorizeFollowupDispatch`, checked before anything is posted and again before the change), 404 no session, 409 closed or replaced session, or a stale `expect` (the goal is no longer where the card saw it), 502 the thread notice could not be posted (nothing changed), 503 the opening turn could not be admitted (rolled back).
 - **Semantics.** `add` goes through `enqueueOrActivateGoal` like the typed command. Deleting the current goal is `deleteGoalById`: the next queued goal is promoted and the deleted goal is not archived as complete. There is no dashboard `clear` — `goal clear` also drops the queue and history. The running turn is never cut.
 - **Order.** A thread notice is posted first (it anchors the opening turn's reactions; if it fails nothing changes), then the state is re-checked, mutated, persisted and the opening turn admitted in one synchronous step, exactly as for typed commands. For `add`, whether the goal starts or queues is only known after that await, so nothing before it depends on it: the author is checked unconditionally, the notice is neutral (`🎯 Goal added via dashboard`), and after the await the session identity and the author are re-checked; a queued result posts its position.
@@ -302,7 +352,7 @@ The dashboard goal list (`POST /api/dashboard/session/:key/goal`) takes tasks: t
 
 `SessionRegistry.saveSessions()` must persist sessions that have a `sessionId`, a `handoffContext`, a `goal`, a non-empty `goalQueue`, or a non-empty `goalHistory`. This preserves a goal set before the first model turn and the multi-goal queue/history across restarts. `migrateLegacyGoal` backfills `goalId` for goals persisted before the field existed.
 
-`resetSessionContext()` clears the goal because `/new` and `/renew` create a fresh logical conversation in the same Slack thread.
+`resetSessionContext()` clears the goal, its queue and its paused goals because `/new` and `/renew` create a fresh logical conversation in the same Slack thread (X10). The archive keeps the queue (X11). The judge's lease (`pendingEval`) is never written: a judge lives only in the process that runs it (D4).
 
 ## `/z` Surface
 

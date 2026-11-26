@@ -24,6 +24,7 @@ import {
 } from '@soma/slack/followup-queue';
 import { FOLLOWUP_RESTART_FREEZE_REASON, type FollowupQueueView } from '@soma/slack/followup-queue-blocks';
 import { FollowupQueueStore } from '@soma/slack/followup-queue-store';
+import type { GoalBoardRuntime } from '@soma/slack/goal/board';
 import { stopGoal } from '@soma/slack/goal/machine';
 import { phaseOf, slotGoalInFlight, slotHoldOf } from '@soma/slack/goal/read';
 import { OutputFlag } from '@soma/slack/output-flags';
@@ -9324,14 +9325,25 @@ export class SlackHandler {
     return this.slackApi;
   }
 
-  /**
-   * #929 — whether a host turn (a synthetic message) would start in this thread now rather than be dropped:
-   * no request running and no follow-up dispatch slot held, under the thread's key or the key a bot-thread
-   * migration moved its slot to — the same fence `handleMessage` applies to a synthetic event.
-   */
   /** .prd/39 S1 · D1 — the goal loop gate's question: is a turn preparing or running here. */
   isTurnHeld(sessionKey: string): boolean {
     return this.occupancy.turnHeld(sessionKey);
+  }
+
+  /**
+   * .prd/39 S6 — what the dashboard reads of this session's memory-only state to place its card: a turn held (S1 —
+   * the display may still read idle while a run prepares), someone driving it (S1 `driven`, or a goal drive the turn
+   * end deferred until the follow-ups drain or the slot frees), and a restart resume not yet run (S5).
+   */
+  goalBoardRuntimeOf(sessionKey: string): GoalBoardRuntime {
+    return {
+      turnHeld: this.occupancy.turnHeld(sessionKey),
+      driven:
+        this.occupancy.driven(sessionKey) ||
+        this.followupDeferredGoalSessions?.has(sessionKey) === true ||
+        this.followupSlotHeldGoalSessions?.has(sessionKey) === true,
+      resumePending: this.recovery.resumed.has(sessionKey),
+    };
   }
 
   /**
@@ -9347,6 +9359,11 @@ export class SlackHandler {
     if (cause === 'kick') (this.goalDriverKickOnRelease ??= new Set<string>()).add(sessionKey);
   }
 
+  /**
+   * #929 — whether a host turn (a synthetic message) would start in this thread now rather than be dropped:
+   * no request running and no follow-up dispatch slot held, under the thread's key or the key a bot-thread
+   * migration moved its slot to — the same fence `handleMessage` applies to a synthetic event.
+   */
   isHostTurnFree(channel: string, threadTs?: string): boolean {
     const sessionKey = this.resolveFollowupSessionKey({ channel, thread_ts: threadTs, ts: threadTs } as MessageEvent);
     if (!sessionKey) return false;
