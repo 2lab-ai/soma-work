@@ -20,10 +20,10 @@ import {
 } from '@soma/slack/followup-queue-blocks';
 import { parseFollowupQueueSnapshot } from '@soma/slack/followup-queue-store';
 import { getMetricsEmitter } from '../metrics/event-emitter';
+import { AnswerNotKeptError } from '../slack/actions/answer-not-kept';
 import { ChoiceActionHandler } from '../slack/actions/choice-action-handler';
 import { QueueHandler } from '../slack/commands/queue-handler';
 import { GoalLoopController } from '../slack/goal-loop-controller';
-import { AnswerNotKeptError } from '../slack/actions/answer-not-kept';
 import { ThreadSurface } from '../slack/thread-surface';
 import { SlackHandler } from '../slack-handler';
 import { userSettingsStore } from '../user-settings-store';
@@ -3037,6 +3037,8 @@ describe('SlackHandler — follow-up queue host', () => {
       // #1474 — an answer to the model's question the full queue did not keep is a failure its sender hears: the
       // answer handler took the question off the session, and gives it back on this error. A plain message ends as
       // above (the thread is told), without a throw.
+      // Refused at once: the thread's notice waits in Slack's line on its own, and does not hold the give-back.
+      addReaction.mockImplementationOnce(() => new Promise(() => undefined));
       await expect(
         scoped.handleMessage(message({ ts: '333.333', text: '1', questionAnswer: true } as any), say()),
       ).rejects.toThrow(AnswerNotKeptError);
@@ -3147,6 +3149,19 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(startWithContinuation.mock.calls.length).toBe(before);
       expect(items()).toHaveLength(queuedBefore + 1);
       expect(items().at(-1).message.ts).toBe('555.666');
+    });
+
+    it('refuses an answer to the model’s question it could not park, at once, so the question goes back (#1474)', async () => {
+      await parkOneAndGoIdle();
+      handler.prepareFollowupShutdown();
+      saveError = new Error('disk full');
+      addReaction.mockImplementationOnce(() => new Promise(() => undefined));
+
+      await expect(
+        handler.handleMessage(message({ ts: '555.888', text: '1', questionAnswer: true } as any), say()),
+      ).rejects.toThrow(AnswerNotKeptError);
+
+      saveError = undefined;
     });
 
     it('fails loud and keeps accepting work when the freeze cannot be persisted', async () => {
@@ -9166,6 +9181,29 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(registrySession.actionPanel.pendingQuestion).toEqual(singleQuestion());
     });
 
+    // #1474 round 2 (astra/fable): the answer handler recorded the answer — one chunk of a form leaves the others open.
+    it('T2 an answer the answer handler recorded closes nothing more: the form’s other chunks stay open', async () => {
+      const remaining = { kind: 'multi', turnId: 'turn-1', formIds: ['form-b'] };
+      registrySession.activityState = 'waiting';
+      registrySession.actionPanel = {
+        waitingForChoice: true,
+        pendingQuestion: singleQuestion(),
+        pendingChoice: remaining,
+      };
+      handlerAny.threadPanel.clearChoice.mockClear();
+
+      await handler.handleMessage(
+        message({ ts: '333.448', text: 'A?: 1. 빠른 수정', questionAnswer: true } as any),
+        say(),
+      );
+
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      expect(handlerAny.threadPanel.clearChoice).not.toHaveBeenCalled();
+      expect(registrySession.actionPanel.waitingForChoice).toBe(true);
+      expect(registrySession.actionPanel.pendingQuestion).toEqual(singleQuestion());
+      expect(registrySession.actionPanel.pendingChoice).toBe(remaining);
+    });
+
     // astra review P1 (second round): one answer per question across Slack AND the dashboard.
     describe('one answer per question across Slack and the dashboard', () => {
       const QUESTION_TS = 'q-msg';
@@ -9285,9 +9323,14 @@ describe('SlackHandler — follow-up queue host', () => {
 
         expect(dashboard.status).toBe('fulfilled');
         expect(startWithContinuation).toHaveBeenCalledTimes(1);
-        // #1474 — the dashboard answer took the question off the session before any Slack write: the click finds
-        // no question to answer and its message is marked as one that no longer holds.
-        expect(handlerAny.slackApi.updateMessage).toHaveBeenCalledWith(
+        // #1474 — the dashboard answer took the question off the session before any Slack write, and remembers its
+        // card: the click is told the question was answered, and the answered card is not marked invalid.
+        expect(handlerAny.slackApi.postEphemeral).toHaveBeenCalledWith(
+          CHANNEL,
+          'U_OWNER',
+          expect.stringContaining('이미 답변을 받았습니다'),
+        );
+        expect(handlerAny.slackApi.updateMessage).not.toHaveBeenCalledWith(
           CHANNEL,
           QUESTION_TS,
           expect.stringContaining('더 이상 유효하지 않습니다'),
@@ -9366,11 +9409,11 @@ describe('SlackHandler — follow-up queue host', () => {
         expect(startWithContinuation).toHaveBeenCalledTimes(1);
         expect(startWithContinuation.mock.calls[0][0]).toContain('anyone. 누구나');
         // #1474 — the dashboard answer took the whole question (its Slack forms with it) before any Slack write: the
-        // form submit finds its form gone and is told so.
+        // form submit is told the question was answered.
         expect(handlerAny.slackApi.postEphemeral).toHaveBeenCalledWith(
           CHANNEL,
           'U_OWNER',
-          expect.stringContaining('폼을 찾을 수 없습니다'),
+          expect.stringContaining('이미 답변을 받았습니다'),
         );
       });
     });

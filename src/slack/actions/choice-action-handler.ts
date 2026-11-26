@@ -3,7 +3,8 @@ import { isAdminUser } from '../../admin-utils';
 import type { ClaudeHandler } from '../../claude-handler';
 import { getInstructionApprovals } from '../../instruction-approval';
 import { Logger } from '../../logger';
-import type { ConversationSession, UserChoices } from '../../types';
+import type { ConversationSession, UserChoice, UserChoices } from '../../types';
+import { userSettingsStore } from '../../user-settings-store';
 import { ChoiceMessageBuilder } from '../choice-message-builder';
 import type { CompletionMessageTracker } from '../completion-message-tracker';
 import type { SlackApiHelper } from '../slack-api-helper';
@@ -19,6 +20,15 @@ const CUSTOM_INPUT_CHOICE_ID = '직접입력';
 
 /** Shown on Slack when the question it answers is already being answered (on the dashboard or another click). */
 const ANSWER_IN_PROGRESS_TEXT = '⏳ 이 질문은 이미 답변을 처리하고 있습니다.';
+
+/**
+ * #1474 — shown on Slack for a click on a question already answered, while its card still shows the buttons (the
+ * answer's edit waits in Slack's line).
+ */
+const ANSWER_TAKEN_TEXT = '✅ 이 질문은 이미 답변을 받았습니다 — 카드는 곧 갱신됩니다.';
+
+/** #1474 — how long an answered card or form is remembered: far past any Slack lag the edit could wait in. */
+const ANSWERED_MARK_TTL_MS = 6 * 60 * 60 * 1000;
 
 /** #767 — a single choice from someone who is not the owner waits for the owner's approval. */
 const CHOICE_HELD_FOR_OWNER_TEXT = '⏳ 이 작업의 소유자가 승인하면 답이 전달됩니다 — 소유자에게 승인을 요청했습니다.';
@@ -51,6 +61,8 @@ interface DashboardAnswerClaim {
 interface TakenQuestion {
   /** The session's activity clock right after the record: unmoved = no turn started or ended since. */
   recordedAt: ConversationSession['activityStateChangedAt'];
+  /** The session's state when the answer came: `idle` for a question recorded on an idle session (a goal decision). */
+  activityState: ConversationSession['activityState'];
   question: NonNullable<ConversationSession['actionPanel']>['pendingQuestion'];
   choice: NonNullable<ConversationSession['actionPanel']>['pendingChoice'];
   openBit: boolean | undefined;
@@ -109,6 +121,14 @@ export class ChoiceActionHandler {
    * handler instance, and a hold is taken synchronously before the first await.
    */
   private readonly answering = new Map<string, Set<AnswerHold>>();
+  /**
+   * #1474 — the Slack messages and forms of questions already answered (`${sessionKey}|${ts or formId}` → when), for
+   * as long as their buttons may still be pressed. The record takes a question off the session at once, but its card
+   * loses the buttons only when Slack's line reaches the edit — on a busy host an hour later (#1470). A click in
+   * between is a second answer that nothing on the session tells apart any more: a P3 click would read stale and
+   * mark the answered card invalid, a legacy click would answer again. Forgotten when the answer is given back.
+   */
+  private readonly answered = new Map<string, number>();
 
   constructor(
     private ctx: ChoiceActionContext,
@@ -164,6 +184,8 @@ export class ChoiceActionHandler {
 
       this.logger.info('User choice selected', { sessionKey, choiceId, label, userId });
 
+      if (await this.refuseAnswered(sessionKey, channel, userId, messageTs)) return;
+
       if (channel && messageTs && this.needsOwnerApproval(session, sessionKey, userId)) {
         await this.holdChoiceForOwner({
           userId,
@@ -206,15 +228,18 @@ export class ChoiceActionHandler {
         // The messages the card shows the question in — read before the record takes the choice off the session.
         const targets = channel ? this.resolveChoiceSyncMessageTs(sessionKey, messageTs, completionMessageTs) : [];
         // #1474 — recorded, then handed on, then drawn (answerQuestion).
-        await this.answerQuestion({
-          session,
-          sessionKey,
-          channel,
-          event: { user: userId, channel, thread_ts: threadTs, ts: messageTs, text: choiceId, questionAnswer: true },
-          draw: () => this.drawAnswered(session, sessionKey, channel, targets, completedText, completedBlocks),
-        }).catch((handlerError) =>
-          this.logger.error('Choice handler failed — the question is given back', { sessionKey, error: handlerError }),
-        );
+        try {
+          const outcome = await this.answerQuestion({
+            session,
+            sessionKey,
+            channel,
+            event: { user: userId, channel, thread_ts: threadTs, ts: messageTs, text: choiceId, questionAnswer: true },
+            card: { targets, text: completedText, blocks: completedBlocks },
+          });
+          if (outcome === 'already-answered') await this.tellAnswered(channel, userId);
+        } catch (handlerError) {
+          this.logger.error('Choice handler failed', { sessionKey, error: handlerError });
+        }
       } else {
         this.logger.warn('Session not found for user choice', { sessionKey });
         await this.ctx.slackApi.postEphemeral(
@@ -241,6 +266,8 @@ export class ChoiceActionHandler {
       const messageTs = body.message?.ts;
 
       this.logger.info('Multi-choice selection', { formId, questionId, choiceId, label, userId });
+
+      if (await this.refuseAnswered(sessionKey, channel, userId, formId, messageTs)) return;
 
       if (this.needsOwnerApproval(session, sessionKey, userId)) {
         // #767 — someone else may not change the owner's form: the owner would submit their answer as their own.
@@ -304,6 +331,8 @@ export class ChoiceActionHandler {
 
       this.logger.info('Edit choice requested', { formId, questionId, userId });
 
+      if (await this.refuseAnswered(sessionKey, channel, userId, formId, messageTs)) return;
+
       if (this.needsOwnerApproval(session, sessionKey, userId)) {
         // #767 — someone else may not change the owner's form: the owner would submit their answer as their own.
         if (channel && userId) await this.ctx.slackApi.postEphemeral(channel, userId, FORM_OWNER_ONLY_TEXT);
@@ -345,6 +374,8 @@ export class ChoiceActionHandler {
       const messageTs = body.message?.ts;
 
       this.logger.info('Form submit requested', { formId, userId });
+
+      if (await this.refuseAnswered(sessionKey, channel, userId, formId, messageTs)) return;
 
       if (this.needsOwnerApproval(session, sessionKey, userId)) {
         if (channel && userId) await this.ctx.slackApi.postEphemeral(channel, userId, FORM_OWNER_ONLY_TEXT);
@@ -452,6 +483,8 @@ export class ChoiceActionHandler {
 
       this.logger.info('Form reset requested', { formId, userId });
 
+      if (await this.refuseAnswered(sessionKey, channel, userId, formId, messageTs)) return;
+
       if (this.needsOwnerApproval(session, sessionKey, userId)) {
         // #767 — someone else may not change the owner's form: the owner would submit their answer as their own.
         if (channel && userId) await this.ctx.slackApi.postEphemeral(channel, userId, FORM_OWNER_ONLY_TEXT);
@@ -555,9 +588,9 @@ export class ChoiceActionHandler {
         ? [pendingForm.messageTs]
         : []
       : this.resolveChoiceSyncMessageTs(sessionKey, messageTs, pendingForm.messageTs || messageTs);
-    this.formStore.delete(pendingForm.formId);
 
     if (!session) {
+      this.formStore.delete(pendingForm.formId);
       // Nothing to answer on: the form's messages still lose their buttons.
       for (const targetTs of targets) {
         await this.ctx.slackApi
@@ -567,27 +600,29 @@ export class ChoiceActionHandler {
       return;
     }
 
-    // #1474 — recorded, then handed on, then drawn (answerQuestion); a failed hand-on gives the question back.
-    await this.answerQuestion({
-      session,
-      sessionKey,
-      channel,
-      event: {
-        user: userId,
-        channel,
-        thread_ts: resolvedThreadTs,
-        ts: messageTs,
-        text: combinedMessage,
-        questionAnswer: true,
-      },
-      remainingChoice,
-      draw: () => this.drawAnswered(session, sessionKey, channel, targets, '✅ 모든 선택 완료', completedBlocks),
-    }).catch((handlerError) =>
-      this.logger.error('Multi-choice handler failed — the question is given back', {
+    // #1474 — recorded, then handed on, then drawn (answerQuestion); a failed hand-on gives the question back, and
+    // the form with it.
+    try {
+      const outcome = await this.answerQuestion({
+        session,
         sessionKey,
-        error: handlerError,
-      }),
-    );
+        channel,
+        event: {
+          user: userId,
+          channel,
+          thread_ts: resolvedThreadTs,
+          ts: messageTs,
+          text: combinedMessage,
+          questionAnswer: true,
+        },
+        remainingChoice,
+        card: { targets, text: '✅ 모든 선택 완료', blocks: completedBlocks },
+        forms: [pendingForm],
+      });
+      if (outcome === 'already-answered') await this.tellAnswered(channel, userId);
+    } catch (handlerError) {
+      this.logger.error('Multi-choice handler failed', { sessionKey, error: handlerError });
+    }
   }
 
   /**
@@ -618,6 +653,8 @@ export class ChoiceActionHandler {
       const channel = body.channel?.id || session?.channelId;
       const messageTs = body.message?.ts;
       const isBlocked = typeof action.action_id === 'string' && action.action_id.includes('_blocked_');
+
+      if (await this.refuseAnswered(sessionKey, channel, userId, formId, messageTs)) return;
 
       if (this.needsOwnerApproval(session, sessionKey, userId)) {
         if (channel && userId) await this.ctx.slackApi.postEphemeral(channel, userId, FORM_OWNER_ONLY_TEXT);
@@ -924,7 +961,7 @@ export class ChoiceActionHandler {
     );
     // #1474 — recorded, then handed on, then drawn (answerQuestion); a failed hand-on gives the question back.
     try {
-      await this.answerQuestion({
+      const outcome = await this.answerQuestion({
         session,
         sessionKey,
         channel,
@@ -936,8 +973,9 @@ export class ChoiceActionHandler {
           text: turnText,
           questionAnswer: true,
         },
-        draw: () => this.drawAnswered(session, sessionKey, channel, targets, completedText, completedBlocks),
+        card: { targets, text: completedText, blocks: completedBlocks },
       });
+      if (outcome === 'already-answered') throw new Error('Session is not waiting for a choice');
     } catch (error) {
       this.logger.error('Error processing dashboard choice', { sessionKey, choiceId, error });
       throw error;
@@ -1040,11 +1078,11 @@ export class ChoiceActionHandler {
           if (form?.messageTs && !targets.includes(form.messageTs)) targets.push(form.messageTs);
         }
       }
-      // The whole question is answered here: every Slack form of it is done.
-      for (const [formId] of this.formStore.getFormsBySession(sessionKey)) this.formStore.delete(formId);
+      // The whole question is answered here: every Slack form of it is done (and comes back with a given-back answer).
+      const forms = [...this.formStore.getFormsBySession(sessionKey).values()];
       // #1474 — recorded, then handed on, then drawn (answerQuestion); a failed hand-on gives the question back.
       try {
-        await this.answerQuestion({
+        const outcome = await this.answerQuestion({
           session,
           sessionKey,
           channel,
@@ -1056,9 +1094,10 @@ export class ChoiceActionHandler {
             text: combinedMessage,
             questionAnswer: true,
           },
-          draw: () =>
-            this.drawAnswered(session, sessionKey, channel, targets, dashboardCompletedText, dashboardCompletedBlocks),
+          card: { targets, text: dashboardCompletedText, blocks: dashboardCompletedBlocks },
+          forms,
         });
+        if (outcome === 'already-answered') throw new Error('Session is not waiting for a choice');
       } catch (error) {
         this.logger.error('Error processing dashboard multi-choice', { sessionKey, error });
         throw error;
@@ -1147,7 +1186,7 @@ export class ChoiceActionHandler {
       return;
     }
     try {
-      await this.answerQuestion({
+      const outcome = await this.answerQuestion({
         session,
         sessionKey,
         channel,
@@ -1159,10 +1198,11 @@ export class ChoiceActionHandler {
           text: args.text,
           questionAnswer: true,
         },
-        draw: () => this.drawAnswered(session, sessionKey, channel, targets, args.completedText, args.completedBlocks),
+        card: { targets, text: args.completedText, blocks: args.completedBlocks },
       });
+      if (outcome === 'already-answered') await this.tellAnswered(channel, userId);
     } catch (handlerError) {
-      this.logger.error('Typed answer failed — the question is given back', { sessionKey, error: handlerError });
+      this.logger.error('Typed answer failed', { sessionKey, error: handlerError });
     } finally {
       this.endAnswerHold(sessionKey, hold);
     }
@@ -1174,7 +1214,8 @@ export class ChoiceActionHandler {
    * 1. Record, before any await (`recordAnswer`): the question stops being open and leaves the session, and the
    *    session reads `working`. A turn that asked and ends from here reads it answered, so its run does not settle
    *    `blocked: awaiting user choice` and lock the line again. A chunk of a form whose other chunks are still to
-   *    answer keeps the question open (`remainingChoice`).
+   *    answer keeps the question open (`remainingChoice`). The card's messages and the forms are remembered as
+   *    answered (a second click on them is refused) and the forms leave the store.
    * 2. Hand on, at once: the answer goes to the pipeline — into the queue behind a running turn, in the order it was
    *    given, or as the next turn. It does not wait for its Slack edits: Slack's one line ran an hour behind on a busy
    *    host (#1470), and an answer that waited there was in no queue, while the line behind it could move on.
@@ -1182,19 +1223,35 @@ export class ChoiceActionHandler {
    *    answer's turn posts, and are awaited after it. Drawing never changes the session: a question asked after this
    *    answer is never taken down by it.
    *
-   * A hand-on that throws gives the question back (`giveBackQuestion`) and rethrows.
+   * A hand-on that throws gives the question back (`giveBackQuestion`) — with its forms, its card drawn open again
+   * behind the answered drawing — and rethrows. A card or form already answered takes nothing: `already-answered`.
    */
   async answerQuestion(args: {
     session: ConversationSession;
     sessionKey: string;
     channel: string | undefined;
     event: MessageEvent;
-    draw: () => Promise<unknown>;
+    /** The card's messages (what is remembered as answered) and how they read once answered. */
+    card: { targets: string[]; text: string; blocks: any[] };
+    /** The Slack forms this answer takes (they leave the store, and come back if the answer is given back). */
+    forms?: PendingChoiceFormData[];
     /** A chunk of a form whose other chunks are still to answer: the choice record that remains open. */
     remainingChoice?: NonNullable<ConversationSession['actionPanel']>['pendingChoice'];
-  }): Promise<void> {
+  }): Promise<'handed-on' | 'already-answered'> {
+    const forms = args.forms ?? [];
+    const marks = [...args.card.targets, ...forms.map((form) => form.formId)];
+    if (this.wasAnswered(args.sessionKey, ...marks)) return 'already-answered';
     const taken = this.recordAnswer(args.session, args.sessionKey, args.remainingChoice);
-    const drawing = args.draw().catch((error: unknown) =>
+    const remembered = this.rememberAnswered(args.sessionKey, marks);
+    for (const form of forms) this.formStore.delete(form.formId);
+    const drawing = this.drawAnswered(
+      args.session,
+      args.sessionKey,
+      args.channel,
+      args.card.targets,
+      args.card.text,
+      args.card.blocks,
+    ).catch((error: unknown) =>
       this.logger.warn('Drawing an answered question failed', {
         sessionKey: args.sessionKey,
         error: (error as Error)?.message ?? String(error),
@@ -1203,11 +1260,27 @@ export class ChoiceActionHandler {
     try {
       await this.ctx.messageHandler(args.event, this.createSayFn(args.channel as string));
     } catch (error) {
-      this.giveBackQuestion(args.session, args.sessionKey, taken, error);
-      await drawing;
+      if (this.giveBackQuestion(args.session, args.sessionKey, taken, error)) {
+        this.forgetAnswered(remembered);
+        for (const form of forms) {
+          if (!this.formStore.get(form.formId)) this.formStore.set(form.formId, { ...form, submitting: false });
+        }
+        // Not awaited: the question is open again now, while Slack's line may still hold the answered drawing.
+        void drawing
+          .then(() =>
+            this.drawQuestionBack(args.session, args.sessionKey, args.channel, taken, args.card.targets, forms),
+          )
+          .catch((drawError: unknown) =>
+            this.logger.warn('Drawing a given-back question failed', {
+              sessionKey: args.sessionKey,
+              error: (drawError as Error)?.message ?? String(drawError),
+            }),
+          );
+      }
       throw error;
     }
     await drawing;
+    return 'handed-on';
   }
 
   /**
@@ -1223,6 +1296,7 @@ export class ChoiceActionHandler {
     const panel = session.actionPanel;
     const taken: TakenQuestion = {
       recordedAt: undefined,
+      activityState: session.activityState,
       question: panel?.pendingQuestion,
       choice: panel?.pendingChoice,
       openBit: panel?.waitingForChoice,
@@ -1257,24 +1331,24 @@ export class ChoiceActionHandler {
 
   /**
    * #1474 — an answer the pipeline did not take gives its question back as it was — open bit, recorded question,
-   * choice record — and the session waits on it again:
+   * choice record, and the session's state (`waiting`; `idle` for a question recorded on an idle session):
    * - the queue did not keep it (`AnswerNotKeptError`): whatever the turn that asked did meanwhile, the owner's
    *   question is still unanswered;
    * - or nothing moved since the record (the session's activity clock): the dispatch failed before a turn started.
    * A failure after the answer's own turn ran (the clock moved, and no queue refused it) does not offer the used
    * answer again. Nor is anything given back over a newer question the model asked since: that one is open, and
-   * this answer was not its answer.
+   * this answer was not its answer. True when the question was given back.
    */
   private giveBackQuestion(
     session: ConversationSession,
     sessionKey: string,
     taken: TakenQuestion,
     error: unknown,
-  ): void {
+  ): boolean {
     const panel = session.actionPanel;
     if (panel?.pendingQuestion !== undefined && panel.pendingQuestion !== taken.question) {
       this.logger.info('Answer not given back — the model asked a newer question since', { sessionKey });
-      return;
+      return false;
     }
     const notKept = error instanceof AnswerNotKeptError;
     const untouched = session.activityStateChangedAt === taken.recordedAt;
@@ -1283,7 +1357,7 @@ export class ChoiceActionHandler {
         sessionKey,
         activityState: session.activityState,
       });
-      return;
+      return false;
     }
     try {
       if (panel) {
@@ -1294,12 +1368,18 @@ export class ChoiceActionHandler {
         panel.choiceMessageLink = taken.choiceMessageLink;
         panel.choiceBlocks = taken.choiceBlocks;
       }
-      // The session waits on its question again: a click (or a form) is how it was answered, so it was waiting.
-      this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'waiting');
+      // Waiting on its question again — unless the question was recorded on an idle session (a goal's decision): it
+      // was idle, and is again.
+      this.ctx.claudeHandler.setActivityStateByKey(sessionKey, taken.activityState === 'idle' ? 'idle' : 'waiting');
       this.ctx.claudeHandler.getSessionRegistry?.()?.persistAndBroadcast?.(sessionKey);
     } catch (rollbackError) {
       this.logger.error('Failed to give an answer back', { sessionKey, rollbackError });
     }
+    this.logger.info('Answer given back — the question is open again', {
+      sessionKey,
+      reason: notKept ? (error as AnswerNotKeptError).reason : 'dispatch failed before a turn started',
+    });
+    return true;
   }
 
   /**
@@ -1325,6 +1405,120 @@ export class ChoiceActionHandler {
       .catch((err: unknown) => this.logger.debug('Failed to redraw the thread header', { sessionKey, error: err }));
     this.deleteCompletionMessages(session, sessionKey, channel);
     await Promise.all([...edits, header]);
+  }
+
+  /**
+   * #1474 — draw a given-back question open again, behind its answered drawing: each form it took gets its buttons
+   * (and the selections it had) back; a single question's card is rebuilt from the recorded question, with the P3
+   * turn its buttons carried. The thread header re-renders from the session, which holds the question again.
+   */
+  private async drawQuestionBack(
+    session: ConversationSession,
+    sessionKey: string,
+    channel: string | undefined,
+    taken: TakenQuestion,
+    targets: string[],
+    forms: PendingChoiceFormData[],
+  ): Promise<void> {
+    if (!channel) return;
+    const edits: Promise<unknown>[] = [];
+    if (forms.length > 0) {
+      for (const form of forms) {
+        if (!form.messageTs) continue;
+        const payload = UserChoiceHandler.buildMultiChoiceFormBlocks(
+          { type: 'user_choices', questions: form.questions },
+          form.formId,
+          sessionKey,
+          form.selections,
+        );
+        edits.push(
+          this.ctx.slackApi.updateMessage(
+            form.channel || channel,
+            form.messageTs,
+            '📋 선택이 필요합니다',
+            undefined,
+            payload.attachments,
+          ),
+        );
+      }
+    } else if (taken.question?.type === 'user_choice') {
+      const question = taken.question as UserChoice;
+      const turnId = taken.choice?.kind === 'single' ? taken.choice.turnId : undefined;
+      let theme: Parameters<typeof UserChoiceHandler.buildUserChoiceBlocks>[2];
+      try {
+        theme = session.ownerId ? userSettingsStore.getUserSessionTheme(session.ownerId) : undefined;
+      } catch {
+        theme = undefined;
+      }
+      const payload = UserChoiceHandler.buildUserChoiceBlocks(question, sessionKey, theme, turnId);
+      for (const targetTs of targets) {
+        edits.push(
+          this.ctx.slackApi.updateMessage(
+            channel,
+            targetTs,
+            question.question ?? '선택이 필요합니다',
+            payload.blocks,
+            payload.attachments ?? [],
+          ),
+        );
+      }
+    }
+    const header = this.ctx.threadPanel?.updatePanel?.(session, sessionKey);
+    const results = await Promise.allSettled([...edits, header]);
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        this.logger.warn('Failed to draw a given-back question', { sessionKey, error: result.reason });
+      }
+    }
+  }
+
+  /**
+   * #1474 — refuse a click on a card or form this handler already answered: the clicker is told, and nothing else
+   * happens — no stale mark over the answered card, no second answer. True when refused.
+   */
+  private async refuseAnswered(
+    sessionKey: string | undefined,
+    channel: string | undefined,
+    userId: string | undefined,
+    ...marks: (string | undefined)[]
+  ): Promise<boolean> {
+    if (!sessionKey || !this.wasAnswered(sessionKey, ...marks)) return false;
+    this.logger.info('Click refused — the question was already answered', { sessionKey });
+    await this.tellAnswered(channel, userId);
+    return true;
+  }
+
+  private async tellAnswered(channel: string | undefined, userId: string | undefined): Promise<void> {
+    if (!channel || !userId) return;
+    await this.ctx.slackApi.postEphemeral(channel, userId, ANSWER_TAKEN_TEXT).catch(() => undefined);
+  }
+
+  private wasAnswered(sessionKey: string, ...marks: (string | undefined)[]): boolean {
+    const now = Date.now();
+    return marks.some((mark) => {
+      if (!mark) return false;
+      const at = this.answered.get(`${sessionKey}|${mark}`);
+      return at !== undefined && now - at < ANSWERED_MARK_TTL_MS;
+    });
+  }
+
+  private rememberAnswered(sessionKey: string, marks: (string | undefined)[]): string[] {
+    const now = Date.now();
+    // Oldest first (insertion order): drop what has outlived any Slack lag.
+    for (const [key, at] of this.answered) {
+      if (now - at < ANSWERED_MARK_TTL_MS) break;
+      this.answered.delete(key);
+    }
+    const keys = [...new Set(marks.filter((mark): mark is string => !!mark))].map((mark) => `${sessionKey}|${mark}`);
+    for (const key of keys) {
+      this.answered.delete(key);
+      this.answered.set(key, now);
+    }
+    return keys;
+  }
+
+  private forgetAnswered(keys: string[]): void {
+    for (const key of keys) this.answered.delete(key);
   }
 
   /** Delete the turn's tracked completion messages (S8), never the thread root (the header). Fire-and-forget. */

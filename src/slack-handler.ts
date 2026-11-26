@@ -38,7 +38,6 @@ import type { SessionLinks } from 'somalib/model-commands/session-types';
 import { keysInText, WORK_KEYS_MAX } from 'somalib/work-queue/keys';
 import { getAdminUsers, isAdminUser } from './admin-utils';
 import { taskDirectoryFor } from './agent-runtime/execution-context';
-import { AnswerNotKeptError } from './slack/actions/answer-not-kept';
 import type { ContinuationHandler, TurnRunnerSurface } from './agent-session';
 import { isAwaitingUserChoice, TurnRunner, V1QueryAdapter } from './agent-session';
 import type { ClaudeHandler } from './claude-handler';
@@ -112,6 +111,7 @@ import {
   ToolTracker,
   withoutHostOnlyFields,
 } from './slack';
+import { AnswerNotKeptError } from './slack/actions/answer-not-kept';
 import {
   type CancelSteeredOutcome,
   CANCEL_STEERED_DELIVERED_TEXT as FOLLOWUP_CANCEL_ALREADY_DELIVERED_TEXT,
@@ -3158,8 +3158,12 @@ export class SlackHandler {
 
       // Only the user's own word completes the choice; a host turn (an epic's wake, a goal continuation)
       // leaves the choice the owner has to make where it is (#854, review #872 R2 astra).
+      // #1474 — an answer the answer handler handed on was recorded there: the question it answered is already off
+      // the session — or, for one chunk of a form, only that chunk is. What is open now (the form's other chunks, or
+      // a question the model asked since) is not this message's to close.
+      const answerRecorded = event.questionAnswer === true;
       const hasPendingChoice = sessionResult.session.actionPanel?.waitingForChoice === true;
-      if (hasPendingChoice && userWord) {
+      if (hasPendingChoice && userWord && !answerRecorded) {
         await this.threadPanel?.clearChoice(sessionResult.sessionKey);
         // Treat direct user message as completing manual input from choice UI.
         this.claudeHandler.setActivityStateByKey(sessionResult.sessionKey, 'working');
@@ -3171,7 +3175,7 @@ export class SlackHandler {
       // question: a host turn (synthetic, or a post-compaction replay of one —
       // `routeContext.hostTurn`) and a maintenance turn (`/compact`, forwarded
       // to the SDK as a local slash command) — `userWord` above.
-      if (userWord && sessionResult.session.actionPanel?.pendingQuestion) {
+      if (userWord && !answerRecorded && sessionResult.session.actionPanel?.pendingQuestion) {
         sessionResult.session.actionPanel.pendingQuestion = undefined;
       }
       // #911 — and the drain the question paused reopens with it.
@@ -5325,10 +5329,23 @@ export class SlackHandler {
   /**
    * #1474 — the owner's answer to the model's question that the queue could not keep is a failure its sender must
    * hear: the answer handler already took the question off the session, and gives it back when the hand-on throws.
-   * Any other message ends here as before — the thread was told it was not kept.
+   * It is refused at once — the notice runs on its own. Any other message ends here as before, after the thread
+   * was told it was not kept.
    */
-  private refuseUnkeptAnswer(event: MessageEvent, reason: string): void {
-    if (event.questionAnswer === true) throw new AnswerNotKeptError(reason);
+  private async refuseFollowup(event: MessageEvent, reason: string, notify: () => Promise<unknown>): Promise<void> {
+    if (event.questionAnswer !== true) {
+      await notify();
+      return;
+    }
+    // The refusal does not wait for Slack's line: the question goes back to the session now, and the thread hears
+    // it was not kept when the line gets there (round 2, astra/fable).
+    void notify().catch((error: unknown) =>
+      this.logger.warn('Refusal notice for an unkept answer failed', {
+        reason,
+        error: (error as Error)?.message ?? String(error),
+      }),
+    );
+    throw new AnswerNotKeptError(reason);
   }
 
   private async enqueueFollowup(sessionKey: string, event: MessageEvent, say: any): Promise<void> {
@@ -5345,14 +5362,16 @@ export class SlackHandler {
         ...this.followupCounts(sessionKey),
         reason: 'queue_degraded',
       });
-      await this.slackApi.addReaction(event.channel, event.ts, 'warning');
-      await this.slackApi.postSystemMessage(
-        event.channel,
-        `⚠️ 큐를 사용할 수 없어 이 메시지를 보관하지 못했습니다 — ${this.followupDegradedReason ?? 'queue unavailable'}\n` +
-          '_실행 중인 턴이 끝난 뒤 다시 보내주세요._',
-        { threadTs },
-      );
-      this.refuseUnkeptAnswer(event, 'queue_degraded');
+      const degradedReason = this.followupDegradedReason ?? 'queue unavailable';
+      await this.refuseFollowup(event, 'queue_degraded', async () => {
+        await this.slackApi.addReaction(event.channel, event.ts, 'warning');
+        await this.slackApi.postSystemMessage(
+          event.channel,
+          `⚠️ 큐를 사용할 수 없어 이 메시지를 보관하지 못했습니다 — ${degradedReason}\n` +
+            '_실행 중인 턴이 끝난 뒤 다시 보내주세요._',
+          { threadTs },
+        );
+      });
       return;
     }
 
@@ -5368,13 +5387,14 @@ export class SlackHandler {
         ...this.followupCounts(sessionKey),
         reason: 'persist_failed',
       });
-      await this.slackApi.addReaction(event.channel, event.ts, 'warning');
-      await this.slackApi.postSystemMessage(
-        event.channel,
-        `❌ 큐 저장에 실패해 이 메시지를 보관하지 못했습니다 — ${detail}\n_다시 보내주세요._`,
-        { threadTs },
-      );
-      this.refuseUnkeptAnswer(event, 'persist_failed');
+      await this.refuseFollowup(event, 'persist_failed', async () => {
+        await this.slackApi.addReaction(event.channel, event.ts, 'warning');
+        await this.slackApi.postSystemMessage(
+          event.channel,
+          `❌ 큐 저장에 실패해 이 메시지를 보관하지 못했습니다 — ${detail}\n_다시 보내주세요._`,
+          { threadTs },
+        );
+      });
       return;
     }
 
@@ -5386,13 +5406,15 @@ export class SlackHandler {
         uncertainCount: this.followupCounts(sessionKey).uncertainCount,
         reason: 'capacity',
       });
-      await this.slackApi.addReaction(event.channel, event.ts, 'warning');
-      await this.slackApi.postSystemMessage(
-        event.channel,
-        `⚠️ 큐가 가득 찼습니다 (${result.pending}/${result.capacity}) — 이 메시지는 보관되지 않았습니다.`,
-        { threadTs },
-      );
-      this.refuseUnkeptAnswer(event, 'capacity');
+      const { pending, capacity } = result;
+      await this.refuseFollowup(event, 'capacity', async () => {
+        await this.slackApi.addReaction(event.channel, event.ts, 'warning');
+        await this.slackApi.postSystemMessage(
+          event.channel,
+          `⚠️ 큐가 가득 찼습니다 (${pending}/${capacity}) — 이 메시지는 보관되지 않았습니다.`,
+          { threadTs },
+        );
+      });
       return;
     }
 
@@ -6884,29 +6906,38 @@ export class SlackHandler {
       }
     };
 
-    const reaction = await attempt('reaction', () =>
-      this.slackApi.addReaction(event.channel, event.ts, parked ? 'inbox_tray' : 'warning'),
-    );
-    const notice = await attempt('notice', () =>
-      this.slackApi.postSystemMessage(
-        event.channel,
-        parked
-          ? '📥 재시작 준비 중이라 지금 실행하지 못했습니다 — Queue에 보관했습니다. 재시작 후 Queue에서 `Resume`을 눌러주세요.'
-          : '⚠️ 재시작 준비 중이라 이 메시지를 받지 못했습니다 — 잠시 후 다시 보내주세요.',
-        { threadTs },
-      ),
-    );
+    const tell = async (): Promise<void> => {
+      const reaction = await attempt('reaction', () =>
+        this.slackApi.addReaction(event.channel, event.ts, parked ? 'inbox_tray' : 'warning'),
+      );
+      const notice = await attempt('notice', () =>
+        this.slackApi.postSystemMessage(
+          event.channel,
+          parked
+            ? '📥 재시작 준비 중이라 지금 실행하지 못했습니다 — Queue에 보관했습니다. 재시작 후 Queue에서 `Resume`을 눌러주세요.'
+            : '⚠️ 재시작 준비 중이라 이 메시지를 받지 못했습니다 — 잠시 후 다시 보내주세요.',
+          { threadTs },
+        ),
+      );
+      if (parkFailure) {
+        this.logger.error('Message NOT stored during shutdown preparation', {
+          sessionKey,
+          channel: event.channel,
+          ts: event.ts,
+          parkFailure,
+          reaction,
+          notice,
+        });
+      }
+    };
 
-    if (parkFailure) {
-      this.logger.error('Message NOT stored during shutdown preparation', {
-        sessionKey,
-        channel: event.channel,
-        ts: event.ts,
-        parkFailure,
-        reaction,
-        notice,
-      });
+    // #1474 — an answer to the model's question that was not stored is refused to its sender at once: the question
+    // goes back to the session (and is saved with it), so the owner can answer it after the restart.
+    if (!parked && event.questionAnswer === true) {
+      void tell();
+      throw new AnswerNotKeptError(parkFailure ? 'shutdown_park_failed' : 'shutdown');
     }
+    await tell();
   }
 
   /**

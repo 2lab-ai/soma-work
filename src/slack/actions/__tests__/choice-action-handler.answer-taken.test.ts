@@ -218,7 +218,10 @@ describe('ChoiceActionHandler — recorded, handed on, then drawn (#1474)', () =
     });
     await Promise.resolve();
 
-    expect(messageHandler).toHaveBeenCalledWith(expect.objectContaining({ questionAnswer: true }), expect.any(Function));
+    expect(messageHandler).toHaveBeenCalledWith(
+      expect.objectContaining({ questionAnswer: true }),
+      expect.any(Function),
+    );
     expect(session.actionPanel.waitingForChoice).toBe(false);
     expect(turnEndingNowWaits()).toBe(false);
 
@@ -262,6 +265,121 @@ describe('ChoiceActionHandler — recorded, handed on, then drawn (#1474)', () =
     expect(session.actionPanel.pendingQuestion).toBeUndefined();
     expect(session.actionPanel.pendingChoice).toBeUndefined();
     expect(messageHandler).toHaveBeenCalledTimes(2);
+  });
+
+  it('a second click on a P3 card while its edit waits sends nothing and does not mark the answered card stale', async () => {
+    session.actionPanel.pendingChoice = { kind: 'single', turnId: 'turn-1', choiceTs: 'q-ts', formIds: [] };
+    const p3 = (choiceId: string) => ({
+      actions: [
+        {
+          value: JSON.stringify({
+            sessionKey: KEY,
+            choiceId,
+            label: '진행',
+            question: QUESTION.question,
+            turnId: 'turn-1',
+          }),
+        },
+      ],
+      user: { id: 'U1' },
+      channel: { id: 'C1' },
+      message: { ts: 'q-ts' },
+    });
+
+    const first = handler.handleUserChoice(p3('1'));
+    await Promise.resolve();
+    // The owner sees no change on the card (Slack's line is behind) and presses again — another option, even.
+    await handler.handleUserChoice(p3('2'));
+
+    expect(messageHandler).toHaveBeenCalledTimes(1);
+    const staleMarks = slackApi.updateMessage.mock.calls.filter((call: any[]) => String(call[2]).includes('유효하지'));
+    expect(staleMarks).toHaveLength(0);
+    expect(slackApi.postEphemeral).toHaveBeenCalledWith('C1', 'U1', expect.stringContaining('이미 답변을 받았습니다'));
+
+    slackWrite.release();
+    await first;
+  });
+
+  it('a second click on a legacy card (no turn on its buttons) is not a second answer', async () => {
+    const first = handler.handleUserChoice(button('1'));
+    await Promise.resolve();
+    await handler.handleUserChoice(button('2'));
+
+    expect(messageHandler).toHaveBeenCalledTimes(1);
+    expect(messageHandler).toHaveBeenCalledWith(expect.objectContaining({ text: '1' }), expect.any(Function));
+    expect(slackApi.postEphemeral).toHaveBeenCalledWith('C1', 'U1', expect.stringContaining('이미 답변을 받았습니다'));
+
+    slackWrite.release();
+    await first;
+  });
+
+  it('a given-back answer draws the card open again behind the answered drawing, and the card answers again', async () => {
+    messageHandler.mockRejectedValueOnce(new AnswerNotKeptError('capacity'));
+
+    await handler.handleUserChoice(button('1'));
+    // The question is back before Slack's line drew anything.
+    expect(session.actionPanel.pendingQuestion).toBe(QUESTION);
+    expect(slackApi.updateMessage).toHaveBeenCalledTimes(1); // the answered drawing, still waiting
+
+    slackWrite.release();
+    await vi.waitFor(() => expect(slackApi.updateMessage).toHaveBeenCalledTimes(2));
+    const [, ts, text, ...payload] = slackApi.updateMessage.mock.calls[1];
+    expect(ts).toBe('q-ts');
+    expect(text).toBe(QUESTION.question);
+    expect(JSON.stringify(payload)).toContain('"type":"button"');
+
+    // Not remembered as answered any more: the owner answers it again.
+    await handler.handleUserChoice(button('2'));
+    expect(messageHandler).toHaveBeenCalledTimes(2);
+    expect(messageHandler).toHaveBeenLastCalledWith(expect.objectContaining({ text: '2' }), expect.any(Function));
+  });
+
+  it('a given-back form answer puts the form back in the store and its message gets its buttons back', async () => {
+    formStore.set('form-1', {
+      formId: 'form-1',
+      sessionKey: KEY,
+      channel: 'C1',
+      threadTs: 'root',
+      messageTs: 'form-ts',
+      questions: [{ id: 'q1', question: '전략?', choices: [{ id: '1', label: '빠른 수정' }] }],
+      selections: { q1: { choiceId: '1', label: '빠른 수정' } },
+      createdAt: Date.now(),
+    });
+    slackWrite.release();
+    messageHandler.mockRejectedValueOnce(new AnswerNotKeptError('persist_failed'));
+
+    await handler.handleFormSubmit({
+      actions: [{ value: JSON.stringify({ formId: 'form-1', sessionKey: KEY }) }],
+      user: { id: 'U1' },
+      channel: { id: 'C1' },
+      message: { ts: 'form-ts' },
+    });
+
+    expect(formStore.get('form-1')).toMatchObject({ formId: 'form-1', submitting: false });
+    await vi.waitFor(() =>
+      expect(slackApi.updateMessage).toHaveBeenCalledWith(
+        'C1',
+        'form-ts',
+        '📋 선택이 필요합니다',
+        undefined,
+        expect.any(Array),
+      ),
+    );
+    expect(session.actionPanel.pendingQuestion).toBe(QUESTION);
+  });
+
+  it('an answer to a question recorded on an idle session (a goal decision) is given back idle', async () => {
+    session.activityState = 'idle';
+    session.actionPanel.waitingForChoice = false;
+    slackWrite.release();
+    messageHandler.mockRejectedValueOnce(new AnswerNotKeptError('capacity'));
+
+    await expect(handler.handleChoiceFromDashboard(KEY, '1', '진행', QUESTION.question, 'U1')).rejects.toThrow(
+      AnswerNotKeptError,
+    );
+
+    expect(session.activityState).toBe('idle');
+    expect(session.actionPanel.pendingQuestion).toBe(QUESTION);
   });
 
   it('a click on an older question takes nothing: the open question stays open', async () => {

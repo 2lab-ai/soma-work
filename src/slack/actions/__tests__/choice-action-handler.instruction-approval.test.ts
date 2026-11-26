@@ -187,9 +187,9 @@ describe('ChoiceActionHandler — an admin answering a question asked for admins
     expect(allows).not.toHaveBeenCalled();
     expect(onClaimed).toHaveBeenCalledTimes(1);
     // #1474 — drawn by the answer itself (no resolveChoice): the card names the admin who answered.
-    expect(slackApi.updateMessage.mock.calls.some((c: unknown[]) => String(c[2]).includes('대시보드 · <@U_ADMIN>'))).toBe(
-      true,
-    );
+    expect(
+      slackApi.updateMessage.mock.calls.some((c: unknown[]) => String(c[2]).includes('대시보드 · <@U_ADMIN>')),
+    ).toBe(true);
     expect(messageHandler).toHaveBeenCalledWith(
       expect.objectContaining({ user: 'U_OWNER', text: '1\n\n(관리자 <@U_ADMIN>가 대시보드 관리자 승인에서 답함)' }),
       expect.any(Function),

@@ -818,7 +818,10 @@ describe('ChoiceActionHandler — P3 (PHASE>=3) classifyClick', () => {
     );
     expect(threadPanel.resolveChoice).not.toHaveBeenCalled();
     expect(claudeHandler.setActivityStateByKey).toHaveBeenCalledWith(sessionKey, 'working');
-    expect(messageHandler).toHaveBeenCalledWith(expect.objectContaining({ questionAnswer: true }), expect.any(Function));
+    expect(messageHandler).toHaveBeenCalledWith(
+      expect.objectContaining({ questionAnswer: true }),
+      expect.any(Function),
+    );
   });
 
   it('payload turnId + no pendingChoice → stale (not legacy)', async () => {
@@ -950,7 +953,9 @@ describe('ChoiceActionHandler — P3 (PHASE>=3) classifyClick', () => {
       await expect(handler.handleChoiceFromDashboard(sessionKey, '2', 'B', 'Q?', 'U1')).rejects.toThrow('send failed');
 
       expect(session.actionPanel.pendingQuestion).toBe(question);
-      expect(session.activityState).toBe('waiting');
+      // #1474 — given back as it was: a question waited on is waited on again; one recorded on an idle session (the
+      // goal's cap decision shows it) is idle again.
+      expect(session.activityState).toBe(activity);
       const persists = sessionRegistry.persistAndBroadcast.mock.invocationCallOrder;
       expect(persists[persists.length - 1], 'the restored question is saved').toBeGreaterThan(
         messageHandler.mock.invocationCallOrder[0],
@@ -1005,7 +1010,7 @@ describe('ChoiceActionHandler — P3 (PHASE>=3) classifyClick', () => {
       ).rejects.toThrow('send failed');
 
       expect(session.actionPanel.pendingQuestion).toBe(multi);
-      expect(session.activityState).toBe('waiting');
+      expect(session.activityState).toBe('idle'); // #1474 — as it was answered from
       const persists = sessionRegistry.persistAndBroadcast.mock.invocationCallOrder;
       expect(persists[persists.length - 1]).toBeGreaterThan(messageHandler.mock.invocationCallOrder[0]);
     });
