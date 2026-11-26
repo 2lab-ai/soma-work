@@ -61,3 +61,36 @@ Loop: ./loop.md · Each round close appends one block at the bottom; nothing abo
 ### Round section (as it was in loop.md)
 
 라운드 3 — 고객 dev 호스트에서 켜기. 소유자 dev 호스트는 라운드 2에서 실측을 통과했다(loop.done.md R2). 남은 것은 고객 dev 호스트 하나였다. 설정은 2026-11-19에 넣었고(백업 · 권한 600 유지), 코드는 2026-11-20 19:00 KST 정기 배포로 들어갔다. 2026-11-26 원장을 읽어 확인했다(위 행). 같은 날 대화 기록에서 v1이 풀지 못한 일을 찾았다: 그 호스트의 실제 QA 레인은 환경 유저의 개인 스킬이 직접 잡는 파일 잠금이라 바쁘면 한 줄로 끝나고 아무도 다시 부르지 않는다(2026-11-24 00:53Z · 2026-11-25 13:14Z) — v2(SSOT_4–5, 라운드 4)의 출발점.
+
+## R4 — closed 2026-11-26
+
+- measured 7✅ · result: v2 merged (one line core, lanes by name with no configuration, `queue_try`, same work fails fast in the personal queue, the 작업 큐 section under the CRON lane with `작업 큐 | 개인별 큐`, admin hands, one-at-a-time history) and live on the owner dev host; A12–A16 observed with real sessions, screenshots, ledger and host log; live QA found three gaps, fixed in https://github.com/2lab-ai/soma-work/pull/1450 · closed rows: W10–W16 · commit/PR: https://github.com/2lab-ai/soma-work/pull/1446 (`46cccaf3`), https://github.com/2lab-ai/soma-work/pull/1447 (`0afa18d2`), https://github.com/2lab-ai/soma-work/pull/1450 (`100871b9`)
+
+### Closed rows
+
+| ID | 작업 단위 | Status | 증거 |
+|---|---|---|---|
+| W10 | 줄 규칙 `line.ts` · 레인 원장 v2(이름으로 생기는 레인 · try · putFirst · 내역 · v1 이전) · `keysInText` | ✅ | somalib 64 GREEN. 실측: 배포 직후 v1 원장(`qa:dev`, 11-19 항목 3개)이 `qa-dev` 레인 내역으로 읽혔다 |
+| W11 | MCP `queue_try` · 설정 없는 레인 · 고정 레인 | ✅ | MCP 14 GREEN. 실측 A12 · A13(아래 시각표) |
+| W12 | 호스트 `manage` · `views` · `/api/dashboard/work-queues` GET · POST | ✅ | host 28 · 보기 2 · 라우트 4 GREEN. 실측 A16: 관리자 모드 꺼짐 403, `돌려놓기` → 다음 차례 깨움 |
+| W13 | 개인 큐: 키 · 같은 작업 거절 · 그래도 시작 · 내역 · `lineView` | ✅ | 개인 큐 · 인그레스 · Slack GREEN. 실측 A14(거절 · 일부 겹침 진행 · 대기 · 한도 원복 자동 시작). `그래도 시작` 실클릭은 loop.md W17 |
+| W14 | 보드 작업 큐 칸(작업 큐 \| 개인별 큐) · 대기 카드 이동 · 24시간 막대 · 설정 탭 내역 | ✅ | 클라이언트 14 · 설정 20 GREEN. 실측 A15 캡처. 실측이 찾은 틈 3개(대기 카드의 관리자 버튼 없음 · 설정 내역의 `admin:U…` · 개인 큐 거절 이유 영어)는 #1450 |
+| W15 | 소비자: `deploy.prompt` · `deploy-qa` 이름 · 공통 규칙(바쁜 레인 = 줄 서기) | ✅ | prompt-builder 49 · 예산 21 · deploy-qa 64 GREEN. 실측: 테스트 세션이 `queued`면 한 줄 쓰고 턴을 끝냈고 차례에 깨워져 이어 갔다 |
+| W16 | 실측: 소유자 dev 호스트 배포 → A12–A16 | ✅ | v0.3.123-dev(`0afa18d2`)에서 A12–A16, #1450 재배포 뒤 `먼저 진행` 재실측 — 아래 시각표 |
+
+### Round section (as it was in loop.md)
+
+라운드 4 — v2 실측. 소유자 dev 호스트 v0.3.123-dev(`0afa18d2`, 배포 job runner = 그 호스트, Verify 통과, 재시작 뒤 세션 4개 시작 · 거절 0), 2026-11-26 UTC. 테스트 세션은 대시보드 새 작업(autogoal · autoz 끔, 일반 채널):
+
+- 04:15:32 A12 — 이 작업 세션이 `queue_enter {queue: "qa-wq-probe", keys: ["WQ-901"]}` → `running`, `created: true`(설정 없음, `wq-4`).
+- 04:16:20 A13 — 테스트 A의 `queue_try qa-wq-probe [WQ-902]` → `busy`, 앞 = `wq-4`(WQ-901). `queue_list`: 원장 그대로(대기 0).
+- 04:17:48 A12 — 테스트 B가 이름을 `qa:wq-probe` 그대로 `queue_enter` → 같은 레인 `queued` #1(`wq-5`). 04:18:30 테스트 C `[WQ-904]` → #2(`wq-6`). 둘 다 한 줄 쓰고 턴을 끝냈다.
+- 04:19 A15 — 보드: B · C 카드가 보드 칸(`kanban` 데이터)에 없고 작업 큐 칸 `qa-wq-probe` 상자에 `큐 대기 · qa-wq-probe · #1/#2`로 있다. 탭 배지 `작업 큐 2`.
+- 04:24 A16 — 관리자 모드 꺼짐: `POST …/wq-6/first` → 403 "관리자 모드를 켠 관리자만…", 버튼 0개. 켜면 진행 줄에 `돌려놓기`. 대기 카드에는 `먼저 진행`이 없었다 → 원인: 세션 카드 본문은 페이지가 그리는 slot이라 element의 data `actions`가 그려지지 않는다 → #1450.
+- 04:34:44 A16 — 관리자 `돌려놓기`(진행 줄 버튼) → 호스트 로그 `Work queue entry managed by an admin {wq-4, release}` · `Work queue turn came — waking the holder {wq-5}`, 이 스레드에 `⏹ 작업 큐 qa-wq-probe 차례를 돌려놓았습니다 (wq-4 · 관리자가 돌려놓음)`. 04:35:00 B "B 완료 (WQ-903)"(`queue_done`) → 04:34:55 `waking {wq-6}` → 04:35:27 C "C 완료 (WQ-904)". 사람 입력 0.
+- 내역(보드 · 설정 표): `wq-4` 04:15:32→04:34:44 돌려놓음(관리자) · `wq-5` 04:34:44→04:34:53 완료 · `wq-6` 04:34:53→04:35:23 완료 — 앞 항목이 끝난 뒤에만 다음이 시작, 24시간 막대 겹침 없음.
+- 04:38:22 A13 — 빈 레인 `queue_try qa-wq-try [WQ-910]` → `running`, `created`; `queue_done` → `done`.
+- 04:39:32 A14 — 테스트 D(`WQ-905`, 150초 작업) 진행 중 테스트 E "WQ-905 다시 해줘" → 1초 만에 `⛔ 같은 작업이라 시작하지 않았습니다`(D 스레드 링크, `그래도 시작` 버튼, 30분), 로그 `the same work is already running or waiting — not started`, 개인 내역 `refused`. 04:41:19 테스트 F "WQ-905 and WQ-906"(키 하나만 겹침) → 정상 진행.
+- 04:42:03–04:42:18 A15(개인) — Z의 한도를 15초간 1로: 테스트 G가 개인별 큐 #1로 대기(보드 칸에 없음, 개인별 큐 탭에 카드 · `다음 차례 — … 끝나면 바로 시작`), 한도 원복 즉시 시작 → 04:42:51 "G 시작".
+- 테스트 카드 A–G는 대시보드에서 닫았다. 화면 캡처는 작업 스레드(Slack)에 남겼다.
+- #1450 재배포(v0.3.125-dev, `100871b9`) 뒤, 05:11–05:16: 이 세션 `qa-wq-probe [WQ-920]` 진행(`wq-8`), 테스트 H `[WQ-921]` #1(`wq-9`) · I `[WQ-922]` #2(`wq-10`). 관리자 모드로 I 카드를 펼치면 액션 바 = `먼저 진행 · 대기에서 빼기 · 중지 · Slack`. 05:14:09 `먼저 진행` → 로그 `managed by an admin {wq-10, first}`, 대기 = `wq-10 #1 · wq-9 #2`. 05:15:23 `queue_done wq-8` → `waking {wq-10}` → 05:15:34 "I 완료" → 05:15:32 `waking {wq-9}` → 05:15:41 "H 완료". 설정 표: `wq-4 … 돌려놓음 관리자`. 테스트 J(이 세션이 쥔 `2lab-ai/soma-work#1445`) → ⛔, 개인 내역 이유 `same-work` = "같은 키가 다른 스레드에서 진행 중이거나 대기 중"(#1450 전 기록은 영어 문장 그대로 남는다). 카드 정리 · 관리자 모드 원복.
