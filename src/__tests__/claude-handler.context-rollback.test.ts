@@ -28,7 +28,7 @@ vi.mock('../agent-runtime/claude-code/build-stream-options', () => ({
   })),
 }));
 
-import { decodeContextAnchor, encodeContextAnchor } from '@soma/slack/context-anchor';
+import { decodeContextAnchor, encodeContextAnchor, turnStartAnchor } from '@soma/slack/context-anchor';
 import { ClaudeHandler } from '../claude-handler';
 import type { McpManager } from '../mcp-manager';
 import { asSdkQuery } from '../test-utils/fake-sdk-query';
@@ -175,6 +175,106 @@ describe('ClaudeHandler — context rollback', () => {
     expect(session.contextRewinds).toEqual([earlier]);
     expect(session.contextAnchor).toBe(anchorOf(9));
     expect(markRewoundTurnsMock).not.toHaveBeenCalled();
+  });
+
+  // #1473 — the loop runs ahead of the renderer, which is what counts a compaction (`session.compactionCount`): the loop
+  // counts the boundaries it handled itself, so a cut point right after one carries the new epoch.
+  it('a cut point right after a compaction carries the new epoch, though nothing has counted it on the session yet', async () => {
+    const session: any = { sessionId: SID, compactionCount: 0, ownerId: 'U1', channelId: 'C1', threadTs: '1.1' };
+    installTurn((opening) => [
+      { type: 'system', subtype: 'init', session_id: SID, model: 'claude-test', tools: [] },
+      { type: 'system', subtype: 'compact_boundary', session_id: SID, compact_metadata: { trigger: 'auto' } },
+      { type: 'assistant', uuid: U(20), message: { content: [{ type: 'text', text: 'after the compaction' }] } },
+      result(opening),
+    ]);
+    const handler = new ClaudeHandler({ getPluginManager: () => null } as unknown as McpManager);
+    await drain(handler, session);
+
+    // The loop owns the count too (a rollback compares an anchor's epoch with it): no reader counted anything here.
+    expect(session.compactionCount).toBe(1);
+    expect(decodeContextAnchor(session.contextAnchor)).toMatchObject({ uuid: U(20), epoch: 1 });
+  });
+
+  // #1473 round 1 (astra): a work-log entry is made as its frame is drawn — it carries that frame's cut point, not the
+  // one the loop reached since.
+  it('the anchor a frame is drawn under is that frame’s, while the loop has moved past it', async () => {
+    const session: any = { sessionId: SID, compactionCount: 0, ownerId: 'U1', channelId: 'C1', threadTs: '1.1' };
+    installTurn((opening) => [
+      { type: 'system', subtype: 'init', session_id: SID, model: 'claude-test', tools: [] },
+      { type: 'assistant', uuid: U(30), message: { content: [{ type: 'text', text: 'first' }] } },
+      { type: 'assistant', uuid: U(31), message: { content: [{ type: 'text', text: 'second' }] } },
+      result(opening),
+    ]);
+    const handler = new ClaudeHandler({ getPluginManager: () => null } as unknown as McpManager);
+    const it = handler.streamQuery('hi', session, undefined, undefined, SLACK, 'C1:1.1')[Symbol.asyncIterator]();
+
+    await it.next(); // init
+    const first = await it.next(); // the first reply, being drawn
+    expect((first.value as { uuid?: string }).uuid).toBe(U(30));
+    await new Promise((resolve) => setTimeout(resolve, 0)); // the loop runs on to the end
+    expect(decodeContextAnchor(session.contextAnchor)?.uuid).toBe(U(31));
+    expect(decodeContextAnchor(turnStartAnchor(session))?.uuid).toBe(U(30));
+
+    for (let next = await it.next(); !next.done; next = await it.next()) {
+      // draw the rest
+    }
+    // Drawn to its end: the session's own anchor is the one again.
+    expect(session.renderedAnchor).toBeUndefined();
+    expect(decodeContextAnchor(turnStartAnchor(session))?.uuid).toBe(U(31));
+  });
+
+  // #1473 round 2 (fable/astra): a reader that stops after the loop already ended leaves no drawn-frame anchor behind.
+  it('a stop after the loop ended clears the drawn frame’s anchor: the session’s own is the one', async () => {
+    const session: any = { sessionId: SID, compactionCount: 0, ownerId: 'U1', channelId: 'C1', threadTs: '1.1' };
+    installTurn((opening) => [
+      { type: 'system', subtype: 'init', session_id: SID, model: 'claude-test', tools: [] },
+      { type: 'assistant', uuid: U(40), message: { content: [{ type: 'text', text: 'first' }] } },
+      { type: 'assistant', uuid: U(41), message: { content: [{ type: 'text', text: 'second' }] } },
+      result(opening),
+    ]);
+    const handler = new ClaudeHandler({ getPluginManager: () => null } as unknown as McpManager);
+    const it = handler.streamQuery('hi', session, undefined, undefined, SLACK, 'C1:1.1')[Symbol.asyncIterator]();
+    await it.next();
+    await it.next(); // drawing the first reply
+    await new Promise((resolve) => setTimeout(resolve, 0)); // the loop ran to its end
+    expect(session.renderedAnchor).toBeDefined();
+
+    await it.return(undefined); // Stop, with the loop already over
+
+    expect(session.renderedAnchor).toBeUndefined();
+    expect(decodeContextAnchor(turnStartAnchor(session))?.uuid).toBe(U(41));
+  });
+
+  // #1473 round 2 (astra): a reader that stops while the turn is prepared takes nothing from the session.
+  it('a stop while the turn is prepared leaves a waiting rollback waiting', async () => {
+    const session = rollingBack();
+    const pending = session.pendingRewind;
+    installTurn((opening) => opened(opening, 9));
+    const handler = new ClaudeHandler({ getPluginManager: () => null } as unknown as McpManager);
+    const it = handler.streamQuery('hi', session, undefined, undefined, SLACK, 'C1:1.1')[Symbol.asyncIterator]();
+    const first = it.next();
+    await it.return(undefined);
+    expect((await first).done).toBe(true);
+
+    expect(queryMock).not.toHaveBeenCalled();
+    expect(session.pendingRewind).toBe(pending);
+  });
+
+  // #1473 round 3 (astra): a Stop reaches a turn being prepared as the abort, not as the reader's return — the outer
+  // stream's `return()` waits behind its pending read. It takes nothing from the session either.
+  it('a Stop (abort) while the turn is prepared leaves a waiting rollback waiting and starts no query', async () => {
+    const session = rollingBack();
+    const pending = session.pendingRewind;
+    installTurn((opening) => opened(opening, 9));
+    const handler = new ClaudeHandler({ getPluginManager: () => null } as unknown as McpManager);
+    const abort = new AbortController();
+    const it = handler.streamQuery('hi', session, abort, undefined, SLACK, 'C1:1.1')[Symbol.asyncIterator]();
+    const first = it.next();
+    abort.abort(); // Stop, while the turn is still being prepared
+
+    expect((await first).done).toBe(true);
+    expect(queryMock).not.toHaveBeenCalled();
+    expect(session.pendingRewind).toBe(pending);
   });
 
   it('a waiting rollback becomes resumeSessionAt once, and the anchor follows the new chain', async () => {

@@ -114,6 +114,52 @@ describe('runAgentStreamFromSdk (epic #1023 P4)', () => {
     expect(usage?.usage?.totalCostUsd).toBe(1); // 100 * 0.01 from the host, not the SDK's 0.2
   });
 
+  // #1473 round 4 (astra): a reader that stops while the CLI is quiet reaches the stream it reads at once — an async
+  // generator's `return()` would wait behind the pending `next()` until the next message came.
+  it('return() while a next() waits closes the source at once, and the waiting next() ends', async () => {
+    let closed = false;
+    let release: (r: IteratorResult<SDKMessage>) => void = () => {};
+    const source: AsyncIterator<SDKMessage> & AsyncIterable<SDKMessage> = {
+      next: () =>
+        new Promise<IteratorResult<SDKMessage>>((resolve) => {
+          release = resolve;
+        }),
+      return: async () => {
+        closed = true;
+        release({ done: true, value: undefined });
+        return { done: true, value: undefined };
+      },
+      [Symbol.asyncIterator]() {
+        return this;
+      },
+    };
+    const it = runAgentStreamFromSdk(source, { calculateTokenCost: CALC })[Symbol.asyncIterator]();
+    const waiting = it.next();
+    await Promise.resolve();
+
+    await it.return!(undefined);
+
+    expect(closed).toBe(true);
+    expect(await waiting).toEqual({ done: true, value: undefined });
+    expect(await it.next()).toEqual({ done: true, value: undefined });
+  });
+
+  it('a failing source fails the read once; nothing more is read after it', async () => {
+    let reads = 0;
+    const source: AsyncIterable<SDKMessage> = {
+      [Symbol.asyncIterator]: () => ({
+        next: async () => {
+          reads += 1;
+          throw new Error('boom');
+        },
+      }),
+    };
+    const it = runAgentStreamFromSdk(source, { calculateTokenCost: CALC })[Symbol.asyncIterator]();
+    await expect(it.next()).rejects.toThrow('boom');
+    expect(await it.next()).toEqual({ done: true, value: undefined });
+    expect(reads).toBe(1);
+  });
+
   it('empty stream → no events', async () => {
     expect(await collect(runAgentStreamFromSdk(fromArray([]), { calculateTokenCost: CALC }))).toEqual([]);
   });

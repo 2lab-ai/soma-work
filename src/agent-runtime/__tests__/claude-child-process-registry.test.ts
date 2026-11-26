@@ -43,6 +43,70 @@ describe('ClaudeChildProcessRegistry', () => {
     expect(registry.size).toBe(0);
   });
 
+  // #1473 round 5 (grok): a turn's query resolving its close does not mean its CLI is gone — the next turn of the
+  // session waits for the process itself.
+  it('waits for the children of one session to exit, not for the others', async () => {
+    const registry = new ClaudeChildProcessRegistry();
+    const mine = fakeProcess({ pid: 11 });
+    const other = fakeProcess({ pid: 12 });
+    registry.track(mine, { sessionKey: 'work:C1:1.1' });
+    registry.track(other, { sessionKey: 'work:C1:2.2' });
+
+    let exited: boolean | undefined;
+    const waiting = registry.waitForSessionExit('work:C1:1.1', 5_000).then((v) => {
+      exited = v;
+    });
+    other.emit('exit', 0, null);
+    await Promise.resolve();
+    expect(exited).toBeUndefined();
+
+    mine.emit('exit', 0, null);
+    await waiting;
+    expect(exited).toBe(true);
+    expect(registry.hasLiveChildFor('work:C1:1.1')).toBe(false);
+  });
+
+  it('stops waiting for a session’s exit at the bound, or when the waiting turn is stopped', async () => {
+    vi.useFakeTimers();
+    const registry = new ClaudeChildProcessRegistry();
+    registry.track(fakeProcess({ pid: 21 }), { sessionKey: 'work:C1:1.1' });
+
+    const bounded = registry.waitForSessionExit('work:C1:1.1', 100);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await bounded).toBe(false);
+
+    const stop = new AbortController();
+    const stopped = registry.waitForSessionExit('work:C1:1.1', 5_000, stop.signal);
+    stop.abort('user-stop');
+    expect(await stopped).toBe(false);
+  });
+
+  it('signals only the children of the session it names', () => {
+    const registry = new ClaudeChildProcessRegistry();
+    const mine = fakeProcess({ pid: 31 });
+    const other = fakeProcess({ pid: 32 });
+    registry.track(mine, { sessionKey: 'work:C1:1.1' });
+    registry.track(other, { sessionKey: 'work:C1:2.2' });
+
+    expect(registry.killSession('work:C1:1.1', 'SIGTERM')).toBe(1);
+    expect(mine.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(other.kill).not.toHaveBeenCalled();
+  });
+
+  it('signals only the child spawned for one owner object, not a later one of the same session', () => {
+    const registry = new ClaudeChildProcessRegistry();
+    const earlierOwner = { sessionKey: 'work:C1:1.1' };
+    const laterOwner = { sessionKey: 'work:C1:1.1' };
+    const earlier = fakeProcess({ pid: 41 });
+    const later = fakeProcess({ pid: 42 });
+    registry.track(earlier, earlierOwner);
+    registry.track(later, laterOwner);
+
+    expect(registry.killOwned(earlierOwner, 'SIGTERM')).toBe(1);
+    expect(earlier.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(later.kill).not.toHaveBeenCalled();
+  });
+
   it('escalates a graceful drain from SIGTERM to SIGKILL for survivors', async () => {
     vi.useFakeTimers();
     const registry = new ClaudeChildProcessRegistry();

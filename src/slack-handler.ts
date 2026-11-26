@@ -38,6 +38,7 @@ import type { SessionLinks } from 'somalib/model-commands/session-types';
 import { keysInText, WORK_KEYS_MAX } from 'somalib/work-queue/keys';
 import { getAdminUsers, isAdminUser } from './admin-utils';
 import { taskDirectoryFor } from './agent-runtime/execution-context';
+import { HOST_LAG_WARN_MS } from './agent-runtime/result-transit';
 import type { ContinuationHandler, TurnRunnerSurface } from './agent-session';
 import { isAwaitingUserChoice, TurnRunner, V1QueryAdapter } from './agent-session';
 import type { ClaudeHandler } from './claude-handler';
@@ -1024,6 +1025,22 @@ export class SlackHandler {
         );
       },
       inputReopened: (sessionKey) => this.onFollowupInputReopened(sessionKey),
+      // #1473 — the turn's verdict on its steered messages, the moment the frame loop decides it: the loop runs ahead
+      // of the renderer now, and a renderer stopped before it reached the settlement frame would leave the rows
+      // `steered`. The same receipts still come down the stream; a row already settled moves no further.
+      settled: (sessionKey, verdict) => {
+        const settle = (uuid: string, phase: 'completed' | 'discarded') =>
+          this.settleSteeredFollowup({ sessionKey, uuid, phase }).catch((error) =>
+            this.logger.warn('Steer settlement signal could not be applied — left for the stream receipt', {
+              sessionKey,
+              uuid,
+              phase,
+              error: (error as Error)?.message ?? String(error),
+            }),
+          );
+        for (const uuid of verdict.consumed) void settle(uuid, 'completed');
+        for (const uuid of verdict.discarded) void settle(uuid, 'discarded');
+      },
     });
     // #1472 — a turn held open only for background work asks this at each safe boundary: does a person's command
     // wait at the head of the line, one that can never be pushed into the turn? Then the hold ends and the line runs.
@@ -5182,6 +5199,21 @@ export class SlackHandler {
   }
 
   /** Dispatcher notices that carry facts the committed snapshot cannot show. */
+  /**
+   * #1473 — how long a run held its slot after its turn's loop had ended (the CLI gone, the verdicts decided): the
+   * render backlog and the turn-end work, all waiting on Slack. One line per run, so a p95 can be read across runs —
+   * the number that decides whether settling leaves the render path too (the #1473 follow-up).
+   */
+  private logRunSettleLag(slotKey: string): void {
+    const sessionKey = this.canonicalFollowupKey(slotKey);
+    const loopEndedAt = this.claudeHandler.takeTurnLoopEndedAt?.(sessionKey);
+    if (loopEndedAt === undefined) return;
+    const settleLagMs = Math.max(0, Date.now() - loopEndedAt);
+    const fields = { settleLagMs, sessionKey };
+    if (settleLagMs >= HOST_LAG_WARN_MS) this.logger.warn('A run held its slot after its turn had ended', fields);
+    else this.logger.info('A run settled after its turn ended', fields);
+  }
+
   private observeDispatcherNotice(notice: DispatcherNotice): void {
     if (notice.type === 'run-started' || notice.type === 'run-settled')
       this.announceFollowupTurnHeld(notice.sessionKey);
@@ -5199,6 +5231,7 @@ export class SlackHandler {
         void this.syncFollowupReactions(notice.sessionKey, itemId);
       // Anchor for the NEXT drain's wait: the boundary opened here.
       timing.settledAt.set(notice.sessionKey, Date.now());
+      this.logRunSettleLag(notice.sessionKey);
       // Only the run that claimed the session clears it — an interrupted
       // victim settles AFTER its successor opened, and must not erase it.
       if (timing.kind.get(notice.sessionKey)?.runId === notice.report.runId) {
@@ -6032,7 +6065,14 @@ export class SlackHandler {
         // over. A `read` that moved nothing (the opening message) touches no file.
         if (settled.ok) await this.recordReadSteer(sessionKey, queueKey, uuid, args.turnEpoch);
       } else if (phase === 'completed' && settled.ok) await this.finishConsumedSteer(sessionKey, uuid);
-      else await this.cleanupSteerFiles(this.takeSteerFiles(uuid));
+      else {
+        // #1473 — the verdict now comes at loop time, right behind the `read` that may still be copying these files
+        // into the conversation (`recordReadSteer`): the copy finishes before the files go (round 1, astra).
+        const recording = this.followupReadSteers?.get(uuid)?.recording;
+        const files = this.takeSteerFiles(uuid);
+        await recording;
+        await this.cleanupSteerFiles(files);
+      }
       // NOT awaited: the executor awaits this hook inside its stream loop, so a
       // Slack round-trip here delays the answer the user is waiting for. The
       // queue mutation above is the part that must be finished before the turn

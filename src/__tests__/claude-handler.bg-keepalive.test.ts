@@ -56,6 +56,7 @@ vi.mock('../agent-runtime/claude-code/build-stream-options', () => ({
   })),
 }));
 
+import { getClaudeChildProcessRegistry } from '../agent-runtime/claude-child-process-registry';
 import { STEER_SETTLEMENT_SUBTYPE } from '../agent-runtime/steer-settlement';
 import {
   BG_FOLLOWUP_GRACE_MS,
@@ -65,6 +66,7 @@ import {
   KEEPALIVE_BACKSTOP_IDLE_MS,
   KEEPALIVE_REPORT_TURN_MAX_MS,
   NON_TURN_RESULT_IDLE_MS,
+  PreviousCliStillRunningError,
 } from '../claude-handler';
 import { Logger } from '../logger';
 import type { McpManager } from '../mcp-manager';
@@ -435,6 +437,262 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
     expect(settlement).toMatchObject({ consumed: ['u-steer'], discarded: [] });
     expect(frames.indexOf(settlement)).toBeLessThan(frames.indexOf(results[0]));
     expect(cli.inputEnded).toBe(true);
+  });
+
+  // #1473 round 1 (grok): a reader that stops (Stop, `Send now`) while the turn is held still lets the held turn end —
+  // its steers are settled, so the queue's turn-end sweep does not run the ones the model already answered again.
+  it('settles the steers of a held turn whose reader stops', async () => {
+    const cli = newFakeCli();
+    const pulledPastOpening = deferred();
+    const steerGate = deferred();
+    const quiet = deferred();
+    installScriptedQuery(cli, async function* (inputs) {
+      await readOpening(inputs, cli);
+      yield* openingTurnHead([agentTask(AGENT_ID)]);
+      yield openingResult(cli.opening?.uuid);
+      pulledPastOpening.resolve();
+      await steerGate.promise;
+      cli.received.push((await inputs.next()).value);
+      yield INIT;
+      yield assistantText('ACK');
+      yield successResult({
+        result: 'ACK',
+        num_turns: 1,
+        uuid: 'steer-result-uuid',
+        user_message_uuid: 'u-steer',
+        queued_turn_count: 0,
+      });
+      await quiet.promise; // the agent still runs; the CLI says nothing more
+    });
+    const handler = newHandler();
+    const settled = vi.fn();
+    handler.setSteerSignals({ read: vi.fn(), inputReopened: vi.fn(), settled });
+    const turn = startTurn(handler);
+    await turn.next();
+    await pulledPastOpening.promise;
+    await hostCaughtUp();
+    expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-steer', text: 'and also' })).toBe(true);
+    steerGate.resolve();
+    await hostCaughtUp();
+
+    const stopping = turn.return!(undefined);
+    await vi.waitFor(() => expect(settled).toHaveBeenCalledTimes(1));
+    expect(settled).toHaveBeenCalledWith(SESSION_KEY, expect.objectContaining({ consumed: ['u-steer'] }));
+
+    quiet.resolve();
+    await stopping;
+  });
+
+  // #1473 round 4 (grok): the reader of a stopped turn gives up after a bound, and the session's next turn may start
+  // while the stopped one still closes its query — two CLIs on one transcript. The next query starts after that end.
+  it('starts the next turn’s query only after the abandoned turn before it closed its query', async () => {
+    const cli = newFakeCli();
+    const quiet = deferred();
+    installScriptedQuery(cli, async function* (inputs) {
+      await readOpening(inputs, cli);
+      yield INIT;
+      yield assistantText('working');
+      await quiet.promise;
+    });
+    const handler = newHandler();
+    const first = startTurn(handler);
+    await first.next();
+    await hostCaughtUp();
+    const query = queryMock.mock.results[0].value as { return: (v?: unknown) => Promise<unknown> };
+    const close = query.return.bind(query);
+    const closeGate = deferred();
+    query.return = vi.fn(async (v?: unknown) => {
+      await closeGate.promise; // a CLI slow to exit
+      return close(v);
+    });
+
+    const stopping = first.return!(undefined); // the reader stops; its loop still closes the query
+    await hostCaughtUp();
+    expect(query.return).toHaveBeenCalledTimes(1);
+
+    const second = startTurn(handler);
+    const secondFrame = second.next();
+    await hostCaughtUp();
+    expect(queryMock).toHaveBeenCalledTimes(1); // waits for the first turn's end
+
+    closeGate.resolve();
+    await stopping;
+    await vi.waitFor(() => expect(queryMock).toHaveBeenCalledTimes(2));
+
+    quiet.resolve();
+    await second.return!(undefined);
+    await secondFrame.catch(() => undefined);
+  });
+
+  // #1473 round 4/5 (grok): a close that failed did not close — the CLI still running for the session is stopped,
+  // through the process registry (the turn's controller and its reason are the turn's).
+  it('stops the session’s CLI when the abandoned query’s close fails', async () => {
+    const cli = newFakeCli();
+    const quiet = deferred();
+    installScriptedQuery(cli, async function* (inputs) {
+      await readOpening(inputs, cli);
+      yield INIT;
+      yield assistantText('working');
+      await quiet.promise;
+    });
+    const handler = newHandler();
+    const kill = vi.spyOn(getClaudeChildProcessRegistry(), 'killOwned').mockReturnValue(1);
+    const controller = new AbortController();
+    const turn = handler
+      .streamQuery('ping', undefined, controller, undefined, TEST_SLACK_CONTEXT, SESSION_KEY)
+      [Symbol.asyncIterator]() as AsyncIterator<unknown>;
+    await turn.next();
+    await hostCaughtUp();
+    const query = queryMock.mock.results[0].value as { return: (v?: unknown) => Promise<unknown> };
+    query.return = vi.fn(async () => {
+      throw new Error('close failed');
+    });
+
+    await turn.return!(undefined);
+
+    expect(query.return).toHaveBeenCalledTimes(1);
+    // Only this query's own CLI (its owner object), not the session's.
+    expect(kill).toHaveBeenCalledWith({ sessionKey: SESSION_KEY }, 'SIGTERM');
+    expect(controller.signal.aborted).toBe(false);
+    kill.mockRestore();
+    quiet.resolve();
+  });
+
+  // #1473 round 5 (grok): the query's close resolves before its CLI has exited (the SDK signals it later) — the next
+  // turn of the session starts its query only once that process is gone.
+  it('starts the next turn’s query only after the session’s previous CLI exited', async () => {
+    const cli = newFakeCli();
+    const quiet = deferred();
+    installScriptedQuery(cli, async function* (inputs) {
+      await readOpening(inputs, cli);
+      yield INIT;
+      yield assistantText('working');
+      await quiet.promise;
+    });
+    const registry = getClaudeChildProcessRegistry();
+    let alive = true;
+    const live = vi.spyOn(registry, 'hasLiveChildFor').mockImplementation(() => alive);
+    const exitGate = deferred();
+    const wait = vi.spyOn(registry, 'waitForSessionExit').mockImplementation(async () => {
+      await exitGate.promise;
+      alive = false;
+      return true;
+    });
+    const handler = newHandler();
+
+    const turn = startTurn(handler);
+    const firstFrame = turn.next();
+    await hostCaughtUp();
+    expect(queryMock).not.toHaveBeenCalled(); // the previous CLI still runs
+
+    exitGate.resolve();
+    await vi.waitFor(() => expect(queryMock).toHaveBeenCalledTimes(1));
+    expect(wait).toHaveBeenCalledWith(SESSION_KEY, expect.any(Number), undefined);
+
+    live.mockRestore();
+    wait.mockRestore();
+    quiet.resolve();
+    await turn.return!(undefined);
+    await firstFrame.catch(() => undefined);
+  });
+
+  // #1473 round 6 (grok/astra): the bound is no proof of exit — the session's previous CLI is killed and waited for
+  // once more; one that survives even that is never run beside: the turn fails instead of starting a second CLI.
+  it.each([
+    ['exits after the kill: the turn starts', true],
+    ['survives the kill: the turn fails, no second CLI', false],
+  ])('a previous CLI alive at the bound is killed — %s', async (_label, exitsAfterKill) => {
+    const cli = newFakeCli();
+    const quiet = deferred();
+    installScriptedQuery(cli, async function* (inputs) {
+      await readOpening(inputs, cli);
+      yield INIT;
+      await quiet.promise;
+    });
+    const registry = getClaudeChildProcessRegistry();
+    let alive = true;
+    const live = vi.spyOn(registry, 'hasLiveChildFor').mockImplementation(() => alive);
+    const kill = vi.spyOn(registry, 'killSession').mockImplementation(() => {
+      if (exitsAfterKill) alive = false;
+      return 1;
+    });
+    const wait = vi.spyOn(registry, 'waitForSessionExit').mockImplementation(async () => !alive);
+    const handler = newHandler();
+
+    const turn = startTurn(handler);
+    const first = turn.next();
+    if (exitsAfterKill) {
+      await vi.waitFor(() => expect(queryMock).toHaveBeenCalledTimes(1));
+    } else {
+      await expect(first).rejects.toThrow(PreviousCliStillRunningError);
+      expect(queryMock).not.toHaveBeenCalled();
+    }
+    expect(kill).toHaveBeenCalledWith(SESSION_KEY, 'SIGKILL');
+    expect(wait).toHaveBeenCalledTimes(2);
+
+    live.mockRestore();
+    kill.mockRestore();
+    wait.mockRestore();
+    quiet.resolve();
+    await turn.return!(undefined);
+    await first.catch(() => undefined);
+  });
+
+  // #1473 round 2 (grok): the settlement of a held turn goes through the query (an interrupt when the CLI still counts
+  // queued turns) — the query is closed only after it, or the interrupt is refused and a read steer runs again.
+  it('settles a held turn through its query before the query is closed, when its reader stops', async () => {
+    const cli = newFakeCli();
+    const pulledPastOpening = deferred();
+    const steerGate = deferred();
+    const quiet = deferred();
+    installScriptedQuery(cli, async function* (inputs) {
+      await readOpening(inputs, cli);
+      yield* openingTurnHead([agentTask(AGENT_ID)]);
+      yield openingResult(cli.opening?.uuid);
+      pulledPastOpening.resolve();
+      await steerGate.promise;
+      cli.received.push((await inputs.next()).value);
+      yield INIT;
+      yield assistantText('ACK');
+      yield successResult({
+        result: 'ACK',
+        num_turns: 1,
+        uuid: 'steer-result-uuid',
+        user_message_uuid: 'u-steer',
+        queued_turn_count: 1, // the CLI still counts a queued turn: the settlement asks it (interrupt)
+      });
+      await quiet.promise;
+    });
+    const handler = newHandler();
+    const settled = vi.fn();
+    handler.setSteerSignals({ read: vi.fn(), inputReopened: vi.fn(), settled });
+    const turn = startTurn(handler);
+    await turn.next();
+    await pulledPastOpening.promise;
+    const query = queryMock.mock.results[0].value as {
+      interrupt: ReturnType<typeof vi.fn>;
+      cancelAsyncMessage: ReturnType<typeof vi.fn>;
+      return: unknown;
+    };
+    query.cancelAsyncMessage = vi.fn(query.cancelAsyncMessage);
+    const closeQuery = vi.fn((query.return as (v?: unknown) => Promise<unknown>).bind(query));
+    query.return = closeQuery;
+    await hostCaughtUp();
+    expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-steer', text: 'and also' })).toBe(true);
+    steerGate.resolve();
+    await hostCaughtUp();
+
+    const stopping = turn.return!(undefined);
+    await vi.waitFor(() => expect(settled).toHaveBeenCalledTimes(1));
+    // The settlement asked the open query; the query was closed only after.
+    const asked = [...query.interrupt.mock.invocationCallOrder, ...query.cancelAsyncMessage.mock.invocationCallOrder];
+    expect(asked.length).toBeGreaterThan(0);
+    if (closeQuery.mock.calls.length > 0) {
+      expect(closeQuery.mock.invocationCallOrder[0]).toBeGreaterThan(Math.max(...asked));
+    }
+
+    quiet.resolve();
+    await stopping;
   });
 
   it('stops every live agent at the keepalive cap, ends the input, and ends the turn on the result that follows', async () => {
@@ -2942,6 +3200,7 @@ describe('ClaudeHandler keepalive cap measures silence, not age (#1039)', () => 
 describe('ClaudeHandler — a turn result that waits for the host is logged (#1471)', () => {
   const BEHIND_LOG = 'The host is behind its Claude Code process';
   const WAITED_LOG = 'A turn result waited for the host';
+  const RENDER_WAITED_LOG = 'A turn result waited for the renderer';
 
   beforeEach(() => {
     queryMock.mockReset();
@@ -2961,7 +3220,9 @@ describe('ClaudeHandler — a turn result that waits for the host is logged (#14
     });
   }
 
-  it('says the host is behind while the result waits, then how long it waited', async () => {
+  // #1473 — a slow renderer no longer holds the turn's result: the loop handles it when it arrives. The host is not
+  // behind its Claude Code process (no watch, no lag); the renderer's own wait is reported apart, once it takes it.
+  it('a slow renderer does not hold the result: the host is not behind, and the render wait is reported apart', async () => {
     vi.useFakeTimers();
     const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
     try {
@@ -2975,17 +3236,14 @@ describe('ClaudeHandler — a turn result that waits for the host is logged (#14
       await resultSent.promise;
       await vi.advanceTimersByTimeAsync(HOST_LAG_WATCH_MS + 1_000);
 
-      const behind = callsOf(warn, BEHIND_LOG);
-      expect(behind).toHaveLength(1);
-      expect(behind[0][1]).toMatchObject({ stillInTransit: 1, sessionKey: SESSION_KEY });
+      expect(callsOf(warn, BEHIND_LOG)).toHaveLength(0);
 
       const frames = await collect(turn);
       expect(resultsOf(frames)).toHaveLength(1);
-      const waited = callsOf(warn, WAITED_LOG);
-      expect(waited).toHaveLength(1);
-      const lag = waited[0][1] as { waitedMs: number; stillInTransit: number };
-      expect(lag.waitedMs).toBeGreaterThanOrEqual(HOST_LAG_WATCH_MS);
-      expect(lag.stillInTransit).toBe(0);
+      expect(callsOf(warn, WAITED_LOG)).toHaveLength(0);
+      const rendered = callsOf(warn, RENDER_WAITED_LOG);
+      expect(rendered).toHaveLength(1);
+      expect((rendered[0][1] as { renderWaitMs: number }).renderWaitMs).toBeGreaterThanOrEqual(HOST_LAG_WATCH_MS);
     } finally {
       warn.mockRestore();
     }
@@ -3186,7 +3444,9 @@ describe('ClaudeHandler — a held run yields to a waiting command (#1472)', () 
     }
   });
 
-  it('a request made while the host was a frame behind is kept, and made once the loop catches up', async () => {
+  // #1473 — the renderer falling behind no longer puts the loop behind: a request made while the consumer is paused is
+  // made at once, on the frames the loop has already handled.
+  it('a request made while the renderer is paused is made at once: the loop is not behind it', async () => {
     const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
     try {
       const cli = newFakeCli();
@@ -3232,22 +3492,21 @@ describe('ClaudeHandler — a held run yields to a waiting command (#1472)', () 
       emitProgress.resolve();
       await hostCaughtUp();
 
-      // One agent frame is handed to the paused consumer, the second waits unhandled: the host is a frame behind.
+      // Both agent frames are handled though the consumer took at most one: the request is made now.
       waiting = true;
       handler.requestHoldRelease(SESSION_KEY);
       await hostCaughtUp();
-      expect(cli.stopTask).not.toHaveBeenCalled();
-      expect(cli.inputEnded).toBe(false);
+      expect(cli.stopTask).toHaveBeenCalledTimes(1);
+      expect(cli.inputEnded).toBe(true);
+      expect(callsOf(info, YIELD_LOG)).toHaveLength(1);
 
-      // The consumer catches up; nothing else arrives and no one asks again.
+      // The consumer catches up and gets the turn's one result; no one asks again.
       const resume = paused;
       paused = undefined;
       resume.resolve();
       await consumed;
 
       expect(cli.stopTask).toHaveBeenCalledTimes(1);
-      expect(cli.inputEnded).toBe(true);
-      expect(callsOf(info, YIELD_LOG)).toHaveLength(1);
       expect(resultsOf(frames)).toHaveLength(1);
     } finally {
       info.mockRestore();

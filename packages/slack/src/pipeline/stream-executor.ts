@@ -2752,7 +2752,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           // Dashboard v2.1 — bump compaction counter. Guarded so any failure
           // in the dashboard/broadcast path cannot interrupt compaction.
           try {
-            session.compactionCount = (session.compactionCount || 0) + 1;
+            // #1473 — the turn's loop runs ahead of this renderer and counts the boundary itself (it stamps the epoch it
+            // set on the frame's metadata): a counted boundary is not counted again.
+            const counted = (metadata as Record<string, unknown> | undefined)?.soma_compaction_epoch;
+            session.compactionCount =
+              typeof counted === 'number'
+                ? Math.max(session.compactionCount || 0, counted)
+                : (session.compactionCount || 0) + 1;
             this.deps.claudeHandler.getSessionRegistry().broadcastSessionUpdate();
           } catch (err) {
             this.logger.debug('compactionCount bump failed', {

@@ -1239,8 +1239,10 @@ export class AgentStreamProcessor {
         if (abortSignal.aborted) {
           // The safeguard stop aborts between events, with the generator
           // suspended at a yield: close it so its cleanup (lease heartbeat,
-          // active-query entry) runs instead of leaking.
-          if (this.safeguardFlag) await this.tryReturnIterator(iterator, 'safeguard');
+          // active-query entry) runs instead of leaking. #1473 — any stop does: the turn's loop runs ahead of this
+          // reader, and closing the stream is how it hears the reader is gone (its held turn settles, the drawn
+          // frame's anchor goes) (round 3, astra).
+          await this.tryReturnIterator(iterator, this.safeguardFlag ? 'safeguard' : 'abort');
           const rescue = await this.flushTextOnExplicitInterrupt(textBuf, context, abortSignal);
           this.settleNarration(context);
           this.emitAgentEvent(context, { kind: 'turn_end', ts: Date.now() });
@@ -1253,7 +1255,10 @@ export class AgentStreamProcessor {
           };
         }
 
-        const step = await this.raceNextStep(iterator, abortSignal);
+        const raced = await this.raceNextStep(iterator, abortSignal);
+        // A stream that ended because the turn was stopped (a turn stopped while it was prepared yields nothing) is a
+        // stop, not an empty turn — whichever of the two settled first (#1473 round 4, fable).
+        const step = raced.kind === 'done' && abortSignal.aborted ? ({ kind: 'aborted' } as const) : raced;
         if (step.kind === 'done') break;
         if (step.kind === 'aborted') {
           // Mirror the idleTimeout branch: best-effort tell the abandoned
@@ -1549,6 +1554,9 @@ export class AgentStreamProcessor {
         sdkResultError: this._sdkResultError,
       };
     } catch (error: any) {
+      // #1473 — the turn's loop runs ahead of this reader: a reader that fails stops it (bounded), or the loop would
+      // keep reading the CLI into a buffer nobody draws.
+      await this.tryReturnIterator(iterator, 'error');
       this.settleNarration(context);
       this.emitAgentEvent(context, { kind: 'turn_end', ts: Date.now() });
       if (error.name === 'AbortError') {

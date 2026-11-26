@@ -3506,6 +3506,47 @@ describe('Auto fallback compact — boundary restore (execute e2e)', () => {
     // Compaction bookkeeping still ran (flag consumed by boundary path).
     expect(session.compactionCount).toBe(1);
   });
+
+  // #1473 — the turn's loop counts the boundary before this renderer reaches it, and stamps the epoch it set.
+  it('a boundary the loop already counted (its epoch on the metadata) is not counted again', async () => {
+    const deps = createDeps();
+    deps.claudeHandler.streamAgentEvents.mockImplementation(() =>
+      toAgentEvents(
+        (async function* () {
+          yield {
+            type: 'system',
+            subtype: 'compact_boundary',
+            compact_metadata: { trigger: 'auto', pre_tokens: 1, post_tokens: 1, soma_compaction_epoch: 1 },
+          };
+          yield { type: 'result', subtype: 'success', total_cost_usd: 0, usage: {} };
+        })(),
+      ),
+    );
+    const session = {
+      sessionId: 'sess_counted',
+      ownerId: 'U_TEST',
+      logVerbosity: LOG_DETAIL,
+      usage: {},
+      terminated: false,
+      compactionCount: 1, // the loop's count
+    } as any;
+
+    await new StreamExecutor(deps).execute({
+      session,
+      sessionKey: 'C9:t9',
+      userName: 'testuser',
+      workingDirectory: '/tmp/test',
+      abortController: new AbortController(),
+      processedFiles: [],
+      text: 'go on',
+      channel: 'C9',
+      threadTs: 't9',
+      user: 'U_TEST',
+      say: vi.fn().mockResolvedValue({ ts: 'msg_ts' }),
+    } as any);
+
+    expect(session.compactionCount).toBe(1);
+  });
 });
 
 // ── Trace: docs/archive/features/fix-thread-header-files/trace.md ──
