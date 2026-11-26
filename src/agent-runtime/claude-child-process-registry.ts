@@ -179,6 +179,47 @@ export class ClaudeChildProcessRegistry {
     }
   }
 
+  /** #1473 — is a child still running a turn for `sessionKey`? */
+  hasLiveChildFor(sessionKey: string): boolean {
+    for (const child of this.children) {
+      if (child.exitCode === null && this.owners.get(child)?.sessionKey === sessionKey) return true;
+    }
+    return false;
+  }
+
+  /**
+   * #1473 — wait until no child runs a turn for `sessionKey` (the session's previous CLI has exited), `timeoutMs`
+   * passes, or `signal` aborts. True when none is left.
+   */
+  async waitForSessionExit(sessionKey: string, timeoutMs: number, signal?: AbortSignal): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (this.hasLiveChildFor(sessionKey)) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0 || signal?.aborted) return false;
+      let onAbort: (() => void) | undefined;
+      await Promise.race([
+        this.waitForChange(remainingMs),
+        new Promise<void>((resolve) => {
+          onAbort = resolve;
+          signal?.addEventListener('abort', onAbort, { once: true });
+        }),
+      ]);
+      if (onAbort) signal?.removeEventListener('abort', onAbort);
+    }
+    return true;
+  }
+
+  /** #1473 — signal every child still running a turn for `sessionKey` (a stopped turn whose CLI did not close). */
+  killSession(sessionKey: string, signal: NodeJS.Signals): number {
+    let signalled = 0;
+    for (const child of this.children) {
+      if (child.exitCode !== null || this.owners.get(child)?.sessionKey !== sessionKey) continue;
+      this.kill(child, signal);
+      signalled += 1;
+    }
+    return signalled;
+  }
+
   killAllSync(signal: NodeJS.Signals): void {
     this.notifyShutdown();
     for (const child of this.children) {

@@ -32,6 +32,7 @@ import type { HostWriteReceipt } from 'somalib/model-commands/host-receipt';
 import type { ModelCommandContext } from 'somalib/model-commands/types';
 import { type AgentRunOptions, type AgentStreamEvent, runAgentStream, runOneShotText } from './agent-runtime';
 import { liveAgentIds, liveNonAgentTaskIds, MAX_TIMER_DELAY_MS } from './agent-runtime/background-keepalive';
+import { getClaudeChildProcessRegistry } from './agent-runtime/claude-child-process-registry';
 import {
   buildStreamOptions,
   type EnvSkillDenial,
@@ -466,15 +467,25 @@ interface RunHandle {
  */
 const frameAnchors = new WeakMap<object, string | undefined>();
 
-/** #1473 — how long an abandoned run's query close may take before the loop stops waiting on it. */
-const ABANDONED_QUERY_CLOSE_MS = 5_000;
+/**
+ * #1473 — how long the loop's close of its query may take before it stops waiting and stops the CLI itself. The SDK's
+ * own close ends the CLI's input, waits up to 2s for it to exit, then signals it (SIGTERM, SIGKILL 5s later).
+ */
+const QUERY_CLOSE_MS = 5_000;
 
 /**
  * #1473 — how long a turn waits, before it starts its query, for an abandoned turn of the same session to end: the
- * held turn's settlement and the bounded close of its query, plus a grace for a CLI killed at that bound. Two CLIs
- * never write one transcript; a run that does not end within this is logged and the new turn goes on.
+ * held turn's settlement and the bounded close of its query, plus a grace. A run that does not end within this is
+ * logged and the new turn goes on (to the CLI-exit wait below).
  */
-const PREVIOUS_RUN_END_WAIT_MS = STEER_SETTLEMENT_BOUND_MS + ABANDONED_QUERY_CLOSE_MS + 1_000;
+const PREVIOUS_RUN_END_WAIT_MS = STEER_SETTLEMENT_BOUND_MS + QUERY_CLOSE_MS + 1_000;
+
+/**
+ * #1473 — how long a turn waits, before it starts its query, for the session's previous CLI to have exited — the
+ * SDK's escalation after a close (2s to SIGTERM, 5s more to SIGKILL), plus a grace. Two CLIs never write one
+ * transcript: a query resolving its close does not mean its process is gone (round 5, grok).
+ */
+const PREVIOUS_CLI_EXIT_WAIT_MS = 2_000 + 5_000 + 1_000;
 
 /**
  * The keepalive cap's hard ceiling, as a multiple of `SOMA_BG_KEEPALIVE_MAX_MS`
@@ -1632,8 +1643,7 @@ export class ClaudeHandler implements TurnSteeringPort {
     // #1473 — an abandoned turn of this session may still be settling its held turn and closing its query (its reader
     // gave up after a bound): this turn's query starts after that one has ended, so two CLIs never write one
     // transcript (round 4, grok).
-    const previous = sessionKey ? this.runsEnding.get(sessionKey) : undefined;
-    if (previous) await this.awaitPreviousRunEnd(previous, sessionKey as string);
+    if (sessionKey) await this.awaitPreviousRunEnd(sessionKey, abortController?.signal);
     yield* this.streamSdkQuery(
       prompt,
       session,
@@ -1646,28 +1656,80 @@ export class ClaudeHandler implements TurnSteeringPort {
     );
   }
 
-  /** Wait, bounded, for an abandoned run of the session to end (`runsEnding`). */
-  private async awaitPreviousRunEnd(previous: Promise<void>, sessionKey: string): Promise<void> {
-    const startedAt = Date.now();
+  /**
+   * #1473 — close a turn's query, bounded. Its own `return()` ends the CLI's input and waits a while for it to exit; a
+   * close that fails or does not finish within `QUERY_CLOSE_MS` did not close, and the CLI still running for the
+   * session is signalled through the process registry (not the turn's controller: its reason is the turn's).
+   */
+  private async closeQuery(query: { return: (value?: undefined) => unknown }, sessionKey: string | undefined) {
     let bound: ReturnType<typeof setTimeout> | undefined;
-    const endedInTime = await Promise.race([
-      previous.then(() => true),
+    const closedInTime = await Promise.race([
+      // A close that failed did not close: the CLI may still run.
+      Promise.resolve()
+        .then(() => query.return(undefined))
+        .then(
+          () => true,
+          () => false,
+        ),
       new Promise<boolean>((resolve) => {
-        bound = setTimeout(() => resolve(false), PREVIOUS_RUN_END_WAIT_MS);
+        bound = setTimeout(() => resolve(false), QUERY_CLOSE_MS);
         (bound as { unref?: () => void }).unref?.();
       }),
     ]);
     if (bound) clearTimeout(bound);
-    if (endedInTime) {
-      this.logger.info('A turn waited for the abandoned turn before it to end', {
-        sessionKey,
-        waitedMs: Date.now() - startedAt,
-      });
-    } else {
-      this.logger.warn('The abandoned turn before this one did not end in time — this turn starts anyway', {
-        sessionKey,
-        boundMs: PREVIOUS_RUN_END_WAIT_MS,
-      });
+    if (closedInTime) return;
+    const signalled = sessionKey ? getClaudeChildProcessRegistry().killSession(sessionKey, 'SIGTERM') : 0;
+    this.logger.warn('A turn’s query did not close in time — its CLI is stopped', {
+      sessionKey,
+      boundMs: QUERY_CLOSE_MS,
+      signalled,
+    });
+  }
+
+  /**
+   * #1473 — before a turn's query starts: an abandoned run of the session ends (its loop settles and closes its query,
+   * `runsEnding`), and the session's previous CLI exits. Both bounded; a Stop of this turn ends the wait.
+   */
+  private async awaitPreviousRunEnd(sessionKey: string, signal: AbortSignal | undefined): Promise<void> {
+    const startedAt = Date.now();
+    const previous = this.runsEnding.get(sessionKey);
+    if (previous) {
+      let bound: ReturnType<typeof setTimeout> | undefined;
+      let onAbort: (() => void) | undefined;
+      const endedInTime = await Promise.race([
+        previous.then(() => true),
+        new Promise<boolean>((resolve) => {
+          bound = setTimeout(() => resolve(false), PREVIOUS_RUN_END_WAIT_MS);
+          (bound as { unref?: () => void }).unref?.();
+          onAbort = () => resolve(false);
+          signal?.addEventListener('abort', onAbort, { once: true });
+        }),
+      ]);
+      if (bound) clearTimeout(bound);
+      if (onAbort) signal?.removeEventListener('abort', onAbort);
+      if (!endedInTime && !signal?.aborted) {
+        // Not waited on again by every later turn: the CLI-exit wait below is what still holds.
+        if (this.runsEnding.get(sessionKey) === previous) this.runsEnding.delete(sessionKey);
+        this.logger.warn('The abandoned turn before this one did not end in time', {
+          sessionKey,
+          boundMs: PREVIOUS_RUN_END_WAIT_MS,
+        });
+      }
+    }
+    if (signal?.aborted) return;
+    const registry = getClaudeChildProcessRegistry();
+    if (registry.hasLiveChildFor(sessionKey)) {
+      const exited = await registry.waitForSessionExit(sessionKey, PREVIOUS_CLI_EXIT_WAIT_MS, signal);
+      if (!exited && !signal?.aborted) {
+        this.logger.warn('The session’s previous CLI is still running — this turn starts anyway', {
+          sessionKey,
+          boundMs: PREVIOUS_CLI_EXIT_WAIT_MS,
+        });
+      }
+    }
+    const waitedMs = Date.now() - startedAt;
+    if (waitedMs > 0 && (previous || waitedMs >= 50)) {
+      this.logger.info('A turn waited for the session’s previous run to end', { sessionKey, waitedMs });
     }
   }
 
@@ -1846,7 +1908,7 @@ export class ClaudeHandler implements TurnSteeringPort {
       // #1473 — the renderer stopped (Stop, `Send now`, an idle timeout) while this loop runs ahead of it: the input
       // closes and the frames stop at once (`pumpFrames` `until`), so the loop leaves its read now. The query stays
       // open (`keepSource`) until the loop has ended what it holds — a held turn's settlement asks it — and the loop's
-      // cleanup closes it (`finally`, bounded).
+      // cleanup closes it (`closeQuery`, bounded), whatever ended the loop.
       let releaseFrames: () => void = () => {};
       const framesReleased = new Promise<void>((resolve) => {
         releaseFrames = resolve;
@@ -1908,9 +1970,9 @@ export class ClaudeHandler implements TurnSteeringPort {
             this.steerSignals?.read(steerKey, uuid);
           }
         },
-        // Abandoned: the frames end but the query stays open until the loop has settled what it holds (a held turn's
-        // interrupt goes through it); the loop's cleanup closes it (round 2, grok).
-        { until: framesReleased, keepSource: () => run?.abandoned === true },
+        // The frames never close the query: the loop's cleanup does, once, bounded — after it has settled what it
+        // holds (a held turn's interrupt goes through the query) (round 2, grok; round 5, astra).
+        { until: framesReleased, keepSource: () => true },
       );
 
       // Set once the turn's steered sends have been settled (the settlement
@@ -2637,33 +2699,9 @@ export class ClaudeHandler implements TurnSteeringPort {
         const transit = resultTransit.summary();
         if (transit) this.logger.info('Turn results handled by the host', { ...transit, sessionKey: steerKey });
         channel.close();
-        // #1473 — the reader stopped: the frames left the query open for the held turn's settlement, done above. Close
-        // it now — its own `return()` closes the CLI and awaits its exit — bounded, so a wedged CLI cannot hold the
-        // loop's end.
-        if (run?.abandoned) {
-          let bound: ReturnType<typeof setTimeout> | undefined;
-          const closedInTime = await Promise.race([
-            // A close that failed did not close: the CLI may still run.
-            Promise.resolve(activeQuery.return(undefined)).then(
-              () => true,
-              () => false,
-            ),
-            new Promise<boolean>((resolve) => {
-              bound = setTimeout(() => resolve(false), ABANDONED_QUERY_CLOSE_MS);
-              (bound as { unref?: () => void }).unref?.();
-            }),
-          ]);
-          if (bound) clearTimeout(bound);
-          if (!closedInTime) {
-            // The turn is over for everyone: its controller stops the CLI, so the session's next turn (waiting on this
-            // loop's end) does not run beside it (round 4, grok).
-            this.logger.warn('An abandoned turn’s query did not close in time — its CLI is stopped', {
-              sessionKey: steerKey,
-              boundMs: ABANDONED_QUERY_CLOSE_MS,
-            });
-            abortController?.abort('abandoned-query-close-timeout');
-          }
-        }
+        // #1473 — the frames left the query open for the held turn's settlement, done above. Close it now — one owner,
+        // whatever ended the loop (a result, a stop, a failure) — bounded, so a wedged CLI cannot hold the loop's end.
+        await this.closeQuery(activeQuery, steerKey);
         if (steerKey && this.activeQueries.get(steerKey)?.query === activeQuery) {
           this.activeQueries.delete(steerKey);
         }
