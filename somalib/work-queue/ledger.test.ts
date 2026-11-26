@@ -7,6 +7,7 @@ import {
   endEntry,
   enterQueue,
   entriesOfHolder,
+  forgetQueue,
   markNotified,
   parseWorkQueueLedger,
   putFirst,
@@ -225,6 +226,29 @@ describe('endEntry', () => {
     }
     expect(l.records).toHaveLength(LINE_RECORDS_KEEP);
     expect(l.records[LINE_RECORDS_KEEP - 1].id).toBe(`wq-${LINE_RECORDS_KEEP + 5}`);
+  });
+});
+
+describe('forgetQueue — an admin forgets an idle lane', () => {
+  it("drops the lane's history and leaves every other lane alone; an unpinned lane leaves the views", () => {
+    let l = enter(emptyLedger(), A, ['ABC-1'], 'qa-test').ledger;
+    l = endEntry(l, { id: 'wq-1', end: 'done', actor: A }, 2).ledger;
+    l = enter(l, B, ['ABC-2'], 'qa-dev2').ledger;
+    l = endEntry(l, { id: 'wq-2', end: 'done', actor: B }, 3).ledger;
+    const { ledger, result } = forgetQueue(l, 'qa-test');
+    expect(result).toEqual({ ok: true, removed: 1 });
+    expect(ledger.records.map((r) => r.queue)).toEqual(['qa-dev2']);
+    expect(queueViews(ledger, []).map((q) => q.id)).toEqual(['qa-dev2']);
+    // A pinned lane stays listed, with no history.
+    const pinned = forgetQueue(ledger, 'qa-dev2').ledger;
+    expect(queueViews(pinned, ['qa-dev2'])).toEqual([expect.objectContaining({ id: 'qa-dev2', recent: [] })]);
+  });
+
+  it('refuses a lane with a running or waiting entry (BUSY) or a bad name, and changes nothing', () => {
+    const l = enter(emptyLedger(), A, ['ABC-1'], 'qa-test').ledger;
+    expect(forgetQueue(l, 'qa-test')).toEqual({ ledger: l, result: { ok: false, code: 'BUSY' } });
+    expect(forgetQueue(l, 'qa:test')).toEqual({ ledger: l, result: { ok: false, code: 'BUSY' } });
+    expect(forgetQueue(l, '')).toEqual({ ledger: l, result: { ok: false, code: 'INVALID_QUEUE' } });
   });
 });
 

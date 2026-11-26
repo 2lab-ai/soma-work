@@ -390,6 +390,17 @@ describe('WorkQueueHost — an admin manages a lane (.prd/36 v2 D13)', () => {
     expect(store.read().entries.map((e) => [e.id, e.state])).toEqual([['wq-2', 'running']]);
   });
 
+  it('forgets an idle lane (its history goes, it leaves the views); a busy lane is refused', () => {
+    const h = harness();
+    h.enter(A, ['ABC-1']);
+    expect(h.host.forget('qa-dev2', 'UADMIN')).toEqual({ ok: false, code: 'BUSY' });
+    store.mutate((l) => endEntry(l, { id: 'wq-1', end: 'done', actor: A }, h.clock.now));
+    expect(h.host.views([]).map((q) => q.id)).toEqual(['qa-dev2']);
+    expect(h.host.forget('qa-dev2', 'UADMIN')).toEqual({ ok: true, removed: 1 });
+    expect(h.host.views([])).toEqual([]);
+    expect(store.read().records).toEqual([]);
+  });
+
   it('says why it cannot: an unknown entry, first on a running one, cancel on a running one', () => {
     const h = harness();
     h.enter(A, ['ABC-1']);

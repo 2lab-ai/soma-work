@@ -434,6 +434,21 @@ export function putFirst(
   return { ledger: { ...ledger, entries }, result: { ok: true } };
 }
 
+/**
+ * An admin forgets a lane that has nothing in it: its history goes, so a lane named once (a test, a typo) leaves the
+ * board. A lane with a running or waiting entry is refused (`BUSY`); a pinned lane stays listed, with no history.
+ */
+export function forgetQueue(
+  ledger: WorkQueueLedger,
+  queue: string,
+): { ledger: WorkQueueLedger; result: { ok: true; removed: number } | { ok: false; code: 'INVALID_QUEUE' | 'BUSY' } } {
+  const name = normalizeQueueName(queue);
+  if (!isQueueName(name)) return { ledger, result: { ok: false, code: 'INVALID_QUEUE' } };
+  if (ledger.entries.some((e) => e.queue === name)) return { ledger, result: { ok: false, code: 'BUSY' } };
+  const records = ledger.records.filter((r) => r.queue !== name);
+  return { ledger: { ...ledger, records }, result: { ok: true, removed: ledger.records.length - records.length } };
+}
+
 /** Stamp that the holder of a running entry was told it runs. Same ledger when there is nothing to stamp. */
 export function markNotified(ledger: WorkQueueLedger, id: string, now: number): WorkQueueLedger {
   const at = ledger.entries.findIndex((e) => e.id === id && e.state === 'running' && e.notifiedAt === undefined);

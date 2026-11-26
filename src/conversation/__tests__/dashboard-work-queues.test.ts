@@ -168,6 +168,26 @@ describe('Dashboard — the 작업 큐 section (lanes and people)', () => {
     expect(store.read().entries.map((e: any) => e.id)).toEqual(['wq-1', 'wq-3']);
   });
 
+  it('an admin in admin mode forgets an idle lane; a busy lane is 409, anyone else 403', async () => {
+    const admin = { ...(await signIn('U_ADMIN')), 'x-admin-mode': 'on' };
+    expect((await act('/api/dashboard/work-queues/lane/qa-dev2/forget', admin)).statusCode).toBe(409);
+    expect((await act('/api/dashboard/work-queues/lane/qa-dev2/forget', await signIn('U1'))).statusCode).toBe(403);
+    const { endEntry } = await import('somalib/work-queue/ledger');
+    for (const id of ['wq-1', 'wq-2', 'wq-3']) {
+      store.mutate((l: any) => {
+        const e = l.entries.find((x: any) => x.id === id);
+        return endEntry(l, { id, end: 'done', actor: e.holder }, 40);
+      });
+    }
+    const res = await act('/api/dashboard/work-queues/lane/qa-dev2/forget', admin);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ ok: true, removed: 3 });
+    const view = JSON.parse(
+      (await injectWebServer({ method: 'GET', url: '/api/dashboard/work-queues', headers: AUTH_HEADER })).body,
+    );
+    expect(view.lanes.map((q: any) => q.id)).toEqual(['deploy-dev2']);
+  });
+
   it('says why it cannot: gone, wrong state, unknown action', async () => {
     const admin = { ...(await signIn('U_ADMIN')), 'x-admin-mode': 'on' };
     expect((await act('/api/dashboard/work-queues/wq-9/cancel', admin)).statusCode).toBe(404);

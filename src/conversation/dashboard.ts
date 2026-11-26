@@ -5254,6 +5254,34 @@ export async function registerDashboardRoutes(
     },
   );
 
+  // An idle lane forgotten from the 작업 큐 section (an admin with admin mode): its history goes, and a lane nobody pins
+  // leaves the board. A lane with a running or waiting entry is refused (409).
+  server.post<{ Params: { queue: string } }>(
+    '/api/dashboard/work-queues/lane/:queue/forget',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const host = getActiveWorkQueueHost();
+      if (!host) {
+        reply.status(404).send({ error: '작업 큐가 꺼져 있습니다' });
+        return;
+      }
+      if (!_hasWriteAccess(request, undefined)) {
+        reply.status(403).send({ error: '관리자 모드를 켠 관리자만 할 수 있습니다' });
+        return;
+      }
+      const by = signedInUserId(request) ?? 'viewer';
+      const result = host.forget(request.params.queue, by);
+      if (!result.ok) {
+        reply
+          .status(result.code === 'BUSY' ? 409 : 400)
+          .send({ error: result.code === 'BUSY' ? '진행하거나 기다리는 항목이 있는 레인은 지울 수 없습니다' : result.code });
+        return;
+      }
+      logger.info('Dashboard: work queue lane forgotten', { queue: request.params.queue, removed: result.removed, by });
+      reply.send({ ok: true, removed: result.removed });
+    },
+  );
+
   server.post<{ Params: { key: string }; Body: { pauseGoalId?: unknown } | undefined }>(
     '/api/dashboard/session/:key/stop',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
