@@ -460,6 +460,18 @@ describe('the page', () => {
     expect(DASHBOARD_TS).toContain('id="wq-dialog-confirm" onclick="wqAskConfirm()"');
   });
 
+  it('the whole section has its English: every Korean string of its markup and its script is in the page catalog', () => {
+    const start = DASHBOARD_TS.indexOf('<div class="wq-section');
+    const markup = DASHBOARD_TS.slice(
+      start,
+      DASHBOARD_TS.indexOf('<!--', DASHBOARD_TS.indexOf('id="wq-people"', start)),
+    );
+    const missing = scanPage(`${markup}\n<script>\n${WORK_QUEUE_CLIENT_JS}\n</script>`)
+      .filter((seg) => !seg.skip && pageText(seg.key) === undefined)
+      .map((seg) => seg.key);
+    expect(missing).toEqual([]);
+  });
+
   it('the question has its English: every Korean string of the dialog and its text is in the page catalog', () => {
     const start = DASHBOARD_TS.indexOf('<ui-dialog id="wq-dialog"');
     const dialog = DASHBOARD_TS.slice(start, DASHBOARD_TS.indexOf('</ui-dialog>', start) + '</ui-dialog>'.length);

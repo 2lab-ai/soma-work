@@ -4,9 +4,21 @@
  * out of the shipped script.
  */
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { pageText, registerPageCatalog, scanPage } from '@soma/common/i18n-page';
 import { describe, expect, it, vi } from 'vitest';
 import { renderSettingsPage, SETTINGS_CLIENT_JS, SETTINGS_TABS } from '../settings-page';
 import { TASK_QUEUE_CLIENT_JS, TASK_QUEUE_TAB_HTML } from '../settings-task-queue-tab';
+
+registerPageCatalog(
+  JSON.parse(
+    readFileSync(
+      join(__dirname, '..', '..', '..', 'packages', 'common', 'src', 'i18n-catalog', 'en-page.json'),
+      'utf8',
+    ),
+  ),
+);
 
 const ALL_JS = `${TASK_QUEUE_CLIENT_JS}\n${SETTINGS_CLIENT_JS}`;
 
@@ -489,5 +501,14 @@ describe('the tab speaks the settings grammar (2026-11-26, owner: "ui마다 개�
     expect(html).toBe(
       '<div class="tq-lane is-idle"><div class="tq-lane-h"><span class="tq-lane-name">qa-x</span><span class="tq-sub">비어 있음 · 아직 내역 없음</span></div></div>',
     );
+  });
+});
+
+describe('작업 큐 tab — English', () => {
+  it('every Korean string of the tab and its script has its English (the page catalog)', () => {
+    const missing = scanPage(`${TASK_QUEUE_TAB_HTML}\n<script>\n${TASK_QUEUE_CLIENT_JS}\n</script>`)
+      .filter((seg) => !seg.skip && pageText(seg.key) === undefined)
+      .map((seg) => seg.key);
+    expect(missing).toEqual([]);
   });
 });
