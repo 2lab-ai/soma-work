@@ -39,6 +39,11 @@ import { isAwaitingUserChoice, TurnRunner, V1QueryAdapter } from './agent-sessio
 import type { ClaudeHandler } from './claude-handler';
 import { getFollowupQueueCapacity, getReleaseNotesChannels } from './config';
 import { isClientRef } from './conversation/client-ref';
+import {
+  noteInstructionReachedModel,
+  noteInstructionRunEnded,
+  noteInstructionStage,
+} from './conversation/instruction-progress';
 import { captureUserMedia, getConversation, recordUserTurn } from './conversation/recorder';
 import { readWorkLog } from './conversation/work-log';
 import { FileHandler, type ProcessedFile } from './file-handler';
@@ -2179,12 +2184,15 @@ export class SlackHandler {
     }
     if (userTask === 'queued') {
       // Durably stored, like a follow-up behind a busy slot: a host waiting for the receipt hears it now.
+      // #1466 — a dashboard send's chat says it waits in the person's task queue.
+      noteInstructionStage(sessionKey, event.dashboardClientRef, 'queued');
       this.noteTurnAccepted(event.channel, event.ts);
       return;
     }
     if (userTask === 'same-work') {
       // .prd/36 v2 D12 — every key it names already runs or waits in another thread of the person: nothing starts,
       // the thread was told who has it (그래도 시작 sends it on once).
+      noteInstructionStage(sessionKey, event.dashboardClientRef, 'same-work');
       this.noteTurnAccepted(event.channel, event.ts);
       return;
     }
@@ -2195,7 +2203,12 @@ export class SlackHandler {
     // (`followup-dispatcher.ts:329`, `:567`) — so this never leaks across runs.
     this.rememberInitialSay(sessionKey, say);
     const started = dispatcher.runInitial(sessionKey, event, this.captureFollowupContext(event));
-    if (started.status === 'dispatched') this.noteUserTaskSlot(sessionKey, event);
+    if (started.status === 'dispatched') {
+      this.noteUserTaskSlot(sessionKey, event);
+      // #1466 — its turn is dispatched: the session is set up next, then the prompt reaches the model (that run's
+      // first SDK event — bound to its epoch, so a late event of another run never says the model has this one).
+      noteInstructionStage(sessionKey, event.dashboardClientRef, 'starting', Date.now(), started.run.turnEpoch);
+    }
     // --- end of fence ---
 
     if (started.status !== 'dispatched') {
@@ -2231,6 +2244,8 @@ export class SlackHandler {
     }
 
     const report = await started.run.settled;
+    // #1466 — the run ended: a dashboard send still starting never reached the model (an error, a stop).
+    noteInstructionRunEnded(sessionKey, event.dashboardClientRef, started.run.turnEpoch);
     // Items parked during a migrating turn were stored under the CANONICAL
     // (work-thread) key, because that is the session that still exists — drain
     // there, not under the source key whose session the pipeline deleted.
@@ -5282,6 +5297,8 @@ export class SlackHandler {
    * receipt for an item nobody stored (ssot.md:89).
    */
   private async enqueueFollowup(sessionKey: string, event: MessageEvent, say: any): Promise<void> {
+    // #1466 (review on #1468) — behind a running turn: the follow-up queue's rows say what happens to it from here.
+    noteInstructionStage(sessionKey, event.dashboardClientRef, 'followup');
     const queue = this.followupQueue;
     const threadTs = event.thread_ts || event.ts;
 
@@ -6995,6 +7012,9 @@ export class SlackHandler {
     turnEpoch?: number;
     replayEpoch?: number;
   }): void {
+    // #1466 — a dashboard send whose run this is (its epoch, or the run a post-compact replay runs in): the model has it.
+    // Recorded under the slot's key (handleMessage's), which differs from the executor's while a migration is bound.
+    noteInstructionReachedModel(this.boundFollowupSlot(sessionKey) ?? sessionKey, { turnEpoch, replayEpoch });
     const dispatcher = this.followupDispatcher;
     if (!dispatcher) return;
     // The executor speaks the session's canonical key; the run holds its slot

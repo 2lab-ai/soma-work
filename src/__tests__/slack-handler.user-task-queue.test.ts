@@ -10,6 +10,7 @@ vi.mock('../work-queue/host-wait', async (importOriginal) => ({
   hostWaitFor: (channel?: string, threadTs?: string) => hostWait.fn(channel, threadTs),
 }));
 
+import { instructionProgressOf, resetInstructionProgressForTests } from '../conversation/instruction-progress';
 import { getMetricsEmitter } from '../metrics/event-emitter';
 import { SlackHandler } from '../slack-handler';
 import { userSettingsStore } from '../user-settings-store';
@@ -283,6 +284,68 @@ describe('SlackHandler — per-user task queue gate', () => {
     expect(startWithContinuation).toHaveBeenCalledTimes(2);
     // The admission was taken by the replay: nothing is left in line.
     expect(ledger.entries).toEqual([]);
+  });
+
+  it('#1466 — a dashboard send the queue holds keeps its ref through the replay: queued → starting → delivered', async () => {
+    resetInstructionProgressForTests();
+    const REF = 'optimistic-1795680000000-abc123';
+    const a = await startBusy('100.0');
+    await handler.handleMessage(
+      message('200.0', { ts: '200.01', text: '두 번째 일', dashboardClientRef: REF }),
+      vi.fn(),
+    );
+    expect(instructionProgressOf('C123:200.0')).toMatchObject({ ref: REF, stage: 'queued' });
+    await a.settle();
+
+    // Its replayed run stays open (the model has not answered yet).
+    const second = deferred<any>();
+    startWithContinuation.mockImplementationOnce(() => second.promise);
+    queue.release(OWNER);
+    await tick();
+    await tick();
+    expect(startWithContinuation).toHaveBeenCalledTimes(2);
+    expect(instructionProgressOf('C123:200.0')).toMatchObject({ ref: REF, stage: 'starting' });
+    // Another run's first event does not say the model has it; its own run's does.
+    const epoch = handlerAny.followupDispatcher.snapshot('C123:200.0').turnEpoch as number;
+    handlerAny.onFollowupTurnReachedModel({ sessionKey: 'C123:200.0', turnEpoch: epoch + 1 });
+    expect(instructionProgressOf('C123:200.0')).toMatchObject({ stage: 'starting' });
+    handlerAny.onFollowupTurnReachedModel({ sessionKey: 'C123:200.0', turnEpoch: epoch });
+    expect(instructionProgressOf('C123:200.0')).toMatchObject({ ref: REF, stage: 'delivered' });
+    second.resolve({ hasPendingChoice: false });
+    await tick();
+    // The run ended after the model had it (answered, stopped or failed): done — no stage is left on it.
+    expect(instructionProgressOf('C123:200.0')).toMatchObject({ ref: REF, stage: 'done' });
+  });
+
+  it('#1466 — the first SDK event under a bound bot-thread migration marks the slot’s instruction', async () => {
+    resetInstructionProgressForTests();
+    const REF = 'optimistic-1795680000002-ghi789';
+    const run = deferred<any>();
+    startWithContinuation.mockImplementationOnce(() => run.promise);
+    const sent = handler.handleMessage(message('400.0', { ts: '400.01', dashboardClientRef: REF }), vi.fn());
+    await tick();
+    expect(instructionProgressOf('C123:400.0')).toMatchObject({ ref: REF, stage: 'starting' });
+    const epoch = handlerAny.followupDispatcher.snapshot('C123:400.0').turnEpoch as number;
+    // The executor speaks the work thread's key; the slot (and the record) is the source thread's.
+    vi.spyOn(handlerAny, 'boundFollowupSlot').mockImplementation((key: unknown) =>
+      key === 'C999:work.1' ? 'C123:400.0' : undefined,
+    );
+    handlerAny.onFollowupTurnReachedModel({ sessionKey: 'C999:work.1', turnEpoch: epoch });
+    expect(instructionProgressOf('C123:400.0')).toMatchObject({ ref: REF, stage: 'delivered' });
+    run.resolve({ hasPendingChoice: false });
+    await sent;
+  });
+
+  it('#1466 — a dashboard send whose run ends before the model had it reads not delivered', async () => {
+    resetInstructionProgressForTests();
+    const REF = 'optimistic-1795680000001-def456';
+    // The run settles at once, its first SDK event never came (startWithContinuation resolves without it).
+    await handler.handleMessage(
+      message('300.0', { ts: '300.01', text: '세 번째 일', dashboardClientRef: REF }),
+      vi.fn(),
+    );
+    await tick();
+    expect(instructionProgressOf('C123:300.0')).toMatchObject({ ref: REF, stage: 'not-delivered' });
   });
 
   it('an admin is never held', async () => {
