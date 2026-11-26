@@ -317,6 +317,25 @@ describe('SlackHandler — per-user task queue gate', () => {
     expect(instructionProgressOf('C123:200.0')).toMatchObject({ ref: REF, stage: 'done' });
   });
 
+  it('#1466 — the first SDK event under a bound bot-thread migration marks the slot’s instruction', async () => {
+    resetInstructionProgressForTests();
+    const REF = 'optimistic-1795680000002-ghi789';
+    const run = deferred<any>();
+    startWithContinuation.mockImplementationOnce(() => run.promise);
+    const sent = handler.handleMessage(message('400.0', { ts: '400.01', dashboardClientRef: REF }), vi.fn());
+    await tick();
+    expect(instructionProgressOf('C123:400.0')).toMatchObject({ ref: REF, stage: 'starting' });
+    const epoch = handlerAny.followupDispatcher.snapshot('C123:400.0').turnEpoch as number;
+    // The executor speaks the work thread's key; the slot (and the record) is the source thread's.
+    vi.spyOn(handlerAny, 'boundFollowupSlot').mockImplementation((key: unknown) =>
+      key === 'C999:work.1' ? 'C123:400.0' : undefined,
+    );
+    handlerAny.onFollowupTurnReachedModel({ sessionKey: 'C999:work.1', turnEpoch: epoch });
+    expect(instructionProgressOf('C123:400.0')).toMatchObject({ ref: REF, stage: 'delivered' });
+    run.resolve({ hasPendingChoice: false });
+    await sent;
+  });
+
   it('#1466 — a dashboard send whose run ends before the model had it reads not delivered', async () => {
     resetInstructionProgressForTests();
     const REF = 'optimistic-1795680000001-def456';

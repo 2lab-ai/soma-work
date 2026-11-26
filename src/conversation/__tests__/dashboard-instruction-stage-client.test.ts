@@ -118,11 +118,27 @@ describe('the stage the server reported, on that instruction (convProgressChip)'
   it('review on #1468 — a message the follow-up queue owns carries the queue’s chips, never a stage of this record', () => {
     // The server says so (sent into a running turn: the follow-up queue took it).
     expect(convProgressChip([earlier, answered, optimistic], { instructionStages: [at('followup')] })).toBeNull();
-    // This browser sent it into a running turn, or the running turn already read it (applied).
-    const running = { ...optimistic, _running: true };
-    expect(convProgressChip([earlier, answered, running], { instructionStages: [at('received')] })).toBeNull();
+    // The running turn already read it (applied).
     const steered = { ...recorded, origin: { by: 'user', steered: true } };
     expect(convProgressChip([earlier, answered, steered], { instructionStages: [at('received')] })).toBeNull();
+  });
+
+  it('second review on #1468 — sent into a running session and held for the owner: 승인 대기 (convPaint keeps a queue chip)', () => {
+    const running = { ...optimistic, _running: true };
+    expect(convProgressChip([earlier, answered, running], { instructionStages: [at('approval')] })).toEqual({
+      id: REF,
+      kind: 'approval',
+    });
+  });
+
+  it('second review on #1468 — an answer to something else does not hide a stage the model has not reached', () => {
+    // Held in the task queue; a later answer (a Slack message's) is not its answer.
+    expect(convProgressChip([earlier, optimistic, answered], { instructionStages: [at('queued')] })).toEqual({
+      id: REF,
+      kind: 'userqueue',
+    });
+    // Once the model had it, an answer after it is its answer: the stage is history.
+    expect(convProgressChip([earlier, recorded, answer], { instructionStages: [at('delivered')] })).toBeNull();
   });
 
   it('its run ended before the model had it: not delivered', () => {

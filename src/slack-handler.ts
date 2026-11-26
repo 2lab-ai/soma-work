@@ -6997,7 +6997,8 @@ export class SlackHandler {
     replayEpoch?: number;
   }): void {
     // #1466 — a dashboard send whose run this is (its epoch, or the run a post-compact replay runs in): the model has it.
-    noteInstructionReachedModel(sessionKey, { turnEpoch, replayEpoch });
+    // Recorded under the slot's key (handleMessage's), which differs from the executor's while a migration is bound.
+    noteInstructionReachedModel(this.boundFollowupSlot(sessionKey) ?? sessionKey, { turnEpoch, replayEpoch });
     const dispatcher = this.followupDispatcher;
     if (!dispatcher) return;
     // The executor speaks the session's canonical key; the run holds its slot

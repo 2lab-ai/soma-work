@@ -67,7 +67,9 @@ interface Rec extends InstructionProgress {
   epoch?: number;
 }
 
+/** By session + ref: a ref is the panel's, so the same ref sent to another session is another record. */
 const byRef = new Map<string, Rec>();
+const keyOf = (sessionKey: string, ref: string) => `${sessionKey}\u0000${ref}`;
 /** Each session's refs, newest first (at most PER_SESSION). */
 const bySession = new Map<string, string[]>();
 let listener: ((sessionKey: string) => void) | undefined;
@@ -86,18 +88,19 @@ function changed(sessionKey: string): void {
 }
 
 function put(rec: Rec): void {
-  byRef.delete(rec.ref); // re-insert: the newest write is last in line for eviction
-  byRef.set(rec.ref, rec);
+  const key = keyOf(rec.sessionKey, rec.ref);
+  byRef.delete(key); // re-insert: the newest write is last in line for eviction
+  byRef.set(key, rec);
   const refs = (bySession.get(rec.sessionKey) ?? []).filter((r) => r !== rec.ref);
   refs.unshift(rec.ref);
-  for (const gone of refs.splice(PER_SESSION)) byRef.delete(gone);
+  for (const gone of refs.splice(PER_SESSION)) byRef.delete(keyOf(rec.sessionKey, gone));
   bySession.set(rec.sessionKey, refs);
   while (byRef.size > MAX_RECORDS) {
     const oldest = byRef.keys().next().value as string;
     const rec0 = byRef.get(oldest);
     byRef.delete(oldest);
     if (rec0) {
-      const left = (bySession.get(rec0.sessionKey) ?? []).filter((r) => r !== oldest);
+      const left = (bySession.get(rec0.sessionKey) ?? []).filter((r) => r !== rec0.ref);
       if (left.length) bySession.set(rec0.sessionKey, left);
       else bySession.delete(rec0.sessionKey);
     }
@@ -117,7 +120,7 @@ export function noteInstructionStage(
   epoch?: number,
 ): void {
   if (!sessionKey || !isClientRef(ref)) return;
-  const cur = byRef.get(ref);
+  const cur = byRef.get(keyOf(sessionKey, ref));
   if (cur && RANK[stage] <= RANK[cur.stage]) return;
   put({ ref, sessionKey, stage, at: now, ...(stage === 'starting' && epoch !== undefined ? { epoch } : {}) });
 }
@@ -134,7 +137,7 @@ export function noteInstructionReachedModel(
 ): void {
   if (!sessionKey) return;
   for (const ref of bySession.get(sessionKey) ?? []) {
-    const cur = byRef.get(ref);
+    const cur = byRef.get(keyOf(sessionKey, ref));
     if (!cur || cur.stage !== 'starting' || cur.epoch === undefined) continue;
     if (run.turnEpoch !== cur.epoch && run.replayEpoch !== cur.epoch) continue;
     put({ ...cur, stage: 'delivered', at: now });
@@ -153,8 +156,8 @@ export function noteInstructionRunEnded(
   now: number = Date.now(),
 ): void {
   if (!sessionKey || !isClientRef(ref)) return;
-  const cur = byRef.get(ref);
-  if (!cur || cur.sessionKey !== sessionKey || cur.epoch !== epoch) return;
+  const cur = byRef.get(keyOf(sessionKey, ref));
+  if (!cur || cur.epoch !== epoch) return;
   if (cur.stage === 'starting') put({ ...cur, stage: 'not-delivered', at: now });
   else if (cur.stage === 'delivered') put({ ...cur, stage: 'done', at: now });
 }
@@ -163,7 +166,7 @@ export function noteInstructionRunEnded(
 export function instructionStagesOf(sessionKey: string): InstructionProgress[] {
   const out: InstructionProgress[] = [];
   for (const ref of bySession.get(sessionKey) ?? []) {
-    const cur = byRef.get(ref);
+    const cur = byRef.get(keyOf(sessionKey, ref));
     if (cur) out.push({ ref: cur.ref, stage: cur.stage, at: cur.at });
   }
   return out;

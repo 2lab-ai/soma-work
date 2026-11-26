@@ -16511,9 +16511,10 @@ function steerChipHtml(kind) {
 }
 // #1466 (Z 2026-11-26) — where the instructions sent from here really are: the stage the server reported for each
 // (s.instructionStages — by its ref, the optimistic turn's id, which the recorded turn keeps as clientRef), on that
-// instruction until an answer follows it. Nothing the server has not reported: no record, no chip. A message the
-// follow-up queue owns — the server says so (followup), it was sent into a running turn (_running), or the running
-// turn read it (origin.steered) — keeps the queue's chips (review on #1468): no stage of this record on it.
+// instruction until it is over. Nothing the server has not reported: no record, no chip. A message the follow-up queue
+// owns — the server says so (followup), or the running turn read it (origin.steered) — keeps the queue's chips (review
+// on #1468): no stage of this record on it, and convPaint puts a stage only in 보내는 중's place. An answer after it
+// hides only a stage the model reached (its answer); before that, a later answer is another message's.
 var PROGRESS_CHIP = { received: 'received', approval: 'approval', queued: 'userqueue', 'same-work': 'samework', starting: 'starting', delivered: 'delivered', 'not-delivered': 'undelivered' };
 // The stages before the model has it: the writing row waits (its chip says where the instruction is instead).
 var STAGE_BEFORE_MODEL = /^(received|approval|userqueue|samework|starting|undelivered)(:|$)/;
@@ -16529,8 +16530,7 @@ function convProgressChips(list, s) {
       var t = list[i];
       if (!t) continue;
       if (String(t.id) === String(p.ref) || (t.clientRef && String(t.clientRef) === String(p.ref))) {
-        // An answer after it: its stage is history.
-        if (answered || t._running || (t.origin && t.origin.steered)) break;
+        if ((answered && kind === 'delivered') || (t.origin && t.origin.steered)) break;
         var at = kind === 'userqueue' && s.userQueue ? Number(s.userQueue.position) || 0 : 0;
         out.push({ id: String(t.id), kind: at > 0 ? kind + ':' + at : kind });
         break;

@@ -121,6 +121,15 @@ describe('instruction-progress', () => {
     expect(instructionProgressOf('k')).toEqual({ ref: REF, stage: 'done', at: 200 });
   });
 
+  it('second review on #1468 — a ref is the panel’s, per session: the same ref in another session is another record', () => {
+    noteInstructionStage('k', REF, 'starting', 100, 3);
+    noteInstructionStage('other', REF, 'received', 200); // a client reusing another session's ref
+    expect(instructionProgressOf('k')).toMatchObject({ ref: REF, stage: 'starting' });
+    expect(instructionProgressOf('other')).toMatchObject({ ref: REF, stage: 'received' });
+    noteInstructionRunEnded('other', REF, 3, 300);
+    expect(instructionProgressOf('k')).toMatchObject({ stage: 'starting' });
+  });
+
   it('only a real ref is recorded (a Slack message carries none)', () => {
     noteInstructionStage('k', undefined, 'received', 100);
     noteInstructionStage('k', 'not a ref', 'received', 100);
