@@ -99,10 +99,7 @@ describe('instruction-progress', () => {
       { ref: REF, stage: 'approval', at: 100 },
     ]);
     noteInstructionStage('k', REF, 'starting', 300, 4); // the first one approved and run
-    expect(instructionStagesOf('k').map((p) => `${p.ref}:${p.stage}`)).toEqual([
-      `${REF}:starting`,
-      `${REF2}:approval`,
-    ]);
+    expect(instructionStagesOf('k').map((p) => `${p.ref}:${p.stage}`)).toEqual([`${REF}:starting`, `${REF2}:approval`]);
     expect(instructionProgressOf('k')).toMatchObject({ ref: REF, stage: 'starting' });
     // At most the five latest of a session.
     for (let i = 0; i < 7; i++) noteInstructionStage('k', `optimistic-${i}-x`, 'received', 400 + i);
