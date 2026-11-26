@@ -4079,6 +4079,35 @@ describe('SlackHandler — follow-up queue host', () => {
       await settle();
     });
 
+    it('a cancel or an edit that changes the head of the line asks the held turn again', async () => {
+      withLiveTurn(false);
+      const { settle } = await startBusyTurn();
+      const gate = claudeHandler.setHoldReleaseGate.mock.calls[0][0] as (key: string) => boolean;
+      await handler.handleMessage(message({ ts: '333.444', text: 'PR 이것도 하고 그 다음 것도 해줘' }), say());
+      await handler.handleMessage(message({ ts: '333.555', text: '$autoz 이거 해줘' }), say());
+      expect(gate(SESSION_KEY)).toBe(false);
+      claudeHandler.requestHoldRelease.mockClear();
+
+      // The person cancels the plain message: the command now heads the line.
+      const plain = items().find((item: any) => item.message.ts === '333.444');
+      handlerAny.getFollowupQueue().cancelItem(SESSION_KEY, plain.id, plain.epoch, '테스트가 취소했습니다');
+      handlerAny.followupActionDeps.onItemProcessed(SESSION_KEY, plain.id);
+      expect(claudeHandler.requestHoldRelease).toHaveBeenCalledWith(SESSION_KEY);
+      expect(gate(SESSION_KEY)).toBe(true);
+
+      // An edit of a queued row asks too.
+      claudeHandler.requestHoldRelease.mockClear();
+      await handlerAny.handleQueuedMessageEdit({
+        channel: CHANNEL,
+        ts: '333.555',
+        threadTs: THREAD_TS,
+        user: 'U_OWNER',
+        text: '$autoz 이거 고쳐서 해줘',
+      });
+      expect(claudeHandler.requestHoldRelease).toHaveBeenCalledWith(SESSION_KEY);
+      await settle();
+    });
+
     it('a `$skill` from someone who may not interrupt the session does not end a hold', async () => {
       withLiveTurn();
       const { settle } = await startBusyTurn();

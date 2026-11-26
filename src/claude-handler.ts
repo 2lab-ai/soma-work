@@ -714,7 +714,13 @@ export class ClaudeHandler implements TurnSteeringPort {
    */
   private activeQueries = new Map<
     string,
-    { query: Query; channel: TurnInputChannel; considerHoldRelease?: () => void }
+    {
+      query: Query;
+      channel: TurnInputChannel;
+      considerHoldRelease?: () => void;
+      /** #1472 — steers the SDK gave back (`cancelSteeredMessage` → `withdrawn`): they open no turn. */
+      withdrawnSteers?: Set<string>;
+    }
   >();
 
   /**
@@ -1663,8 +1669,10 @@ export class ClaudeHandler implements TurnSteeringPort {
       // `undefined` and `cancelSteeredMessage` answers `unreachable`. The
       // caller's abort controller and the wall-clock budget still stop it.
       const steerKey = incident ? undefined : sessionKey;
+      /** #1472 — steers of this query the SDK gave back (see `cancelSteeredMessage`). */
+      const withdrawnSteers = new Set<string>();
       if (steerKey) {
-        this.activeQueries.set(steerKey, { query: activeQuery, channel });
+        this.activeQueries.set(steerKey, { query: activeQuery, channel, withdrawnSteers });
       }
       // The frames, read as fast as the CLI sends them (`pumpFrames`): the loop
       // below hands each one to a consumer that renders it before asking for
@@ -1691,6 +1699,8 @@ export class ClaudeHandler implements TurnSteeringPort {
       };
       /** Frames the read-ahead has seen; the loop has caught up when it has processed as many (`frameSeq`). */
       let arrivedFrames = 0;
+      /** #1472 — steers the CLI has handed to the model (their read receipt): they opened or joined a turn. */
+      const readSteers = new Set<string>();
       const frames = pumpFrames(queryFrames(activeQuery), (frame) => {
         arrivedFrames += 1;
         const raw = frame as unknown as Record<string, unknown>;
@@ -1704,6 +1714,7 @@ export class ClaudeHandler implements TurnSteeringPort {
         const uuid = raw.command_uuid;
         // The opening message is reported the same way: only a steer counts.
         if (typeof uuid === 'string' && channel.pushedUuids().includes(uuid)) {
+          readSteers.add(uuid);
           this.steerSignals?.read(steerKey, uuid);
         }
       });
@@ -1941,8 +1952,9 @@ export class ClaudeHandler implements TurnSteeringPort {
           turnRunning() ||
           arrivedFrames !== frameSeq ||
           resultTransit.inTransit > 0 ||
-          // A steer pushed into the hold opens a turn the CLI has not started yet: its result is the next boundary.
-          channel.pushedUuids().length !== held.pushedCount
+          // A steer pushed but not read yet opens (or joins) a turn the CLI has not started: wait for it. A steer the
+          // SDK gave back opens none.
+          channel.pushedUuids().some((uuid) => !readSteers.has(uuid) && !withdrawnSteers.has(uuid))
         ) {
           holdReleaseAsked = true;
           return false;
@@ -2935,7 +2947,9 @@ export class ClaudeHandler implements TurnSteeringPort {
     const cancel = (entry.query as unknown as { cancelAsyncMessage?: (uuid: string) => Promise<boolean> })
       .cancelAsyncMessage;
     if (typeof cancel !== 'function') return 'unreachable';
-    return (await cancel.call(entry.query, uuid)) === true ? 'withdrawn' : 'already-dequeued';
+    const withdrawn = (await cancel.call(entry.query, uuid)) === true;
+    if (withdrawn) entry.withdrawnSteers?.add(uuid);
+    return withdrawn ? 'withdrawn' : 'already-dequeued';
   }
 
   /**

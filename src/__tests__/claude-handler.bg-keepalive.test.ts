@@ -3286,6 +3286,96 @@ describe('ClaudeHandler — a held run yields to a waiting command (#1472)', () 
     }
   });
 
+  it('a steer the SDK gave back does not keep the hold', async () => {
+    const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const agent = installHeldAgent(cli);
+      let waiting = false;
+      const handler = newHandler();
+      handler.setHoldReleaseGate(() => waiting);
+
+      const framesPromise = collect(startTurn(handler));
+      await agent.held;
+      await hostCaughtUp();
+      expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-plain', text: '이것도 봐줘' })).toBe(true);
+      expect(await handler.cancelSteeredMessage(SESSION_KEY, 'u-plain')).toBe('withdrawn');
+
+      waiting = true;
+      handler.requestHoldRelease(SESSION_KEY);
+      const frames = await framesPromise;
+
+      expect(cli.stopTask).toHaveBeenCalledWith(AGENT_ID);
+      expect(callsOf(info, YIELD_LOG)).toHaveLength(1);
+      expect(resultsOf(frames)).toHaveLength(1);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  it('a steer not read yet keeps the hold, even after another turn of the hold ends', async () => {
+    const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const held = deferred();
+      const notify = deferred();
+      const notified = deferred();
+      const readSteer = deferred();
+      installScriptedQuery(cli, async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield* openingTurnHead([agentTask(AGENT_ID)]);
+        yield openingResult(cli.opening?.uuid);
+        const drained = drainInputs(inputs, cli);
+        held.resolve();
+        // A notification turn of the agent runs and ends; the steer pushed before it is not read by it.
+        await notify.promise;
+        yield INIT;
+        yield NOTIFIED;
+        yield notifiedResult();
+        notified.resolve();
+        // Then the CLI reads the steer and answers it in a turn of its own.
+        await readSteer.promise;
+        yield { type: 'command_lifecycle', command_uuid: 'u-plain', state: 'started' };
+        yield INIT;
+        yield assistantText('ANSWERED');
+        yield successResult({ result: 'ANSWERED', num_turns: 1, uuid: 'answer-uuid', user_message_uuid: 'u-plain' });
+        await drained;
+        yield taskNotification(AGENT_ID, 'stopped');
+        yield level([]);
+        yield INIT;
+        yield assistantText('REPORTED');
+        yield notifiedResult({ result: 'REPORTED' });
+      });
+      let waiting = false;
+      const handler = newHandler();
+      handler.setHoldReleaseGate(() => waiting);
+
+      const framesPromise = collect(startTurn(handler));
+      await held.promise;
+      await hostCaughtUp();
+      expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-plain', text: '이것도 봐줘' })).toBe(true);
+      waiting = true;
+      handler.requestHoldRelease(SESSION_KEY);
+      await hostCaughtUp();
+      expect(cli.stopTask).not.toHaveBeenCalled();
+
+      notify.resolve();
+      await notified.promise;
+      await hostCaughtUp();
+      // The notification turn ended, but the steer is still unread: its turn must not be cut.
+      expect(cli.stopTask).not.toHaveBeenCalled();
+      expect(cli.inputEnded).toBe(false);
+
+      readSteer.resolve();
+      const frames = await framesPromise;
+      expect(cli.stopTask).toHaveBeenCalledWith(AGENT_ID);
+      expect(callsOf(info, YIELD_LOG)).toHaveLength(1);
+      expect(resultsOf(frames).length).toBeGreaterThanOrEqual(1);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
   it('a request for another session changes nothing', async () => {
     const cli = newFakeCli();
     const agent = installHeldAgent(cli);

@@ -1345,6 +1345,8 @@ export class SlackHandler {
       // front of the ephemeral the user is waiting for.
       onItemProcessed: (sessionKey, itemId) => {
         void this.syncFollowupReactions(sessionKey, itemId);
+        // #1472 — a cancel can put a waiting command at the head of the line: the held turn asks its gate again.
+        this.claudeHandler.requestHoldRelease?.(this.canonicalFollowupKey(sessionKey));
       },
       // A goal's queued opening turn IS that goal's start: cancelling it means
       // cancelling the goal (see `onGoalOpeningCancelled`).
@@ -6170,6 +6172,8 @@ export class SlackHandler {
         this.logger.debug('Queued item edit refused', { sessionKey, itemId: item.id, reason: result.reason });
         return;
       }
+      // #1472 — an edit can turn the head of the line into a command: the held turn asks its gate again.
+      this.claudeHandler.requestHoldRelease?.(this.canonicalFollowupKey(sessionKey));
       await this.refreshFollowupSurface(sessionKey);
       return;
     }
