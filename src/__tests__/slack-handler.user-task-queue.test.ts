@@ -277,6 +277,35 @@ describe('SlackHandler — per-user task queue gate', () => {
     await first;
   });
 
+  // #1474 round 10 (astra): the person's typed reply in a thread whose question is open, after the asking turn ended,
+  // is that question's answer — not the same work another thread runs.
+  it('#1474 — a typed reply to the open question naming a key another thread runs is not refused: it runs', async () => {
+    limits.set(OWNER, UNLIMITED);
+    const gate = deferred<any>();
+    startWithContinuation.mockImplementationOnce(() => gate.promise);
+    const first = handler.handleMessage(
+      message('100.0', { text: 'ABC-1 구현해줘' }),
+      vi.fn().mockResolvedValue({ ts: 'x' }),
+    );
+    await tick();
+    // The other thread's turn asked which issue, and ended waiting on the question.
+    sessions.set('C123:200.0', {
+      ownerId: OWNER,
+      channelId: CHANNEL,
+      threadTs: '200.0',
+      threadRootTs: '200.0',
+      sessionId: 's-200.0',
+      title: 'task 200.0',
+      actionPanel: { waitingForChoice: true, pendingQuestion: { type: 'user_choice', question: '어느 이슈?' } },
+    });
+
+    await handler.handleMessage(message('200.0', { ts: '200.02', text: 'ABC-1' }), vi.fn());
+    expect(startWithContinuation).toHaveBeenCalledTimes(2);
+    expect(startWithContinuation.mock.calls[1][0]).toContain('ABC-1');
+    gate.resolve({ hasPendingChoice: false });
+    await first;
+  });
+
   it('a thread’s keys are its latest keyed request’s: a thread that did ABC-1 and now does ABC-2 is not doing ABC-1', async () => {
     limits.set(OWNER, UNLIMITED);
     await handler.handleMessage(message('100.0', { text: 'ABC-1 해줘' }), vi.fn().mockResolvedValue({ ts: 'x' }));

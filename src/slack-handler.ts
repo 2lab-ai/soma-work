@@ -9712,9 +9712,12 @@ export class SlackHandler {
         admitted,
         // pr-watch reserved this event's slot as it sent it (`reserveHostTurn`): it runs on that reservation.
         hostReserved: route?.userTaskReady === true,
+        sameWorkOk: route?.userTaskSameWorkOk === true,
         // #1474 — an answer to the model's question goes on with the thread's own work: it is never refused as the
-        // same work another thread of the person runs (its question is already recorded answered) (round 9, astra).
-        sameWorkOk: route?.userTaskSameWorkOk === true || event.questionAnswer === true,
+        // same work another thread of the person runs — a recorded answer (its question already closed) or the
+        // person's typed reply while the question is open. Only that check: a Slack resend of it is still one
+        // (round 9/10, astra).
+        answersQuestion: event.questionAnswer === true || this.answersOpenQuestion(sessionKey, event),
       });
       if (result.action === 'same-work') {
         this.logger.info('User task queue: the same work is already running or waiting — not started', {
