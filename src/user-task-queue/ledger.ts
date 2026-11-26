@@ -9,7 +9,12 @@
  *
  * `waiting` entries stand in line. `admitted` ones were started and are on their way to their turn: they still hold
  * a place until the turn takes it (`take`), so a second release cannot start a task into the same free slot.
+ *
+ * It is a line like a lane's (`somalib/work-queue/line.ts`, .prd/36 v2): an entry names its work by keys, and what
+ * leaves the line leaves a record — the person's queue history.
  */
+import type { LineItem, LineRecord } from 'somalib/work-queue/line';
+import { isLineRecord, personQueueId } from 'somalib/work-queue/line';
 
 export type UserTaskKind = 'request' | 'resume';
 export type UserTaskState = 'waiting' | 'admitted';
@@ -38,11 +43,47 @@ export interface UserTaskEntry extends UserTaskThread {
   deferredFor?: UserTaskThread;
   /** The person let it go first (먼저 진행) while the running task's stop was still landing: it starts as such. */
   bypass?: boolean;
+  /** The work keys the request names (`keysInText`); absent on an entry saved before keys. */
+  keys?: string[];
 }
 
 export interface UserTaskLedger {
   version: 1;
   entries: UserTaskEntry[];
+  /** What left the line, oldest first (`LINE_RECORDS_KEEP`); absent on a ledger saved before records. */
+  records?: LineRecord[];
+}
+
+/** The entry as the shared line sees it: an admitted entry holds a place, as a running one does. */
+export function lineItemOf(e: UserTaskEntry): LineItem {
+  return {
+    id: e.id,
+    keys: e.keys ?? [],
+    state: e.state === 'waiting' ? 'waiting' : 'running',
+    holder: { user: e.userId, channel: e.channel, threadTs: e.threadTs },
+    enteredAt: e.enqueuedAt,
+  };
+}
+
+/** The record an entry leaves when it leaves the person's line. */
+export function recordOf(
+  e: UserTaskEntry,
+  end: LineRecord['end'],
+  now: number,
+  extra: { reason?: string; startedAt?: number } = {},
+): LineRecord {
+  return {
+    id: e.id,
+    queue: personQueueId(e.userId),
+    keys: [...(e.keys ?? [])],
+    holder: { user: e.userId, channel: e.channel, threadTs: e.threadTs },
+    ...(e.preview ? { label: e.preview } : {}),
+    enteredAt: e.enqueuedAt,
+    ...(extra.startedAt !== undefined ? { startedAt: extra.startedAt } : {}),
+    endedAt: now,
+    end,
+    ...(extra.reason ? { reason: extra.reason } : {}),
+  };
 }
 
 export function emptyLedger(): UserTaskLedger {
@@ -112,9 +153,12 @@ export function recoverAfterRestart(ledger: UserTaskLedger): UserTaskLedger {
 /** Throws on anything that is not a ledger (the store's schema gate). */
 export function parseLedger(raw: unknown): UserTaskLedger {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('not an object');
-  const { version, entries } = raw as { version?: unknown; entries?: unknown };
+  const { version, entries, records } = raw as { version?: unknown; entries?: unknown; records?: unknown };
   if (version !== 1) throw new Error(`unknown version ${String(version)}`);
   if (!Array.isArray(entries)) throw new Error('entries is not a list');
+  if (records !== undefined && (!Array.isArray(records) || !records.every(isLineRecord))) {
+    throw new Error('records is not a list of records');
+  }
   for (const e of entries) {
     if (!e || typeof e !== 'object') throw new Error('entry is not an object');
     const entry = e as Partial<UserTaskEntry>;
@@ -123,6 +167,9 @@ export function parseLedger(raw: unknown): UserTaskLedger {
     }
     if (entry.kind !== 'request' && entry.kind !== 'resume') throw new Error('entry kind unknown');
     if (entry.state !== 'waiting' && entry.state !== 'admitted') throw new Error('entry state unknown');
+    if (entry.keys !== undefined && (!Array.isArray(entry.keys) || !entry.keys.every((k) => typeof k === 'string'))) {
+      throw new Error('entry keys is not a list of keys');
+    }
     // A request is replayed as it arrived: one without its message could never run.
     if (entry.kind === 'request') {
       const m = entry.message as { channel?: unknown } | undefined;

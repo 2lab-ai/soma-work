@@ -8,7 +8,6 @@ import { MemoryWorkQueueStore } from 'somalib/work-queue/memory-store';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { type HolderProbe, WORK_QUEUE_ASKING_GRACE_MS, WORK_QUEUE_IDLE_GRACE_MS, WorkQueueHost } from '../host';
 
-const QUEUES = [{ id: 'qa:dev2', lane: 'qa', env: 'dev2' }];
 const A: WorkQueueHolder = { user: 'U1', channel: 'C1', threadTs: '1.1' };
 const B: WorkQueueHolder = { user: 'U2', channel: 'C1', threadTs: '2.2' };
 const C: WorkQueueHolder = { user: 'U3', channel: 'C1', threadTs: '3.3' };
@@ -44,7 +43,7 @@ function harness() {
     now: () => clock.now,
   });
   const enter = (holder: WorkQueueHolder, keys: string[]) =>
-    store.mutate((l) => enterQueue(l, { queue: 'qa:dev2', keys, holder }, QUEUES, clock.now));
+    store.mutate((l) => enterQueue(l, { queue: 'qa-dev2', keys, holder }, clock.now));
   const done = (holder: WorkQueueHolder, id: string) =>
     store.mutate((l) => endEntry(l, { id, end: 'done', actor: holder }, clock.now));
   probes.set('1.1', { exists: true, activity: 'working', activityChangedAt: clock.now });
@@ -54,14 +53,14 @@ function harness() {
 }
 
 describe('WorkQueueHost — reading a thread', () => {
-  it('A3 — a waiting thread reads as queued with its place; it waits on the host', () => {
+  it('A3 — a waiting thread reads as waiting with its place; it waits on the host', () => {
     const h = harness();
     h.enter(A, ['ABC-1']);
     h.enter(B, ['ABC-2']);
     expect(h.host.statusFor('C1', '2.2')).toMatchObject({
-      queue: 'qa:dev2',
+      queue: 'qa-dev2',
       entry: 'wq-2',
-      state: 'queued',
+      state: 'waiting',
       position: 1,
       keys: ['ABC-2'],
     });
@@ -90,7 +89,7 @@ describe('WorkQueueHost — waking', () => {
     h.host.tick();
     expect(h.delivered).toHaveLength(1);
     expect(h.delivered[0].holder).toEqual(B);
-    expect(h.delivered[0].text).toMatch(/qa:dev2/);
+    expect(h.delivered[0].text).toMatch(/qa-dev2/);
     expect(h.delivered[0].text).toMatch(/wq-2/);
     expect(h.delivered[0].text).toMatch(/ABC-2/);
     expect(h.delivered[0].text).toMatch(/queue_done/);
@@ -117,7 +116,7 @@ describe('WorkQueueHost — waking', () => {
     h.host.tick();
     h.delivered[0].done('gone');
     expect(store.read().entries.map((e) => [e.id, e.state])).toEqual([['wq-3', 'running']]);
-    expect(store.read().ended.slice(-1)[0]).toMatchObject({ id: 'wq-2', end: 'released', reason: 'holder-gone' });
+    expect(store.read().records.slice(-1)[0]).toMatchObject({ id: 'wq-2', end: 'released', reason: 'holder-gone' });
     h.host.tick();
     expect(h.delivered.map((d) => d.holder.threadTs)).toEqual(['2.2', '3.3']);
   });
@@ -153,10 +152,10 @@ describe('WorkQueueHost — giving back a turn nobody works on', () => {
     h.clock.now += 2;
     h.host.sweep();
     expect(store.read().entries.map((e) => [e.id, e.state])).toEqual([['wq-2', 'running']]);
-    expect(store.read().ended.slice(-1)[0]).toMatchObject({ id: 'wq-1', reason: 'holder-idle' });
+    expect(store.read().records.slice(-1)[0]).toMatchObject({ id: 'wq-1', reason: 'holder-idle' });
     expect(h.posted).toHaveLength(1);
     expect(h.posted[0].holder).toEqual(A);
-    expect(h.posted[0].text).toMatch(/qa:dev2/);
+    expect(h.posted[0].text).toMatch(/qa-dev2/);
   });
 
   it('a working thread, a thread with a hand-off running, or one just woken keeps its turn', () => {
@@ -193,7 +192,7 @@ describe('WorkQueueHost — giving back a turn nobody works on', () => {
     expect(store.read().entries).toHaveLength(1);
     h.clock.now += 2;
     h.host.sweep();
-    expect(store.read().ended.slice(-1)[0]).toMatchObject({ id: 'wq-1', reason: 'holder-asking' });
+    expect(store.read().records.slice(-1)[0]).toMatchObject({ id: 'wq-1', reason: 'holder-asking' });
   });
 
   it('A7 — a waiting entry whose thread is gone leaves the line without a notice', () => {
@@ -203,7 +202,7 @@ describe('WorkQueueHost — giving back a turn nobody works on', () => {
     h.probes.delete('2.2');
     h.host.sweep();
     expect(store.read().entries.map((e) => e.id)).toEqual(['wq-1']);
-    expect(store.read().ended.slice(-1)[0]).toMatchObject({ id: 'wq-2', reason: 'holder-gone' });
+    expect(store.read().records.slice(-1)[0]).toMatchObject({ id: 'wq-2', reason: 'holder-gone' });
     expect(h.posted).toHaveLength(0);
   });
 
@@ -218,7 +217,7 @@ describe('WorkQueueHost — giving back a turn nobody works on', () => {
     expect(store.read().entries[0]).toMatchObject({ id: 'wq-2', state: 'running' });
     h.clock.now += 20;
     h.host.sweep();
-    expect(store.read().ended.slice(-1)[0]).toMatchObject({ id: 'wq-2', reason: 'holder-idle' });
+    expect(store.read().records.slice(-1)[0]).toMatchObject({ id: 'wq-2', reason: 'holder-idle' });
     expect(h.delivered[0].current()).toBe(false);
   });
 });
@@ -266,7 +265,7 @@ describe('WorkQueueHost — review round 1', () => {
     expect(store.read().entries[0]).toMatchObject({ id: 'wq-1', state: 'running' });
     h.clock.now += WORK_QUEUE_IDLE_GRACE_MS;
     restarted.sweep();
-    expect(store.read().ended.slice(-1)[0]).toMatchObject({ id: 'wq-1', reason: 'holder-idle' });
+    expect(store.read().records.slice(-1)[0]).toMatchObject({ id: 'wq-1', reason: 'holder-idle' });
   });
 
   it('a granted entry whose thread waits on a person is given back after the asking grace, with a notice', () => {
@@ -280,7 +279,7 @@ describe('WorkQueueHost — review round 1', () => {
     expect(h.delivered).toHaveLength(1);
     h.clock.now += WORK_QUEUE_ASKING_GRACE_MS + 1;
     h.host.sweep();
-    expect(store.read().ended.slice(-1)[0]).toMatchObject({ id: 'wq-2', reason: 'holder-asking' });
+    expect(store.read().records.slice(-1)[0]).toMatchObject({ id: 'wq-2', reason: 'holder-asking' });
     expect(h.posted.map((p) => p.holder.threadTs)).toEqual(['2.2']);
     // The wake still waiting for that thread is no longer current: the delivery drops it.
     expect(h.delivered[0].current()).toBe(false);
@@ -308,7 +307,7 @@ describe('WorkQueueHost — review round 1', () => {
     h.done(A, 'wq-1');
     h.host.tick();
     h.delivered[0].done('expired');
-    expect(store.read().ended.slice(-1)[0]).toMatchObject({ id: 'wq-2', reason: 'wake-expired' });
+    expect(store.read().records.slice(-1)[0]).toMatchObject({ id: 'wq-2', reason: 'wake-expired' });
     expect(h.posted.map((p) => p.holder.threadTs)).toEqual(['2.2']);
   });
 
@@ -340,5 +339,77 @@ describe('WorkQueueHost — review round 1', () => {
     h.host.sweep();
     store.stamp = stamp;
     expect(store.read().entries.map((e) => e.id)).toEqual(['wq-1']);
+  });
+});
+
+describe('WorkQueueHost — an admin manages a lane (.prd/36 v2 D13)', () => {
+  it('cancels a waiting entry; the thread hears nothing new (it was not running)', () => {
+    const h = harness();
+    h.enter(A, ['ABC-1']);
+    h.enter(B, ['ABC-2']);
+    expect(h.host.manage('wq-2', 'cancel', 'UADMIN')).toEqual({ ok: true });
+    expect(store.read().entries.map((e) => e.id)).toEqual(['wq-1']);
+    expect(store.read().records.slice(-1)[0]).toMatchObject({ id: 'wq-2', end: 'cancelled', reason: 'admin:UADMIN' });
+  });
+
+  it('gives a running turn back: the holder hears ⏹, the next entry is woken', () => {
+    const h = harness();
+    h.enter(A, ['ABC-1']);
+    h.enter(B, ['ABC-2']);
+    expect(h.host.manage('wq-1', 'release', 'UADMIN')).toEqual({ ok: true });
+    expect(store.read().records.slice(-1)[0]).toMatchObject({ id: 'wq-1', end: 'released', reason: 'admin:UADMIN' });
+    expect(h.posted.map((p) => [p.holder.threadTs, p.text])).toEqual([['1.1', expect.stringMatching(/관리자/)]]);
+    expect(h.delivered.map((d) => d.holder.threadTs)).toEqual(['2.2']);
+  });
+
+  it('lets a waiting entry go first', () => {
+    const h = harness();
+    h.enter(A, ['ABC-1']);
+    h.enter(B, ['ABC-2']);
+    h.enter(C, ['ABC-3']);
+    expect(h.host.manage('wq-3', 'first', 'UADMIN')).toEqual({ ok: true });
+    expect(h.host.statusFor('C1', '3.3')).toMatchObject({ position: 1 });
+    expect(h.host.statusFor('C1', '2.2')).toMatchObject({ position: 2 });
+  });
+
+  it('checks the state inside the change: an entry promoted meanwhile by another process is not cancelled as waiting', () => {
+    const h = harness();
+    h.enter(A, ['ABC-1']);
+    h.enter(B, ['ABC-2']);
+    // Another process (wq-1's MCP) calls queue_done between the host's read and its change: wq-2 runs now.
+    const mutate = store.mutate.bind(store);
+    let raced = false;
+    (store as any).mutate = (fn: any) => {
+      if (!raced) {
+        raced = true;
+        mutate((l: any) => endEntry(l, { id: 'wq-1', end: 'done', actor: A }, h.clock.now));
+      }
+      return mutate(fn);
+    };
+    expect(h.host.manage('wq-2', 'cancel', 'UADMIN')).toEqual({ ok: false, code: 'NOT_WAITING' });
+    expect(store.read().entries.map((e) => [e.id, e.state])).toEqual([['wq-2', 'running']]);
+  });
+
+  it('says why it cannot: an unknown entry, first on a running one, cancel on a running one', () => {
+    const h = harness();
+    h.enter(A, ['ABC-1']);
+    expect(h.host.manage('wq-9', 'cancel', 'UADMIN')).toEqual({ ok: false, code: 'UNKNOWN_ENTRY' });
+    expect(h.host.manage('wq-1', 'first', 'UADMIN')).toEqual({ ok: false, code: 'NOT_WAITING' });
+    expect(h.host.manage('wq-1', 'cancel', 'UADMIN')).toEqual({ ok: false, code: 'NOT_WAITING' });
+  });
+});
+
+describe('WorkQueueHost — views', () => {
+  it('lists the pinned lanes and every lane in use, with what runs, waits and left', () => {
+    const h = harness();
+    h.enter(A, ['ABC-1']);
+    h.enter(B, ['ABC-2']);
+    h.done(A, 'wq-1');
+    const views = h.host.views(['deploy-dev2']);
+    expect(views.map((v) => [v.id, v.running.map((e) => e.id), v.waiting.map((e) => e.id)])).toEqual([
+      ['deploy-dev2', [], []],
+      ['qa-dev2', ['wq-2'], []],
+    ]);
+    expect(views[1].recent.map((r) => [r.id, r.end])).toEqual([['wq-1', 'done']]);
   });
 });

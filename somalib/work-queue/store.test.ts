@@ -10,7 +10,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { emptyLedger, enterQueue } from './ledger';
 import { WORK_QUEUE_FILE, WorkQueueStore, workQueueStoreAvailable } from './store';
 
-const QUEUES = [{ id: 'qa:dev2', lane: 'qa', env: 'dev2' }];
 const A = { user: 'U1', channel: 'C1', threadTs: '1.1' };
 
 let dir: string;
@@ -34,7 +33,7 @@ afterEach(() => {
 });
 
 const enterA = (store: WorkQueueStore, key = 'ABC-1', threadTs = '1.1') =>
-  store.mutate((l) => enterQueue(l, { queue: 'qa:dev2', keys: [key], holder: { ...A, threadTs } }, QUEUES, 1_000));
+  store.mutate((l) => enterQueue(l, { queue: 'qa-dev2', keys: [key], holder: { ...A, threadTs } }, 1_000));
 
 // node:sqlite needs Node >= 22.5; on an older runtime the host keeps no work queue (the tools say so).
 describe.skipIf(!workQueueStoreAvailable())('WorkQueueStore', () => {
@@ -66,7 +65,7 @@ describe.skipIf(!workQueueStoreAvailable())('WorkQueueStore', () => {
     const store = open();
     enterA(store);
     const stamp = store.stamp();
-    store.mutate((l) => enterQueue(l, { queue: 'qa:dev2', keys: ['bad'], holder: A }, QUEUES, 1));
+    store.mutate((l) => enterQueue(l, { queue: 'qa-dev2', keys: ['bad'], holder: A }, 1));
     expect(store.stamp()).toBe(stamp);
   });
 
@@ -102,6 +101,31 @@ describe.skipIf(!workQueueStoreAvailable())('WorkQueueStore', () => {
     expect(() => open().read()).toThrow(/work-queues/);
   });
 
+  it('a v1 ledger a host already has reads as v2, and the next change writes v2', () => {
+    const store = open();
+    enterA(store);
+    store.close();
+    const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
+    const db = new DatabaseSync(file);
+    const v1 = {
+      version: 1,
+      seq: 1,
+      entries: [{ id: 'wq-1', queue: 'qa:dev2', keys: ['ABC-1'], holder: A, state: 'queued', enteredAt: 1 }],
+      ended: [],
+    };
+    db.prepare('UPDATE ledger SET body = ? WHERE id = 1').run(JSON.stringify(v1));
+    db.close();
+    const again = open();
+    expect(again.read().entries).toEqual([expect.objectContaining({ id: 'wq-1', queue: 'qa-dev2', state: 'waiting' })]);
+    again.mutate((l) => ({ ledger: { ...l }, result: undefined }));
+    again.close();
+    const raw = new DatabaseSync(file);
+    const body = JSON.parse((raw.prepare('SELECT body FROM ledger WHERE id = 1').get() as { body: string }).body);
+    raw.close();
+    expect(body.version).toBe(2);
+    expect(body.records).toEqual([]);
+  });
+
   it('writers in separate processes, at once, lose nothing: distinct ids, one running entry', async () => {
     const storeJs = require.resolve('./store');
     const ledgerJs = require.resolve('./ledger');
@@ -112,7 +136,7 @@ describe.skipIf(!workQueueStoreAvailable())('WorkQueueStore', () => {
       while (Date.now() < Number(startAt)) {}
       const store = new WorkQueueStore(file);
       for (let i = 0; i < 15; i++) {
-        store.mutate((l) => enterQueue(l, { queue: 'qa:dev2', keys: ['ABC-' + (who * 100 + i + 1)], holder: { user: 'U', channel: 'C' + who, threadTs: who + '.' + i } }, [{ id: 'qa:dev2', lane: 'qa', env: 'dev2' }], Date.now()));
+        store.mutate((l) => enterQueue(l, { queue: 'qa-dev2', keys: ['ABC-' + (who * 100 + i + 1)], holder: { user: 'U', channel: 'C' + who, threadTs: who + '.' + i } }, Date.now()));
       }
       store.close();
     `;

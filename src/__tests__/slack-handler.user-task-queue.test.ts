@@ -220,6 +220,57 @@ describe('SlackHandler — per-user task queue gate', () => {
     expect(handler.runningTasksOf(OWNER)).toEqual([]);
   });
 
+  it('.prd/36 v2 D12 — the same work sent again in a new thread fails fast: nothing starts, its receipt fires', async () => {
+    limits.set(OWNER, UNLIMITED);
+    const gate = deferred<any>();
+    startWithContinuation.mockImplementationOnce(() => gate.promise);
+    const first = handler.handleMessage(
+      message('100.0', { text: 'ABC-1 구현해줘' }),
+      vi.fn().mockResolvedValue({ ts: 'x' }),
+    );
+    await tick();
+    // The running task registered the keys its request named, and its card's PR.
+    sessions.get('C123:100.0').links = {
+      pr: { url: 'https://github.com/acme/shop/pull/7', type: 'pr', provider: 'github' },
+    };
+    expect(handler.runningTasksOf(OWNER)[0].keys).toEqual(['ABC-1', 'acme/shop#7']);
+
+    const accepted = vi.fn();
+    handler.onTurnAccepted(CHANNEL, '200.01', accepted);
+    await handler.handleMessage(
+      message('200.0', { ts: '200.01', text: 'ABC-1 다시 https://github.com/acme/shop/pull/7' }),
+      vi.fn(),
+    );
+    expect(startWithContinuation).toHaveBeenCalledTimes(1);
+    expect(accepted).toHaveBeenCalledTimes(1);
+    expect(ledger.entries).toEqual([]);
+    expect(ledger.records?.slice(-1)[0]).toMatchObject({ end: 'refused', keys: ['ABC-1', 'acme/shop#7'] });
+
+    // Some of the work is new: it runs.
+    await handler.handleMessage(message('300.0', { ts: '300.01', text: 'ABC-1 and ABC-2' }), vi.fn());
+    expect(startWithContinuation).toHaveBeenCalledTimes(2);
+    gate.resolve({ hasPendingChoice: false });
+    await first;
+  });
+
+  it('a thread’s keys are its latest keyed request’s: a thread that did ABC-1 and now does ABC-2 is not doing ABC-1', async () => {
+    limits.set(OWNER, UNLIMITED);
+    await handler.handleMessage(message('100.0', { text: 'ABC-1 해줘' }), vi.fn().mockResolvedValue({ ts: 'x' }));
+    const gate = deferred<any>();
+    startWithContinuation.mockImplementationOnce(() => gate.promise);
+    const second = handler.handleMessage(
+      message('100.0', { ts: '100.5', text: 'ABC-2 이어서' }),
+      vi.fn().mockResolvedValue({ ts: 'x' }),
+    );
+    await tick();
+    expect(handler.runningTasksOf(OWNER)[0].keys).toEqual(['ABC-2']);
+    // ABC-1 in a new thread is new work now.
+    await handler.handleMessage(message('200.0', { ts: '200.01', text: 'ABC-1 hotfix' }), vi.fn());
+    expect(ledger.records ?? []).toEqual([]);
+    gate.resolve({ hasPendingChoice: false });
+    await second;
+  });
+
   it('when the first ends, the waiting one is replayed as it arrived and runs', async () => {
     const a = await startBusy('100.0');
     await handler.handleMessage(message('200.0', { ts: '200.01', text: '두 번째 일' }), vi.fn());

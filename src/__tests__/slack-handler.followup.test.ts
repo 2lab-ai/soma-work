@@ -6089,7 +6089,7 @@ describe('SlackHandler — follow-up queue host', () => {
       setActiveWorkQueueHost({
         statusFor: (c?: string, t?: string) =>
           c === 'C1' && t === '1.1'
-            ? { queue: 'qa:dev2', entry: 'wq-2', state: 'queued', position: 1, keys: ['ABC-2'], since: 1 }
+            ? { queue: 'qa:dev2', entry: 'wq-2', state: 'waiting', position: 1, keys: ['ABC-2'], since: 1 }
             : undefined,
       } as any);
       try {

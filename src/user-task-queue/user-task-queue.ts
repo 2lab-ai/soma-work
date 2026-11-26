@@ -17,18 +17,36 @@
  * 먼저 진행 (bypass): the person lets a waiting task go first. If no slot is free, the task that started last is
  * stopped and put first in line (`resume`), and the waiting task starts now; the stopped one carries on when it ends.
  *
+ * The same work twice (.prd/36 v2 D12, SSOT_5): a person's request names its work by keys (`keysInText`). When every
+ * key already runs or waits in another thread of theirs, nothing starts: the thread is told who has it (fast-fail),
+ * and 그래도 시작 sends it on once. It is the person's line on the shared line rules (`somalib/work-queue/line.ts`):
+ * claims, places, and a record of what left the line.
+ *
  * No Slack, no session registry, no timers in here: every effect is injected (`UserTaskQueueDeps`). The gate and the
  * admission are synchronous on purpose — they run inside the ingress fence, where an `await` would let two messages
  * in the same tick both start.
  */
 import { randomUUID } from 'node:crypto';
+import { keysInText, WORK_KEYS_MAX } from 'somalib/work-queue/keys';
+import {
+  appendRecords,
+  type KeyClaim,
+  type LineEntryView,
+  type LineItem,
+  type LineQueueView,
+  type LineRecord,
+  personQueueId,
+  splitKeys,
+} from 'somalib/work-queue/line';
 import {
   admittedOf,
   append,
   emptyLedger,
   findEntry,
+  lineItemOf,
   positionOf,
   putFirst,
+  recordOf,
   recoverAfterRestart,
   remove,
   type UserTaskEntry,
@@ -58,6 +76,8 @@ export interface RunningTask extends UserTaskThread {
    * halfway could leave a deploy half done. Never picked as the task to stop.
    */
   guard?: string;
+  /** The work keys the task registered (its requests' keys, its card's issue and PR). */
+  keys?: string[];
 }
 
 export interface GateInput extends UserTaskThread {
@@ -80,11 +100,15 @@ export interface GateInput extends UserTaskThread {
    * reservation, taken once. Without one (it expired) it is gated like any other message.
    */
   hostReserved?: boolean;
+  /** The person chose 그래도 시작 on a refused request: it is not checked for the same work again. */
+  sameWorkOk?: boolean;
 }
 
 export type GateResult =
   | { action: 'run' }
   | { action: 'drop' }
+  /** Every key it names already runs or waits in another thread of the person: nothing starts (fast-fail). */
+  | { action: 'same-work'; keys: string[]; claims: KeyClaim[] }
   /** A redelivery (Slack retried an event it thinks was not acked) of a message already in line, or just gone from it. */
   | { action: 'duplicate' }
   | { action: 'queued'; entry: UserTaskEntry; position: number; limit: number; running: RunningTask[] };
@@ -107,6 +131,8 @@ export interface UserTaskQueueNotifier {
   cancelled(entry: UserTaskEntry, why?: 'person' | 'closed'): void;
   /** `victim` was stopped so `first` could go first; it carries on after. */
   deferred(victim: RunningTask, first: UserTaskEntry): void;
+  /** A request for work that already runs or waits (every key claimed): tell the thread who has it. */
+  refused?(thread: UserTaskThread & { userId: string }, claims: KeyClaim[], token: string): void;
 }
 
 export interface UserTaskQueueDeps {
@@ -127,6 +153,8 @@ export interface UserTaskQueueDeps {
    */
   interrupt(task: RunningTask): StopOutcome;
   notify?: UserTaskQueueNotifier;
+  /** Send a message through the ingress again (그래도 시작 on a refused request). */
+  resend?(message: Record<string, unknown>): void;
   /** The queue changed (the dashboard repaints). */
   onChange?(): void;
   now?(): number;
@@ -173,6 +201,13 @@ function cronJobOf(message: Record<string, unknown> | undefined): string | undef
 
 /** How long a message that left the line is remembered: past Slack's retries (seconds to minutes), with room. */
 export const REDELIVERY_MEMORY_MS = 30 * 60_000;
+/** How long a refused request can still be sent on (그래도 시작). In memory: a restart forgets it. */
+export const SAME_WORK_HOLD_MS = 30 * 60_000;
+
+/** A request a person sent (not a host continuation, not a scheduled fire, not a host-made message). */
+function isPersonRequest(input: GateInput): boolean {
+  return input.continuation === 'none' && !cronJobOf(input.message) && input.message?.synthetic !== true;
+}
 
 /** One Slack message in one thread (its `ts`); undefined for a message with no ts of its own (a host turn's). */
 function messageKeyOf(sessionKey: string, message: Record<string, unknown> | undefined): string | undefined {
@@ -194,6 +229,8 @@ export class UserTaskQueue {
   private readonly hostReservations = new Map<string, { userId: string; at: number }>();
   /** Messages that left the line (started, cancelled, closed) — a late Slack retry of one is not a new request. */
   private readonly recentlyLeft = new Map<string, number>();
+  /** Requests refused as the same work, held for 그래도 시작 (by token). */
+  private readonly refusedHeld = new Map<string, { userId: string; message: Record<string, unknown>; at: number }>();
   private readonly now: () => number;
   private readonly newId: () => string;
 
@@ -230,11 +267,22 @@ export class UserTaskQueue {
     // Slack resends an event it thinks was not acked in time (retry_attempt, reason timeout): the copy of a message
     // already in line — or one that just left it — is not a second request.
     const key = messageKeyOf(input.sessionKey, input.message);
-    if (key) {
+    // 그래도 시작's resend is that request sent on by the host, once — not a Slack retry of it.
+    if (key && !input.sameWorkOk) {
       if (this.ledger.entries.some((e) => messageKeyOf(e.sessionKey, e.message) === key))
         return { action: 'duplicate' };
       this.pruneRecentlyLeft();
       if (this.recentlyLeft.has(key)) return { action: 'duplicate' };
+    }
+    // The same work sent again: every key it names already runs or waits in another thread of the person.
+    if (isPersonRequest(input) && !input.sameWorkOk) {
+      const keys = keysInText(input.text);
+      // A request naming more keys than one entry carries was cut at WORK_KEYS_MAX: the rest might be new work, so it
+      // is never refused on the first ones alone.
+      if (keys.length > 0 && keys.length < WORK_KEYS_MAX) {
+        const { free, claimed } = splitKeys(this.liveItems(input.userId, input.sessionKey), keys);
+        if (claimed.length > 0 && free.length === 0) return this.refuseSameWork(input, keys, claimed);
+      }
     }
     const limit = this.deps.limitFor(input.userId);
     if (limit === UNLIMITED) return { action: 'run' };
@@ -333,7 +381,8 @@ export class UserTaskQueue {
       return { ok: true, deferred: victim, pending: true };
     }
     const admitted: UserTaskEntry = { ...entry, state: 'admitted', admittedAt: this.now() };
-    this.commit(putFirst(this.ledger, admitted, resume));
+    const started = recordOf(entry, 'started', this.now(), { reason: 'bypass', startedAt: this.now() });
+    this.commit(this.withRecords(putFirst(this.ledger, admitted, resume), started));
     this.safe(() => this.deps.notify?.deferred(victim, admitted));
     this.startAdmitted(admitted, 'bypass');
     return { ok: true, deferred: victim };
@@ -370,7 +419,8 @@ export class UserTaskQueue {
     if (!entry) return { ok: false, reason: 'not-found' };
     if (entry.userId !== by && !opts.admin) return { ok: false, reason: 'forbidden' };
     if (entry.state !== 'waiting') return { ok: false, reason: 'not-waiting' };
-    this.commit(remove(this.ledger, entryId));
+    const reason = entry.userId === by ? 'person' : 'admin';
+    this.commit(this.withRecords(remove(this.ledger, entryId), recordOf(entry, 'cancelled', this.now(), { reason })));
     this.rememberLeft(entry);
     this.safe(() => this.deps.notify?.cancelled(entry, 'person'));
     this.release(entry.userId);
@@ -387,7 +437,8 @@ export class UserTaskQueue {
     if (gone.length === 0) return 0;
     let next = this.ledger;
     for (const e of gone) next = remove(next, e.id);
-    this.commit(next);
+    const now = this.now();
+    this.commit(this.withRecords(next, ...gone.map((e) => recordOf(e, 'cancelled', now, { reason: 'closed' }))));
     for (const e of gone) this.rememberLeft(e);
     for (const e of gone) this.safe(() => this.deps.notify?.cancelled(e, 'closed'));
     for (const user of new Set(gone.map((e) => e.userId))) this.release(user);
@@ -469,8 +520,134 @@ export class UserTaskQueue {
     };
   }
 
+  /**
+   * One person's queue as the shared line view (.prd/36 v2) — the shape a lane has, so the board's 개인별 큐 tab and
+   * the settings page draw both kinds alike: the limit, what runs (live tasks), what waits (in order), what left.
+   */
+  lineView(userId: string, recent = 20): LineQueueView {
+    const limit = this.deps.limitFor(userId);
+    const running: LineEntryView[] = this.deps.runningTasks(userId).map((t) => ({
+      id: `run:${t.sessionKey}`,
+      keys: [...(t.keys ?? [])],
+      holder: { user: userId, channel: t.channel, threadTs: t.threadTs },
+      state: 'running',
+      position: 0,
+      enteredAt: t.startedAt ?? 0,
+      ...(t.startedAt !== undefined ? { startedAt: t.startedAt } : {}),
+      ...(t.title ? { label: t.title } : {}),
+    }));
+    const mine = this.ledger.entries.filter((e) => e.userId === userId);
+    const id = personQueueId(userId);
+    return {
+      id,
+      kind: 'person',
+      capacity: limit === UNLIMITED ? null : limit,
+      running: [
+        ...running,
+        ...mine
+          .filter((e) => e.state === 'admitted')
+          .map((e) => ({ ...this.entryView(e), state: 'running' as const, position: 0 })),
+      ],
+      waiting: mine.filter((e) => e.state === 'waiting').map((e) => this.entryView(e)),
+      recent: (this.ledger.records ?? [])
+        .filter((r) => r.queue === id)
+        .slice(-recent)
+        .reverse(),
+    };
+  }
+
+  /** 그래도 시작: send a request refused as the same work on, once — gated again, minus the same-work check. */
+  startSameWork(
+    token: string,
+    by: string,
+    opts: { admin?: boolean } = {},
+  ): { ok: true } | { ok: false; reason: 'not-found' | 'forbidden' } {
+    this.pruneRefused();
+    const held = this.refusedHeld.get(token);
+    if (!held) return { ok: false, reason: 'not-found' };
+    if (held.userId !== by && !opts.admin) return { ok: false, reason: 'forbidden' };
+    this.refusedHeld.delete(token);
+    // The resend carries the host's own flag past the redelivery check (`gate`); the original's late Slack retries
+    // stay duplicates (review 2026-11-26: deleting the memory let a retry run the instruction a second time).
+    const route = (held.message.routeContext as Record<string, unknown> | undefined) ?? {};
+    this.deps.resend?.({ ...held.message, routeContext: { ...route, userTaskSameWorkOk: true } });
+    return { ok: true };
+  }
+
   snapshot(): UserTaskLedger {
     return structuredClone(this.ledger);
+  }
+
+  private entryView(e: UserTaskEntry): LineEntryView {
+    return {
+      id: e.id,
+      keys: [...(e.keys ?? [])],
+      holder: { user: e.userId, channel: e.channel, threadTs: e.threadTs },
+      state: e.state === 'waiting' ? 'waiting' : 'running',
+      position: positionOf(this.ledger, e.id),
+      enteredAt: e.enqueuedAt,
+      ...(e.preview ? { label: e.preview } : {}),
+    };
+  }
+
+  /** What of the person runs or waits in threads other than `sessionKey`, as the shared line sees it. */
+  private liveItems(userId: string, sessionKey: string): LineItem[] {
+    const running: LineItem[] = this.othersRunning(userId, sessionKey).map((t) => ({
+      id: `run:${t.sessionKey}`,
+      keys: t.keys ?? [],
+      state: 'running',
+      holder: { user: userId, channel: t.channel, threadTs: t.threadTs },
+      enteredAt: t.startedAt ?? 0,
+    }));
+    const lined = this.ledger.entries.filter((e) => e.userId === userId && e.sessionKey !== sessionKey).map(lineItemOf);
+    return [...running, ...lined];
+  }
+
+  private refuseSameWork(input: GateInput, keys: string[], claims: KeyClaim[]): GateResult {
+    const token = this.newId();
+    this.pruneRefused();
+    this.refusedHeld.set(token, {
+      userId: input.userId,
+      message: JSON.parse(JSON.stringify(input.message)) as Record<string, unknown>,
+      at: this.now(),
+    });
+    const now = this.now();
+    const record: LineRecord = {
+      id: token,
+      queue: personQueueId(input.userId),
+      keys,
+      holder: { user: input.userId, channel: input.channel, threadTs: input.threadTs },
+      ...(input.text ? { label: previewOf(input.text) } : {}),
+      enteredAt: now,
+      endedAt: now,
+      end: 'refused',
+      // Never another thread's id: a private thread stays unnamed in the history.
+      reason:
+        claims.length === 1
+          ? 'its key already runs or waits in another thread'
+          : `its ${claims.length} keys already run or wait in other threads`,
+    };
+    this.commit(this.withRecords(this.ledger, record));
+    // A late Slack retry of the refused message is not a new request either.
+    const key = messageKeyOf(input.sessionKey, input.message);
+    if (key) this.recentlyLeft.set(key, now);
+    this.safe(() =>
+      this.deps.notify?.refused?.(
+        { userId: input.userId, sessionKey: input.sessionKey, channel: input.channel, threadTs: input.threadTs },
+        claims,
+        token,
+      ),
+    );
+    return { action: 'same-work', keys, claims };
+  }
+
+  private pruneRefused(): void {
+    const cutoff = this.now() - SAME_WORK_HOLD_MS;
+    for (const [token, held] of this.refusedHeld) if (held.at < cutoff) this.refusedHeld.delete(token);
+  }
+
+  private withRecords(ledger: UserTaskLedger, ...records: LineRecord[]): UserTaskLedger {
+    return { ...ledger, records: appendRecords(ledger.records ?? [], ...records) };
   }
 
   private enqueue(input: GateInput, limit: number, running: RunningTask[], announce: boolean): GateResult {
@@ -486,6 +663,8 @@ export class UserTaskQueue {
       state: 'waiting',
       message: JSON.parse(JSON.stringify(input.message)) as Record<string, unknown>,
     };
+    const keys = keysInText(input.text);
+    if (keys.length > 0) entry.keys = keys;
     this.commit(append(this.ledger, entry));
     const position = positionOf(this.ledger, entry.id);
     const line = waitingOf(this.ledger, input.userId);
@@ -528,9 +707,11 @@ export class UserTaskQueue {
   }
 
   private admitAndStart(entry: UserTaskEntry, how: 'turn' | 'bypass', first: boolean): void {
-    const admitted: UserTaskEntry = { ...entry, state: 'admitted', admittedAt: this.now() };
+    const now = this.now();
+    const admitted: UserTaskEntry = { ...entry, state: 'admitted', admittedAt: now };
     const next = update(this.ledger, entry.id, admitted);
-    this.commit(first ? putFirst(next, admitted) : next);
+    const started = recordOf(entry, 'started', now, { reason: how, startedAt: now });
+    this.commit(this.withRecords(first ? putFirst(next, admitted) : next, started));
     this.startAdmitted(admitted, how);
   }
 

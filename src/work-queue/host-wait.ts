@@ -30,12 +30,12 @@ export function hostWaitFor(
   const handoff = deps.handoffs.statusFor(channel, threadTs);
   if (handoff) {
     const env = handoff.envThread && deps.host?.statusFor(handoff.envThread.channel, handoff.envThread.threadTs);
-    if (env?.state === 'queued') return { kind: 'queued', queue: env.queue, position: env.position, since: env.since };
+    if (env?.state === 'waiting') return { kind: 'queued', queue: env.queue, position: env.position, since: env.since };
     return { kind: 'env', owner: handoff.owner, since: handoff.since };
   }
   const own = deps.host?.statusFor(channel, threadTs);
   if (!own) return undefined;
-  if (own.state === 'queued') return { kind: 'queued', queue: own.queue, position: own.position, since: own.since };
+  if (own.state === 'waiting') return { kind: 'queued', queue: own.queue, position: own.position, since: own.since };
   return { kind: 'running', queue: own.queue, since: own.since };
 }
 

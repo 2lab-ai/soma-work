@@ -245,7 +245,7 @@ describe('Dashboard — sessions waiting out an automatic resume, and the one cu
   describe('a session that waits on the host is RUNNING', () => {
     const statuses: Record<string, any> = {
       t1: { queue: 'qa:dev2', entry: 'wq-1', state: 'running', position: 0, keys: ['ABC-1'], since: 10 },
-      t2: { queue: 'qa:dev2', entry: 'wq-2', state: 'queued', position: 1, keys: ['ABC-2'], since: 20 },
+      t2: { queue: 'qa:dev2', entry: 'wq-2', state: 'waiting', position: 1, keys: ['ABC-2'], since: 20 },
     };
     async function withHost<T>(fn: () => Promise<T>): Promise<T> {
       const { setActiveWorkQueueHost } = await import('../../work-queue/host');
@@ -377,7 +377,7 @@ describe('Dashboard — sessions waiting out an automatic resume, and the one cu
       const { setActiveWorkQueueHost } = await import('../../work-queue/host');
       setActiveWorkQueueHost({
         statusFor: (_c: string, t: string) =>
-          t === 't1' ? { state: 'queued', queue: 'deploy:dev2', position: 1, since: 1 } : undefined,
+          t === 't1' ? { state: 'waiting', queue: 'deploy:dev2', position: 1, since: 1 } : undefined,
       } as any);
       const messages: any[] = [];
       const headers = { cookie: `soma_dash_token=${encodeURIComponent('bearer:test-token')}` };

@@ -2,7 +2,7 @@
  * Work-queue keys (.prd/36 D10): a Jira key or a GitHub `owner/repo#n` — nothing else enters a queue.
  */
 import { describe, expect, it } from 'vitest';
-import { normalizeWorkKey, parseWorkKeys, WORK_KEYS_MAX } from './keys';
+import { keysInText, normalizeWorkKey, parseWorkKeys, WORK_KEYS_MAX } from './keys';
 
 describe('normalizeWorkKey', () => {
   it('takes a Jira key and upper-cases it', () => {
@@ -63,5 +63,40 @@ describe('parseWorkKeys', () => {
 
   it('caps the list', () => {
     expect(WORK_KEYS_MAX).toBe(50);
+  });
+});
+
+describe('keysInText — the work a person names in a request (.prd/36 v2 D12)', () => {
+  it('reads GitHub links (Slack <url|label> form too), refs, Jira links and bare upper-case Jira keys, in order', () => {
+    expect(
+      keysInText(
+        'ABC-12: 이거 봐줘 <https://github.com/Acme/Shop/pull/841|github.com/Acme/Shop/pull/841> ' +
+          'and 2lab-ai/soma-work#9, https://example.atlassian.net/browse/ops-7',
+      ),
+    ).toEqual(['ABC-12', 'acme/shop#841', '2lab-ai/soma-work#9', 'OPS-7']);
+  });
+
+  it('each key once', () => {
+    expect(keysInText('[ABC-1] fix ABC-1 https://github.com/a/b/issues/3 a/b#3')).toEqual(['ABC-1', 'a/b#3']);
+  });
+
+  it('is not fooled by tokens that only look like a Jira key, or by lower case prose', () => {
+    expect(keysInText('UTF-8 SHA-256 CVE-2024-1234 GPT-5 ISO-8601 my-1 step-2')).toEqual([]);
+    // Review (2026-11-26): quarters, halves, fiscal years, weeks, phases, versions — not work keys.
+    expect(keysInText('Q4-2026 H2-2026 FY-2026 WEEK-48 PHASE-2 R2-3 K8S-1 SPRINT-12 STEP-3 PART-2 V-2')).toEqual([]);
+  });
+
+  it('a Jira link keeps a project with a digit (the link says it is a key)', () => {
+    expect(keysInText('https://example.atlassian.net/browse/K8S-12')).toEqual(['K8S-12']);
+  });
+
+  it('no text, no keys', () => {
+    expect(keysInText(undefined)).toEqual([]);
+    expect(keysInText('오늘 리포트 써줘')).toEqual([]);
+  });
+
+  it('at most WORK_KEYS_MAX', () => {
+    const many = Array.from({ length: 60 }, (_, i) => `ABC-${i + 1}`).join(' ');
+    expect(keysInText(many)).toHaveLength(WORK_KEYS_MAX);
   });
 });

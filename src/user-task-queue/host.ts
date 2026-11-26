@@ -52,6 +52,8 @@ export interface UserTaskQueueHostDeps {
   isShuttingDown?(): boolean;
   /** A channel whose tasks are private (a DM, a private channel): their titles stay out of other threads. */
   isPrivateChannel?(channel: string): boolean;
+  /** A thread's task title (its session's). */
+  titleOf?(channel: string, threadTs: string): string | undefined;
   logger?: Logger;
   now?: () => number;
   /** How often, and how long, a 먼저 진행 stop is tried again while the turn has no stop handle yet. */
@@ -101,6 +103,7 @@ export function createUserTaskQueueHost(deps: UserTaskQueueHostDeps): UserTaskQu
     slackApi: deps.slackApi,
     queue: () => queueRef,
     isPrivateChannel: deps.isPrivateChannel,
+    titleOf: deps.titleOf,
     logger,
   });
   const retryEvery = deps.abortRetryMs ?? USER_TASK_QUEUE_ABORT_RETRY_MS;
@@ -168,6 +171,8 @@ export function createUserTaskQueueHost(deps: UserTaskQueueHostDeps): UserTaskQu
       return 'pending';
     },
     notify,
+    // 그래도 시작: the refused request goes through the ingress again (gated on the limit, not on the same work).
+    resend: (message) => run(message),
     onChange: () => deps.onChange(),
     now,
   });

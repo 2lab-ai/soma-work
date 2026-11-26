@@ -16,9 +16,22 @@
  *   loop and the follow-up question read it), and `whenFree` (an environment hand-off ends when the environment
  *   user's thread holds no entry, .prd/36 D9). Every read re-reads the file when it changed — a turn that just
  *   entered the queue must read as waiting at the very moment it ends.
+ * - **Manage** (.prd/36 v2 D13) — an admin takes a waiting entry out of line, lets one go first, or gives a running
+ *   turn back (its thread hears `⏹`, the next entry is woken) — the same transitions the tools and the sweep use.
  */
+
 import type { WorkQueueEntry, WorkQueueHolder, WorkQueueLedger } from 'somalib/work-queue/ledger';
-import { emptyLedger, markNotified, queuePosition, releaseByHost, sameHolder } from 'somalib/work-queue/ledger';
+import {
+  emptyLedger,
+  endEntry,
+  markNotified,
+  putFirst,
+  queuePosition,
+  queueViews,
+  releaseByHost,
+  sameHolder,
+} from 'somalib/work-queue/ledger';
+import type { LineQueueView, LineState } from 'somalib/work-queue/line';
 import type { WorkQueueStore } from 'somalib/work-queue/store';
 import { Logger } from '../logger';
 
@@ -60,6 +73,8 @@ export interface WorkQueueHostDeps {
   ) => void;
   /** One line into the holder's thread (never throws to the caller). */
   post: (holder: WorkQueueHolder, text: string) => Promise<unknown>;
+  /** The lanes `config.json#workQueues` pins: listed even while empty. */
+  pinned?: () => readonly string[];
   now?: () => number;
 }
 
@@ -67,7 +82,7 @@ export interface WorkQueueHostDeps {
 export interface WorkQueueThreadStatus {
   queue: string;
   entry: string;
-  state: 'queued' | 'running';
+  state: LineState;
   /** 0 = runs; n = n-th waiting. */
   position: number;
   keys: string[];
@@ -91,12 +106,22 @@ const RELEASE_WHY: Record<string, string> = {
   'wake-expired': '차례를 알리지 못함',
 };
 
-export function releasedText(entry: WorkQueueEntry, reason: string): string {
+function releaseWhy(reason: string): string {
+  if (reason.startsWith('admin:')) return '관리자가 돌려놓음';
+  return RELEASE_WHY[reason] ?? reason;
+}
+
+export function releasedText(entry: Pick<WorkQueueEntry, 'queue' | 'id'>, reason: string): string {
   return (
-    `⏹ 작업 큐 \`${entry.queue}\` 차례를 돌려놓았습니다 (${entry.id} · ${RELEASE_WHY[reason] ?? reason}). ` +
+    `⏹ 작업 큐 \`${entry.queue}\` 차례를 돌려놓았습니다 (${entry.id} · ${releaseWhy(reason)}). ` +
     '다시 하려면 큐에 다시 들어가세요.'
   );
 }
+
+/** What an admin does to an entry from the board or the settings page. */
+export type ManageAction = 'cancel' | 'first' | 'release';
+export type ManageResult = { ok: true } | { ok: false; code: 'UNKNOWN_ENTRY' | 'NOT_WAITING' | 'NOT_RUNNING' };
+type ManageOutcome = { ok: true; entry: WorkQueueEntry } | Exclude<ManageResult, { ok: true }>;
 
 export class WorkQueueHost {
   private readonly logger = new Logger('WorkQueueHost');
@@ -143,7 +168,7 @@ export class WorkQueueHost {
     if (!channel || !threadTs) return undefined;
     this.refresh();
     const mine = this.ledger.entries.filter((e) => sameHolder({ channel, threadTs }, e.holder));
-    const shown = mine.find((e) => e.state === 'queued') ?? mine[0];
+    const shown = mine.find((e) => e.state === 'waiting') ?? mine[0];
     if (!shown) return undefined;
     return {
       queue: shown.queue,
@@ -157,7 +182,51 @@ export class WorkQueueHost {
 
   /** The thread waits in a queue: the host wakes it — no goal judgement, no follow-up question. */
   awaitsHost(channel: string | undefined, threadTs: string | undefined): boolean {
-    return this.statusFor(channel, threadTs)?.state === 'queued';
+    return this.statusFor(channel, threadTs)?.state === 'waiting';
+  }
+
+  /** Every lane as the board and the settings page draw it (pinned lanes first, even empty). */
+  views(pinned: readonly string[] = this.deps.pinned?.() ?? []): LineQueueView[] {
+    this.refresh();
+    return queueViews(this.ledger, pinned);
+  }
+
+  /**
+   * An admin's hand on a lane: `cancel` a waiting entry, let one go `first`, or `release` a running one (its thread is
+   * told, the next entry is woken). The record names the admin (`admin:<id>`).
+   */
+  manage(id: string, action: ManageAction, by: string): ManageResult {
+    const reason = `admin:${by}`;
+    // The state is checked inside the change: another process (an MCP's queue_done) may promote the entry between a
+    // read and the write — a waiting entry that became running is not cancelled as waiting (review 2026-11-26).
+    const outcome = this.deps.store.mutate((ledger): { ledger: WorkQueueLedger; result: ManageOutcome } => {
+      const entry = ledger.entries.find((e) => e.id === id);
+      if (!entry) return { ledger, result: { ok: false, code: 'UNKNOWN_ENTRY' } };
+      if (action === 'first') {
+        const moved = putFirst(ledger, id);
+        return { ledger: moved.ledger, result: moved.result.ok ? { ok: true, entry } : moved.result };
+      }
+      if (action === 'cancel' && entry.state !== 'waiting')
+        return { ledger, result: { ok: false, code: 'NOT_WAITING' } };
+      if (action === 'release' && entry.state !== 'running')
+        return { ledger, result: { ok: false, code: 'NOT_RUNNING' } };
+      const ended = endEntry(
+        ledger,
+        { id, end: action === 'cancel' ? 'cancelled' : 'released', actor: 'admin', reason },
+        this.now(),
+      );
+      if (!ended.result.ok) return { ledger, result: { ok: false, code: 'UNKNOWN_ENTRY' } };
+      return { ledger: ended.ledger, result: { ok: true, entry } };
+    });
+    this.refresh(true);
+    if (!outcome.ok) return outcome;
+    this.logger.info('Work queue entry managed by an admin', { entry: id, queue: outcome.entry.queue, action, by });
+    if (action === 'release') {
+      void this.deps.post(outcome.entry.holder, releasedText(outcome.entry, reason)).catch(() => undefined);
+    }
+    this.wake();
+    this.settleFree();
+    return { ok: true };
   }
 
   /**
