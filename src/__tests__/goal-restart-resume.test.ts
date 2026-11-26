@@ -200,6 +200,46 @@ describe('resumeActiveGoals (T1)', () => {
     expect((goal as any).phase).toMatchObject({ kind: 'stopped', why: 'person-stopped' });
   });
 
+  // Review #1500 — the stop is saved: the pass's save sees it (a restart after this one keeps it).
+  it('X18: the person-stopped record is saved by the pass', () => {
+    const stoppedByPerson = activeGoalSession({ activityState: 'idle', personStoppedWorkAt: 123 } as any);
+    const goal = stoppedByPerson.goal as NonNullable<ConversationSession['goal']>;
+    const sessions = new Map<string, ConversationSession>([['C1-T1', stoppedByPerson]]);
+    const { handler, claudeHandler } = createHandler(sessions);
+    const savedPhases: unknown[] = [];
+    claudeHandler.saveSessions.mockImplementation(() => savedPhases.push((goal as any).phase));
+    handler.setGoalTurnSettledHandler(vi.fn());
+
+    handler.resumeActiveGoals();
+
+    expect(savedPhases).toContainEqual(expect.objectContaining({ kind: 'stopped', why: 'person-stopped' }));
+  });
+
+  // Review #1500 — a goal the loop stopped (judge-failed …) waits for a person whatever the restart cut: no kick, no
+  // refund, no resume mark, its why kept.
+  it.each([
+    'judge-failed',
+    'start-failed',
+    'resume-failed',
+  ] as const)('leaves a goal stopped(%s) as it is — no kick, no refund, no resume mark', (why) => {
+    const stopped = activeGoalSession({ activityState: 'idle' });
+    const goal = stopped.goal as NonNullable<ConversationSession['goal']>;
+    goal.continuationCount = 4;
+    (goal as any).phase = { kind: 'stopped', why, at: 9 };
+    const sessions = new Map<string, ConversationSession>([['C1-T1', stopped]]);
+    const { handler } = createHandler(sessions);
+    const settled = vi.fn();
+    handler.setGoalTurnSettledHandler(settled);
+    (handler as any).recovery.cut.add('C1-T1');
+
+    expect(handler.resumeActiveGoals()).toBe(0);
+
+    expect(settled).not.toHaveBeenCalled();
+    expect(goal.continuationCount).toBe(4);
+    expect((goal as any).phase).toEqual({ kind: 'stopped', why, at: 9 });
+    expect((handler as any).followupResumeMark.has('C1-T1')).toBe(false);
+  });
+
   /** .prd/39 D13 · X19 — a goal whose opening has not reached the model is the first turn's to start, not the loop's. */
   it('X19: leaves a goal whose first turn has not started to that turn — no kick, no resume mark', () => {
     const opening = activeGoalSession({ activityState: 'idle' });

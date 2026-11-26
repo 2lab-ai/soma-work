@@ -618,6 +618,35 @@ describe('GoalHandler — goal max reopens a goal stopped at its cap (X5)', () =
 
     expect(resumeGoalLoop).toHaveBeenCalledTimes(1);
   });
+
+  // Review #1495 — the boundary: a budget at or below the count is still exhausted, so the cap question stays open
+  // exactly as it was (same round, same DM) and nothing rewrites it as answered.
+  it.each([10, 9])('`goal max %i` at a count of 10 leaves the open cap question as it was', async (max) => {
+    const round = { capDmPendingAt: 5, capDecisionId: 'round-1', capDmRef: { channel: 'D1', ts: '1.1' } };
+    const session = makeSession({
+      goal: {
+        goalId: 'g1',
+        objective: 'ship it',
+        status: 'active',
+        createdAt: 1,
+        updatedAt: 1,
+        createdBy: 'U123',
+        continuationCount: 10,
+        maxContinuations: 10,
+        epoch: 2,
+        ...round,
+      },
+    });
+
+    await new GoalHandler(makeDeps(session)).execute(makeCtx({ text: `goal max ${max}` }));
+
+    expect(session.goal?.maxContinuations).toBe(max);
+    expect({
+      capDmPendingAt: session.goal?.capDmPendingAt,
+      capDecisionId: session.goal?.capDecisionId,
+      capDmRef: session.goal?.capDmRef,
+    }).toEqual(round);
+  });
 });
 
 const activeGoalAt = (over: Record<string, unknown> = {}) =>

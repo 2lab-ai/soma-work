@@ -138,6 +138,19 @@ describe('SessionRegistry — the goal as stored (.prd/39 D4 · D5)', () => {
       expect(phaseOf(loaded)).toMatchObject({ kind: 'retrying', until: 999, attempt: 1 });
     });
 
+    // Review #1498 — an older version that arms only the retry fields (the fingerprint does not move) still ends the
+    // stored stop: the legacy fields say something else, so the stop lapses and does not resurface after the retry.
+    it('new (stopped) → old (a judge retry armed: only the retry fields) → new: the stop lapses, retrying, then running', () => {
+      const loaded = roundTrip(stopped(), (g) => {
+        g.evalBackoffUntil = 999;
+        g.evalDispatchRetryCount = 1;
+      });
+      expect(loaded.phase).toBeUndefined();
+      expect(phaseOf(loaded)).toMatchObject({ kind: 'retrying', until: 999 });
+      loaded.evalBackoffUntil = undefined;
+      expect(phaseOf(loaded)).toEqual({ kind: 'running' });
+    });
+
     it('an id-less legacy cap round stays id-less: its old DM buttons can still answer', () => {
       const loaded = roundTrip(goalOf('c', 'active', { continuationCount: 10, capDmPendingAt: 7 }));
       expect(loaded.capDecisionId).toBeUndefined();
@@ -154,6 +167,43 @@ describe('SessionRegistry — the goal as stored (.prd/39 D4 · D5)', () => {
       });
       expect(phaseOf(loaded)).toEqual({ kind: 'running' });
     });
+  });
+
+  // Review #1498 — the writer's own payload, read from disk before any load reconstructs it.
+  it('D17: the stored phase on disk names each phase (opening, retrying, asking cap / stall, stopped)', () => {
+    const reg = new SessionRegistry();
+    const cases: Array<[string, Record<string, unknown>, unknown]> = [
+      ['3.001', { openingPending: true }, { kind: 'opening' }],
+      [
+        '3.002',
+        { evalBackoffUntil: 999, evalDispatchRetryCount: 2, evalRetryReason: 'busy' },
+        { kind: 'retrying', until: 999, attempt: 2, reason: 'busy' },
+      ],
+      ['3.003', { continuationCount: 10, capDmPendingAt: 7, capDecisionId: 'r1' }, { kind: 'asking', ask: 'cap' }],
+      [
+        '3.004',
+        { stall: { stallId: 's', stalledAt: 1, reason: 'same', actions: [], confidence: 0.9 } },
+        { kind: 'asking', ask: 'stall' },
+      ],
+      [
+        '3.005',
+        { phase: { kind: 'stopped', why: 'start-failed', at: 3 } },
+        { kind: 'stopped', why: 'start-failed', at: 3 },
+      ],
+    ];
+    for (const [ts, over] of cases) {
+      const session = reg.createSession('U1', 'User', 'C-ph', ts);
+      session.sessionId = `sess-${ts}`;
+      session.goal = goalOf(`g-${ts}`, 'active', over) as any;
+    }
+    reg.saveSessions();
+    const saved = JSON.parse(fs.readFileSync(path.join(TEST_DATA_DIR, 'sessions.json'), 'utf8'));
+    const rows = Array.isArray(saved) ? saved : saved.sessions;
+    for (const [ts, , phase] of cases) {
+      const stored = rows.find((r: any) => r.threadTs === ts).goal;
+      expect(stored.phase).toEqual(phase);
+      expect(stored.phaseFp).toEqual({ epoch: 0, updatedAt: 1, continuationCount: stored.continuationCount });
+    }
   });
 
   it('D5: the slot and the history holding the same goal become one record', () => {

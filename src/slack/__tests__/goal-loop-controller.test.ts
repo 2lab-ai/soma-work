@@ -14,7 +14,9 @@ import { describe, expect, it, vi } from 'vitest';
 import type { SyntheticMessageEvent } from '../../cron-scheduler';
 import { GOAL_NO_NEW_EVAL_MARK } from '../../prompt/session-goal-block';
 import type { ConversationSession, SessionGoal } from '../../types';
+import { commitGoalChange } from '../goal-commit';
 import type { GoalEvalVerdict } from '../goal-completion-evaluator';
+import { resetGoalContinuationOnUserMessage } from '../goal-continuation';
 import {
   extractEvalRetryDelayMs,
   GOAL_EVAL_DISPATCH_MAX_RETRIES,
@@ -1549,10 +1551,17 @@ describe('GoalLoopController — a commit during a judge re-judges exactly once 
 
     controller.onTurnSettled(SESSION_KEY);
     await vi.waitFor(() => expect(dispatched).toBe(1));
-    // `goal max 20` commits: the epoch moves, one kick is enqueued.
+    // `goal max 20` commits through the one commit path (review #1495): the epoch moves, one kick is enqueued.
     goal.maxContinuations = 20;
-    goal.epoch = (goal.epoch ?? 0) + 1;
-    controller.onTurnSettled(SESSION_KEY, { cause: 'kick' });
+    commitGoalChange(
+      session,
+      SESSION_KEY,
+      { drive: 'kick' },
+      {
+        saveSessions: () => {},
+        kick: (key) => controller.onTurnSettled(key, { cause: 'kick' }),
+      },
+    );
     releases[0]();
     await vi.waitFor(() => expect(dispatched).toBe(2));
     releases[1]();
@@ -1585,6 +1594,28 @@ describe('GoalLoopController — stopped is recorded (.prd/39 D8, A6 · A7)', ()
     h.controller.onTurnSettled(SESSION_KEY, { cause: 'kick' });
     await h.controller.settled(SESSION_KEY);
     expect(dispatched).toBe(1);
+  });
+
+  // Review #1499 — reopening an exhausted goal gives it a fresh retry budget: stopGoal ended the streak, so the next
+  // transient judge failure arms a retry instead of stopping the goal at once.
+  it('A7: an exhausted goal reopened by a person retries its next transient failure, it does not stop again', async () => {
+    const h = makeHarness({
+      dispatcher: async () => {
+        throw new Error(POOL_RATE_LIMIT_ERR);
+      },
+      goal: { evalDispatchRetryCount: GOAL_EVAL_DISPATCH_MAX_RETRIES },
+    });
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(h.goal.phase).toMatchObject({ kind: 'stopped', why: 'judge-failed' });
+
+    resetGoalContinuationOnUserMessage({ goal: h.goal });
+    expect(h.goal.phase).toBeUndefined();
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(h.goal.phase).toBeUndefined();
+    expect(h.goal.evalBackoffUntil).toEqual(expect.any(Number));
+    expect(h.goal.evalDispatchRetryCount).toBe(1);
   });
 
   it('A7: the continuation could not start → stopped(start-failed)', async () => {
