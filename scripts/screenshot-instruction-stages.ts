@@ -193,24 +193,37 @@ async function main() {
     );
     check(s0.chip.includes('보내는 중') && !s0.writing, `S0 보내는 중, no 응답 작성 중 ${JSON.stringify(s0)}`);
 
-    const stage = async (over: Record<string, unknown>, shot: string) => {
+    // Pushed, then read once the chat shows what it should (a loaded host paints late) — at most 8 s, then as it is.
+    type View = Awaited<ReturnType<typeof chat>>;
+    const settle = async (done: (v: View) => boolean) => {
+      let v = await chat(page);
+      for (let i = 0; i < 40 && !done(v); i++) {
+        await sleep(200);
+        v = await chat(page);
+      }
+      return v;
+    };
+    const stage = async (over: Record<string, unknown>, shot: string, done: (v: View) => boolean) => {
       await push(page, { type: 'sessionUpdated', session: session(over) });
-      await sleep(500);
+      const v = await settle(done);
       await page.screenshot({ path: path.join(OUT, shot) });
-      return chat(page);
+      return v;
     };
     const progress = (s: string) => ({ instructionStages: [{ ref, stage: s, at: Date.now() }] });
 
-    const s1 = await stage(progress('received'), '1-received.png');
+    const s1 = await stage(progress('received'), '1-received.png', (v) => v.chip.includes('접수됨'));
     check(s1.chip.includes('접수됨') && !s1.writing, `S1 접수됨 ${JSON.stringify(s1)}`);
 
     const s2 = await stage(
       { ...progress('queued'), userQueue: { entryId: 'e1', kind: 'request', position: 2, since: Date.now() } },
       '2-queued.png',
+      (v) => v.chip.includes('2번째'),
     );
     check(s2.chip.includes('작업 큐 대기 · 2번째') && !s2.writing, `S2 작업 큐 대기 · 2번째 ${JSON.stringify(s2)}`);
 
-    const s3 = await stage({ ...progress('starting'), activityState: 'working' }, '3-starting.png');
+    const s3 = await stage({ ...progress('starting'), activityState: 'working' }, '3-starting.png', (v) =>
+      v.chip.includes('새 작업을 시작'),
+    );
     check(
       s3.chip.includes('새 작업을 시작') && !s3.writing && !s3.pending,
       `S3 working, not the model's yet: 시작 중, no 응답 작성 중 ${JSON.stringify(s3)}`,
@@ -229,11 +242,14 @@ async function main() {
         clientRef: ref,
       },
     });
-    await sleep(400);
-    const s3b = await chat(page);
+    const s3b = await settle((v) => v.lastRole === 'user' && v.chip.includes('새 작업을 시작'));
     check(s3b.chip.includes('새 작업을 시작'), `S3 the recorded turn keeps the stage ${JSON.stringify(s3b)}`);
 
-    const s4 = await stage({ ...progress('delivered'), activityState: 'working' }, '4-delivered.png');
+    const s4 = await stage(
+      { ...progress('delivered'), activityState: 'working' },
+      '4-delivered.png',
+      (v) => v.chip.includes('모델이 받았어요') && v.writing,
+    );
     check(s4.chip.includes('모델이 받았어요') && s4.writing, `S4 모델이 받았어요 + 응답 작성 중 ${JSON.stringify(s4)}`);
 
     await push(page, {
@@ -251,6 +267,7 @@ async function main() {
     const s5 = await stage(
       { ...progress('delivered'), activityState: 'idle', finishedAt: Date.now() },
       '5-answered.png',
+      (v) => !v.chip && !v.writing && v.lastRole === 'assistant',
     );
     check(!s5.chip && !s5.writing && s5.lastRole === 'assistant', `S5 answered: no chip, no row ${JSON.stringify(s5)}`);
     await ctx.close();
