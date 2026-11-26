@@ -249,6 +249,86 @@ describe('Dashboard — work item goal list (SSOT T2/T3)', () => {
       ]);
     });
 
+    // 2026-11-26 — the goal composer: an add carries files; a queued goal is moved (drag) or edited in place.
+    it('an add with the composer files: decoded (base64 → bytes) after the session gate, handed with the objective', async () => {
+      const handler = vi.fn().mockResolvedValue({ outcome: 'started', goalId: 'g2', opening: 'started' });
+      dashboard.setDashboardGoalHandler(handler);
+
+      const res = await post({
+        action: 'add',
+        objective: '스크린샷 보고 고쳐줘',
+        attachments: [{ name: 'shot.png', mimetype: 'image/png', data: Buffer.from('png-bytes').toString('base64') }],
+      });
+
+      expect(res.statusCode).toBe(200);
+      const action = handler.mock.calls[0][1];
+      expect(action.action).toBe('add');
+      expect(action.objective).toBe('스크린샷 보고 고쳐줘');
+      expect(action.attachments).toHaveLength(1);
+      expect(action.attachments[0].name).toBe('shot.png');
+      expect(action.attachments[0].mimetype).toBe('image/png');
+      expect(Buffer.from(action.attachments[0].data).toString()).toBe('png-bytes');
+    });
+
+    it('an add without files hands no attachments key; an empty list is the same', async () => {
+      const handler = vi.fn().mockResolvedValue({ outcome: 'queued', goalId: 'g2', position: 1 });
+      dashboard.setDashboardGoalHandler(handler);
+      await post({ action: 'add', objective: 'a' });
+      await post({ action: 'add', objective: 'b', attachments: [] });
+      expect(handler.mock.calls.map((c: any[]) => c[1])).toEqual([
+        { action: 'add', objective: 'a' },
+        { action: 'add', objective: 'b' },
+      ]);
+    });
+
+    it('moves a queued goal to a queue index and edits a queued goal through the host handler', async () => {
+      const handler = vi.fn().mockResolvedValue({ outcome: 'moved', goalId: 'g3', position: 1 });
+      dashboard.setDashboardGoalHandler(handler);
+
+      expect((await post({ action: 'move', goalId: 'g3', to: 0 })).statusCode).toBe(200);
+      expect((await post({ action: 'edit', goalId: 'g2', objective: '고친 목표' })).statusCode).toBe(200);
+
+      expect(handler.mock.calls.map((call: any[]) => call[1])).toEqual([
+        { action: 'move', goalId: 'g3', to: 0 },
+        { action: 'edit', goalId: 'g2', objective: '고친 목표' },
+      ]);
+    });
+
+    it('a body over the default 1 MB takes the composer limit (a phone photo fits)', async () => {
+      const handler = vi.fn().mockResolvedValue({ outcome: 'queued', goalId: 'g2', position: 1 });
+      dashboard.setDashboardGoalHandler(handler);
+      const big = Buffer.alloc(2 * 1024 * 1024, 7).toString('base64');
+      const res = await post({
+        action: 'add',
+        objective: '사진',
+        attachments: [{ name: 'p.jpg', mimetype: 'image/jpeg', data: big }],
+      });
+      expect(res.statusCode).toBe(200);
+      expect(handler.mock.calls[0][1].attachments[0].data.length).toBe(2 * 1024 * 1024);
+    });
+
+    it.each([
+      [{ action: 'add', objective: 'x', attachments: 'nope' }, /attachments/],
+      [{ action: 'add', objective: 'x', attachments: [{ name: 'a', data: '!!!' }] }, /base64/],
+      [{ action: 'move', goalId: 'g2' }, /to must be/],
+      [{ action: 'move', goalId: 'g2', to: -1 }, /to must be/],
+      [{ action: 'move', goalId: 'g2', to: 1.5 }, /to must be/],
+      [{ action: 'move', to: 0 }, /goalId/],
+      [{ action: 'edit', goalId: 'g2' }, /objective/],
+      [{ action: 'edit', goalId: 'g2', objective: '  ' }, /objective/],
+      [{ action: 'edit', goalId: 'g2', objective: 'x'.repeat(4001) }, /4000/],
+      [{ action: 'edit', objective: 'x' }, /goalId/],
+    ])('rejects a malformed move / edit / attachments body %j with 400', async (payload, message) => {
+      const handler = vi.fn();
+      dashboard.setDashboardGoalHandler(handler);
+
+      const res = await post(payload);
+
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toMatch(message);
+      expect(handler).not.toHaveBeenCalled();
+    });
+
     it.each([
       [{}, /action/],
       [{ action: 'pause' }, /goalId/],

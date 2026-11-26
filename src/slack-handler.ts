@@ -129,7 +129,13 @@ import { type FollowupReactionRole, FollowupReactionSurface, rolesForFollowupSta
 import { isRestartCutUndelivered, restartCutVerdict } from './slack/followup-restart-redelivery';
 import { isGoalCapDecisionPending, retireGoalCapDecision } from './slack/goal-cap-decision';
 import { bumpGoalEpoch, GOAL_SUMMARY_PERSIST_MAX, resetGoalContinuationOnUserMessage } from './slack/goal-continuation';
-import { type HostGoalAction, HostGoalActionError, type HostGoalActionResult } from './slack/goal-host-actions';
+import {
+  type HostGoalAction,
+  HostGoalActionError,
+  type HostGoalActionOptions,
+  type HostGoalActionResult,
+  type HostGoalAttachment,
+} from './slack/goal-host-actions';
 import type { GoalStallQuestion } from './slack/goal-loop-controller';
 import {
   applyGoalStallRollbackAnswer,
@@ -153,13 +159,16 @@ import {
   advanceGoalQueue,
   deleteCurrentGoal,
   deleteGoalById,
+  editQueuedGoal,
   enqueueOrActivateGoal,
   formatGoalObjectiveForSlack,
   formatResumedGoalLine,
+  moveQueuedGoal,
   pauseCurrentGoal,
   pauseCurrentGoalHoldingQueue,
   restoreGoalState,
   resumePausedGoal,
+  type SessionGoalFile,
   snapshotGoalState,
   undoPause,
 } from './slack/session-goal';
@@ -4578,6 +4587,12 @@ export class SlackHandler {
     const slotKey = this.followupMigration?.byCanonical.get(sessionKey);
     const busy = () => dispatcher.isBusy(sessionKey) || (slotKey !== undefined && dispatcher.isBusy(slotKey));
     const wasBusy = busy();
+    // The files the goal was added with (the dashboard's goal composer) ride every opening of THAT goal — started at
+    // once, promoted from the queue or resumed — unless the message that set it carries its own.
+    const liveGoal = this.claudeHandler.getSessionByKey?.(sessionKey)?.goal;
+    const goalFiles =
+      liveGoal?.goalId === opening.goalId && liveGoal.openingFiles?.length ? liveGoal.openingFiles : undefined;
+    const files = anchor.files?.length ? anchor.files : goalFiles;
     const openingEvent = {
       type: 'message',
       channel: anchor.channel,
@@ -4588,7 +4603,7 @@ export class SlackHandler {
       // part, routed as a command when it runs so the skill is resolved then.
       text: opening.prompt ?? opening.objective,
       ...(anchor.team ? { team: anchor.team } : {}),
-      ...(anchor.files?.length ? { files: anchor.files } : {}),
+      ...(files?.length ? { files } : {}),
       ...(anchor.dashboardClientRef ? { dashboardClientRef: anchor.dashboardClientRef } : {}),
       routeContext:
         opening.prompt === undefined
@@ -4599,7 +4614,6 @@ export class SlackHandler {
     // Marked BEFORE the turn is handed over (the callers' snapshots predate
     // it, so a refused admission's restore removes it again); cleared at the
     // opening's model boundary in `processMessage`.
-    const liveGoal = this.claudeHandler.getSessionByKey?.(sessionKey)?.goal;
     if (liveGoal?.goalId === opening.goalId) {
       liveGoal.openingPending = true;
       this.claudeHandler.saveSessions?.();
@@ -9731,6 +9745,7 @@ export class SlackHandler {
     sessionKey: string,
     request: HostGoalAction,
     actorUserId?: string,
+    options: HostGoalActionOptions = {},
   ): Promise<HostGoalActionResult> {
     const session = this.liveGoalSession(sessionKey);
     const actor = actorUserId || session.ownerId;
@@ -9748,6 +9763,9 @@ export class SlackHandler {
       // unconditionally (the drain would refuse a queued goal's opening later
       // anyway) and the anchor text promises neither outcome.
       this.assertGoalOpeningAuthor(sessionKey, actor, channel, threadTs);
+      // The goal's files go into the thread first (like a panel instruction's): the opening turn reads them from
+      // Slack. A failed upload adds no goal — it is never set without the files it was given.
+      const openingFiles = await this.uploadHostGoalFiles(channel, threadTs, request.attachments, options);
       const anchorTs = await this.postGoalAnchor(
         channel,
         threadTs,
@@ -9779,6 +9797,8 @@ export class SlackHandler {
         actor,
         userSettingsStore.getUserGoalMaxContinuations(actor),
       );
+      // On the goal itself: its opening turn carries them whenever it runs (`admitGoalOpeningTurnOrThrow`).
+      if (openingFiles?.length) result.goal.openingFiles = openingFiles;
       if (!result.activated) {
         // Behind the goal in flight: no opening turn, no epoch bump (the
         // running goal's in-flight eval stays valid, M1).
@@ -9821,6 +9841,8 @@ export class SlackHandler {
 
     if (request.action === 'pause') return this.pauseGoalFromHost(sessionKey, session, request.goalId, actor);
     if (request.action === 'resume') return this.resumeGoalFromHost(sessionKey, session, request.goalId, actor);
+    if (request.action === 'move') return this.moveGoalFromHost(session, request.goalId, request.to);
+    if (request.action === 'edit') return this.editGoalFromHost(session, request.goalId, request.objective);
 
     // ── delete ──
     const { goalId, expect } = request;
@@ -9905,6 +9927,74 @@ export class SlackHandler {
       );
     }
     return { outcome: 'deleted', goalId, promoted: { goalId: promoted.goalId, objective: promoted.objective } };
+  }
+
+  /**
+   * Put a dashboard goal's files into the session's thread (`options.uploadFiles`, wired with the Slack client), in
+   * the shape the opening turn downloads from. No files → undefined. Refused (no goal is added) when the host has no
+   * uploader or Slack does not take them.
+   */
+  private async uploadHostGoalFiles(
+    channel: string,
+    threadTs: string,
+    attachments: HostGoalAttachment[] | undefined,
+    options: HostGoalActionOptions,
+  ): Promise<SessionGoalFile[] | undefined> {
+    if (!attachments?.length) return undefined;
+    if (!options.uploadFiles) throw new HostGoalActionError(503, 'This server cannot attach files to a goal');
+    try {
+      const files = await options.uploadFiles(channel, threadTs, attachments);
+      if (files.length !== attachments.length) throw new Error(`Slack took ${files.length} of ${attachments.length}`);
+      return files;
+    } catch (error) {
+      this.logger.warn('Goal files were not uploaded — the goal was not added', {
+        channel,
+        threadTs,
+        files: attachments.length,
+        error: (error as Error)?.message ?? String(error),
+      });
+      throw new HostGoalActionError(
+        502,
+        'The files could not be put into the Slack thread — the goal was not added. Try again.',
+      );
+    }
+  }
+
+  /**
+   * Move a queued goal (the dashboard's drag). Quiet — no thread notice, no epoch bump: the queue is not in the
+   * prompt and the running goal is untouched. Refused as stale when the goal is no longer queued.
+   */
+  private moveGoalFromHost(session: ConversationSession, goalId: string, to: number): HostGoalActionResult {
+    this.assertGoalWhereExpected(session, goalId, 'queued');
+    const moved = moveQueuedGoal(session, goalId, to);
+    if (!moved.moved) throw new HostGoalActionError(409, 'That goal is no longer queued — refresh and try again');
+    if (moved.from !== moved.to) this.claudeHandler.saveSessions();
+    return { outcome: 'moved', goalId, position: moved.to + 1 };
+  }
+
+  /**
+   * Rewrite a queued goal's objective (the dashboard's Edit), validated like an add; the thread gets one notice line.
+   * Refused as stale when the goal is no longer queued — a goal that started is not rewritten under its turn.
+   */
+  private async editGoalFromHost(
+    session: ConversationSession,
+    goalId: string,
+    rawObjective: string,
+  ): Promise<HostGoalActionResult> {
+    const objective = rawObjective.trim();
+    const invalid = validateSessionGoalObjective(objective);
+    if (invalid) throw new HostGoalActionError(400, invalid);
+    this.assertGoalWhereExpected(session, goalId, 'queued');
+    const edited = editQueuedGoal(session, goalId, objective);
+    if (!edited.edited) throw new HostGoalActionError(409, 'That goal is no longer queued — refresh and try again');
+    if (edited.previous === objective) return { outcome: 'edited', goalId };
+    this.claudeHandler.saveSessions();
+    await this.postGoalNoticeBestEffort(
+      session.channelId as string,
+      session.threadTs as string,
+      `✏️ Queued goal edited: ${formatGoalObjectiveForSlack(objective)}`,
+    );
+    return { outcome: 'edited', goalId };
   }
 
   /**

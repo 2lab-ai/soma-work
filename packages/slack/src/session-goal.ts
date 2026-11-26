@@ -77,9 +77,30 @@ export interface SessionGoalFirstFailure {
  * apply/queue helpers create, clear, or carry. The real `SessionGoal` is
  * assignable to this shape and vice versa.
  */
+/**
+ * A file the goal's opening turn carries: a Slack file in the session's thread, in the shape the message pipeline
+ * downloads from (`MessageEvent.files`). Mirrors `SlackEventFile` (`src/conversation/new-task-launcher.ts`).
+ */
+export interface SessionGoalFile {
+  id: string;
+  name: string;
+  mimetype: string;
+  filetype: string;
+  url_private: string;
+  url_private_download: string;
+  size: number;
+  permalink?: string;
+}
+
 export interface SessionGoalState {
   goalId: string;
   objective: string;
+  /**
+   * The files the goal was added with (the dashboard's goal composer): already in the session's Slack thread. Every
+   * opening turn of this goal carries them — when it starts at once, when it is promoted from the queue later, and
+   * when a paused goal is resumed — so a queued goal does not lose what it was given.
+   */
+  openingFiles?: SessionGoalFile[];
   status: SessionGoalStatus;
   createdAt: number;
   updatedAt: number;
@@ -536,6 +557,48 @@ export function deleteGoalById(
     return { ...deleteCurrentGoal(session), wasActive: true };
   }
   return { deleted: false, wasActive: false };
+}
+
+/**
+ * Move the QUEUED goal `goalId` to index `to` of `session.goalQueue` (0-based, clamped) — the dashboard's drag.
+ * Nothing else changes: the running goal, its epoch and the paused goals are untouched (the queue is not in the
+ * prompt). Returns where it was and where it is now; `moved: false` when the goal is not queued. Persistence is the
+ * caller's job.
+ */
+export function moveQueuedGoal(
+  session: GoalQueueSession,
+  goalId: string,
+  to: number,
+): { moved: boolean; from: number; to: number } {
+  const queue = session.goalQueue ?? [];
+  const from = queue.findIndex((g) => g.goalId === goalId);
+  if (from < 0) return { moved: false, from: -1, to: -1 };
+  const target = Math.min(Math.max(Math.trunc(Number.isFinite(to) ? to : 0), 0), queue.length - 1);
+  if (target === from) return { moved: true, from, to: target };
+  const next = queue.slice();
+  const [goal] = next.splice(from, 1);
+  next.splice(target, 0, goal);
+  session.goalQueue = next;
+  goal.updatedAt = Date.now();
+  return { moved: true, from, to: target };
+}
+
+/**
+ * Replace the objective of the QUEUED goal `goalId` — the dashboard's Edit on a goal that has not started. The caller
+ * validates the text. Returns the old objective; `edited: false` when the goal is not queued. Persistence is the
+ * caller's job.
+ */
+export function editQueuedGoal(
+  session: GoalQueueSession,
+  goalId: string,
+  objective: string,
+): { edited: boolean; previous?: string } {
+  const goal = session.goalQueue?.find((g) => g.goalId === goalId);
+  if (!goal) return { edited: false };
+  const previous = goal.objective;
+  goal.objective = objective;
+  goal.updatedAt = Date.now();
+  return { edited: true, previous };
 }
 
 /**

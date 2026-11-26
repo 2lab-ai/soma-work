@@ -5628,25 +5628,64 @@ export async function registerDashboardRoutes(
 
   // ── Goal list (work item) ──
 
+  // add takes the goal composer's files (base64 in JSON, the panel composer's limits and body limit); move and edit
+  // act on a goal still in the queue.
   server.post<{
     Params: { key: string };
-    Body: { action?: unknown; objective?: unknown; goalId?: unknown; expect?: unknown };
+    Body: {
+      action?: unknown;
+      objective?: unknown;
+      goalId?: unknown;
+      expect?: unknown;
+      attachments?: unknown;
+      to?: unknown;
+    };
   }>(
     '/api/dashboard/session/:key/goal',
-    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    { bodyLimit: NEW_TASK_BODY_LIMIT, preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
       const body = request.body || {};
+      const objectiveError = (v: unknown): string | null =>
+        typeof v !== 'string' || !v.trim()
+          ? 'objective is required and must be a non-empty string'
+          : v.length > 4000
+            ? 'objective exceeds max length (4000 chars)'
+            : null;
+      const goalIdError = (v: unknown): string | null =>
+        typeof v !== 'string' || !v || v.length > 200 ? 'goalId is required and must be a string' : null;
       let action: HostGoalAction;
+      // Decoded only after the session gate below (a sender it refuses never gets files parsed).
+      let rawAttachments: unknown;
       if (body.action === 'add') {
-        if (typeof body.objective !== 'string' || !body.objective.trim()) {
-          reply.status(400).send({ error: 'objective is required and must be a non-empty string' });
+        const bad = objectiveError(body.objective);
+        if (bad) {
+          reply.status(400).send({ error: bad });
           return;
         }
-        if (body.objective.length > 4000) {
-          reply.status(400).send({ error: 'objective exceeds max length (4000 chars)' });
+        if (body.attachments !== undefined && !Array.isArray(body.attachments)) {
+          reply.status(400).send({ error: 'attachments must be an array' });
           return;
         }
-        action = { action: 'add', objective: body.objective };
+        rawAttachments = body.attachments;
+        action = { action: 'add', objective: body.objective as string };
+      } else if (body.action === 'move') {
+        const bad = goalIdError(body.goalId);
+        if (bad) {
+          reply.status(400).send({ error: bad });
+          return;
+        }
+        if (typeof body.to !== 'number' || !Number.isSafeInteger(body.to) || body.to < 0 || body.to > 1000) {
+          reply.status(400).send({ error: 'to must be a queue index (an integer from 0)' });
+          return;
+        }
+        action = { action: 'move', goalId: body.goalId as string, to: body.to };
+      } else if (body.action === 'edit') {
+        const bad = goalIdError(body.goalId) ?? objectiveError(body.objective);
+        if (bad) {
+          reply.status(400).send({ error: bad });
+          return;
+        }
+        action = { action: 'edit', goalId: body.goalId as string, objective: body.objective as string };
       } else if (body.action === 'delete') {
         if (typeof body.goalId !== 'string' || !body.goalId || body.goalId.length > 200) {
           reply.status(400).send({ error: 'goalId is required and must be a string' });
@@ -5664,12 +5703,20 @@ export async function registerDashboardRoutes(
         }
         action = { action: body.action, goalId: body.goalId };
       } else {
-        reply.status(400).send({ error: "action must be 'add', 'delete', 'pause' or 'resume'" });
+        reply.status(400).send({ error: "action must be 'add', 'delete', 'pause', 'resume', 'move' or 'edit'" });
         return;
       }
       const resolved = resolveSelfActionKeyAndOwner(request, reply);
       if (!resolved) return;
       const { originalKey } = resolved;
+      if (action.action === 'add' && Array.isArray(rawAttachments) && rawAttachments.length) {
+        const files = parseAttachments(rawAttachments);
+        if (!files.ok) {
+          reply.status(400).send({ error: files.error });
+          return;
+        }
+        action = { ...action, attachments: files.value };
+      }
       if (!_goalActionHandlerFn) {
         reply.status(501).send({ error: 'Goal action handler not configured' });
         return;
@@ -17766,6 +17813,7 @@ function renderPanelGoal() {
     card._gcSig = sig;
     card.data = d;
   }
+  paintGoalComposer(card, s, canEdit);
 }
 // Paused goals (SSOT 2026-11-06): the goals the owner set aside — they no longer hold the queue back. The card has
 // no paused list, so the page draws one under it on the kit's buttons: 재개 (now when no goal runs, otherwise right
@@ -17809,6 +17857,9 @@ function renderPanelGoalPaused(s, canEdit) {
 // the open shadow root by element / role, as uiTabsFocus does (the card has no focus API of its own).
 function goalCardFocusTarget() {
   var card = document.querySelector('#panel-goal > ui-goal-card');
+  // The goal composer in its add slot: focus opens it (one line → the whole composer).
+  var composer = card && card.querySelector ? card.querySelector('ui-composer[slot="add"]') : null;
+  if (composer) return composer;
   var root = card && card.shadowRoot;
   return root ? (root.querySelector('textarea') || root.querySelector('[role="group"]')) : null;
 }
@@ -19479,9 +19530,9 @@ var GOAL_STATUS_TONE = { active: 'run', paused: 'wait', complete: 'done' };
 var GOAL_SVG = '<i data-ui-icon="target"></i>';
 var GOAL_VIA_LABELS = { user: '직접 완료', 'eval-model': '평가 모델 완료' };
 var GOAL_OBJECTIVE_MAX = 4000; // the route's cap on an objective
-var GOAL_ACTIONS = ['delete', 'pause', 'resume']; // what the goal route answers besides add
+var GOAL_ACTIONS = ['delete', 'pause', 'resume', 'move', 'edit']; // what the goal route answers besides add
 var _goalErrors = Object.create(null); // session key → last refused goal action (shown until the next success)
-var _goalBusy = Object.create(null); // session key → { op: 'add' | 'delete' | 'pause' | 'resume', id } while that write is out
+var _goalBusy = Object.create(null); // session key → { op: 'add' | 'delete' | 'pause' | 'resume' | 'move' | 'edit', id } while that write is out
 // One past goal for the element: time spent · tokens · cost · continuation turns · how it closed on its meta
 // line, the evaluator's reason as its note (when it ended is the element's, from endedAt).
 function goalPastItem(h) {
@@ -19580,6 +19631,139 @@ async function addGoal(key, objective, card) {
   var ok = await goalAction(key, { action: 'add', objective: objective });
   if (ok && card && card.isConnected && card.getAttribute('data-goal-key') === key && card.draft.trim() === objective) card.draft = '';
 }
+// ── The goal composer (2026-11-26): the add box is the instruction composer ──
+// "신규 goal 추가 … 포커스를 받으면 이 창이 지시창 처럼": the card's add slot holds a <ui-composer collapse> — one line
+// while idle, the whole composer on focus: a multiline objective, files, images and voice notes (the panel
+// composer's limits), 받아쓰기, the counter. Its send is a goal add: the objective and the files (base64, as the
+// command route takes them) go to POST /goal; the server puts the files into the thread and on the goal's opening
+// turn — now, or when it leaves the queue. The trigger menus (/ % $) and model · effort stay with the instruction
+// composer under the panel: a goal's words run as written, so a command typed into a goal would not run.
+// One element per session (its text, files and a recording carry across openings of that session; another
+// session gets a fresh one), slotted into whichever card the panel shows.
+var _gcComposer = null; // { key, el, sig } — the goal composer of the session the panel shows
+function goalComposerData(s) {
+  var g = s.goal || null;
+  var cur = g && g.current;
+  var next = !!(cur && cur.status !== 'complete');
+  var busy = _goalBusy[s.key];
+  var d = {
+    label: '목표 추가',
+    placeholder: next ? '목표 추가 — 지금 목표 다음에 시작' : '목표 추가 — 바로 시작',
+    submitLabel: '추가',
+    hint: true,
+    minRows: 2,
+    maxRows: 8,
+    maxLength: GOAL_OBJECTIVE_MAX,
+    maxFiles: PC_LIMITS.maxFiles,
+    maxFileSize: PC_LIMITS.maxFileBytes,
+    maxTotalBytes: PC_LIMITS.maxTotalBytes,
+    busy: !!(busy && busy.op === 'add'),
+  };
+  if (ntDictationUsable(typeof window !== 'undefined' ? window : null)) d.tools = [ntDictationTool(ntDictating('gc'))];
+  return d;
+}
+// Recording discarded, a preview stopped, a dictation ended — the text and files stay.
+function goalComposerQuiet(c) {
+  ntDictateStopIn('gc');
+  if (!c) return;
+  if (typeof c.cancelRecording === 'function') c.cancelRecording();
+  if (typeof c.pause === 'function') c.pause();
+}
+function paintGoalComposer(card, s, canEdit) {
+  var cur = _gcComposer;
+  if (!canEdit || !s) {
+    if (cur) {
+      goalComposerQuiet(cur.el);
+      if (cur.el.parentNode) cur.el.parentNode.removeChild(cur.el);
+    }
+    return;
+  }
+  if (cur && cur.key !== s.key) {
+    goalComposerQuiet(cur.el);
+    if (cur.el.parentNode) cur.el.parentNode.removeChild(cur.el);
+    cur = null;
+  }
+  if (!cur) {
+    var c = document.createElement('ui-composer');
+    c.slot = 'add';
+    c.setAttribute('collapse', '');
+    c.setAttribute('lang', document.documentElement && document.documentElement.lang === 'en' ? 'en' : 'ko');
+    c.setAttribute('data-goal-key', s.key);
+    cur = _gcComposer = { key: s.key, el: c, sig: '' };
+  }
+  if (cur.el.parentNode !== card) card.appendChild(cur.el);
+  var d = goalComposerData(s);
+  var sig = JSON.stringify(d);
+  if (cur.sig !== sig) {
+    cur.sig = sig;
+    cur.el.data = d;
+  }
+}
+// The panel closed: the goal composer goes quiet with it (no microphone stays open in a hidden drawer).
+function goalComposerReset() {
+  if (_gcComposer) goalComposerQuiet(_gcComposer.el);
+}
+function isGoalComposer(el) {
+  return !!el && el.tagName === 'UI-COMPOSER' && el.slot === 'add' && !!el.getAttribute('data-goal-key');
+}
+// A goal from the composer: the words are the objective (files alone are not a goal), the files ride with it.
+// The send is prevented, so the composer keeps the words and files until the add went through — a refusal
+// leaves them to fix; only the composer that sent them, still holding those words, is cleared.
+async function addGoalFromComposer(key, text, files, c) {
+  var objective = String(text || '').trim();
+  if (!objective) {
+    dashToast({ title: '목표를 글로 적어 주세요', description: '파일만으로는 목표를 추가할 수 없어요', tone: 'error' });
+    return false;
+  }
+  var list = files || [];
+  var attachments = [];
+  if (list.length) {
+    try {
+      attachments = await Promise.all(list.map(ntReadFile));
+    } catch (err) {
+      setGoalError(key, '첨부 파일을 읽지 못했어요 — 다시 붙여 주세요');
+      return false;
+    }
+  }
+  var payload = { action: 'add', objective: objective };
+  if (attachments.length) payload.attachments = attachments;
+  var ok = await goalAction(key, payload);
+  if (ok && c && c.isConnected && c.getAttribute('data-goal-key') === key && String(c.value || '').trim() === objective && typeof c.clear === 'function') c.clear();
+  return ok;
+}
+document.addEventListener('ui-submit', function(e) {
+  var c = e.target;
+  if (!isGoalComposer(c)) return;
+  e.preventDefault();
+  ntDictateStopIn('gc');
+  var key = c.getAttribute('data-goal-key');
+  if (!key || !_sessionCache[key]) return;
+  var d = e.detail || {};
+  addGoalFromComposer(key, d.text, d.files, c);
+});
+// 받아쓰기 in the goal composer: its press starts and stops it; typing stops it.
+document.addEventListener('ui-tool', function(e) {
+  if (isGoalComposer(e.target)) ntOnComposerTool(e, ntDictationHost('gc'));
+});
+document.addEventListener('ui-input', function(e) {
+  if (isGoalComposer(e.target)) ntDictateStopIn('gc');
+});
+// A goal's queue order changed in the page's copy at once (the card's next data keeps it), then on the server; a
+// refusal (the goal started meanwhile) reloads the sessions, which puts the order back.
+function goalQueueReorder(s, order) {
+  var q = s && s.goal && s.goal.queue;
+  if (!Array.isArray(q) || !Array.isArray(order) || order.length !== q.length) return false;
+  var byId = Object.create(null);
+  for (var i = 0; i < q.length; i++) byId[String(q[i].goalId)] = q[i];
+  var next = [];
+  for (var j = 0; j < order.length; j++) {
+    var g = byId[String(order[j])];
+    if (!g) return false;
+    next.push(g);
+  }
+  s.goal.queue = next;
+  return true;
+}
 // The element's events: a confirmed Delete (the current goal, or a queued one — its own remove spins), an Add.
 document.addEventListener('ui-delete', function(e) {
   var el = e.target;
@@ -19596,6 +19780,28 @@ document.addEventListener('ui-add', function(e) {
   var key = el.getAttribute('data-goal-key');
   if (!key || !_sessionCache[key]) return;
   addGoal(key, e.detail.objective, el);
+});
+// A queued goal dragged (or moved with ↑ ↓) to another place: the page's copy takes the order at once, then the route.
+document.addEventListener('ui-move', function(e) {
+  var el = e.target;
+  if (!el || el.tagName !== 'UI-GOAL-CARD' || !e.detail) return;
+  var key = el.getAttribute('data-goal-key');
+  var s = key ? _sessionCache[key] : null;
+  if (!s || isBusy(key, 'goal')) { e.preventDefault(); return; }
+  var id = String(e.detail.id || '');
+  goalQueueReorder(s, e.detail.order);
+  goalAction(key, { action: 'move', goalId: id, to: Number(e.detail.to) || 0 }, id);
+});
+// A queued goal's text saved from its editor: prevented, so the editor stays (Save spins) until the data carries the
+// new text; a refusal leaves the text to fix.
+document.addEventListener('ui-edit', function(e) {
+  var el = e.target;
+  if (!el || el.tagName !== 'UI-GOAL-CARD' || !e.detail) return;
+  e.preventDefault();
+  var key = el.getAttribute('data-goal-key');
+  if (!key || !_sessionCache[key]) return;
+  var id = String(e.detail.id || '');
+  goalAction(key, { action: 'edit', goalId: id, objective: String(e.detail.objective || '') }, id);
 });
 // ⏸️ on the current goal: it moves to the paused goals and the next queued goal starts (or the goal work ends);
 // ▶️ on a current goal stopped in place (the cap question's 취소) resumes it.
@@ -24945,6 +25151,8 @@ function closePanel() {
   if (typeof chgCloseViewer === 'function') chgCloseViewer();
   // Task view: a closed panel keeps no mic, no files and watches no answers.
   pcReset();
+  // The goal composer too: no recording or dictation goes on in a closed drawer (its text and files stay).
+  if (typeof goalComposerReset === 'function') goalComposerReset();
   if (_ansIo) { _ansIo.disconnect(); _ansIo = null; }
   layoutBeforeChange();
   // An opening still waiting for the element is dropped; a drawer not yet defined has nothing open to close.
@@ -28584,6 +28792,23 @@ function ntDictateStopIn(id) {
 // Where a dictation writes: the composer, what follows its text, where its status goes, its repaint. The new task
 // has a status line and a saved draft; the session panel has neither — its why is a toast.
 function ntDictationHost(id) {
+  if (id === 'gc') {
+    // The goal composer (the add slot of the panel's goal card): no status line — its why is a toast.
+    return {
+      id: 'gc',
+      el: function () {
+        return _gcComposer ? _gcComposer.el : null;
+      },
+      text: function () {},
+      status: function (msg, final) {
+        if (final && msg) dashToast({ title: msg });
+      },
+      clear: function () {},
+      paint: function () {
+        repaintPanelGoalFor(panelSessionKey);
+      },
+    };
+  }
   if (id === 'pc') {
     return {
       id: 'pc',

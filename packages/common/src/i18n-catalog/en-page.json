@@ -2019,5 +2019,12 @@
   " · 사용 중 ": " · in use ",
   "연결 오류 — 다시 시도하세요": "Connection error — try again",
   "작업 워커 영역": "Work workers area",
-  "<div class=\"notice\">찾는 이름의 작업 워커가 없습니다.</div>": "<div class=\"notice\">No work worker by that name.</div>"
+  "<div class=\"notice\">찾는 이름의 작업 워커가 없습니다.</div>": "<div class=\"notice\">No work worker by that name.</div>",
+  "목표 추가": "Add a goal",
+  "목표 추가 — 지금 목표 다음에 시작": "Add a goal — starts after the current one",
+  "목표 추가 — 바로 시작": "Add a goal — starts now",
+  "추가": "Add",
+  "목표를 글로 적어 주세요": "Write the goal in words",
+  "파일만으로는 목표를 추가할 수 없어요": "Files alone cannot be a goal",
+  "첨부 파일을 읽지 못했어요 — 다시 붙여 주세요": "The attached files could not be read — attach them again"
 }
