@@ -14,14 +14,12 @@ export const WORKERS_TAB_HTML = `<div slot="workers" data-tab="workers" class="p
   </aside>
   <main>
     <p class="intro">작업(Claude Code)이 돌아가는 머신입니다. 지금은 이 soma-work가 설치된 노드 하나이고, 워커를 더 붙이면 여기에 함께 나옵니다.</p>
-    <p class="intro">닉네임을 정하면 작업 카드의 노드 배지와 프로세스 탭에 노드 이름 대신 닉네임이 나옵니다. 노드 이름은 배지의 툴팁에 남습니다.</p>
     <div id="wk-status" class="status" role="status" aria-live="polite"></div>
-    <section class="group" id="wk-body"><div class="notice">불러오는 중…</div></section>
+    <div id="wk-body"><div class="notice">불러오는 중…</div></div>
   </main>
 </div>`;
 
 export const WORKERS_TAB_CSS = `
-#wk-body { padding: 16px; }
 .wk-banner { font-size: 13px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); margin-bottom: 12px; display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
 .wk-rows { list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
 .wk-row { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
@@ -117,11 +115,13 @@ function renderWorkers() {
   var workers = all.filter(function(w) {
     return !q || String(w.name || '').toLowerCase().indexOf(q) >= 0 || String(w.nodeId || '').toLowerCase().indexOf(q) >= 0;
   });
-  el.innerHTML = wkBanner() + (workers.length
-    ? '<ul class="wk-rows">' + workers.map(function(w) { return wkRow(w, adminModeOn()); }).join('') + '</ul>'
-    : all.length
-      ? '<div class="notice">찾는 이름의 작업 워커가 없습니다.</div>'
-      : '<div class="notice">작업 워커가 없습니다 — 이 인스턴스에서 프로세스 모니터가 꺼져 있어요.</div>');
+  // The admin-mode banner over the card; the card's head says how many and what a nickname does (groupCard).
+  el.innerHTML = wkBanner() + groupCard('작업 워커', all.length + '대 — 닉네임을 정하면 작업 카드의 노드 배지와 프로세스 탭에 노드 이름 대신 닉네임이 나옵니다. 노드 이름은 배지의 툴팁에 남습니다.',
+    workers.length
+      ? '<ul class="wk-rows">' + workers.map(function(w) { return wkRow(w, adminModeOn()); }).join('') + '</ul>'
+      : all.length
+        ? '<p class="lock">찾는 이름의 작업 워커가 없습니다.</p>'
+        : '<p class="lock">작업 워커가 없습니다 — 이 인스턴스에서 프로세스 모니터가 꺼져 있어요.</p>');
 }
 function wkSubmit(e, form) {
   if (e && e.preventDefault) e.preventDefault();

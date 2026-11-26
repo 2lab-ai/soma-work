@@ -22,6 +22,7 @@ function clientFn(name: string): string {
 
 const FNS = [
   'esc',
+  'groupCard',
   'escAttr',
   'scWhen',
   'stStatus',
@@ -120,7 +121,25 @@ return { ${FNS.join(', ')}, state: function () { return _st; } };`.replace('__DA
   return { api, els, apiWrite, confirmDialog, loadServerTools };
 }
 
+// One card grammar (groupCard, settings-page.ts): every title is the head of a section.group, the body under it —
+// the 개인 설정 · 기억 · 받아쓰기 · 작업 큐 look. Returns the titles in order.
+function cardTitles(html: string): string[] {
+  const all = html.match(/<h2[ >]/g) ?? [];
+  const inHead = html.match(/<section class="group"><header>(?:<div class="group-lead">[\s\S]*?<\/div>)?<h2>/g) ?? [];
+  expect(inHead.length).toBe(all.length);
+  return [...html.matchAll(/<h2>([\s\S]*?)<\/h2>/g)].map((m) => m[1]);
+}
+
 describe('서버 도구 tab — what an admin sees', () => {
+  it('one card grammar: the banner over three cards — tools, the server-tools grants, the servers', () => {
+    const { api, els } = page({ adminMode: false });
+    api.renderServerTools();
+    const html: string = els['st-body'].innerHTML;
+    expect(html.startsWith('<div class="st-banner"')).toBe(true);
+    expect(cardTitles(html)).toEqual(['도구', 'server-tools 허락', '서버 · 환경']);
+    expect(html).toContain('<h2>server-tools 허락</h2><p>기간제, 최대 4주 — ');
+  });
+
   it('without admin mode: tools with levels, admin-only locked, servers, secrets, who is allowed, no controls', () => {
     const { api, els } = page({ adminMode: false });
     api.renderServerTools();

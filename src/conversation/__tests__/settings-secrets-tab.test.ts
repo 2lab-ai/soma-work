@@ -24,6 +24,7 @@ function load<T>(fns: string[], inject: Record<string, unknown> = {}): T {
 }
 
 const FNS = [
+  'groupCard',
   'scUserName',
   'scChip',
   'scAccess',
@@ -99,7 +100,27 @@ return { ${FNS.join(', ')}, set: function (k, v) { if (k === 'replacing') _scRep
   return { api, els, apiWrite, confirmDialog, loadSecrets };
 }
 
+// One card grammar (groupCard, settings-page.ts): every title is the head of a section.group, the body under it —
+// the 개인 설정 · 기억 · 받아쓰기 · 작업 큐 look. Returns the titles in order.
+function cardTitles(html: string): string[] {
+  const all = html.match(/<h2[ >]/g) ?? [];
+  const inHead = html.match(/<section class="group"><header>(?:<div class="group-lead">[\s\S]*?<\/div>)?<h2>/g) ?? [];
+  expect(inHead.length).toBe(all.length);
+  return [...html.matchAll(/<h2>([\s\S]*?)<\/h2>/g)].map((m) => m[1]);
+}
+
 describe('비밀 tab — list', () => {
+  it('one card grammar: the admin-mode banner over the cards, each card titled in its head', () => {
+    const { api, els } = page({ adminMode: true });
+    api.renderSecrets();
+    const html: string = els['sc-body'].innerHTML;
+    expect(html.startsWith('<div class="sc-banner"')).toBe(true);
+    expect(cardTitles(html)).toEqual(['비밀', '없는 비밀']);
+    expect(html).toContain(
+      '<header><h2>비밀</h2><p>2개 — 값은 보이지 않습니다.</p></header><div class="group-in"><div class="sc-box"><h3>비밀 추가</h3>',
+    );
+  });
+
   it('without admin mode: names, times, usages, the missing ones, no controls', () => {
     const { api, els } = page({ adminMode: false });
     api.renderSecrets();

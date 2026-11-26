@@ -148,6 +148,9 @@ section.group.danger { border-color: var(--tint-fail-line); background: var(--ti
 section.group > header { padding: 14px 16px 10px; border-bottom: 1px solid var(--border); }
 section.group > header h2 { font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
 section.group > header p { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+/* A card drawn by a tab's script (groupCard): the same head, then the body on the card's 16px inset. */
+section.group > .group-in { padding: 16px; }
+section.group > header > .group-lead { margin-bottom: 6px; }
 /* Buttons are the library kit's (.ui-btn): a hairline card button, the ink primary — the one decision of
    its row or dialog — and the destructive confirm in the fail tone. One press rule: scale(.97). */
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; font: inherit; font-size: 13px; font-weight: 500; line-height: 1.2; color: var(--ib-text); background: var(--ib-card); border: 1px solid var(--ib-card-border); border-radius: 8px; padding: 6px 12px; min-height: 34px; white-space: nowrap; cursor: pointer; transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, opacity 150ms ease, transform var(--dur-press) var(--ease-out); }
@@ -233,6 +236,13 @@ function esc(s) {
 }
 function escAttr(s) {
   return esc(s).replace(/'/g, '&#39;');
+}
+// One card for every tab — the section.group that 개인 설정 · 기억 · 받아쓰기 · 작업 큐 write in their page: the head
+// (a title, the line under it) and then the body. Arguments are HTML, escaped by the caller; lead sits above the
+// title in the head (a skill's back link).
+function groupCard(title, desc, body, lead) {
+  return '<section class="group"><header>' + (lead || '') + '<h2>' + title + '</h2>' + (desc ? '<p>' + desc + '</p>' : '')
+    + '</header><div class="group-in">' + body + '</div></section>';
 }
 function adminModeOn() {
   try { return localStorage.getItem('soma_admin_mode') === 'on'; } catch (_e) { return false; }

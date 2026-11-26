@@ -41,6 +41,15 @@ const worker = (over: Record<string, unknown> = {}) => ({
 });
 const ROW = ['wkRow', 'wkPlatform', 'wkBytes', 'wkCpu', 'esc', 'escAttr'];
 
+// One card grammar (groupCard, settings-page.ts): every title is the head of a section.group, the body under it —
+// the 개인 설정 · 기억 · 받아쓰기 · 작업 큐 look. Returns the titles in order.
+function cardTitles(html: string): string[] {
+  const all = html.match(/<h2[ >]/g) ?? [];
+  const inHead = html.match(/<section class="group"><header>(?:<div class="group-lead">[\s\S]*?<\/div>)?<h2>/g) ?? [];
+  expect(inHead.length).toBe(all.length);
+  return [...html.matchAll(/<h2>([\s\S]*?)<\/h2>/g)].map((m) => m[1]);
+}
+
 describe('작업 워커 tab — the page', () => {
   it('is an admin-only tab whose data loads the first time it is shown', () => {
     expect(SETTINGS_TABS.find((t) => t.id === 'workers')).toEqual({
@@ -160,13 +169,32 @@ describe('작업 워커 tab — renaming', () => {
     expect(status[0]).toEqual(['studio-build-01 닉네임을 저장하지 못했습니다 — 연결 오류 — 다시 시도하세요', true]);
   });
 
+  it('one card grammar: the workers are one card, its head says how many and what a nickname does', () => {
+    const el = { innerHTML: '' };
+    const r = load<any>(
+      ['renderWorkers', 'wkRow', 'wkBanner', 'wkPlatform', 'wkBytes', 'wkCpu', 'esc', 'escAttr', 'groupCard'],
+      {
+        document: { getElementById: (id: string) => (id === 'wk-body' ? el : null) },
+        adminModeOn: () => false,
+      },
+    );
+    r.setWk({ maxNickname: 24, workers: [worker(), worker({ nodeId: 'rack-02', name: 'rack-02' })] });
+    r.renderWorkers();
+    expect(el.innerHTML.startsWith('<div class="wk-banner"')).toBe(true);
+    expect(cardTitles(el.innerHTML)).toEqual(['작업 워커']);
+    expect(el.innerHTML).toContain('<h2>작업 워커</h2><p>2대 — 닉네임을 정하면');
+  });
+
   it('the side column filters the cards by name or node id', () => {
     const el = { innerHTML: '' };
     const filter = { value: '' };
-    const r = load<any>(['renderWorkers', 'wkRow', 'wkBanner', 'wkPlatform', 'wkBytes', 'wkCpu', 'esc', 'escAttr'], {
-      document: { getElementById: (id: string) => (id === 'wk-body' ? el : id === 'wk-filter' ? filter : null) },
-      adminModeOn: () => true,
-    });
+    const r = load<any>(
+      ['renderWorkers', 'wkRow', 'wkBanner', 'wkPlatform', 'wkBytes', 'wkCpu', 'esc', 'escAttr', 'groupCard'],
+      {
+        document: { getElementById: (id: string) => (id === 'wk-body' ? el : id === 'wk-filter' ? filter : null) },
+        adminModeOn: () => true,
+      },
+    );
     r.setWk({
       maxNickname: 24,
       workers: [worker({ nickname: 'b01', name: 'b01' }), worker({ nodeId: 'rack-02', name: 'rack-02' })],
