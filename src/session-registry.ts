@@ -857,6 +857,28 @@ export class SessionRegistry {
   }
 
   /**
+   * Listen to the turn runtime's activity reports (`setActivityState` / `setActivityStateByKey`), repeats included.
+   * The turn occupancy (`src/slack/session-occupancy.ts`) keeps them in memory as its run-phase marks; a value read
+   * from disk or written outside these two setters is never reported. Returns the unsubscribe function.
+   */
+  addTurnActivityListener(listener: (sessionKey: string, state: ActivityState) => void): () => void {
+    this.turnActivityListeners.add(listener);
+    return () => this.turnActivityListeners.delete(listener);
+  }
+
+  private readonly turnActivityListeners = new Set<(sessionKey: string, state: ActivityState) => void>();
+
+  private noteTurnActivity(sessionKey: string, state: ActivityState): void {
+    for (const listener of this.turnActivityListeners) {
+      try {
+        listener(sessionKey, state);
+      } catch (err) {
+        this.logger.debug('Turn activity listener failed', { sessionKey, state, error: err });
+      }
+    }
+  }
+
+  /**
    * Fire the activity-state/session-update callback without changing session state.
    * Used by turn-timer / compaction-counter paths so dashboard reflects changes.
    */
@@ -2169,6 +2191,8 @@ export class SessionRegistry {
   setActivityState(channelId: string, threadTs: string | undefined, state: ActivityState): void {
     const session = this.getSession(channelId, threadTs);
     if (!session) return;
+    // Every report of the turn runtime, a repeat included — the turn occupancy marks the run it belongs to.
+    this.noteTurnActivity(this.getSessionKey(channelId, threadTs), state);
     if (session.activityState === state) return; // No-op for duplicate transitions
 
     const leftWaiting = session.activityState === 'waiting';
@@ -2215,6 +2239,7 @@ export class SessionRegistry {
     sessionKey = normalizeSessionKey(sessionKey);
     const session = this.getSessionByKey(sessionKey);
     if (!session) return;
+    this.noteTurnActivity(sessionKey, state); // every report, a repeat included (see setActivityState)
     if (session.activityState === state) return;
 
     const leftWaiting = session.activityState === 'waiting';
