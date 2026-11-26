@@ -648,26 +648,29 @@ function wqAfterBoard() {
 var WQ_ACT_LABEL = { release: '차례 끝내기', first: '먼저 진행', cancel: '대기에서 빼기' };
 // Pure: the question before a hand that takes work out of a lane — { html, confirm } — or null for one that does not
 // (먼저 진행 only reorders). It names the work and the lane, and says what follows: the entry leaves the lane, its
-// thread hears it, the session itself goes on, what starts next.
+// thread hears it, the session itself goes on, what starts next. Each sentence is one string with {slots}, so the
+// page catalog (en-page.json) has it whole.
+function wqFill(text, slots) {
+  return String(text).replace(/\{(\w+)\}/g, function(m, k) { return slots[k] != null ? slots[k] : m; });
+}
 function wqAskText(action, entry, q) {
-  var title = esc((entry && entry.task && entry.task.title) || (entry && entry.label) || (entry && entry.id) || '작업');
+  var title = esc((entry && entry.task && entry.task.title) || (entry && entry.label) || (entry && entry.id) || '');
   var lane = '<code>' + esc((q && q.id) || (entry && entry.queue) || '') + '</code>';
   var next = q && q.waiting && q.waiting.length ? q.waiting[0] : null;
-  var nextTitle = next ? esc((next.task && next.task.title) || next.label || next.id) : '';
+  var slots = { title: title, lane: lane, next: next ? esc((next.task && next.task.title) || next.label || next.id) : '' };
   if (action === 'release') {
     return {
       confirm: WQ_ACT_LABEL.release,
-      html: '<p class="rb-lead">' + lane + '에서 진행 중인 「' + title + '」의 차례를 지금 끝낼까요?</p>'
-        + '<p class="rb-note">이 작업은 레인에서 빠지고, 그 스레드에 ⏹ 안내가 갑니다. 작업 세션은 멈추지 않고 레인 없이 계속합니다 — '
-        + '다시 줄을 서려면 그 스레드에서 큐에 다시 들어가야 합니다. '
-        + (next ? '대기 중인 다음 작업 「' + nextTitle + '」이 바로 시작합니다.' : '대기 중인 작업은 없습니다.') + '</p>',
+      html: '<p class="rb-lead">' + wqFill('{lane}에서 진행 중인 「{title}」의 차례를 지금 끝낼까요?', slots) + '</p>'
+        + '<p class="rb-note">' + wqFill('이 작업은 레인에서 빠지고, 그 스레드에 ⏹ 안내가 갑니다. 작업 세션은 멈추지 않고 레인 없이 계속합니다 — 다시 줄을 서려면 그 스레드에서 큐에 다시 들어가야 합니다.', slots)
+        + ' ' + (next ? wqFill('대기 중인 다음 작업 「{next}」이 바로 시작합니다.', slots) : '대기 중인 작업은 없습니다.') + '</p>',
     };
   }
   if (action === 'cancel') {
     return {
       confirm: WQ_ACT_LABEL.cancel,
-      html: '<p class="rb-lead">「' + title + '」을 ' + lane + ' 대기에서 뺄까요?</p>'
-        + '<p class="rb-note">줄에서 빠지고, 차례가 와도 시작하지 않습니다. 다시 하려면 큐에 다시 들어가야 합니다.</p>',
+      html: '<p class="rb-lead">' + wqFill('「{title}」을 {lane} 대기에서 뺄까요?', slots) + '</p>'
+        + '<p class="rb-note">' + wqFill('줄에서 빠지고, 차례가 와도 시작하지 않습니다. 다시 하려면 큐에 다시 들어가야 합니다.', slots) + '</p>',
     };
   }
   return null;

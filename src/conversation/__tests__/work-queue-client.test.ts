@@ -6,8 +6,18 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { pageText, registerPageCatalog, scanPage } from '@soma/common/i18n-page';
 import { describe, expect, it } from 'vitest';
 import { WORK_QUEUE_CLIENT_JS, WORK_QUEUE_CSS } from '../work-queue-client';
+
+registerPageCatalog(
+  JSON.parse(
+    readFileSync(
+      join(__dirname, '..', '..', '..', 'packages', 'common', 'src', 'i18n-catalog', 'en-page.json'),
+      'utf8',
+    ),
+  ),
+);
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 
@@ -448,6 +458,16 @@ describe('the page', () => {
     expect(DASHBOARD_TS).toContain('<ui-dialog id="wq-dialog"');
     expect(DASHBOARD_TS).toContain('onclick="wqAskClose()">취소</button>');
     expect(DASHBOARD_TS).toContain('id="wq-dialog-confirm" onclick="wqAskConfirm()"');
+  });
+
+  it('the question has its English: every Korean string of the dialog and its text is in the page catalog', () => {
+    const start = DASHBOARD_TS.indexOf('<ui-dialog id="wq-dialog"');
+    const dialog = DASHBOARD_TS.slice(start, DASHBOARD_TS.indexOf('</ui-dialog>', start) + '</ui-dialog>'.length);
+    const script = `<script>\n${varSource('WQ_ACT_LABEL')}\n${['wqFill', 'wqAskText'].map(fnSource).join('\n')}\n</script>`;
+    const missing = scanPage(`${dialog}\n${script}`)
+      .filter((seg) => !seg.skip && pageText(seg.key) === undefined)
+      .map((seg) => seg.key);
+    expect(missing).toEqual([]);
   });
 
   it('the script is plain ES5 with no template syntax (it reaches the browser byte for byte)', () => {
