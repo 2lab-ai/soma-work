@@ -2032,6 +2032,9 @@
   "목표 추가 — 바로 시작": "Add a goal — starts now",
   "추가": "Add",
   "목표를 글로 적어 주세요": "Write the goal in words",
+  "이 세션에는 지금 명령을 보낼 수 없어요": "Commands cannot be sent to this session now",
+  "이 세션에 지시할 수 없는 계정이에요": "This account cannot instruct this session",
+  "끝났거나 잠든 세션이에요": "The session has ended or is asleep",
   "파일만으로는 목표를 추가할 수 없어요": "Files alone cannot be a goal",
   "첨부 파일을 읽지 못했어요 — 다시 붙여 주세요": "The attached files could not be read — attach them again"
 }

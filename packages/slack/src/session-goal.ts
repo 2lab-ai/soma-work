@@ -102,11 +102,18 @@ export interface SessionGoalState {
    */
   openingFiles?: SessionGoalFile[];
   /**
-   * {@link openingFiles} rode a turn of this goal already (its opening, or the first continuation when the loop
-   * itself started the goal — an eval verdict promoting it from the queue, a restart repairing a stranded queue). The
-   * loop's continuations carry them only while this is unset; an explicit opening (start, promote, resume) always does.
+   * The skill part of an objective written with a `$skill` in the dashboard's goal composer (`goal … $skill`, split by
+   * `CommandRouter.splitGoalSkill`): the goal's first turn runs it as a command, so the skill is resolved then — when
+   * it starts at once, when it is promoted from the queue later, or when a paused goal is resumed.
    */
-  openingFilesSent?: boolean;
+  openingPrompt?: string;
+  /**
+   * {@link openingFiles} / {@link openingPrompt} rode a turn of this goal already (its opening, or the first
+   * continuation when the loop itself started the goal — an eval verdict promoting it from the queue, a restart
+   * repairing a stranded queue). The loop's continuations carry them only while this is unset; an explicit opening
+   * (start, promote, resume) always does.
+   */
+  openingSent?: boolean;
   status: SessionGoalStatus;
   createdAt: number;
   updatedAt: number;

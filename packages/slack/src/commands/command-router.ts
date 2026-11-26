@@ -135,6 +135,11 @@ export interface CommandHandler {
   execute(ctx: CommandContext): Promise<CommandResult>;
 }
 
+/** The skill handler's read-only existence check (SkillForceHandler.skillExists) — the goal composer's split. */
+export interface SkillExistence {
+  skillExists?(token: string, user?: string): boolean;
+}
+
 export interface CommandRouterHandlers {
   handlers: CommandHandler[];
   newHandler: CommandHandler;
@@ -420,11 +425,15 @@ export class CommandRouter {
    * to a skill, else `null`. Shared by {@link route} and
    * {@link isGoalCommandText} so the two cannot disagree on what a split is.
    */
-  private findGoalSkillSplit(routedText: string, user?: string): { goalText: string; skillText: string } | null {
+  private findGoalSkillSplit(
+    routedText: string,
+    user?: string,
+    isSkill: (token: string) => boolean = (token) => this.skillForceHandler.canHandle(token, user),
+  ): { goalText: string; skillText: string } | null {
     const skillRefPattern = /\$[\w-]+(?::[\w-]+)?/g;
     let skillMatch = skillRefPattern.exec(routedText);
     while (skillMatch !== null) {
-      if (this.skillForceHandler.canHandle(skillMatch[0], user)) {
+      if (isSkill(skillMatch[0])) {
         return {
           goalText: routedText.slice(0, skillMatch.index).trim(),
           skillText: routedText.slice(skillMatch.index).trim(),
@@ -433,6 +442,20 @@ export class CommandRouter {
       skillMatch = skillRefPattern.exec(routedText);
     }
     return null;
+  }
+
+  /**
+   * A goal objective written in the dashboard's goal composer, split the way
+   * `goal <objective> $skill` is: the goal (before the first `$skill` token)
+   * and the skill part, which the goal's opening turn runs as a command. Only a
+   * token that names a skill which EXISTS splits (`skillExists`, not the
+   * pattern-level `canHandle`): an objective is prose, and `$REDIS_HOST:6379`
+   * in it is not a skill. No existence check wired → never split. Pure.
+   */
+  splitGoalSkill(objective: string, user?: string): { goalText: string; skillText: string } | null {
+    const handler = this.skillForceHandler as CommandHandler & SkillExistence;
+    if (typeof handler.skillExists !== 'function') return null;
+    return this.findGoalSkillSplit(objective, user, (token) => handler.skillExists?.(token, user) === true);
   }
 
   /**

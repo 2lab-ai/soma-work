@@ -8,10 +8,16 @@
  * stand-in that applies each action to the session the board reads (so the page's reload shows the outcome) and
  * records what it was sent. Asserts (exit 1 on any failure) and writes screenshots at 1280 and 390:
  *   G1  the add box is one line (a <ui-composer collapse> in the card's add slot, toolbar hidden)
- *   G2  a click opens it into the instruction composer: attach, image, voice, 받아쓰기, the counter, 추가
+ *   G2  a click opens it into the instruction composer: attach, image, voice, 받아쓰기, 추가 — and the counter once
+ *       the words near the 4,000 cap (from 3,200)
  *   G3  typed words + a picked file → Enter posts add with the objective and the file (base64), then it clears
  *   G4  dragging the first queued goal's handle below the second posts move { to: 1 } and the list redraws in order
  *   G5  Edit opens the text in place; Enter posts edit and the row shows the new text
+ *   (second pass — "모든 기능": everything the instruction composer has)
+ *   G6  the menus: / lists the commands (/model among them), $ the skills — the instruction composer's set
+ *   G7  model · effort on its row: the session picker, enabled, not clipped; picking a level posts the effort
+ *   G8  a command (/model sonnet) goes the instruction composer's way (POST /command), not as a goal; it clears
+ *   G9  words with a $skill are a goal add (the server runs the skill on the goal's first turn)
  *
  *   SOMA_CONFIG_DIR=$TMP/cfg SOMA_INSTANCE_DIR=$TMP/inst npx tsx scripts/screenshot-goal-composer.ts [outDir]
  */
@@ -109,6 +115,17 @@ async function main() {
     }
     return { outcome: 'deleted', goalId: (action as any).goalId };
   });
+  const commands: { message: string; files: string[] }[] = [];
+  dashboard.setDashboardCommandHandler(async (_key, message, files) => {
+    commands.push({ message, files: (files || []).map((f: any) => f.name) });
+  });
+  const efforts: string[] = [];
+  dashboard.setDashboardEffortHandler((_key, effort) => {
+    const previous = session.effort;
+    efforts.push(effort);
+    session.effort = effort;
+    return { status: 'switched', effort: effort as any, previous, effective: effort };
+  });
 
   const ws = await import('../src/conversation/web-server');
   await ws.startWebServer({ listen: true });
@@ -126,6 +143,8 @@ async function main() {
       session = freshSession();
       sessions.set(KEY, session);
       calls.length = 0;
+      commands.length = 0;
+      efforts.length = 0;
       const context = await browser.newContext({ viewport: { width: vp.width, height: vp.height } });
       await context.addCookies([{ name, value, url: BASE }]);
       const page = await context.newPage();
@@ -162,16 +181,25 @@ async function main() {
           send: r.querySelector('.cp-send')?.textContent.trim() || '',
         };
       });
+      await panelGoal.screenshot({ path: path.join(OUT, `${vp.tag}-2-open.png`) });
+      // Near the cap the counter comes (typed, so the composer's ui-input carries it).
+      await composer.locator('textarea.cp-field').fill('가'.repeat(3299));
+      await composer.locator('textarea.cp-field').press('End');
+      await composer.locator('textarea.cp-field').pressSequentially('나');
+      await page.waitForTimeout(300);
+      const near = await composer.evaluate((c: any) => c.shadowRoot.querySelector('.cp-count')?.textContent || '');
+      await panelGoal.screenshot({ path: path.join(OUT, `${vp.tag}-2b-near-cap.png`) });
+      await composer.locator('textarea.cp-field').fill('');
       check(
-        `${vp.tag} G2: focus opens the whole composer (files, images, voice, counter, 추가)`,
+        `${vp.tag} G2: focus opens the whole composer (files, images, voice, 추가; the counter near the cap)`,
         !open.collapsed &&
           open.h > folded.h &&
           open.tools.length >= 2 &&
-          /4,000/.test(open.count) &&
+          open.count === '' &&
+          near === '3,300 / 4,000' &&
           open.send.includes('추가'),
-        JSON.stringify(open),
+        JSON.stringify({ ...open, near }),
       );
-      await panelGoal.screenshot({ path: path.join(OUT, `${vp.tag}-2-open.png`) });
 
       // G3 — words + a file → Enter → add with the file.
       await composer.locator('textarea.cp-field').fill('스크린샷 보고 목표 카드 여백 고치기');
@@ -262,6 +290,130 @@ async function main() {
         JSON.stringify({ edit, texts }),
       );
       await panelGoal.screenshot({ path: path.join(OUT, `${vp.tag}-6-after.png`) });
+
+      // G6 — the menus.
+      const field = composer.locator('textarea.cp-field');
+      await field.click();
+      await field.fill('');
+      await field.pressSequentially('/mod');
+      await page.waitForTimeout(300);
+      const slash = await composer.evaluate((c: any) => {
+        const pop = c.shadowRoot.querySelector('.cp-sg');
+        return {
+          shown: !!pop && !pop.hidden,
+          rows: Array.from(pop?.querySelectorAll('[role="option"]') || []).map((r: any) => r.textContent.trim()),
+        };
+      });
+      await panelGoal.screenshot({ path: path.join(OUT, `${vp.tag}-7-slash-menu.png`) });
+      await page.screenshot({ path: path.join(OUT, `${vp.tag}-7-slash-menu-page.png`) });
+      await field.press('Escape');
+      await field.fill('');
+      await field.pressSequentially('배포 $');
+      await page.waitForTimeout(300);
+      const dollar = await composer.evaluate((c: any) => {
+        const pop = c.shadowRoot.querySelector('.cp-sg');
+        return {
+          shown: !!pop && !pop.hidden,
+          rows: Array.from(pop?.querySelectorAll('[role="option"]') || []).map((r: any) => r.textContent.trim()),
+        };
+      });
+      await page.screenshot({ path: path.join(OUT, `${vp.tag}-8-skill-menu-page.png`) });
+      await field.press('Escape');
+      await field.fill('');
+      check(
+        `${vp.tag} G6: / lists the commands (/model), $ the skills ($user) — the instruction composer's menus`,
+        slash.shown &&
+          slash.rows.some((r) => r.startsWith('/model')) &&
+          dollar.shown &&
+          dollar.rows.some((r) => r.startsWith('$user')),
+        JSON.stringify({
+          slash: { ...slash, rows: slash.rows.slice(0, 4) },
+          dollar: { ...dollar, rows: dollar.rows.slice(0, 3) },
+        }),
+      );
+
+      // G7 — model · effort on its row.
+      await field.click();
+      const picker = composer.locator('.gc-controls ui-model-picker');
+      const pk = await picker.evaluate((p: any) => {
+        const t = p.shadowRoot.querySelector('.mp-trigger');
+        return {
+          w: Math.round(p.getBoundingClientRect().width),
+          clipped: !t || t.scrollWidth > t.clientWidth + 1,
+          compact: p.hasAttribute('compact'),
+          disabled: p.hasAttribute('data-mp-ro'),
+          key: p.getAttribute('data-mp-key'),
+        };
+      });
+      await picker.locator('.mp-trigger').click();
+      await page.waitForTimeout(400);
+      const menuOpen = await picker.evaluate((p: any) => p.hasAttribute('open'));
+      await page.screenshot({ path: path.join(OUT, `${vp.tag}-9-picker-open.png`) });
+      const level = await picker.evaluate((p: any) => {
+        const b = p.shadowRoot.querySelector('.mp-seg-btn[aria-checked="false"]');
+        return b ? b.getAttribute('data-effort') : '';
+      });
+      if (level) await picker.locator(`.mp-seg-btn[data-effort="${level}"]`).click();
+      await page.waitForTimeout(600);
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(200);
+      check(
+        `${vp.tag} G7: the session's model · effort picker on the goal composer's row; a level pick posts the effort`,
+        pk.w > 0 &&
+          !pk.clipped &&
+          pk.compact &&
+          !pk.disabled &&
+          !!pk.key &&
+          menuOpen &&
+          !!level &&
+          efforts.includes(level),
+        JSON.stringify({ pk, menuOpen, level, efforts }),
+      );
+
+      // G8 — a command goes the instruction composer's way.
+      const addsBefore = calls.filter((c) => c.action === 'add').length;
+      await field.click();
+      await field.fill('/model sonnet');
+      await field.press('Enter');
+      await page.waitForFunction(
+        () => {
+          const c: any = document.querySelector('#panel-goal ui-composer[slot="add"]');
+          return c && c.value === '';
+        },
+        null,
+        { timeout: 10000 },
+      );
+      await page.waitForTimeout(300);
+      await page.screenshot({ path: path.join(OUT, `${vp.tag}-10-command-sent.png`) });
+      check(
+        `${vp.tag} G8: /model sonnet is sent as an instruction (POST /command), not added as a goal; the composer clears`,
+        commands.some((c) => c.message === '/model sonnet') &&
+          calls.filter((c) => c.action === 'add').length === addsBefore,
+        JSON.stringify({ commands, adds: calls.filter((c) => c.action === 'add').length - addsBefore }),
+      );
+
+      // G9 — a goal with a $skill is a goal add.
+      await field.click();
+      await field.fill('랜딩 페이지 문구 다듬기 $z');
+      await field.press('Escape');
+      await field.press('Enter');
+      await page.waitForFunction(
+        () => {
+          const c: any = document.querySelector('#panel-goal ui-composer[slot="add"]');
+          return c && c.value === '';
+        },
+        null,
+        { timeout: 10000 },
+      );
+      const skillAdd = calls.filter((c) => c.action === 'add').pop();
+      check(
+        `${vp.tag} G9: words with a $skill are a goal add (the skill runs on its first turn, server side)`,
+        !!skillAdd &&
+          skillAdd.objective === '랜딩 페이지 문구 다듬기 $z' &&
+          !commands.some((c) => c.message.includes('$z')),
+        JSON.stringify(skillAdd),
+      );
+      await panelGoal.screenshot({ path: path.join(OUT, `${vp.tag}-11-after-all.png`) });
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
       check(`${vp.tag}: no horizontal overflow`, overflow <= 0, `overflow=${overflow}`);
       await context.close();

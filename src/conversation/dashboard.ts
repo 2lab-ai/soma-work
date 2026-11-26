@@ -7341,6 +7341,10 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .panel-controls:empty { display: none; }
 #panel-controls { position: relative; flex-wrap: nowrap; justify-content: flex-end; min-width: 0; padding: 0; }
 #panel-controls ui-model-picker { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+/* The goal composer's copy (its slot="end", always compact): the same row rules. */
+.gc-controls { position: relative; flex-wrap: nowrap; justify-content: flex-end; min-width: 0; padding: 0; }
+.gc-controls ui-model-picker { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+.gc-controls ui-model-picker::part(trigger) { overflow: hidden; }
 /* A row narrower than even the compact trigger (320px with four tools) clips the trigger's own content (level, then
    the mark) inside its button — it never runs over Send. The button's outline and the menu (fixed) are not clipped. */
 #panel-controls ui-model-picker::part(trigger) { overflow: hidden; }
@@ -7754,6 +7758,7 @@ body[data-view-mode="minimal"] #lifecycle-btn { display: none !important; }
    — the status bar, the approvals, the question, the composer — is in no list: never hidden. ── */
 body:not([data-detail~="subtitle"]) #panel-title-sub,
 body:not([data-detail~="controls"]) #panel-controls { display: none !important; }
+body:not([data-detail~="controls"]) .gc-controls { display: none !important; }
 /* ── THE TAB BAR (SSOT 2026-11-03) — under 입력 필요: 목표 · 작업 · 에이전트 · 산출물 · 세부, each closed at first. A
    tab's content shows only while it is pressed (.slide-panel[data-midtab], selectPanelMid); the agent strip and the
    agent's head are the 에이전트 tab's — and stay while the card looks at a subagent (data-agent-scoped), so the reader
@@ -19216,11 +19221,12 @@ function setBusy(key, op, on) {
 // library has loaded it reads the model's name. Others read the same element,
 // disabled (#813: the maker's mark, the model's name and the level; no menu) —
 // data-mp-ro carries why it cannot change (mpHydrate hands it over as data.disabled).
+// surface 'goal': the goal composer's row — the panel's picker, always compact (its row is shorter).
 function renderModelPicker(s, canSwitch, modelShort, surface, readOnlyWhy) {
-  var where = surface === 'panel' ? 'panel' : 'card';
+  var where = surface === 'panel' || surface === 'goal' ? 'panel' : 'card';
   var ro = canSwitch ? '' : ' data-mp-ro="' + escAttr(readOnlyWhy || '바꿀 수 없습니다') + '"';
   return '<span class="ui-tok mp-slot" data-mk="' + escAttr('mp|' + where + '|' + s.key) + '">'
-    + '<ui-model-picker lang="ko"' + (where === 'panel' && canSwitch ? ' side="top"' : '') + (where === 'panel' && _pcCompact ? ' compact' : '') + ' data-mp-key="' + escAttr(s.key) + '" data-mp-surface="' + where + '"' + ro + '>'
+    + '<ui-model-picker lang="ko"' + (where === 'panel' && canSwitch ? ' side="top"' : '') + (where === 'panel' && _pcCompact ? ' compact' : '') + (surface === 'goal' && !_pcCompact ? ' compact' : '') + ' data-mp-key="' + escAttr(s.key) + '" data-mp-surface="' + where + '"' + ro + '>'
     + '<span class="mp-fallback">' + (modelShort || '모델') + '</span></ui-model-picker></span>';
 }
 // The disabled picker's reason, and — when the model runs a lower level than the one set — both levels: its trigger
@@ -19576,9 +19582,23 @@ function renderPanelControls(s) {
   mpHydrate(el);
   syncPickerFit();
 }
-// After a switch on either surface: the panel's copy follows at once.
+// May this viewer switch this session's model · effort here — renderPanelControls' rule, for the goal composer's copy.
+function panelCanSwitch(s) {
+  return viewerCanManage(s) && !s.terminated && s.sessionState !== 'SLEEPING' && !isSiblingSession(s);
+}
+// The session's model · effort trigger as the goal composer's row draws it (renderPanelControls' picker, surface
+// 'goal'). #813 — a read-only viewer reads the same element, disabled (its trigger names the level too).
+function panelPickerHtml(s, surface) {
+  var canSwitch = panelCanSwitch(s);
+  var modelShort = esc(s.model || '').replace(/^claude-/, '').replace(/-\\d{8}$/, '');
+  return renderModelPicker(s, canSwitch, modelShort, surface || 'panel', canSwitch ? '' : mpReadOnlyWhy(s, viewerCanManage(s), s.terminated ? 'closed' : ''));
+}
+// After a switch on either surface: the panel's copy follows at once — the goal composer's picker too (one session
+// setting, two triggers; a live render repaints it with the goal tab).
 function repaintPanelControlsFor(key) {
-  if (panelOpen && panelSessionKey === key && _sessionCache[key]) renderPanelControls(_sessionCache[key]);
+  if (!(panelOpen && panelSessionKey === key && _sessionCache[key])) return;
+  renderPanelControls(_sessionCache[key]);
+  if (_gcComposer && _gcComposer.key === key) paintGoalComposerControls(_gcComposer, _sessionCache[key]);
 }
 // ── Goal (E-12): @2lab.ai/ui <ui-goal-card> — the goal's home (spec 13) ──
 // The board card's line (cardGoalLine) reads the status words; the editor is the element in #panel-goal
@@ -19598,6 +19618,8 @@ var GOAL_STATUS_TONE = { active: 'run', paused: 'wait', complete: 'done' };
 var GOAL_SVG = '<i data-ui-icon="target"></i>';
 var GOAL_VIA_LABELS = { user: '직접 완료', 'eval-model': '평가 모델 완료' };
 var GOAL_OBJECTIVE_MAX = 4000; // the route's cap on an objective
+// The goal composer's counter shows from here (80%): below it the row keeps its room for model · effort.
+var GOAL_COUNT_FROM = 3200;
 var GOAL_ACTIONS = ['delete', 'pause', 'resume', 'move', 'edit']; // what the goal route answers besides add
 var _goalErrors = Object.create(null); // session key → last refused goal action (shown until the next success)
 var _goalBusy = Object.create(null); // session key → { op: 'add' | 'delete' | 'pause' | 'resume' | 'move' | 'edit', id } while that write is out
@@ -19702,13 +19724,18 @@ async function addGoal(key, objective, card) {
 // ── The goal composer (2026-11-26): the add box is the instruction composer ──
 // "신규 goal 추가 … 포커스를 받으면 이 창이 지시창 처럼": the card's add slot holds a <ui-composer collapse> — one line
 // while idle, the whole composer on focus: a multiline objective, files, images and voice notes (the panel
-// composer's limits), 받아쓰기, the counter. Its send is a goal add: the objective and the files (base64, as the
-// command route takes them) go to POST /goal; the server puts the files into the thread and on the goal's opening
-// turn — now, or when it leaves the queue. The trigger menus (/ % $) and model · effort stay with the instruction
-// composer under the panel: a goal's words run as written, so a command typed into a goal would not run.
+// composer's limits), 받아쓰기, a counter once the words near the route's cap, and — as the instruction composer has
+// them (2026-11-26, "모든 기능") — the menus (/ commands, % session settings, $ skills) and the session's model ·
+// effort on its row (compact: mark and level). Its send:
+//  - a command (gcIsCommand: a / command the menu offers, %…, !) goes as the instruction composer's send
+//    (sendCommand — the chat, the queue, the toasts): it runs now, it is not a goal;
+//  - anything else is a goal add: the objective and the files (base64, as the command route takes them) go to
+//    POST /goal; the server puts the files into the thread and on the goal's opening turn — now, or when it leaves
+//    the queue — and a $skill in it runs as that skill on the goal's first turn (the words before it are the goal).
 // One element per session (its text, files and a recording carry across openings of that session; another
 // session gets a fresh one), slotted into whichever card the panel shows.
-var _gcComposer = null; // { key, el, sig } — the goal composer of the session the panel shows
+var _gcComposer = null; // { key, el, ctl, sig, trig, near } — the goal composer of the session the panel shows
+var _gcSending = ''; // the session whose goal composer is sending a command (its send button spins)
 function goalComposerData(s) {
   var g = s.goal || null;
   var cur = g && g.current;
@@ -19721,14 +19748,72 @@ function goalComposerData(s) {
     hint: true,
     minRows: 2,
     maxRows: 8,
-    maxLength: GOAL_OBJECTIVE_MAX,
     maxFiles: PC_LIMITS.maxFiles,
     maxFileSize: PC_LIMITS.maxFileBytes,
     maxTotalBytes: PC_LIMITS.maxTotalBytes,
-    busy: !!(busy && busy.op === 'add'),
+    busy: !!(busy && busy.op === 'add') || _gcSending === s.key,
   };
   if (ntDictationUsable(typeof window !== 'undefined' ? window : null)) d.tools = [ntDictationTool(ntDictating('gc'))];
+  // The counter at the route's cap, once the words come near it (gcCountFollow repaints on the crossing).
+  if (gcNearCap(s.key)) d.maxLength = GOAL_OBJECTIVE_MAX;
   return d;
+}
+function gcNearCap(key) {
+  var cur = _gcComposer;
+  return !!cur && cur.key === key && String(cur.el.value || '').length >= GOAL_COUNT_FROM;
+}
+// Typing across GOAL_COUNT_FROM (either way) repaints the goal composer, so its counter comes and goes.
+function gcCountFollow(c) {
+  var cur = _gcComposer;
+  if (!cur || cur.el !== c) return;
+  if (gcNearCap(cur.key) !== !!cur.near) repaintPanelGoalFor(cur.key);
+}
+// The words a goal composer sends as a command, not as a goal: % (the session settings), ! (stop, then the words
+// after it), and a / command the menu offers (its first word: "/model opus" is /model). A goal that starts with a
+// path ("/tmp 정리") stays a goal. Before the menus load, any /word counts as a command.
+function gcIsCommand(text) {
+  var t = String(text || '').trim();
+  var c = t.charAt(0);
+  if (c === '%' || c === '!') return true;
+  if (c !== '/') return false;
+  var head = t.split(/\\s/)[0];
+  var trig = cmTriggersFor('session');
+  if (!trig) return /^\\/[a-z][\\w-]*$/i.test(head);
+  for (var i = 0; i < trig.length; i++) {
+    if (!trig[i] || trig[i].char !== '/') continue;
+    var items = trig[i].items || [];
+    for (var j = 0; j < items.length; j++) if (String(items[j].value || '').split(' ')[0] === head) return true;
+  }
+  return false;
+}
+// Repaint the goal composer of the session the panel shows (the menus arrived).
+function gcRepaint() {
+  if (_gcComposer) repaintPanelGoalFor(_gcComposer.key);
+}
+// The menus as the instruction composer has them (the same object; a change of the loaded set writes it again).
+function gcTriggers() {
+  return cmTriggersFor('session');
+}
+// Model · effort on the goal composer's row (its slot "end"): the instruction composer's picker for the same
+// session setting — a pick in either is the session's (mpOnChange), each shows it (mpHydrate). An open menu holds it.
+function paintGoalComposerControls(cur, s) {
+  var ctl = cur.ctl;
+  if (!ctl) {
+    ctl = document.createElement('div');
+    ctl.className = 'panel-controls gc-controls';
+    ctl.slot = 'end';
+    ctl.setAttribute('aria-label', '이 세션의 모델과 추론 강도');
+    cur.ctl = ctl;
+  }
+  if (ctl.parentNode !== cur.el) cur.el.appendChild(ctl);
+  if (!isPickingModel(ctl)) {
+    var html = panelPickerHtml(s, 'goal');
+    if (ctl._html !== html) {
+      morphInnerHtml(ctl, html);
+      ctl._html = html;
+    }
+  }
+  mpHydrate(ctl);
 }
 // Recording discarded, a preview stopped, a dictation ended — the text and files stay.
 function goalComposerQuiet(c) {
@@ -19757,15 +19842,21 @@ function paintGoalComposer(card, s, canEdit) {
     c.setAttribute('collapse', '');
     c.setAttribute('lang', document.documentElement && document.documentElement.lang === 'en' ? 'en' : 'ko');
     c.setAttribute('data-goal-key', s.key);
-    cur = _gcComposer = { key: s.key, el: c, sig: '' };
+    cur = _gcComposer = { key: s.key, el: c, ctl: null, sig: '', trig: null, near: false };
   }
   if (cur.el.parentNode !== card) card.appendChild(cur.el);
   var d = goalComposerData(s);
+  cur.near = 'maxLength' in d; // what the element shows now (gcCountFollow compares the words against it)
   var sig = JSON.stringify(d);
-  if (cur.sig !== sig) {
+  // The menus are compared by identity (one loaded set, large): the rest by value.
+  var trig = gcTriggers();
+  if (cur.sig !== sig || cur.trig !== trig) {
     cur.sig = sig;
+    cur.trig = trig;
+    if (trig) d.triggers = trig;
     cur.el.data = d;
   }
+  paintGoalComposerControls(cur, s);
 }
 // The panel closed: the goal composer goes quiet with it (no microphone stays open in a hidden drawer).
 function goalComposerReset() {
@@ -19799,6 +19890,30 @@ async function addGoalFromComposer(key, text, files, c) {
   if (ok && c && c.isConnected && c.getAttribute('data-goal-key') === key && String(c.value || '').trim() === objective && typeof c.clear === 'function') c.clear();
   return ok;
 }
+// A command from the goal composer runs as the instruction composer's send would (the panel shows this session):
+// the chat shows it, a running turn queues it, an answer-only command says where its answer is. One send at a time
+// across both composers; a session the instruction composer cannot send to (read-only, closed, asleep) refuses it.
+// The composer keeps the words until it went, then clears (only if it still holds them).
+async function commandFromGoalComposer(key, text, files, c) {
+  var s = _sessionCache[key];
+  if (!s || panelSessionKey !== key || _gcSending || _pcSending) return false;
+  if (pcModeOf(s) !== 'open') {
+    dashToast({ title: '이 세션에는 지금 명령을 보낼 수 없어요', description: pcModeOf(s) === 'readonly' ? '이 세션에 지시할 수 없는 계정이에요' : '끝났거나 잠든 세션이에요', tone: 'error' });
+    return false;
+  }
+  var msg = String(text || '').trim();
+  _gcSending = key;
+  repaintPanelGoalFor(key);
+  var ok = false;
+  try {
+    ok = (await sendCommand(msg, '', files || [], 'gc')) === true;
+  } finally {
+    _gcSending = '';
+    repaintPanelGoalFor(key);
+  }
+  if (ok && c && c.isConnected && c.getAttribute('data-goal-key') === key && String(c.value || '').trim() === msg && typeof c.clear === 'function') c.clear();
+  return ok;
+}
 document.addEventListener('ui-submit', function(e) {
   var c = e.target;
   if (!isGoalComposer(c)) return;
@@ -19807,14 +19922,17 @@ document.addEventListener('ui-submit', function(e) {
   var key = c.getAttribute('data-goal-key');
   if (!key || !_sessionCache[key]) return;
   var d = e.detail || {};
-  addGoalFromComposer(key, d.text, d.files, c);
+  if (gcIsCommand(d.text)) commandFromGoalComposer(key, d.text, d.files, c);
+  else addGoalFromComposer(key, d.text, d.files, c);
 });
 // 받아쓰기 in the goal composer: its press starts and stops it; typing stops it.
 document.addEventListener('ui-tool', function(e) {
   if (isGoalComposer(e.target)) ntOnComposerTool(e, ntDictationHost('gc'));
 });
 document.addEventListener('ui-input', function(e) {
-  if (isGoalComposer(e.target)) ntDictateStopIn('gc');
+  if (!isGoalComposer(e.target)) return;
+  ntDictateStopIn('gc');
+  gcCountFollow(e.target);
 });
 // A goal's queue order changed in the page's copy at once (the card's next data keeps it), then on the server; a
 // refusal (the goal started meanwhile) reloads the sessions, which puts the order back.
@@ -25330,8 +25448,10 @@ document.addEventListener('keydown', function(e) {
 // text and files back; one the server refuses is marked failed on its row (Retry,
 // which re-emits the ref without files: they are kept by ref) and said in a toast.
 var _pcNoteFiles = Object.create(null); // a note's ref → its File list, until it went out
-async function sendCommand(text, ref, files) {
+// from 'gc': the goal composer's send — it keeps its own words, so nothing is given back to this composer.
+async function sendCommand(text, ref, files, from) {
   var el = document.getElementById('cmd-steer');
+  var giveBack = from === 'gc' ? function() {} : pcGiveBack;
   if (!panelSessionKey || !el) return;
   // Capture the session this send belongs to — before any wait: an instruction
   // is never sent to a card opened meanwhile.
@@ -25343,13 +25463,13 @@ async function sendCommand(text, ref, files) {
   var attachments;
   _pcSending = true;
   try {
-    if (!pcCanSend(msg, list)) { pcGiveBack(el, ref, msg, sendingSessionKey); return; }
+    if (!pcCanSend(msg, list)) { giveBack(el, ref, msg, sendingSessionKey); return; }
     // Every file read in full (base64, as the command route takes them).
     try {
       attachments = await Promise.all(list.map(ntReadFile));
     } catch (readErr) {
       dashToast({ title: '파일을 읽지 못했어요', description: String((readErr && readErr.message) || '').slice(5), tone: 'error' });
-      pcGiveBack(el, ref, msg, sendingSessionKey);
+      giveBack(el, ref, msg, sendingSessionKey);
       return;
     }
   } finally {
@@ -28735,6 +28855,8 @@ async function cmLoadMenus() {
   }
   paintNtComposer();
   pcPaintComposer();
+  // The goal composer takes the menus at its next paint (compared by identity).
+  if (typeof gcRepaint === 'function') gcRepaint();
 }
 // Closing the sheet discards a recording in progress, stops a voice note's preview and ends a dictation (the text
 // and files stay).
@@ -28823,13 +28945,16 @@ function ntDictateStopIn(id) {
 // has a status line and a saved draft; the session panel has neither — its why is a toast.
 function ntDictationHost(id) {
   if (id === 'gc') {
-    // The goal composer (the add slot of the panel's goal card): no status line — its why is a toast.
+    // The goal composer (the add slot of the panel's goal card): no status line — its why is a toast. Dictated words
+    // reach the counter too (a value write sends no ui-input).
     return {
       id: 'gc',
       el: function () {
         return _gcComposer ? _gcComposer.el : null;
       },
-      text: function () {},
+      text: function () {
+        if (_gcComposer) gcCountFollow(_gcComposer.el);
+      },
       status: function (msg, final) {
         if (final && msg) dashToast({ title: msg });
       },

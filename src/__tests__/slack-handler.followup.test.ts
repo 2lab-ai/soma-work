@@ -8224,7 +8224,7 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(registrySession.goal.openingFiles.map((f: any) => f.id)).toEqual(['F1', 'F2']);
       expect(items()[0].message.files.map((f: any) => f.id)).toEqual(['F1', 'F2']);
       // The opening carries them: the loop's continuations need not again.
-      expect(registrySession.goal.openingFilesSent).toBe(true);
+      expect(registrySession.goal.openingSent).toBe(true);
       await settle();
     });
 
@@ -8290,6 +8290,92 @@ describe('SlackHandler — follow-up queue host', () => {
         expect.stringContaining('파일을 스레드에 올리지 못했습니다'),
         expect.anything(),
       );
+    });
+
+    it('a `$skill` in the goal composer: the goal keeps every word, the opening runs the skill part as a command', async () => {
+      handlerAny.commandRouter.splitGoalSkill = vi.fn((text: string) =>
+        text.includes('$z')
+          ? { goalText: text.slice(0, text.indexOf('$z')).trim(), skillText: text.slice(text.indexOf('$z')) }
+          : null,
+      );
+      const { settle } = await startBusyTurn();
+
+      await handler.handleHostGoalAction(SESSION_KEY, { action: 'add', objective: '로그인 버그 고치기 $z 테스트부터' });
+
+      expect(registrySession.goal).toMatchObject({
+        objective: '로그인 버그 고치기 $z 테스트부터',
+        openingPrompt: '$z 테스트부터',
+      });
+      expect(items()[0].message).toMatchObject({ text: '$z 테스트부터' });
+      expect(items()[0].message.routeContext.verbatimPrompt).toBeUndefined();
+      expect(items()[0].message.routeContext.goalOpeningId).toBe(registrySession.goal.goalId);
+      expect(registrySession.goal.openingSent).toBe(true);
+      await settle();
+    });
+
+    it('a skill first: the whole text is the goal and its opening; a queued goal keeps its skill for when it starts', async () => {
+      handlerAny.commandRouter.splitGoalSkill = vi.fn((text: string) =>
+        text.includes('$z')
+          ? { goalText: text.slice(0, text.indexOf('$z')).trim(), skillText: text.slice(text.indexOf('$z')) }
+          : null,
+      );
+      registrySession.goal = goalOf();
+      await handler.handleHostGoalAction(SESSION_KEY, { action: 'add', objective: '$z 릴리즈 노트' });
+      expect(registrySession.goalQueue[0]).toMatchObject({
+        objective: '$z 릴리즈 노트',
+        openingPrompt: '$z 릴리즈 노트',
+      });
+      expect(items()).toHaveLength(0);
+
+      const { settle } = await startBusyTurn();
+      await handler.handleHostGoalAction(SESSION_KEY, { action: 'delete', goalId: 'g1', expect: 'current' });
+      expect(items()[0].message).toMatchObject({ text: '$z 릴리즈 노트' });
+      expect(items()[0].message.routeContext.verbatimPrompt).toBeUndefined();
+      await settle();
+    });
+
+    it('editing a queued goal decides its opening skill again: kept, changed or dropped with the words', async () => {
+      handlerAny.commandRouter.splitGoalSkill = vi.fn((text: string) => {
+        const at = text.search(/\$(z|stv)\b/);
+        return at < 0 ? null : { goalText: text.slice(0, at).trim(), skillText: text.slice(at) };
+      });
+      registrySession.goal = goalOf();
+      await handler.handleHostGoalAction(SESSION_KEY, { action: 'add', objective: '로그인 버그 고치기 $z 테스트부터' });
+      const queued = () => registrySession.goalQueue[0];
+      expect(queued().openingPrompt).toBe('$z 테스트부터');
+
+      await handler.handleHostGoalAction(SESSION_KEY, {
+        action: 'edit',
+        goalId: queued().goalId,
+        objective: '결제 버그 고치기 $stv 스펙부터',
+      });
+      expect(queued()).toMatchObject({ objective: '결제 버그 고치기 $stv 스펙부터', openingPrompt: '$stv 스펙부터' });
+
+      await handler.handleHostGoalAction(SESSION_KEY, {
+        action: 'edit',
+        goalId: queued().goalId,
+        objective: '결제 버그 고치기',
+      });
+      expect(queued().objective).toBe('결제 버그 고치기');
+      expect('openingPrompt' in queued()).toBe(false);
+
+      // It starts: the opening is the words, verbatim — the old skill does not ride.
+      const { settle } = await startBusyTurn();
+      await handler.handleHostGoalAction(SESSION_KEY, { action: 'delete', goalId: 'g1', expect: 'current' });
+      expect(items()[0].message).toMatchObject({ text: '결제 버그 고치기', routeContext: { verbatimPrompt: true } });
+      await settle();
+    });
+
+    it('words with no skill: the opening stays verbatim (a `$20` or `$word` is just text)', async () => {
+      handlerAny.commandRouter.splitGoalSkill = vi.fn(() => null);
+      const { settle } = await startBusyTurn();
+      await handler.handleHostGoalAction(SESSION_KEY, { action: 'add', objective: '예산 $20 안에서 끝내기' });
+      expect(registrySession.goal.openingPrompt).toBeUndefined();
+      expect(items()[0].message).toMatchObject({
+        text: '예산 $20 안에서 끝내기',
+        routeContext: { verbatimPrompt: true },
+      });
+      await settle();
     });
 
     it('move: a queued goal to another place, quietly (no notice, the running goal and its epoch untouched)', async () => {
