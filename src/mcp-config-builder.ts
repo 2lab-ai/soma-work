@@ -39,6 +39,7 @@ import {
   type PermissionLevel,
 } from './mcp-tool-permission-config';
 import { isSafePathSegment, normalizeTmpPath } from './path-utils';
+import { userUploadsDir } from './sandbox/tenant-read-boundary';
 import { attachesEpicServer, buildEpicServer, EPIC_SERVER } from './task-turn/epic-server';
 import { attachesPlanServer, buildPlanServer, PLAN_SERVER } from './task-turn/plan-server';
 import { userSettingsStore } from './user-settings-store';
@@ -493,6 +494,9 @@ export class McpConfigBuilder {
     const artifactIndex = slackContext.conversationId
       ? getArtifactStore().indexFile(slackContext.conversationId)
       : null;
+    // Thread files the model downloads go where only the speaker's sessions read them — a non-admin session reads
+    // nothing outside its work area and its own part of the data directory (`src/sandbox/tenant-read-boundary.ts`).
+    const uploads = userUploadsDir(DATA_DIR, slackContext.user);
     return {
       command: command.command,
       args: command.args,
@@ -501,6 +505,7 @@ export class McpConfigBuilder {
         SLACK_MCP_CONTEXT: JSON.stringify(threadContext),
         SOMA_DISPLAY_LANG: userSettingsStore.getUserDisplayLanguage(slackContext.user),
         ...(artifactIndex ? { SOMA_ARTIFACT_INDEX: artifactIndex } : {}),
+        ...(uploads ? { SOMA_DOWNLOAD_DIR: path.join(uploads, 'thread-files') } : {}),
       },
     };
   }

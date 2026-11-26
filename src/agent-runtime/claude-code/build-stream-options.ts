@@ -44,6 +44,7 @@ import {
   checkEnvPluginMcpAccess,
   checkEnvSkillAccess,
   type EnvSkillRegistry,
+  envSkillReadableSkillDirs,
   envSkillRegistry,
   envSkillSandboxDenyRead,
 } from '../../env-skill-registry';
@@ -69,6 +70,7 @@ import { extendSandboxWithGrant, loadDeploySandboxGrant } from '../../sandbox/de
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
 import { launchAllFrom, mcpLaunchDir, wrapPluginLaunchers } from '../../sandbox/mcp-launch-dir';
 import { projectConfigRoot } from '../../sandbox/project-config-root';
+import { ensureClaudeTmpDir, tenantReadBoundary } from '../../sandbox/tenant-read-boundary';
 import { checkSecretAccess } from '../../secrets/secret-access';
 import { loadServerToolsSection } from '../../secrets/secret-usage';
 import { ADMIN_ONLY_SERVER_TOOLS } from '../../server-tools-admin/catalog';
@@ -1096,7 +1098,96 @@ export async function buildStreamOptions(
     options.plugins = launchers.plugins;
   }
 
+  // Reads: a non-admin session reads its own work area and the code it runs, nothing else of the host
+  // (`src/sandbox/tenant-read-boundary.ts`). Last, once the plugins and the write roots are final.
+  if (!sandboxDisabled && options.sandbox && contextUser && sandboxUserDir && !isAdminUser(contextUser)) {
+    const envRegistry = deps.getEnvSkillRegistry?.();
+    const scope = slackContext
+      ? { channel: slackContext.channel, threadTs: slackContext.threadTs }
+      : execCtx
+        ? { channel: execCtx.sessionKey }
+        : undefined;
+    applyTenantReadBoundary(
+      options,
+      {
+        user: contextUser,
+        userRoot: sandboxUserDir,
+        workingDirectory,
+        queryEnv,
+        grantedSkillDirs: envRegistry ? envSkillReadableSkillDirs(envRegistry, contextUser, scope) : [],
+      },
+      logger,
+    );
+  }
+
   return attachStderrCapture(options, logger, processOwner);
+}
+
+/**
+ * Close a non-admin session's reads to its own work area (see `tenantReadBoundary`): the file tools
+ * through the CLI's working-directory read block, the shell through the sandbox's read lists, and the
+ * CLI's temp directory moved into the user's root.
+ */
+function applyTenantReadBoundary(
+  options: Options,
+  input: {
+    user: string;
+    userRoot: string;
+    workingDirectory?: string;
+    queryEnv: Record<string, string | undefined>;
+    grantedSkillDirs: string[];
+  },
+  logger: BuildStreamOptionsDeps['logger'],
+): void {
+  const sandbox = options.sandbox as NonNullable<Options['sandbox']>;
+  const filesystem = sandbox.filesystem ?? {};
+  sandbox.filesystem = filesystem;
+  const home = os.homedir();
+  const boundary = tenantReadBoundary({
+    platform: process.platform,
+    home,
+    tmpdir: os.tmpdir(),
+    writeRoots: [...(input.workingDirectory ? [input.workingDirectory] : []), ...(filesystem.allowWrite ?? [])],
+    workingDirectory: input.workingDirectory,
+    installDir: path.dirname(CONFIG_FILE),
+    dataDir: DATA_DIR,
+    ownDataDir: path.join(DATA_DIR, input.user),
+    claudeConfigDir: input.queryEnv.CLAUDE_CONFIG_DIR || path.join(home, '.claude'),
+    ghConfigDir: input.queryEnv.GH_CONFIG_DIR,
+    pluginPaths: (options.plugins ?? []).map((plugin) => plugin.path),
+    grantedSkillDirs: input.grantedSkillDirs,
+    denied: filesystem.denyRead ?? [],
+  });
+  filesystem.denyRead = [...(filesystem.denyRead ?? []), ...boundary.denyRead];
+  filesystem.allowRead = [...(filesystem.allowRead ?? []), ...boundary.allowRead];
+
+  // The CLI's temp directory (cwd tracking, background output, TMPDIR of its commands) is otherwise one
+  // shared directory under the closed temp root.
+  const claudeTmpDir = ensureClaudeTmpDir(input.userRoot);
+  if (claudeTmpDir) {
+    if (!options.env) options.env = {};
+    options.env.CLAUDE_CODE_TMPDIR = claudeTmpDir;
+  } else {
+    logger.warn("The session's temp directory could not be made: its shell keeps the CLI's default", {
+      user: input.user,
+    });
+  }
+
+  const base = options.settings && typeof options.settings === 'object' ? options.settings : {};
+  options.settings = {
+    ...base,
+    permissions: {
+      ...(base.permissions ?? {}),
+      blockReadsOutsideWorkingDirectories: true,
+      blockReadsExemptPaths: boundary.exemptPaths,
+    },
+  };
+  logger.debug('Read boundary applied', {
+    user: input.user,
+    denyRead: boundary.denyRead.length,
+    allowRead: boundary.allowRead.length,
+    exempt: boundary.exemptPaths.length,
+  });
 }
 
 /**

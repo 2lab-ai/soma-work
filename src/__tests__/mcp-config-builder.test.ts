@@ -1,3 +1,4 @@
+import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock env-paths to use a non-existent config file, preventing test pollution
@@ -79,6 +80,20 @@ describe('McpConfigBuilder slack-mcp server', () => {
     expect(ctx.channel).toBe('C123');
     expect(ctx.threadTs).toBe('1700000000.000000');
     expect(ctx.mentionTs).toBe('1700000010.000000');
+  });
+
+  it("slack-mcp saves the thread files it downloads in the speaker's uploads directory", async () => {
+    const { DATA_DIR } = await import('../env-paths');
+    const builder = new McpConfigBuilder(createMockMcpManager());
+    const config = await builder.buildConfig({
+      channel: 'C123',
+      threadTs: '1700000000.000000',
+      mentionTs: '1700000010.000000',
+      user: 'U123',
+    });
+    expect(config.mcpServers?.['slack-mcp']?.env?.SOMA_DOWNLOAD_DIR).toBe(
+      path.join(DATA_DIR, 'U123', 'uploads', 'thread-files'),
+    );
   });
 
   it('passes both work and source thread in SLACK_MCP_CONTEXT when bot migrates to new thread', async () => {

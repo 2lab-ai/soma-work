@@ -285,6 +285,40 @@ export function envSkillSandboxDenyRead(registry: EnvSkillRegistry, requesterId:
 }
 
 /**
+ * The skill directories of environment plugins that `requesterId` holds a grant for in `scope` — what the
+ * file tools may read there once reads outside the working directories are refused. Empty with the
+ * all-environment-skills grant: the whole plugins are open then (no read deny is set for them).
+ */
+export function envSkillReadableSkillDirs(
+  registry: EnvSkillRegistry,
+  requesterId: string,
+  scope: GrantScope | undefined,
+): string[] {
+  if (registry.pluginNames.size === 0) return [];
+  if (loadGrants(ENV_SKILL_GRANT_OWNER).allowAll.includes(requesterId)) return [];
+  const dirs: string[] = [];
+  for (const root of pluginRoots(registry)) {
+    for (const plugin of registry.pluginNames) {
+      if (!isSafePathSegment(plugin)) continue;
+      const skillsDir = path.join(root, plugin, 'skills');
+      let skills: string[];
+      try {
+        skills = fs.readdirSync(skillsDir);
+      } catch {
+        continue;
+      }
+      for (const skill of skills) {
+        if (!isSafePathSegment(skill)) continue;
+        if (envSkillAllowed(`${plugin}:${skill}`, requesterId, scope, registry.environments ?? [])) {
+          dirs.push(path.join(skillsDir, skill));
+        }
+      }
+    }
+  }
+  return [...new Set(dirs)];
+}
+
+/**
  * Where a path sits relative to the environment plugins: inside a skill's directory
  * (`plugin:skill`), elsewhere in an environment plugin or its backups (the plugin name), or outside
  * them (null). A relative path resolves against `cwd`; an existing path is also checked as the OS

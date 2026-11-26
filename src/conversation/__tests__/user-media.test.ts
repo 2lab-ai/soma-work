@@ -132,6 +132,24 @@ describe('UserMediaStore', () => {
     expect(list.map((a) => a.stored)).toEqual([false, false, false, false]);
   });
 
+  it("M3 — reads a download in a user's uploads directory, and nothing elsewhere in the data directory", async () => {
+    const { DATA_DIR } = await import('../../env-paths');
+    const uploads = path.join(DATA_DIR, 'U0MEDIA01', 'uploads');
+    fs.mkdirSync(uploads, { recursive: true });
+    const ok = download('shot.png', 'PNG', uploads);
+    const notUploads = path.join(DATA_DIR, 'U0MEDIA01');
+    const misplaced = download('shot.png', 'PNG', notUploads);
+    const deeper = path.join(uploads, 'nested');
+    fs.mkdirSync(deeper, { recursive: true });
+    const nested = download('shot.png', 'PNG', deeper);
+    const list = await store.capture('conv-up', [
+      file(ok, 'shot.png', 'image/png'),
+      file(misplaced, 'shot.png', 'image/png'),
+      file(nested, 'shot.png', 'image/png'),
+    ]);
+    expect(list.map((a) => a.stored)).toEqual([true, false, false]);
+  });
+
   it('M4 — kind by name, then a Slack-MIME allowlist; html and svg are classified, never trusted', () => {
     expect(classifyUserMedia('a.PNG', '')).toEqual({ kind: 'image', mime: 'image/png' });
     expect(classifyUserMedia('report.pdf', 'application/octet-stream')).toEqual({

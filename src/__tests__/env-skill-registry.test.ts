@@ -14,6 +14,7 @@ import {
   envPluginNamesFromConfig,
   envPluginsOfMcpTool,
   envSkillExists,
+  envSkillReadableSkillDirs,
   envSkillRegistry,
   envSkillSandboxDenyRead,
   resolveEnvSkillKey,
@@ -485,6 +486,20 @@ describe('env-skill-registry', () => {
       expect(dirs).toContain(path.join(path.resolve(pluginsDir), '.backups', 'acme-env'));
       expect(dirs.some((d) => d.includes(`${path.sep}stv`))).toBe(false);
       expect(envSkillSandboxDenyRead(registry, 'USANDBOX1')).toEqual(dirs);
+    });
+
+    it('the file tools may read the skill directories a grant opens, and only those', () => {
+      const root = path.resolve(pluginsDir);
+      expect(envSkillReadableSkillDirs(registry, 'UREAD1', thread)).toEqual([]);
+      addThreadGrant(ENV_SKILL_GRANT_OWNER, 'acme-env:post-deploy', 'UREAD1', thread);
+      const dirs = envSkillReadableSkillDirs(registry, 'UREAD1', thread);
+      expect(dirs).toContain(path.join(root, 'acme-env', 'skills', 'post-deploy'));
+      expect(dirs.some((d) => d.endsWith(`${path.sep}staging-qa`))).toBe(false);
+      // Another thread's grant does not open it here.
+      expect(envSkillReadableSkillDirs(registry, 'UREAD1', { channel: 'C9', threadTs: '9.9' })).toEqual([]);
+      // With the all-environment-skills grant no plugin is closed, so there is nothing to list.
+      grantAllSkills(ENV_SKILL_GRANT_OWNER, 'UREAD2');
+      expect(envSkillReadableSkillDirs(registry, 'UREAD2', thread)).toEqual([]);
     });
 
     it('the all-environment-skills grant lifts it; a host without environment plugins has none', () => {

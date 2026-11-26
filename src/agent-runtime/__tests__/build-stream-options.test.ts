@@ -402,22 +402,24 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
         makeDeps({ getEnvSkillRegistry: () => envRegistry('/srv/soma/plugins') }),
       );
       const denyRead = (options.sandbox as { filesystem?: { denyRead?: string[] } } | undefined)?.filesystem?.denyRead;
-      expect(denyRead).toEqual([
+      // The denies set on purpose come first; the read boundary's data roots follow them.
+      const onPurpose = [
         SECRETS_DIR,
         ...credentialPaths(os.homedir()),
         '/srv/soma/plugins/acme-env',
         '/srv/soma/plugins/.backups/acme-env',
-      ]);
+      ];
+      expect(denyRead?.slice(0, onPurpose.length)).toEqual(onPurpose);
       // The write mount is kept.
       expect((options.sandbox as { filesystem?: { allowWrite?: string[] } }).filesystem?.allowWrite?.length).toBe(1);
     });
 
-    it('only the secret store and the credential files are read-denied on a host without environment plugins', async () => {
+    it('on a host without environment plugins, the denies set on purpose are the secret store and the credential files', async () => {
       const { options } = await buildStreamOptions({ queryEnv: {}, slackContext: makeSlackContext() }, makeDeps());
-      expect((options.sandbox as { filesystem?: { denyRead?: string[] } } | undefined)?.filesystem?.denyRead).toEqual([
-        SECRETS_DIR,
-        ...credentialPaths(os.homedir()),
-      ]);
+      const denyRead = (options.sandbox as { filesystem?: { denyRead?: string[] } } | undefined)?.filesystem?.denyRead;
+      const onPurpose = [SECRETS_DIR, ...credentialPaths(os.homedir())];
+      expect(denyRead?.slice(0, onPurpose.length)).toEqual(onPurpose);
+      expect(denyRead).not.toContain('/srv/soma/plugins/acme-env');
     });
   });
 
@@ -857,6 +859,82 @@ describe('sandbox: admin profile and write protection (env-access WU2, #1210)', 
       expect.stringContaining('SOMA_SANDBOX_OFF_ALLOWED'),
       expect.objectContaining({ user: ADMIN }),
     );
+  });
+
+  describe("reads: a non-admin session reads its own work area, not the host's data", () => {
+    type ReadSettings = {
+      permissions?: { blockReadsOutsideWorkingDirectories?: boolean; blockReadsExemptPaths?: string[] };
+    };
+    type ReadSandbox = { filesystem?: { denyRead?: string[]; allowRead?: string[] } };
+
+    it('the file tools refuse reads outside the working directories, in every mode', async () => {
+      const { options } = await withSettings(false, () => build(SAFE_USER));
+      const permissions = (options.settings as ReadSettings).permissions;
+      expect(permissions?.blockReadsOutsideWorkingDirectories).toBe(true);
+      // The working directories are the session folder and the user's root.
+      expect(options.cwd).toBe(WORK_DIR);
+      expect(options.additionalDirectories).toContain(path.join('/tmp', SAFE_USER));
+      // The service data is not let through; the user's own part of it is when it exists.
+      expect(permissions?.blockReadsExemptPaths).not.toContain(DATA_DIR);
+    });
+
+    it("the shell cannot read the deployment, its data, the CLI config or the service user's home", async () => {
+      const { options } = await withSettings(false, () => build(SAFE_USER));
+      const filesystem = (options.sandbox as ReadSandbox).filesystem;
+      const real = (p: string) => fs.realpathSync(p);
+      expect(filesystem?.denyRead).toEqual(
+        expect.arrayContaining([real(path.dirname(CONFIG_FILE)), real(DATA_DIR), real(os.homedir())]),
+      );
+      // The session folder is re-opened, as the OS resolves it.
+      expect(filesystem?.allowRead).toContain(real(WORK_DIR));
+      expect(filesystem?.allowRead).not.toContain(real(DATA_DIR));
+      expect(filesystem?.allowRead).not.toContain(real(os.homedir()));
+      // Nothing re-opens the secret store.
+      for (const entry of filesystem?.allowRead ?? []) {
+        expect(SECRETS_DIR === entry || SECRETS_DIR.startsWith(`${entry}${path.sep}`), entry).toBe(false);
+      }
+    });
+
+    it("the user's own data directory (memory, own skills, uploads) is readable by the file tools", async () => {
+      const own = path.join(DATA_DIR, SAFE_USER);
+      fs.mkdirSync(own, { recursive: true });
+      try {
+        const { options } = await withSettings(false, () => build(SAFE_USER));
+        expect((options.settings as ReadSettings).permissions?.blockReadsExemptPaths).toContain(own);
+        expect((options.sandbox as ReadSandbox).filesystem?.allowRead).toContain(fs.realpathSync(own));
+      } finally {
+        fs.rmSync(own, { recursive: true, force: true });
+      }
+    });
+
+    it("the CLI's temp directory moves into the user's root when it exists", async () => {
+      // A user whose root exists: the host makes /tmp/{userId} with the first session folder.
+      const user = `U0RDTMP${process.pid}`;
+      const root = path.join('/tmp', user);
+      fs.mkdirSync(root, { recursive: true });
+      try {
+        const { options } = await withSettings(false, () => build(user));
+        expect(options.env?.CLAUDE_CODE_TMPDIR).toBe(path.join(root, '.claude-tmp'));
+        expect(fs.statSync(path.join(root, '.claude-tmp')).mode & 0o777).toBe(0o700);
+        expect((options.sandbox as ReadSandbox).filesystem?.allowRead).toContain(fs.realpathSync(root));
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("no temp directory is made while the user's root is not there", async () => {
+      const { options } = await withSettings(false, () => build('U0RDNOROOT1'));
+      expect(options.env?.CLAUDE_CODE_TMPDIR).toBeUndefined();
+      expect(fs.existsSync(path.join('/tmp', 'U0RDNOROOT1'))).toBe(false);
+    });
+
+    it('an admin keeps the wide profile: no read block, no read lists', async () => {
+      await asAdmin();
+      const { options } = await withSettings(false, () => build(ADMIN));
+      expect((options.settings as ReadSettings).permissions?.blockReadsOutsideWorkingDirectories).toBeUndefined();
+      expect((options.sandbox as ReadSandbox).filesystem?.allowRead).toBeUndefined();
+      expect(options.env?.CLAUDE_CODE_TMPDIR).toBeUndefined();
+    });
   });
 
   it('a host that allows it lets an admin run without the sandbox', async () => {

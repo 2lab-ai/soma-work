@@ -21,6 +21,7 @@
  *   - SLACK_MCP_CONTEXT: JSON { channel, threadTs, mentionTs }
  *   - SOMA_ARTIFACT_INDEX: the session's artifact index (read only) — an upload's version (#1074)
  *   - SOMA_DISPLAY_LANG: `ko` | `en` — the language of the version line in an upload's comment
+ *   - SOMA_DOWNLOAD_DIR: where download_thread_file saves (the speaker's uploads directory); else the OS temp dir
  */
 
 import { WebClient } from '@slack/web-api';
@@ -40,6 +41,7 @@ import {
   type VersionLang,
   versionFields,
 } from './helpers/artifact-version.js';
+import { pruneOldDownloads } from './helpers/downloads.js';
 import {
   ALLOWED_MEDIA_EXTENSIONS,
   getMediaType,
@@ -761,8 +763,10 @@ class SlackMcpServer extends BaseMcpServer {
     if (!response.ok) throw new Error(`File download failed: ${response.status} ${response.statusText}`);
 
     const buffer = Buffer.from(await response.arrayBuffer());
-    const tempDir = path.join(os.tmpdir(), 'slack-mcp-files');
-    await fs.mkdir(tempDir, { recursive: true });
+    // The daemon names the speaker's download directory (SOMA_DOWNLOAD_DIR); downloads older than a week go.
+    const tempDir = process.env.SOMA_DOWNLOAD_DIR || path.join(os.tmpdir(), 'slack-mcp-files');
+    await fs.mkdir(tempDir, { recursive: true, mode: 0o700 });
+    await pruneOldDownloads(tempDir);
     const safeName = path.basename(file_name).replace(/[^a-zA-Z0-9._-]/g, '_');
     const tempPath = path.join(tempDir, `${Date.now()}_${safeName}`);
     await fs.writeFile(tempPath, buffer);
