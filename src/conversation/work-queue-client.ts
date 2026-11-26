@@ -55,6 +55,22 @@ export const WORK_QUEUE_CSS = String.raw`
 .wq-empty { color: var(--text-tertiary); font-size: 13px; padding: 4px 0; }
 `;
 
+// Why an entry left a lane, in the reader's words — the board's section and the settings tab (TASK_QUEUE_CLIENT_JS)
+// say it the same way.
+export const WQ_REASON_JS = String.raw`function wqReason(reason) {
+  var s = String(reason || '');
+  if (s.indexOf('admin:') === 0) return '관리자';
+  if (s === 'holder-idle') return '세션이 일을 하지 않음';
+  if (s === 'holder-asking') return '사람 답을 오래 기다림';
+  if (s === 'holder-gone') return '세션이 사라짐';
+  if (s === 'holder-stuck') return '턴이 너무 오래 멈춤';
+  if (s === 'wake-expired') return '차례를 알리지 못함';
+  if (s === 'person') return '본인';
+  if (s === 'admin') return '관리자';
+  if (s === 'closed') return '세션 종료';
+  return s;
+}`;
+
 export const WORK_QUEUE_CLIENT_JS = String.raw`
 // ── 작업 큐 section (.prd/36 v2, work-queue-client.ts) ──
 var WQ_POLL_MS = 15000;
@@ -132,19 +148,7 @@ function wqRecordText(r) {
   var why = r.reason && r.end !== 'started' ? ' — ' + wqReason(r.reason) : '';
   return { glyph: WQ_END_GLYPH[r.end] || '·', end: WQ_END_LABEL[r.end] || r.end, label: label, keys: keys, when: when, why: why };
 }
-function wqReason(reason) {
-  var s = String(reason || '');
-  if (s.indexOf('admin:') === 0) return '관리자';
-  if (s === 'holder-idle') return '세션이 일을 하지 않음';
-  if (s === 'holder-asking') return '사람 답을 오래 기다림';
-  if (s === 'holder-gone') return '세션이 사라짐';
-  if (s === 'holder-stuck') return '턴이 너무 오래 멈춤';
-  if (s === 'wake-expired') return '차례를 알리지 못함';
-  if (s === 'person') return '본인';
-  if (s === 'admin') return '관리자';
-  if (s === 'closed') return '세션 종료';
-  return s;
-}
+${WQ_REASON_JS}
 
 // Pure: the 24-hour strip's bars — every lane run (ended or running) inside the window, left and width in percent.
 // A lane runs one at a time, so the bars never overlap: the strip itself shows it.

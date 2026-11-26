@@ -15,8 +15,10 @@
  * waited, ran and ended, so the page shows the lane ran them one at a time (`GET /api/dashboard/work-queues`).
  *
  * Admins only (the tab is `adminOnly`; `user-task-limits-routes.ts` refuses everyone else). Turning needs admin mode.
- * Client script: String.raw, no `${…}` and no backticks (ships byte for byte).
+ * Client script: String.raw, no backticks (ships byte for byte); its one `${…}` is the shared `wqReason` (WQ_REASON_JS).
  */
+
+import { WQ_REASON_JS } from './work-queue-client';
 
 export const TASK_QUEUE_TAB_HTML = `<div slot="task-queue" data-tab="task-queue" class="page" hidden>
   <aside class="side" aria-label="작업 큐 영역">
@@ -242,6 +244,7 @@ function tqSetAdminMode(on) {
   renderTaskQueue();
 }
 var _tqLanes = null;       // GET /api/dashboard/work-queues (.prd/36 v2)
+${WQ_REASON_JS}
 var TQ_END = { done: '완료', cancelled: '취소', released: '돌려놓음' };
 function tqClock(ms) {
   var d = new Date(ms);
@@ -267,7 +270,7 @@ function tqLaneHtml(q) {
   var rows = ran.map(function(r) {
     var run = r.startedAt != null ? tqClock(r.startedAt) + ' → ' + tqClock(r.endedAt) + ' (' + tqDur(r.endedAt - r.startedAt) + ')' : '실행 안 함';
     return '<tr><td>' + esc(r.id) + '</td><td>' + esc((r.task && r.task.title) || r.label || '') + '</td><td class="tq-keys">' + esc((r.keys || []).join(', ')) + '</td>'
-      + '<td>' + tqClock(r.enteredAt) + '</td><td>' + run + '</td><td>' + esc(TQ_END[r.end] || r.end) + (r.reason ? ' <span class="tq-sub">' + esc(r.reason) + '</span>' : '') + '</td></tr>';
+      + '<td>' + tqClock(r.enteredAt) + '</td><td>' + run + '</td><td>' + esc(TQ_END[r.end] || r.end) + (r.reason ? ' <span class="tq-sub">' + esc(wqReason(r.reason)) + '</span>' : '') + '</td></tr>';
   });
   return '<div class="tq-lane"><div class="tq-lane-h"><span class="tq-lane-name">' + esc(q.title) + '</span>'
     + '<span class="tq-sub">한 번에 ' + (q.capacity == null ? '제한 없음' : q.capacity + '개') + ' · 진행 ' + q.running.length + ' · 대기 ' + q.waiting.length + '</span></div>'
