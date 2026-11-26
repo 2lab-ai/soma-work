@@ -3015,3 +3015,195 @@ describe('ClaudeHandler — a turn result that waits for the host is logged (#14
     }
   });
 });
+
+/**
+ * #1472 — a run kept open only so background work can report back yields to a
+ * person's command waiting in line (a `$<skill>` or another command the host
+ * must dispatch, which can never be pushed into the turn). The host asks
+ * (`setHoldReleaseGate`, `requestHoldRelease`); the turn ends the hold the way
+ * the keepalive cap does, but only at a safe boundary: the answer is out, no
+ * notification turn runs, and the loop has caught up with the CLI.
+ */
+describe('ClaudeHandler — a held run yields to a waiting command (#1472)', () => {
+  const YIELD_LOG = "A person's command waits: ending the background hold";
+
+  beforeEach(() => {
+    queryMock.mockReset();
+    releaseMock.mockClear();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  /** Opening turn with a live agent → held; then, on cue, the agent's notification turn starts and ends. */
+  function installHeldAgent(cli: FakeCli) {
+    const held = deferred();
+    const startNotification = deferred();
+    const notificationStarted = deferred();
+    const endNotification = deferred();
+    installScriptedQuery(cli, async function* (inputs) {
+      await readOpening(inputs, cli);
+      yield* openingTurnHead([agentTask(AGENT_ID)]);
+      yield openingResult(cli.opening?.uuid);
+      const drained = drainInputs(inputs, cli);
+      held.resolve();
+      const first = await Promise.race([
+        startNotification.promise.then(() => 'notify' as const),
+        drained.then(() => 'ended' as const),
+      ]);
+      if (first === 'notify') {
+        // A notification turn of the (still live) agent: it starts, runs, and ends.
+        yield INIT;
+        notificationStarted.resolve();
+        await endNotification.promise;
+        yield NOTIFIED;
+        yield notifiedResult();
+        await drained;
+      }
+      yield taskNotification(AGENT_ID, 'stopped');
+      yield level([]);
+      yield INIT;
+      yield assistantText('REPORTED');
+      yield notifiedResult({ result: 'REPORTED' });
+    });
+    return {
+      held: held.promise,
+      startNotification: async () => {
+        startNotification.resolve();
+        await notificationStarted.promise;
+        await hostCaughtUp();
+      },
+      endNotification: () => endNotification.resolve(),
+    };
+  }
+
+  it('a command already waiting when the hold starts ends it: the agent is stopped and told why', async () => {
+    const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      installHeldAgent(cli);
+      const handler = newHandler();
+      handler.setHoldReleaseGate((key) => key === SESSION_KEY);
+
+      const frames = await collect(startTurn(handler));
+
+      expect(cli.stopTask).toHaveBeenCalledWith(AGENT_ID);
+      expect(cli.inputEnded).toBe(true);
+      expect(callsOf(info, YIELD_LOG)).toHaveLength(1);
+      const note = cli.received.slice(1).map(textOf).join('\n');
+      expect(note).toContain('a person');
+      expect(note).toContain(AGENT_ID);
+      expect(resultsOf(frames)).toHaveLength(1);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  it('no waiting command: the hold keeps the agent running', async () => {
+    vi.useFakeTimers();
+    const cli = newFakeCli();
+    const agent = installHeldAgent(cli);
+    const handler = newHandler();
+    handler.setHoldReleaseGate(() => false);
+
+    const framesPromise = collect(startTurn(handler));
+    await agent.held;
+    await hostCaughtUp();
+    handler.requestHoldRelease(SESSION_KEY);
+    await hostCaughtUp();
+
+    expect(cli.stopTask).not.toHaveBeenCalled();
+    expect(cli.inputEnded).toBe(false);
+
+    await agent.startNotification();
+    agent.endNotification();
+    await vi.advanceTimersByTimeAsync(0);
+    // Let the run end the ordinary way: the agent reports and the input closes on silence.
+    await vi.advanceTimersByTimeAsync(NON_TURN_RESULT_IDLE_MS * 2);
+    handler.setHoldReleaseGate(() => true);
+    handler.requestHoldRelease(SESSION_KEY);
+    await framesPromise;
+  });
+
+  it('a command that arrives while the run is held and idle ends the hold at once', async () => {
+    const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const agent = installHeldAgent(cli);
+      let waiting = false;
+      const handler = newHandler();
+      handler.setHoldReleaseGate(() => waiting);
+
+      const framesPromise = collect(startTurn(handler));
+      await agent.held;
+      await hostCaughtUp();
+      expect(cli.stopTask).not.toHaveBeenCalled();
+
+      waiting = true;
+      handler.requestHoldRelease(SESSION_KEY);
+      const frames = await framesPromise;
+
+      expect(cli.stopTask).toHaveBeenCalledWith(AGENT_ID);
+      expect(cli.inputEnded).toBe(true);
+      expect(callsOf(info, YIELD_LOG)).toHaveLength(1);
+      expect(resultsOf(frames)).toHaveLength(1);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  it('a notification turn that is running is not cut: the hold ends at its result', async () => {
+    const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const agent = installHeldAgent(cli);
+      let waiting = false;
+      const handler = newHandler();
+      handler.setHoldReleaseGate(() => waiting);
+
+      const framesPromise = collect(startTurn(handler));
+      await agent.held;
+      await agent.startNotification();
+
+      waiting = true;
+      handler.requestHoldRelease(SESSION_KEY);
+      await hostCaughtUp();
+      // The notification turn runs: nothing is stopped, the input stays open.
+      expect(cli.stopTask).not.toHaveBeenCalled();
+      expect(cli.inputEnded).toBe(false);
+
+      agent.endNotification();
+      const frames = await framesPromise;
+
+      expect(cli.stopTask).toHaveBeenCalledWith(AGENT_ID);
+      expect(cli.inputEnded).toBe(true);
+      expect(callsOf(info, YIELD_LOG)).toHaveLength(1);
+      expect(resultsOf(frames)).toHaveLength(1);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  it('a request for another session changes nothing', async () => {
+    const cli = newFakeCli();
+    const agent = installHeldAgent(cli);
+    const handler = newHandler();
+    handler.setHoldReleaseGate((key) => key === 'OTHER:1');
+
+    const framesPromise = collect(startTurn(handler));
+    await agent.held;
+    await hostCaughtUp();
+    handler.requestHoldRelease('OTHER:1');
+    handler.requestHoldRelease(SESSION_KEY);
+    await hostCaughtUp();
+
+    expect(cli.stopTask).not.toHaveBeenCalled();
+    expect(cli.inputEnded).toBe(false);
+
+    handler.setHoldReleaseGate(() => true);
+    handler.requestHoldRelease(SESSION_KEY);
+    await framesPromise;
+  });
+});

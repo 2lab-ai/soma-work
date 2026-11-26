@@ -140,6 +140,8 @@ describe('SlackHandler — follow-up queue host', () => {
       setActivityStateByKey: vi.fn(),
       broadcastSessionUpdate: vi.fn(),
       setSteerSignals: vi.fn(),
+      setHoldReleaseGate: vi.fn(),
+      requestHoldRelease: vi.fn(),
     };
 
     const store = {
@@ -4004,6 +4006,54 @@ describe('SlackHandler — follow-up queue host', () => {
         await settle();
       });
     }
+
+    /**
+     * #1472 — such a command can only run once the turn ends. It asks the turn
+     * to end a hold it keeps only for background work, and the gate the host
+     * gave the turn answers yes while it heads the line.
+     */
+    it('a queued `$skill` asks the running turn to end its background hold, and heads the gate', async () => {
+      const steerTurn = withLiveTurn();
+      const { settle } = await startBusyTurn();
+      const gate = claudeHandler.setHoldReleaseGate.mock.calls[0][0] as (key: string) => boolean;
+      expect(gate(SESSION_KEY)).toBe(false);
+
+      await handler.handleMessage(message({ ts: '333.444', text: '$autoz 이거 해줘' }), say());
+
+      expect(steerTurn).not.toHaveBeenCalled();
+      expect(claudeHandler.requestHoldRelease).toHaveBeenCalledWith(SESSION_KEY);
+      expect(gate(SESSION_KEY)).toBe(true);
+      await settle();
+    });
+
+    it('a plain message never ends a hold, and a `$skill` behind it does not jump it', async () => {
+      // The turn refuses the push: the plain message stays queued at the head of the line.
+      withLiveTurn(false);
+      const { settle } = await startBusyTurn();
+      const gate = claudeHandler.setHoldReleaseGate.mock.calls[0][0] as (key: string) => boolean;
+
+      await handler.handleMessage(message({ ts: '333.444', text: 'PR 이것도 하고 그 다음 것도 해줘' }), say());
+      expect(claudeHandler.requestHoldRelease).not.toHaveBeenCalled();
+      expect(gate(SESSION_KEY)).toBe(false);
+
+      await handler.handleMessage(message({ ts: '333.555', text: '$autoz 이거 해줘' }), say());
+      // Asked, but the head of the line is the plain message: the gate says no.
+      expect(gate(SESSION_KEY)).toBe(false);
+      await settle();
+    });
+
+    it('a `$skill` from someone who may not interrupt the session does not end a hold', async () => {
+      withLiveTurn();
+      const { settle } = await startBusyTurn();
+      const gate = claudeHandler.setHoldReleaseGate.mock.calls[0][0] as (key: string) => boolean;
+      claudeHandler.canInterrupt.mockReturnValue(false);
+
+      await handler.handleMessage(message({ ts: '333.444', text: '$autoz 이거 해줘' }), say());
+
+      expect(gate(SESSION_KEY)).toBe(false);
+      claudeHandler.canInterrupt.mockReturnValue(true);
+      await settle();
+    });
 
     /**
      * #891 T2 — a dedicated `/compact` turn ends at the compaction's result. A
