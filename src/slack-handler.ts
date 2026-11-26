@@ -9760,12 +9760,11 @@ export class SlackHandler {
     if (!channel || !threadTs) throw new HostGoalActionError(409, 'Session has no Slack thread');
 
     if (request.action === 'add') {
-      const written = request.objective.trim();
-      // A `$skill` in the goal composer's words works as in `goal <objective> $skill`: the goal is the words before it
-      // (all of them when the skill comes first), and the goal's first turn runs the skill part as a command.
-      const split = this.commandRouter?.splitGoalSkill?.(written, actor) ?? null;
-      const objective = split?.goalText ? split.goalText : written;
-      const openingPrompt = split?.skillText || undefined;
+      // A `$skill` in the goal composer's words (one that exists — splitGoalSkill) runs on the goal's first turn: the
+      // skill part as a command, as `goal <objective> $skill` does. The goal keeps every word that was written (what
+      // the eval judges, the notice and the editor show) — nothing is cut off.
+      const objective = request.objective.trim();
+      const openingPrompt = this.goalOpeningSkillOf(objective, actor);
       const invalid = validateSessionGoalObjective(objective);
       if (invalid) throw new HostGoalActionError(400, invalid);
       // Whether the goal will START or QUEUE is only known after the anchor
@@ -9867,7 +9866,7 @@ export class SlackHandler {
     if (request.action === 'pause') return this.pauseGoalFromHost(sessionKey, session, request.goalId, actor);
     if (request.action === 'resume') return this.resumeGoalFromHost(sessionKey, session, request.goalId, actor);
     if (request.action === 'move') return this.moveGoalFromHost(session, request.goalId, request.to);
-    if (request.action === 'edit') return this.editGoalFromHost(session, request.goalId, request.objective);
+    if (request.action === 'edit') return this.editGoalFromHost(session, request.goalId, request.objective, actor);
 
     // ── delete ──
     const { goalId, expect } = request;
@@ -10001,10 +10000,19 @@ export class SlackHandler {
    * Rewrite a queued goal's objective (the dashboard's Edit), validated like an add; the thread gets one notice line.
    * Refused as stale when the goal is no longer queued — a goal that started is not rewritten under its turn.
    */
+  /**
+   * The command a goal's opening turn runs for a `$skill` in its objective: from the first token that names an
+   * existing skill to the end (`CommandRouter.splitGoalSkill`), else none — the objective then opens verbatim.
+   */
+  private goalOpeningSkillOf(objective: string, actor?: string): string | undefined {
+    return this.commandRouter?.splitGoalSkill?.(objective, actor)?.skillText || undefined;
+  }
+
   private async editGoalFromHost(
     session: ConversationSession,
     goalId: string,
     rawObjective: string,
+    actor?: string,
   ): Promise<HostGoalActionResult> {
     const objective = rawObjective.trim();
     const invalid = validateSessionGoalObjective(objective);
@@ -10013,6 +10021,13 @@ export class SlackHandler {
     const edited = editQueuedGoal(session, goalId, objective);
     if (!edited.edited) throw new HostGoalActionError(409, 'That goal is no longer queued — refresh and try again');
     if (edited.previous === objective) return { outcome: 'edited', goalId };
+    // The edited words decide the opening skill again, as an add does: a `$skill` kept, changed or removed with them.
+    const goal = session.goalQueue?.find((g) => g.goalId === goalId);
+    if (goal) {
+      const openingPrompt = this.goalOpeningSkillOf(objective, actor ?? goal.createdBy);
+      if (openingPrompt) goal.openingPrompt = openingPrompt;
+      else delete goal.openingPrompt;
+    }
     this.claudeHandler.saveSessions();
     await this.postGoalNoticeBestEffort(
       session.channelId as string,

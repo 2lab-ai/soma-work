@@ -7329,11 +7329,15 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
    syncPickerFit). A model note floats above the picker. */
 .panel-controls { display: flex; align-items: center; gap: 6px 8px; font-size: 13px; }
 .panel-controls:empty { display: none; }
-#panel-controls, .gc-controls { position: relative; flex-wrap: nowrap; justify-content: flex-end; min-width: 0; padding: 0; }
-#panel-controls ui-model-picker, .gc-controls ui-model-picker { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+#panel-controls { position: relative; flex-wrap: nowrap; justify-content: flex-end; min-width: 0; padding: 0; }
+#panel-controls ui-model-picker { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+/* The goal composer's copy (its slot="end", always compact): the same row rules. */
+.gc-controls { position: relative; flex-wrap: nowrap; justify-content: flex-end; min-width: 0; padding: 0; }
+.gc-controls ui-model-picker { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+.gc-controls ui-model-picker::part(trigger) { overflow: hidden; }
 /* A row narrower than even the compact trigger (320px with four tools) clips the trigger's own content (level, then
    the mark) inside its button — it never runs over Send. The button's outline and the menu (fixed) are not clipped. */
-#panel-controls ui-model-picker::part(trigger), .gc-controls ui-model-picker::part(trigger) { overflow: hidden; }
+#panel-controls ui-model-picker::part(trigger) { overflow: hidden; }
 #panel-controls > .cb-model-note {
   position: absolute; z-index: 2; right: 0; bottom: calc(100% + 6px); max-width: min(280px, 80vw); margin-top: 0; padding: 4px 8px;
   border-radius: 8px; background: var(--surface-raised); box-shadow: var(--ib-shadow);
@@ -7743,7 +7747,8 @@ body[data-view-mode="minimal"] #lifecycle-btn { display: none !important; }
    lists the ones it shows (detailSpecOf → applyViewMode), and every other one steps aside here. What needs the user
    — the status bar, the approvals, the question, the composer — is in no list: never hidden. ── */
 body:not([data-detail~="subtitle"]) #panel-title-sub,
-body:not([data-detail~="controls"]) #panel-controls, body:not([data-detail~="controls"]) .gc-controls { display: none !important; }
+body:not([data-detail~="controls"]) #panel-controls { display: none !important; }
+body:not([data-detail~="controls"]) .gc-controls { display: none !important; }
 /* ── THE TAB BAR (SSOT 2026-11-03) — under 입력 필요: 목표 · 작업 · 에이전트 · 산출물 · 세부, each closed at first. A
    tab's content shows only while it is pressed (.slide-panel[data-midtab], selectPanelMid); the agent strip and the
    agent's head are the 에이전트 tab's — and stay while the card looks at a subagent (data-agent-scoped), so the reader
@@ -19157,13 +19162,12 @@ function setBusy(key, op, on) {
 // library has loaded it reads the model's name. Others read the same element,
 // disabled (#813: the maker's mark, the model's name and the level; no menu) —
 // data-mp-ro carries why it cannot change (mpHydrate hands it over as data.disabled).
-// surface 'goal': the goal composer's row — the panel's picker, always compact (its row also carries the counter).
+// surface 'goal': the goal composer's row — the panel's picker, always compact (its row is shorter).
 function renderModelPicker(s, canSwitch, modelShort, surface, readOnlyWhy) {
   var where = surface === 'panel' || surface === 'goal' ? 'panel' : 'card';
-  var compact = surface === 'goal' || (where === 'panel' && _pcCompact);
   var ro = canSwitch ? '' : ' data-mp-ro="' + escAttr(readOnlyWhy || '바꿀 수 없습니다') + '"';
   return '<span class="ui-tok mp-slot" data-mk="' + escAttr('mp|' + where + '|' + s.key) + '">'
-    + '<ui-model-picker lang="ko"' + (where === 'panel' && canSwitch ? ' side="top"' : '') + (compact ? ' compact' : '') + ' data-mp-key="' + escAttr(s.key) + '" data-mp-surface="' + where + '"' + ro + '>'
+    + '<ui-model-picker lang="ko"' + (where === 'panel' && canSwitch ? ' side="top"' : '') + (where === 'panel' && _pcCompact ? ' compact' : '') + (surface === 'goal' && !_pcCompact ? ' compact' : '') + ' data-mp-key="' + escAttr(s.key) + '" data-mp-surface="' + where + '"' + ro + '>'
     + '<span class="mp-fallback">' + (modelShort || '모델') + '</span></ui-model-picker></span>';
 }
 // The disabled picker's reason, and — when the model runs a lower level than the one set — both levels: its trigger
@@ -19506,7 +19510,11 @@ function renderPanelControls(s) {
     held = null;
   }
   if (!held) {
-    var html = panelPickerHtml(s) + renderModelNote(s, panelCanSwitch(s));
+    var canSwitch = viewerCanManage(s) && !s.terminated && s.sessionState !== 'SLEEPING' && !isSiblingSession(s);
+    var modelShort = esc(s.model || '').replace(/^claude-/, '').replace(/-\\d{8}$/, '');
+    // #813 — a read-only viewer reads the same element, disabled (its trigger names the level too).
+    var html = renderModelPicker(s, canSwitch, modelShort, 'panel', canSwitch ? '' : mpReadOnlyWhy(s, viewerCanManage(s), s.terminated ? 'closed' : ''))
+      + renderModelNote(s, canSwitch);
     if (el._html !== html) {
       morphInnerHtml(el, html);
       el._html = html;
@@ -19514,23 +19522,24 @@ function renderPanelControls(s) {
   }
   mpHydrate(el);
   syncPickerFit();
-  // The goal composer's row carries the same picker (one session setting, two triggers).
-  if (_gcComposer && _gcComposer.key === s.key) paintGoalComposerControls(_gcComposer, s);
 }
-// May this viewer switch this session's model · effort here (the owner, a live session of this instance).
+// May this viewer switch this session's model · effort here — renderPanelControls' rule, for the goal composer's copy.
 function panelCanSwitch(s) {
   return viewerCanManage(s) && !s.terminated && s.sessionState !== 'SLEEPING' && !isSiblingSession(s);
 }
-// The session's model · effort trigger as a composer's row draws it — the instruction composer's and the goal
-// composer's. #813 — a read-only viewer reads the same element, disabled (its trigger names the level too).
+// The session's model · effort trigger as the goal composer's row draws it (renderPanelControls' picker, surface
+// 'goal'). #813 — a read-only viewer reads the same element, disabled (its trigger names the level too).
 function panelPickerHtml(s, surface) {
   var canSwitch = panelCanSwitch(s);
   var modelShort = esc(s.model || '').replace(/^claude-/, '').replace(/-\\d{8}$/, '');
   return renderModelPicker(s, canSwitch, modelShort, surface || 'panel', canSwitch ? '' : mpReadOnlyWhy(s, viewerCanManage(s), s.terminated ? 'closed' : ''));
 }
-// After a switch on either surface: the panel's copy follows at once.
+// After a switch on either surface: the panel's copy follows at once — the goal composer's picker too (one session
+// setting, two triggers; a live render repaints it with the goal tab).
 function repaintPanelControlsFor(key) {
-  if (panelOpen && panelSessionKey === key && _sessionCache[key]) renderPanelControls(_sessionCache[key]);
+  if (!(panelOpen && panelSessionKey === key && _sessionCache[key])) return;
+  renderPanelControls(_sessionCache[key]);
+  if (_gcComposer && _gcComposer.key === key) paintGoalComposerControls(_gcComposer, _sessionCache[key]);
 }
 // ── Goal (E-12): @2lab.ai/ui <ui-goal-card> — the goal's home (spec 13) ──
 // The board card's line (cardGoalLine) reads the status words; the editor is the element in #panel-goal
@@ -19717,6 +19726,10 @@ function gcIsCommand(text) {
     for (var j = 0; j < items.length; j++) if (String(items[j].value || '').split(' ')[0] === head) return true;
   }
   return false;
+}
+// Repaint the goal composer of the session the panel shows (the menus arrived).
+function gcRepaint() {
+  if (_gcComposer) repaintPanelGoalFor(_gcComposer.key);
 }
 // The menus as the instruction composer has them (the same object; a change of the loaded set writes it again).
 function gcTriggers() {
@@ -28822,7 +28835,7 @@ async function cmLoadMenus() {
   paintNtComposer();
   pcPaintComposer();
   // The goal composer takes the menus at its next paint (compared by identity).
-  if (_gcComposer) repaintPanelGoalFor(_gcComposer.key);
+  if (typeof gcRepaint === 'function') gcRepaint();
 }
 // Closing the sheet discards a recording in progress, stops a voice note's preview and ends a dictation (the text
 // and files stay).
@@ -28911,13 +28924,16 @@ function ntDictateStopIn(id) {
 // has a status line and a saved draft; the session panel has neither — its why is a toast.
 function ntDictationHost(id) {
   if (id === 'gc') {
-    // The goal composer (the add slot of the panel's goal card): no status line — its why is a toast.
+    // The goal composer (the add slot of the panel's goal card): no status line — its why is a toast. Dictated words
+    // reach the counter too (a value write sends no ui-input).
     return {
       id: 'gc',
       el: function () {
         return _gcComposer ? _gcComposer.el : null;
       },
-      text: function () {},
+      text: function () {
+        if (_gcComposer) gcCountFollow(_gcComposer.el);
+      },
       status: function (msg, final) {
         if (final && msg) dashToast({ title: msg });
       },

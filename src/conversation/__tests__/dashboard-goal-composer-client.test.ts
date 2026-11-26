@@ -510,10 +510,12 @@ describe('the goal composer — its events on document (executed)', () => {
 
   it('the dictation host writes into the goal composer and repaints the goal section', () => {
     const repaintPanelGoalFor = vi.fn();
+    const gcCountFollow = vi.fn();
     const composerEl = el('ui-composer');
     const m = load<{ ntDictationHost(id: string): any }>(['ntDictationHost'], [], {
       _gcComposer: { key: 'k', el: composerEl },
       repaintPanelGoalFor,
+      gcCountFollow,
       panelSessionKey: 'k',
       dashToast: vi.fn(),
     });
@@ -522,6 +524,9 @@ describe('the goal composer — its events on document (executed)', () => {
     expect(h.el()).toBe(composerEl);
     h.paint();
     expect(repaintPanelGoalFor).toHaveBeenCalledWith('k');
+    // Dictated words reach the counter (a value write sends no ui-input).
+    h.text('…');
+    expect(gcCountFollow).toHaveBeenCalledWith(composerEl);
   });
 });
 
@@ -608,6 +613,7 @@ describe('the goal composer — the instruction composer’s menus and model · 
     expect(m.renderModelPicker(s, true, 'opus', 'panel', '')).not.toContain(' compact');
     m.__set('_pcCompact', true);
     expect(m.renderModelPicker(s, true, 'opus', 'panel', '')).toContain(' compact');
+    expect(m.renderModelPicker(s, true, 'opus', 'goal', '').split(' compact').length - 1).toBe(1);
     expect(m.renderModelPicker(s, true, 'opus', 'card', '')).not.toContain(' compact');
   });
 
@@ -619,13 +625,14 @@ describe('the goal composer — the instruction composer’s menus and model · 
   });
 
   it('the instruction composer’s picker paint and fit carry the goal composer’s; menus loading repaint it', () => {
-    expect(clientFn('renderPanelControls')).toContain(
-      'if (_gcComposer && _gcComposer.key === s.key) paintGoalComposerControls(_gcComposer, s);',
+    expect(clientFn('repaintPanelControlsFor')).toContain(
+      'if (_gcComposer && _gcComposer.key === key) paintGoalComposerControls(_gcComposer, _sessionCache[key]);',
     );
-    expect(clientFn('renderPanelControls')).toContain(
-      'var html = panelPickerHtml(s) + renderModelNote(s, panelCanSwitch(s));',
-    );
-    expect(clientFn('cmLoadMenus')).toContain('if (_gcComposer) repaintPanelGoalFor(_gcComposer.key);');
+    expect(clientFn('cmLoadMenus')).toContain("if (typeof gcRepaint === 'function') gcRepaint();");
+    // The goal composer's picker uses the panel's switch rule.
+    const rule = "viewerCanManage(s) && !s.terminated && s.sessionState !== 'SLEEPING' && !isSiblingSession(s)";
+    expect(clientFn('renderPanelControls')).toContain(rule);
+    expect(clientFn('panelCanSwitch')).toContain(rule);
   });
 });
 
