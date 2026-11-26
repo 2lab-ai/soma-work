@@ -151,6 +151,9 @@ describe('goal state boundary (.prd/40 §6)', () => {
     const unlisted = found.filter((key) => !(key in ALLOWED));
     const gone = Object.keys(ALLOWED).filter((key) => !found.includes(key));
     expect({ unlisted, gone }).toEqual({ unlisted: [], gone: [] });
+    // …and that undo statement lives only in the cap answer (review #1503): a rollback of the epoch anywhere else would
+    // make a stale verdict valid again.
+    expect([...sitesOf(UNDO, files)]).toEqual(['src/slack/goal-cap-decision.ts#answerGoalCapDecision']);
   });
 
   /**
@@ -162,14 +165,29 @@ describe('goal state boundary (.prd/40 §6)', () => {
     const files = ['src/slack/commands/goal-handler.ts', 'src/slack/actions/goal-action-handler.ts'];
     // A port handed to commitGoalChange (`saveSessions: () => …`) is the commit's own save, not a site (review #1495):
     // a direct save anywhere else in those functions is.
+    // The port is exempt only in a function that hands it to commitGoalChange (review #1503).
     const PORT = /^\s*(saveSessions|broadcastSessionUpdate)\s*:\s*\(\)\s*=>/;
     const SAVE_CALL = /\.saveSessions(OrThrow)?\(|\.broadcastSessionUpdate\?*\.?\(/;
-    const isSave = (line: string) => SAVE_CALL.test(line) && !PORT.test(line);
-    expect([
-      isSave('      saveSessions: () => this.deps.claudeHandler.saveSessions(),'),
-      isSave('      this.deps.claudeHandler.saveSessions();'),
-    ]).toEqual([false, true]);
-    const SAVE = { test: isSave } as RegExp;
+    const saveSitesIn = (rows: Array<{ member: string; text: string }>): string[] => {
+      const commits = new Set(rows.filter((r) => /\bcommitGoalChange\(/.test(r.text)).map((r) => r.member));
+      const out = new Set<string>();
+      for (const { member, text } of rows) {
+        if (!SAVE_CALL.test(text)) continue;
+        if (PORT.test(text) && commits.has(member)) continue;
+        out.add(member);
+      }
+      return [...out];
+    };
+    expect(
+      saveSitesIn([
+        { member: 'viaCommit', text: '    commitGoalChange(session, key, { drive }, {' },
+        { member: 'viaCommit', text: '      saveSessions: () => this.deps.claudeHandler.saveSessions(),' },
+        { member: 'portElsewhere', text: '      saveSessions: () => this.deps.claudeHandler.saveSessions(),' },
+        { member: 'direct', text: '      this.deps.claudeHandler.saveSessions();' },
+      ]),
+    ).toEqual(['portElsewhere', 'direct']);
+    const sitesIn = (fileList: string[]): Set<string> =>
+      new Set(fileList.flatMap((file) => saveSitesIn(membersOf(file)).map((member) => `${file}#${member}`)));
     const ALLOWED: Record<string, string> = {
       'src/slack/actions/goal-action-handler.ts#answerCapDecision': 'the cap answer declares its own order (D9)',
       'src/slack/actions/goal-action-handler.ts#handleDelete': 'goal-list delete — PR6 (surfaces)',
@@ -178,7 +196,7 @@ describe('goal state boundary (.prd/40 §6)', () => {
       'src/slack/commands/goal-handler.ts#pauseGoal': 'goal pause — PR6',
       'src/slack/commands/goal-handler.ts#resumeGoal': 'goal resume — PR6 (D11)',
     };
-    const found = [...sitesOf(SAVE, files)].sort();
+    const found = [...sitesIn(files)].sort();
     const unlisted = found.filter((key) => !(key in ALLOWED));
     const gone = Object.keys(ALLOWED).filter((key) => !found.includes(key));
     expect({ unlisted, gone }).toEqual({ unlisted: [], gone: [] });
