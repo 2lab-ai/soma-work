@@ -139,8 +139,8 @@ function faceOf(card, model, face, asks, effort, asked) {
   if (foot.length) out.metrics = foot;
   // Where the work runs and how hard (@2lab.ai/ui 0.46.0 card.node): one badge in the head, next to the owner — the
   // node's name, then this task's CPU and memory as two 10-step gauges. In the head, so a one-line card keeps it.
-  // With it, the task's own CPU (0.47.0 card.load): past one core the card's top and bottom edges carry red hazard
-  // stripes, a step heavier past 2, 4 and 8 cores.
+  // With it, the task's own CPU (0.47.0 card.load): past one core the card wears the 프로세스 tab's CPU badge (0.48.0 —
+  // a red tint and ring, a hatched underline), a step stronger past 2, 4 and 8 cores.
   var node = card && nodeBadgeOf(card.procUsage);
   if (node) {
     out.node = node;
@@ -168,7 +168,7 @@ function taskGaugesOf(u) {
   return { cpu: cpu, mem: mem, share: share };
 }
 // The card's node badge (card.node) from its process usage: none while nothing of the task is alive. No number is
-// drawn before the name: the level (busy from 10% of a core, hot — a red ring — from 100%) says it.
+// drawn before the name: the level (busy from 10% of a core, hot — a solid red pill, 0.48.0 — from 100%) says it.
 function nodeBadgeOf(u) {
   if (!u || !(Number(u.processCount) > 0) || !u.nodeId) return null;
   var g = taskGaugesOf(u);
