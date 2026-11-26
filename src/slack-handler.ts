@@ -178,6 +178,7 @@ import {
   undoPause,
 } from './slack/session-goal';
 import { announceSessionNotice, recordSessionNotice } from './slack/session-notice';
+import { SessionOccupancy } from './slack/session-occupancy';
 import { SourceThreadNewTask } from './slack/source-thread-new-task';
 import { type SessionFollowUp, SummaryService, setFollowUpListener } from './slack/summary-service';
 import { SummaryTimer } from './slack/summary-timer';
@@ -405,6 +406,8 @@ export class SlackHandler {
 
   // Concurrency and tracking
   private requestCoordinator: RequestCoordinator;
+  /** .prd/39 S1 — turn occupancy (run phase · turnHeld · driven). */
+  private readonly occupancy: SessionOccupancy;
   private toolTracker: ToolTracker;
 
   // Command routing
@@ -757,6 +760,18 @@ export class SlackHandler {
         this.noteSessionStop(sessionKey, reason);
       },
     });
+    // .prd/39 S1 — the one answer to "is a turn running here". Its deps read the dispatcher, the migration map and
+    // the goal loop probe at call time: those are built (or wired) later.
+    this.occupancy = new SessionOccupancy({
+      slotBusy: (key) => this.followupDispatcher?.isBusy(key) === true,
+      slotEpoch: (key) => this.followupDispatcher?.liveTurnEpoch(key),
+      migratedSlotOf: (key) => this.followupMigration?.byCanonical.get(key),
+      requestActive: (key) => this.requestCoordinator.isRequestActive(key),
+      loopActing: (key) => this.goalLoopActing?.(key) === true,
+    });
+    this.claudeHandler
+      ?.getSessionRegistry?.()
+      ?.addTurnActivityListener?.((key, state) => this.occupancy.noteTurnActivity(key, state));
     this.toolTracker = new ToolTracker();
     this.reactionManager = new ReactionManager(this.slackApi);
     this.contextWindowManager = new ContextWindowManager(this.slackApi);
@@ -1435,6 +1450,7 @@ export class SlackHandler {
     this.goalDriverKickOnRelease?.delete(sessionKey);
     this.goalTurnOrder.delete(sessionKey);
     this.nestedAutoCompactStops.delete(sessionKey);
+    this.occupancy.forget(sessionKey);
   }
 
   /** #893 — the session's turn begin/end order, created on first use. */
@@ -3829,10 +3845,7 @@ export class SlackHandler {
    * the queue held it.
    */
   isFollowupTurnBusy(sessionKey: string): boolean {
-    const dispatcher = this.followupDispatcher;
-    if (!dispatcher) return false;
-    const slotKey = this.followupMigration?.byCanonical.get(sessionKey);
-    return dispatcher.isBusy(sessionKey) || (slotKey !== undefined && dispatcher.isBusy(slotKey));
+    return this.occupancy.slotHeld(sessionKey);
   }
 
   /**
@@ -4599,8 +4612,7 @@ export class SlackHandler {
       );
     if (existing) return existing.state === 'dispatched' ? 'started' : 'queued';
 
-    const slotKey = this.followupMigration?.byCanonical.get(sessionKey);
-    const busy = () => dispatcher.isBusy(sessionKey) || (slotKey !== undefined && dispatcher.isBusy(slotKey));
+    const busy = () => this.occupancy.slotHeld(sessionKey);
     const wasBusy = busy();
     // The files the goal was added with (the dashboard's goal composer) ride every opening of THAT goal — started at
     // once, promoted from the queue or resumed — unless the message that set it carries its own.
@@ -7573,10 +7585,7 @@ export class SlackHandler {
    */
   /** Does a dispatcher run hold this session's slot — under its key or the source key it migrated from? */
   private isFollowupSlotHeld(sessionKey: string): boolean {
-    const dispatcher = this.followupDispatcher;
-    if (!dispatcher) return false;
-    const slotKey = this.followupMigration?.byCanonical.get(sessionKey);
-    return dispatcher.isBusy(sessionKey) || (slotKey !== undefined && dispatcher.isBusy(slotKey));
+    return this.occupancy.slotHeld(sessionKey);
   }
 
   private shouldDeferGoalDriver(sessionKey: string): boolean {
@@ -8844,9 +8853,7 @@ export class SlackHandler {
       // a running session in the done column for its whole turn (2026-11-26, 1795677176.047669). That turn carries
       // the session like a restart resume: not forced idle, not kicked; the loop judges when it settles. The follow-up
       // slot counts too: a dispatch holds it before its controller is set and between legs.
-      const liveTurn =
-        !resumedByRestart &&
-        (this.requestCoordinator.isRequestActive(sessionKey) || this.isFollowupSlotHeld(sessionKey));
+      const liveTurn = !resumedByRestart && this.occupancy.runPhase(sessionKey) !== 'none';
       const panel = session.actionPanel;
       if (
         !resumedByRestart &&
@@ -9230,11 +9237,8 @@ export class SlackHandler {
   isHostTurnFree(channel: string, threadTs?: string): boolean {
     const sessionKey = this.resolveFollowupSessionKey({ channel, thread_ts: threadTs, ts: threadTs } as MessageEvent);
     if (!sessionKey) return false;
-    if (this.requestCoordinator.isRequestActive(sessionKey)) return false;
-    const dispatcher = this.followupDispatcher;
-    if (!dispatcher) return true;
-    const slotKey = this.followupMigration?.byCanonical.get(sessionKey);
-    return !dispatcher.isBusy(sessionKey) && !(slotKey !== undefined && dispatcher.isBusy(slotKey));
+    // No run holds the slot and no request runs — the same fence `handleMessage` applies to a synthetic event.
+    return this.occupancy.runPhase(sessionKey) === 'none';
   }
 
   /** Expose request coordinator for dashboard stop handler */
