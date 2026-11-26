@@ -7762,11 +7762,13 @@ body:not([data-detail~="agenthead"]) #panel-agents { display: none !important; }
 .slide-panel:not([data-midtab="agents"]):not([data-agent-scoped]) .panel-tabs::part(list),
 body:not([data-detail~="agenttabs"]) .panel-tabs::part(list),
 body:not([data-detail~="sections"]):not([data-detail~="logtab"]) .panel-sections::part(list) { display: none; }
-.panel-midbar { display: flex; flex-wrap: wrap; align-items: stretch; gap: 0 2px; padding: 0 10px; min-height: 36px; }
+/* The bar speaks like the section tabs under it (<ui-tabs>, as on the settings page): 13px, weight 500, 12px each
+   side, the labels starting where theirs start; the open one is told by colour and underline, not weight. */
+.panel-midbar { display: flex; flex-wrap: wrap; align-items: stretch; gap: 0 2px; padding: 0 12px; min-height: 36px; }
 .panel-midbar[hidden] { display: none; }
-.pm-tab { display: inline-flex; align-items: center; gap: 5px; min-height: 36px; padding: 0 8px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--text-secondary); font: inherit; font-size: 12.5px; cursor: pointer; white-space: nowrap; }
+.pm-tab { display: inline-flex; align-items: center; gap: 5px; min-height: 36px; padding: 0 12px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--text-secondary); font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap; }
 .pm-tab:hover:not(:disabled) { color: var(--text); }
-.pm-tab[aria-expanded="true"] { color: var(--text); font-weight: 600; border-bottom-color: var(--text); }
+.pm-tab[aria-expanded="true"] { color: var(--text); border-bottom-color: var(--text); }
 .pm-tab:disabled { cursor: default; opacity: .45; }
 .pm-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 4px; }
 .pm-count { font-variant-numeric: tabular-nums; color: var(--text-tertiary); font-weight: 500; }
