@@ -110,6 +110,45 @@ describe('GoalActionHandler — delete (S1)', () => {
  * as the dashboard — the promoted goal starts with its opening turn admitted
  * through the follow-up fence, not with a bare loop kick.
  */
+/**
+ * .prd/39 D12 · A14 (X14) — a 🗑️ on an old `goal` message's queued line, clicked after that goal was promoted, asks
+ * the host for the place the line was shown (`queued`); the host answers that the list changed, and the goal that
+ * runs now stays. Computed at click time, the place read `current` and deleted the running goal.
+ */
+describe('GoalActionHandler — delete asks for the place the line was shown (X14)', () => {
+  it('a queued line clicked after its goal was promoted asks for queued, not current', async () => {
+    const session = makeSession({ goal: makeGoal({ goalId: 'g-promoted' }) });
+    const hostAction = vi.fn().mockRejectedValue(new HostGoalActionError(409, 'The goal list changed — refresh'));
+    getHostGoalActionHandlerMock.mockReturnValue(hostAction);
+    const { handler } = makeHandler(session);
+    const respond = vi.fn().mockResolvedValue(undefined);
+    const shownQueued = {
+      user: { id: 'U-owner' },
+      actions: [
+        {
+          value: encodeGoalActionValue({
+            sessionKey: SESSION_KEY,
+            goalId: 'g-promoted',
+            channel: 'C1',
+            threadTs: 'T1',
+            place: 'queued',
+          }),
+        },
+      ],
+    };
+
+    await handler.handleDelete(shownQueued, respond);
+
+    expect(hostAction).toHaveBeenCalledWith(
+      SESSION_KEY,
+      { action: 'delete', goalId: 'g-promoted', expect: 'queued' },
+      'U-owner',
+    );
+    expect(session.goal?.goalId).toBe('g-promoted');
+    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining('changed') }));
+  });
+});
+
 describe('GoalActionHandler — delete through the host goal action', () => {
   it('delegates deleting the current goal with expect=current and never mutates locally', async () => {
     const session = makeSession({
