@@ -109,8 +109,13 @@ same snapshot, and work will be placed by each node's free CPU and memory.
    full at one core's share of the node's memory (its size ÷ its cores — `nodeMemBytes` and `cpuCount` ride with the
    usage). No number is drawn before the name: the pill's level says it (busy from 10% of a core; hot, a red ring, from
    100%), and its title and accessible name give the numbers. The head is the part a one-line card keeps, so the foot's
-   CPU · 메모리 chip went (2026-11-25) — a layout saved with it drops it. A card is pushed again only when a gauge
-   crosses a step or the level changes; the node's own load is not on the card (the 프로세스 tab's node line has it).
+   CPU · 메모리 chip went (2026-11-25) — a layout saved with it drops it. Past one core the card's top and bottom
+   edges also carry red hazard stripes (2026-11-26, `@2lab.ai/ui` 0.47.0 `card.load`, the task's CPU), a step heavier
+   past 2, 4 and 8 cores: thicker, then marching, then a glow. A card is pushed again only when a gauge crosses a step,
+   the level changes or the stripes step; the node's own load is not on the card (the 프로세스 tab's node line has it).
+   In the 프로세스 tab each CPU and memory cell is one badge (Task Manager's heat map): its fill is its share of one
+   core (memory: of the tree's largest process); past one core it is red with ▲ and its core count as a solid second
+   segment over the same hatched edge.
 
 9. **A CPU cap per task (2026-11-24).** One task of a person may use at most their cap: 100% (one core) by default,
    none for an admin, an admin's choice per person in the settings page's 작업 큐 tab (`DATA_DIR/user-cpu-limits.json`,

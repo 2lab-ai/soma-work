@@ -486,15 +486,29 @@ describe('P6 — the tree: guides, folds, CPU levels, where · what', () => {
       'hot',
       'hot',
     ]);
-    const hot = e.procCpuCellHtml(113);
-    expect(hot).toContain('is-hot');
-    expect(hot).toContain('▲ 113%');
-    expect(hot).toContain('1.1코어');
-    expect(hot).toContain('width:100%');
-    expect(e.procCpuCellHtml(42)).toContain('is-busy');
-    expect(e.procCpuCellHtml(42)).toContain('width:42%');
-    expect(e.procCpuCellHtml(42)).not.toContain('▲');
-    expect(e.procCpuCellHtml(125, true)).toContain('Σ 125%');
+    // One badge (Task Manager's heat map: the cell's own fill says how hard): the number, and past one core ▲ and the
+    // core count as the badge's second segment — no separate meter under it.
+    expect(e.procCpuCellHtml(113)).toBe(
+      '<span class="pp-cpu is-hot" style="--pp-fill:100%" title="CPU 113% — 코어 1.1개"><span class="pp-v">▲ 113%</span><span class="pp-cores">1.1코어</span></span>',
+    );
+    expect(e.procCpuCellHtml(475)).toContain('<span class="pp-v">▲ 475%</span><span class="pp-cores">4.8코어</span>');
+    expect(e.procCpuCellHtml(42)).toBe(
+      '<span class="pp-cpu is-busy" style="--pp-fill:42%" title="CPU 42%"><span class="pp-v">42%</span></span>',
+    );
+    expect(e.procCpuCellHtml(0.4)).toContain('class="pp-cpu is-idle" style="--pp-fill:0%"');
+    expect(e.procCpuCellHtml(125, true)).toContain('<span class="pp-v">▲ Σ 125%</span>');
+    for (const v of [0.4, 42, 113, 475]) expect(e.procCpuCellHtml(v)).not.toContain('pp-bar');
+  });
+
+  it('a memory cell is one badge too: its fill is its share of the tree’s largest process', () => {
+    const e = env() as unknown as { procMemCellHtml: (b: number, max: number, total?: boolean) => string };
+    expect(e.procMemCellHtml(1e9, 4e9)).toBe(
+      '<span class="pp-mem" style="--pp-fill:25%"><span class="pp-v">1.0GB</span></span>',
+    );
+    expect(e.procMemCellHtml(1, 4e9)).toContain('--pp-fill:2%');
+    expect(e.procMemCellHtml(0, 0)).toContain('--pp-fill:0%');
+    expect(e.procMemCellHtml(5e9, 4e9, true)).toContain('<span class="pp-v">Σ 5.0GB</span>');
+    expect(e.procMemCellHtml(1e9, 4e9)).not.toContain('pp-bar');
   });
 
   it('a working directory reads relative to the Claude Code process’s folder, else by its last two parts', () => {
@@ -561,18 +575,36 @@ describe('P6 — the tree: guides, folds, CPU levels, where · what', () => {
   });
 
   it('the CSS colours busy amber and hot red, and gives hot rows a tint and a rail', () => {
-    expect(CSS).toContain('.pp-cpu.is-busy .pp-v, .pp-cpu-sum.is-busy { color: color-mix(in srgb, var(--st-wait)');
-    expect(CSS).toContain('.pp-cpu.is-hot .pp-v, .pp-cpu-sum.is-hot { color: color-mix(in srgb, var(--st-fail)');
+    expect(CSS).toContain('.pp-cpu.is-busy, .pp-cpu-sum.is-busy { --pp-c: color-mix(in srgb, var(--st-wait)');
+    expect(CSS).toContain('.pp-cpu.is-hot, .pp-cpu-sum.is-hot { --pp-c: color-mix(in srgb, var(--st-fail)');
     expect(CSS).toContain('.pp-table tr.pp-row.is-hot td { background:');
   });
 
-  it('in high contrast every meter is one solid system colour — the busy and hot rules do not outrank it', () => {
-    const forced = CSS.slice(CSS.indexOf('@media (forced-colors: active) {\n  .pp-bar'));
-    const rule = forced.slice(0, forced.indexOf('}') + 1);
-    for (const sel of ['.pp-bar > i', '.pp-cpu.is-busy .pp-bar > i', '.pp-cpu.is-hot .pp-bar > i']) {
-      expect(rule).toContain(sel);
-    }
-    expect(rule).toContain('background: CanvasText;');
+  it('the badge: its fill up to one core, a hot one’s cores as a solid segment over a hatched edge, the column fits it', () => {
+    const rule = (sel: string) => {
+      const at = CSS.indexOf(`\n${sel} {`);
+      expect(at, sel).toBeGreaterThan(-1);
+      return CSS.slice(at, CSS.indexOf('}', at) + 1);
+    };
+    const badge = rule('.pp-cpu, .pp-mem');
+    expect(badge).toContain('border-radius: 999px;');
+    expect(badge).toContain('var(--pp-fill, 0%)');
+    expect(badge).toContain('white-space: nowrap;');
+    expect(rule('.pp-cpu.is-hot .pp-cores')).toContain('background: var(--pp-c);');
+    expect(rule('.pp-cpu.is-hot::after')).toContain(
+      'repeating-linear-gradient(135deg, var(--pp-c) 0 3px, transparent 3px 6px)',
+    );
+    expect(rule('.pp-table th:nth-child(2)')).toContain('width: 136px;');
+    // The old meter under the number is gone.
+    expect(CSS).not.toContain('.pp-bar');
+  });
+
+  it('in high contrast the badge is an ink outline with no fill (the number is text)', () => {
+    const forced = CSS.slice(CSS.indexOf('@media (forced-colors: active) {\n  .pp-cpu'));
+    const rule = forced.slice(0, forced.indexOf('\n}') + 2);
+    expect(rule).toContain('.pp-cpu, .pp-mem { forced-color-adjust: none;');
+    expect(rule).toContain('box-shadow: inset 0 0 0 1px CanvasText;');
+    expect(rule).toContain('--pp-c: CanvasText;');
   });
 });
 
@@ -1127,6 +1159,16 @@ describe('P8 — the card’s node badge (card.node)', () => {
       text: 'build-box',
     });
     expect(f.faceOf({ title: 'x' }, '', { rows: [], foot: [] }).node).toBeUndefined();
+  });
+
+  it('the card carries the task’s own CPU as card.load (its edge stripes past one core), only with the badge', () => {
+    const f = fns();
+    expect(f.faceOf({ title: 'x', procUsage: u({ cpuPercent: 475 }) }, '', { rows: [], foot: [] }).load).toBe(475);
+    expect(f.faceOf({ title: 'x', procUsage: u({ cpuPercent: 42 }) }, '', { rows: [], foot: [] }).load).toBe(42);
+    expect(f.faceOf({ title: 'x', procUsage: u({ processCount: 0 }) }, '', { rows: [], foot: [] })).not.toHaveProperty(
+      'load',
+    );
+    expect(f.faceOf({ title: 'x' }, '', { rows: [], foot: [] })).not.toHaveProperty('load');
   });
 
   it('a paused process and the CPU cap are in its title', () => {

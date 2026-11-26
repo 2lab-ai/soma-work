@@ -1309,10 +1309,13 @@ function procSignature(u: SessionProcessUsage, node?: NodeCapacity): string {
   // The badge's level (busy from 10%, hot from 100%) and its two gauges move at their own edges, which a bucket or
   // the 10 MB grain can straddle.
   const level = u.cpuPercent >= 100 ? 2 : u.cpuPercent >= 10 ? 1 : 0;
+  // The card's edge stripes (@2lab.ai/ui 0.47.0 card.load) step past 1, 2, 4 and 8 cores — edges a bucket straddles too.
+  const strain = [100, 200, 400, 800].filter((edge) => u.cpuPercent > edge).length;
   const gauges = taskGaugesOf(u, node?.cpuCount ?? 0, node?.totalMemBytes ?? 0);
   return [
     cpu,
     level,
+    strain,
     Math.round(u.rssBytes / 10_000_000),
     u.processCount,
     u.stoppedCount,
@@ -7811,7 +7814,7 @@ html[data-pdragging], html[data-pdragging] * { cursor: grabbing !important; user
 .pp-table th { text-align: left; font-weight: 500; color: var(--text-tertiary); padding: 4px 6px; border-bottom: 1px solid var(--border); white-space: nowrap; }
 .pp-table td { padding: 4px 6px; border-bottom: 1px solid var(--border); vertical-align: middle; white-space: nowrap; }
 .pp-table th + th, .pp-table td + td { padding-left: 8px; }
-.pp-table th:nth-child(2) { width: 92px; }
+.pp-table th:nth-child(2) { width: 136px; }
 .pp-table th:nth-child(3) { width: 64px; }
 .pp-table th:nth-child(4) { width: 36px; }
 .pp-op { min-width: 28px; padding-inline: 6px; }
@@ -7840,25 +7843,33 @@ html[data-pdragging], html[data-pdragging] * { cursor: grabbing !important; user
 .pp-cap { padding: 0 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-secondary); font-weight: 500; }
 .pp-cap.is-on { border-color: var(--st-wait); color: color-mix(in srgb, var(--st-wait) calc(100% * var(--chroma, 1)), var(--text)); }
 .pp-throttled { border: 1px solid var(--st-wait); background: transparent; }
-/* CPU: under 1% dim, 10%+ amber and bold, 100%+ (over one core) red with ▲ and the core count — never colour alone. */
-.pp-cpu, .pp-mem { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 2px 4px; min-width: 0; max-width: 100%; }
-.pp-bar { position: relative; flex: 0 0 100%; height: 3px; border-radius: 2px; background: var(--border); overflow: hidden; }
-.pp-bar > i { position: absolute; inset: 0 auto 0 0; border-radius: 3px; background: var(--text-tertiary); }
+/* CPU and memory, one badge each (Task Manager's heat map: the cell's own fill says how hard — no meter under it).
+   CPU: the fill is its share of one core; under 1% dim, 10%+ amber and bold, 100%+ (over one core) red with ▲ and its
+   core count as a solid second segment over a hatched edge — the task card's edge stripes, the same pattern. Never
+   colour alone. Memory: the fill is its share of the tree's largest process. */
+.pp-cpu, .pp-mem {
+  --pp-c: var(--text-tertiary);
+  position: relative; display: inline-flex; align-items: stretch; max-width: 100%; overflow: hidden; vertical-align: middle;
+  border-radius: 999px; white-space: nowrap; line-height: 1.55; font-size: 11.5px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--pp-c) 24%, transparent) var(--pp-fill, 0%), color-mix(in srgb, var(--text) 5%, transparent) var(--pp-fill, 0%));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pp-c) 35%, transparent);
+}
+.pp-cpu .pp-v, .pp-mem .pp-v, .pp-cores { padding: 0 6px; }
 .pp-cpu.is-idle .pp-v { color: var(--text-tertiary); }
-.pp-cpu.is-busy .pp-v, .pp-cpu-sum.is-busy, .pp-cpu-sum.is-hot { font-weight: 700; }
-.pp-cpu.is-busy .pp-v, .pp-cpu-sum.is-busy { color: color-mix(in srgb, var(--st-wait) calc(100% * var(--chroma, 1)), var(--text)); }
-.pp-cpu.is-busy .pp-bar > i { background: color-mix(in srgb, var(--st-wait) calc(100% * var(--chroma, 1)), var(--text-secondary)); }
-.pp-cpu.is-hot .pp-v, .pp-cpu-sum.is-hot { color: color-mix(in srgb, var(--st-fail) calc(100% * var(--chroma, 1)), var(--text)); font-weight: 800; }
-/* Hot: a striped meter (a pattern, so it reads in mono too). */
-.pp-cpu.is-hot .pp-bar > i { background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--st-fail) calc(100% * var(--chroma, 1)), var(--text)) 0 4px, transparent 4px 7px); }
-.pp-cores { padding: 0 4px; border-radius: 999px; background: color-mix(in srgb, var(--st-fail) calc(100% * var(--chroma, 1)), var(--text)); color: var(--surface); font-size: 10px; font-weight: 700; line-height: 1.4; }
+.pp-cpu.is-busy, .pp-cpu-sum.is-busy { --pp-c: color-mix(in srgb, var(--st-wait) calc(100% * var(--chroma, 1)), var(--text)); }
+.pp-cpu.is-hot, .pp-cpu-sum.is-hot { --pp-c: color-mix(in srgb, var(--st-fail) calc(100% * var(--chroma, 1)), var(--text)); }
+.pp-cpu.is-busy .pp-v, .pp-cpu-sum.is-busy { color: var(--pp-c); font-weight: 700; }
+.pp-cpu.is-hot .pp-v, .pp-cpu-sum.is-hot { color: var(--pp-c); font-weight: 800; }
+.pp-cpu.is-hot .pp-cores { background: var(--pp-c); color: var(--surface); font-weight: 700; }
+.pp-cpu.is-hot::after { content: ''; position: absolute; inset: auto 0 0 0; height: 2px; pointer-events: none; background: repeating-linear-gradient(135deg, var(--pp-c) 0 3px, transparent 3px 6px); }
 .pp-pid, .pp-st { margin-right: 8px; color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
 .pp-table tr.pp-row.is-hot td { background: color-mix(in srgb, var(--st-fail) calc(10% * var(--chroma, 1)), transparent); }
 .pp-table tr.pp-row.is-hot td:first-child { box-shadow: inset 3px 0 0 var(--st-fail); }
-/* High contrast: one solid system colour for every meter — as specific as the busy and hot rules, so it wins. */
+/* High contrast: the badge is an ink outline with no fill (the number is text); a hot one's cores in reverse ink. */
 @media (forced-colors: active) {
-  .pp-bar > i, .pp-cpu.is-busy .pp-bar > i, .pp-cpu.is-hot .pp-bar > i { background: CanvasText; }
-  .pp-cores { border: 1px solid CanvasText; }
+  .pp-cpu, .pp-mem { forced-color-adjust: none; --pp-c: CanvasText; background: Canvas; color: CanvasText; box-shadow: inset 0 0 0 1px CanvasText; }
+  .pp-cpu .pp-v, .pp-cpu.is-idle .pp-v, .pp-cpu.is-busy .pp-v, .pp-cpu.is-hot .pp-v, .pp-mem .pp-v { color: CanvasText; }
+  .pp-cpu.is-hot .pp-cores { background: CanvasText; color: Canvas; }
 }
 /* The detail (a snapshot): sections of term · value, the command line in mono and wrapping. */
 .proc-detail-dialog .px-body { display: grid; gap: 14px; font-size: 13px; }
@@ -14201,7 +14212,8 @@ function cardOf(s, col) {
   var uaWait = userActionsWaiting(s);
   if (uaWait > 0) metrics.push({ text: String(uaWait), glyph: 'alert', title: '사용자 할 일 ' + uaWait + '개', label: '사용자 할 일 ' + uaWait + '개' });
   if (metrics.length) card.metrics = metrics;
-  // The node badge in the head (view-layout-client.ts nodeBadgeOf): the session's process tree on its node, live.
+  // The node badge in the head and the card's edge stripes past one core (view-layout-client.ts nodeBadgeOf, faceOf
+  // card.load): the session's process tree on its node, live.
   if (s.procUsage) card.procUsage = s.procUsage;
   // 작업 카드의 연결 (SSOT 2026-11-02): every linked issue, PR and wiki with its state — the face's links row.
   var links = cardLinksFace(s);
@@ -16966,20 +16978,24 @@ function procCpuLevel(p) {
   var v = Math.max(0, Number(p) || 0);
   return v >= 100 ? 'hot' : v >= 10 ? 'busy' : v < 1 ? 'idle' : '';
 }
-// Pure: a CPU cell — a bar of one core (overflow striped past 100%), the number, and for a hot one ▲ and its cores.
+// Pure: a CPU cell as one badge (Task Manager's heat map: the badge's own fill says how hard). Up to one core it fills
+// by its share of a core; past one core it is red, leads with ▲ and carries its core count as a solid second segment
+// over a hatched edge (the task card's edge stripes). Colour is never the only cue: busy is bold, hot has ▲ and cores.
 function procCpuCellHtml(p, total) {
   var v = Math.max(0, Number(p) || 0);
   var lv = procCpuLevel(v);
-  var w = Math.min(100, Math.round(v));
-  var cores = lv === 'hot' ? '<span class="pp-cores">' + (Math.round(v / 10) / 10) + '코어</span>' : '';
-  return '<span class="pp-cpu' + (lv ? ' is-' + lv : '') + '"><span class="pp-v">' + (lv === 'hot' ? '▲ ' : '') + (total ? 'Σ ' : '') + procCpuText(v) + '</span>' + cores
-    + '<span class="pp-bar" aria-hidden="true"><i style="width:' + w + '%"></i></span></span>';
+  var fill = Math.min(100, Math.round(v));
+  var cores = Math.round(v / 10) / 10;
+  var title = 'CPU ' + procCpuText(v) + (lv === 'hot' ? ' — 코어 ' + cores + '개' : '');
+  return '<span class="pp-cpu' + (lv ? ' is-' + lv : '') + '" style="--pp-fill:' + fill + '%" title="' + escAttr(title) + '">'
+    + '<span class="pp-v">' + (lv === 'hot' ? '▲ ' : '') + (total ? 'Σ ' : '') + procCpuText(v) + '</span>'
+    + (lv === 'hot' ? '<span class="pp-cores">' + cores + '코어</span>' : '') + '</span>';
 }
-// Pure: a memory cell — a bar against the tree's largest process, and the number.
+// Pure: a memory cell as one badge — its fill is its share of the tree's largest process.
 function procMemCellHtml(bytes, max, total) {
   var b = Math.max(0, Number(bytes) || 0);
   var w = max > 0 ? Math.max(b > 0 ? 2 : 0, Math.min(100, Math.round((b / max) * 100))) : 0;
-  return '<span class="pp-mem"><span class="pp-v">' + (total ? 'Σ ' : '') + procBytesText(b) + '</span><span class="pp-bar" aria-hidden="true"><i style="width:' + w + '%"></i></span></span>';
+  return '<span class="pp-mem" style="--pp-fill:' + w + '%"><span class="pp-v">' + (total ? 'Σ ' : '') + procBytesText(b) + '</span></span>';
 }
 // Pure: a working directory as the row shows it — relative to the Claude Code process's folder when under it
 // ('.', './packages/x'), else its last two parts ('…/repo/src'); the full path is the title.
@@ -17057,7 +17073,7 @@ function panelProcsHtml(state, canControl) {
   if (toNum(sess.cpuCapPercent)) sum.push('<span class="pp-cap' + (sess.throttling ? ' is-on' : '') + '" title="' + escAttr('이 작업의 CPU 한도 — 넘으면 그 아래 프로세스를 아주 짧게 멈췄다 이어 가며 맞춰요 (Claude Code 자체는 멈추지 않아요)') + '">CPU 한도 ' + toNum(sess.cpuCapPercent) + '%' + (sess.throttling ? ' · 맞추는 중' : '') + '</span>');
   html += '<div class="pp-sum">' + sum.join('<span class="pi-dot" aria-hidden="true">&middot;</span>') + '</div>';
   var opens = st.body.commands === true;
-  html += '<p class="pp-legend">CPU 100% = 코어 1개 · <span class="pp-cpu is-busy"><span class="pp-v">10%+</span></span> 바쁨 · <span class="pp-cpu is-hot"><span class="pp-v">▲ 100%+</span></span> 코어 1개 넘김'
+  html += '<p class="pp-legend">CPU 100% = 코어 1개 · <span class="pp-cpu is-busy" style="--pp-fill:40%"><span class="pp-v">10%+</span></span> 바쁨 · <span class="pp-cpu is-hot" style="--pp-fill:100%"><span class="pp-v">▲ 100%+</span><span class="pp-cores">코어 수</span></span> 코어 1개 넘김'
     + (opens ? ' · 줄을 누르면 그 프로세스의 상세(스냅샷)' : '') + '</p>';
   var procs = sess.processes;
   var base = '';
