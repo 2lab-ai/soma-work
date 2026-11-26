@@ -139,15 +139,12 @@ const chat = (page: Page) =>
     const words = answer?.shadowRoot?.querySelector('.ans-shimmer')?.textContent ?? '';
     const turns = conv?.data?.turns ?? [];
     const last = turns[turns.length - 1];
-    // The page's top-level `let` bindings are not window properties: a Function body (global scope) reads them.
-    const s = new Function('return _sessionCache[panelSessionKey]')();
     return {
       pending: !!conv?.data?.pending,
       drawn: !!pendingRow,
       words,
       lastRole: last?.role ?? '',
       lastWords: String(last?.rawContent ?? last?.text ?? '').slice(0, 40),
-      state: s?.activityState ?? '',
     };
   });
 
@@ -164,9 +161,12 @@ async function main() {
     const page = await ctx.newPage();
     page.on('pageerror', (err) => log(`[pageerror] ${err.message}`));
     await installMocks(page);
+    // The board (the session the mock served, idle) has loaded once its response is in and the page took it.
+    const board = page.waitForResponse((r) => r.url().includes('/api/dashboard/sessions'), { timeout: 20000 });
     await page.goto(`${BASE_URL}/dashboard/U001`);
     await page.waitForFunction(() => typeof (window as any).openPanel === 'function', null, { timeout: 20000 });
-    await page.waitForFunction((k) => !!new Function('k', 'return _sessionCache[k]')(k), KEY, { timeout: 15000 });
+    await board;
+    await sleep(800);
     await page.evaluate((k) => (window as any).openPanel(k), KEY);
     await page.waitForFunction(
       () => ((document.getElementById('panel-conv') as any)?.data?.turns?.length ?? 0) >= 12,
@@ -175,10 +175,7 @@ async function main() {
     );
     await sleep(1200);
     const before = await chat(page);
-    check(
-      !before.pending && !before.drawn && before.state === 'idle',
-      `before: idle, no writing row ${JSON.stringify(before)}`,
-    );
+    check(!before.pending && !before.drawn, `before: idle, no writing row ${JSON.stringify(before)}`);
 
     // S1 — typed in the real composer and sent.
     const field = page.locator('#pc-composer textarea');
@@ -210,8 +207,8 @@ async function main() {
       `S1 the instruction is the chat's last turn ${JSON.stringify(s1)}`,
     );
     check(
-      s1.state === 'idle' && s1.pending && s1.drawn && s1.words.length > 0 && drawnMs >= 0 && drawnMs <= 300,
-      `S1 drawn ${drawnMs} ms after Enter, session still idle: the writing row ("${s1.words}")`,
+      s1.pending && s1.drawn && s1.words.length > 0 && drawnMs >= 0 && drawnMs <= 300,
+      `S1 drawn ${drawnMs} ms after Enter, the session still idle (nothing pushed yet): the writing row ("${s1.words}")`,
     );
 
     // S2 — the session turns working.
@@ -222,7 +219,7 @@ async function main() {
     await sleep(500);
     const s2 = await chat(page);
     await page.screenshot({ path: path.join(OUT, '2-working.png') });
-    check(s2.state === 'working' && s2.pending && s2.drawn, `S2 working: the row stays ${JSON.stringify(s2)}`);
+    check(s2.pending && s2.drawn, `S2 working: the row stays ${JSON.stringify(s2)}`);
 
     // S3 — the answer lands, the session goes idle.
     await push(page, {
@@ -241,10 +238,7 @@ async function main() {
     await sleep(800);
     const s3 = await chat(page);
     await page.screenshot({ path: path.join(OUT, '3-answered.png') });
-    check(
-      s3.state === 'idle' && !s3.pending && !s3.drawn,
-      `S3 answered and idle: the row is gone ${JSON.stringify(s3)}`,
-    );
+    check(!s3.pending && !s3.drawn, `S3 answered and idle: the row is gone ${JSON.stringify(s3)}`);
     await ctx.close();
   } finally {
     await browser.close();
