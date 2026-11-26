@@ -437,7 +437,10 @@ describe('GoalLoopController', () => {
     expect(h.goal.continuationCount).toBe(2);
   });
 
-  it('S9: at the cap a kick reuses the verdict, but a NEW turn with the same output is judged (it may be the repeat a stall needs)', async () => {
+  // .prd/39 D2 · A4 — at the cap the goal asks its owner (asking(cap)): neither a kick nor a later turn (a host turn
+  // does not end the round) judges it again. Below the cap a new turn with the same output is still judged (goal-stall
+  // "S9: the same text after a new turn below the cap runs the evaluator").
+  it('S9: at the cap the question is open — a kick and a later turn judge nothing more', async () => {
     let dispatchCount = 0;
     const h = makeHarness({
       goal: { continuationCount: 10, maxContinuations: 10 },
@@ -453,10 +456,10 @@ describe('GoalLoopController', () => {
     h.controller.onTurnSettled(SESSION_KEY, { cause: 'kick' });
     await h.controller.settled(SESSION_KEY);
     expect(dispatchCount).toBe(1);
-    // A real turn that printed the same thing: only the evaluator can call it a repeat.
+    // A later turn while the owner is asked: the question is the one way on.
     h.controller.onTurnSettled(SESSION_KEY, { cause: 'turn' });
     await h.controller.settled(SESSION_KEY);
-    expect(dispatchCount).toBe(2);
+    expect(dispatchCount).toBe(1);
     expect(h.injected).toHaveLength(0);
   });
 
@@ -1327,5 +1330,70 @@ describe('GoalLoopController — the loop gate reads turnHeld and the owner ques
     await r.controller.settled(SESSION_KEY);
     expect(r.dispatched).toHaveLength(0);
     expect(r.held).toEqual([]);
+  });
+});
+
+/**
+ * .prd/39 D2 · A4 (X4) — the gate passes only the phases the loop drives: running and retrying. A goal asking its
+ * owner (the cap question) is not judged or announced again on a kick or a restart pass; a round whose DM never
+ * landed sends that same round's DM again, nothing else. A goal whose opening has not reached the model waits for it.
+ */
+describe('GoalLoopController — the gate reads the goal phase (.prd/39 D2, A4)', () => {
+  function rig(goalOver: Partial<SessionGoal>) {
+    const goal = makeGoal({ continuationCount: 10, maxContinuations: 10, lastEvalReason: '배포 남음', ...goalOver });
+    const session = makeSession(goal);
+    const dispatched: number[] = [];
+    const notices: string[] = [];
+    const dms: Array<{ text: string; decisionId?: string }> = [];
+    const controller = new GoalLoopController({
+      registry: { getSessionByKey: () => session, saveSessions: () => {} },
+      requestCoordinator: { isRequestActive: () => false },
+      turnHeld: () => false,
+      dispatcher: async () => {
+        dispatched.push(1);
+        return JSON.stringify({ completed: false, reason: 'not yet', remaining: ['x'] });
+      },
+      injectContinuation: async () => undefined,
+      postNotice: async (_c, _t, text) => {
+        notices.push(text);
+        return undefined;
+      },
+      postOwnerDm: async (_user, text, blocks) => {
+        const raw = JSON.stringify(blocks);
+        dms.push({ text, decisionId: /"decisionId":"([^"]+)"/.exec(raw.replace(/\\"/g, '"'))?.[1] });
+        return { channel: 'D1', ts: '9.9' };
+      },
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      fallbackModel: () => ({ model: 'claude-sonnet-4' }),
+    });
+    return { controller, goal, dispatched, notices, dms };
+  }
+
+  it('A4: a kick on a goal asking the cap question, its DM delivered — no judge, no notice, nothing sent', async () => {
+    const r = rig({ capDmPendingAt: 5, capDecisionId: 'round-1', capDmRef: { channel: 'D1', ts: '1.1' } });
+    r.controller.onTurnSettled(SESSION_KEY, { cause: 'kick' });
+    await r.controller.settled(SESSION_KEY);
+    expect(r.dispatched).toEqual([]);
+    expect(r.notices).toEqual([]);
+    expect(r.dms).toEqual([]);
+    expect(r.goal.evalAttemptCount ?? 0).toBe(0);
+  });
+
+  it('A4: a kick on a cap round whose DM never landed sends that round’s DM again — no judge, no notice', async () => {
+    const r = rig({ capDmPendingAt: 5, capDecisionId: 'round-1' });
+    r.controller.onTurnSettled(SESSION_KEY, { cause: 'kick' });
+    await r.controller.settled(SESSION_KEY);
+    expect(r.dispatched).toEqual([]);
+    expect(r.notices).toEqual([]);
+    expect(r.dms).toHaveLength(1);
+    expect(r.goal.capDecisionId).toBe('round-1');
+    expect(r.goal.capDmRef).toEqual({ channel: 'D1', ts: '9.9' });
+  });
+
+  it('a goal whose opening has not reached the model is not judged', async () => {
+    const r = rig({ openingPending: true, continuationCount: 0 });
+    r.controller.onTurnSettled(SESSION_KEY, { cause: 'kick' });
+    await r.controller.settled(SESSION_KEY);
+    expect(r.dispatched).toEqual([]);
   });
 });

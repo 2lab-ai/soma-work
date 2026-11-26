@@ -16,6 +16,7 @@
  */
 
 import fs from 'node:fs';
+import { loopDrives, phaseOf } from '@soma/slack/goal/read';
 import path from 'node:path';
 import { Logger } from '../logger';
 import type { EffortLevel } from '../user-settings-store';
@@ -457,20 +458,19 @@ export interface GoalIdleDriverState {
  * supersedes one — and the owner is not being asked something (their answer runs as a turn that drives the loop).
  *
  * All must hold:
- *   1. an active goal exists,
+ *   1. the goal is active and in a phase the loop drives — running or retrying (`phaseOf`, D2),
  *   2. no eval is already in flight (`pendingEval`),
- *   3. no stall question waits for the owner,
- *   4. no turn is held,
- *   5. no owner question is open.
+ *   3. no turn is held,
+ *   4. no owner question is open.
  *
  * Pure — the driver owns stamping `pendingEval`, eval, and injection.
  */
 export function shouldRunGoalIdleDriver(state: GoalIdleDriverState): boolean {
   const { goal, turnHeld, ownerQuestionOpen } = state;
-  if (!goal || goal.status !== 'active') return false;
-  if (goal.pendingEval) return false;
-  // A stalled goal waits for the owner's answer (or any message from them).
-  if (goal.stall) return false;
+  // D2 — the loop drives a running goal and a retrying one; an opening waits for its first turn, a question (cap or
+  // stall) waits for the owner's answer (or any message from them).
+  if (!loopDrives(phaseOf(goal))) return false;
+  if (goal?.pendingEval) return false;
   if (turnHeld) return false;
   if (ownerQuestionOpen) return false;
   return true;

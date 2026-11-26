@@ -1,3 +1,4 @@
+import { slotHoldOf } from '../goal/read';
 import { randomUUID } from 'node:crypto';
 import { displayLangOf, runWithDisplayLang, stripEchoedDisplayLangTag } from '@soma/common/i18n';
 import { Logger, redactAnthropicSecrets } from '@soma/common/logger';
@@ -6855,7 +6856,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               text:
                 samePosition > 0
                   ? `📋 Goal already queued at position ${samePosition} — not added again: ${formatGoalObjectiveForSlack(objective)}`
-                  : session.goal?.status === 'paused'
+                  : slotHoldOf(session as unknown as GoalQueueSession)
                     ? `🎯 Goal already set (paused — \`goal resume\` runs it) — not added again: ${formatGoalObjectiveForSlack(objective)}`
                     : `🎯 Goal already set — not added again: ${formatGoalObjectiveForSlack(objective)}`,
             },

@@ -13,6 +13,7 @@
  * Leaf module: the question, the guard and the ask. The host wires the triggers (`SlackHandler`).
  */
 
+import { phaseOf } from '@soma/slack/goal/read';
 import type { UserChoices } from '@soma/slack/user-choice-extractor';
 
 /** Id of the follow-up question's one item in the multi-choice form. */
@@ -101,11 +102,13 @@ export function somethingElseActsOrAsks(
   if (session.terminated === true || session.state === 'SLEEPING') return true;
   if (input.requestActive || (session.activityState || 'idle') !== 'idle') return true;
   if (session.taskPlan?.state === 'awaiting') return true;
-  const goal = session.goal;
-  if (goal?.status === 'active') {
-    if (goal.pendingEval || goal.stall) return true;
-    if (typeof goal.evalBackoffUntil === 'number' && goal.evalBackoffUntil > input.now) return true;
-    if (typeof goal.capDecisionId === 'string' && goal.capDecisionId && goal.capDmPendingAt !== undefined) return true;
+  // The goal acts or asks (.prd/39 S3, read through `phaseOf`): an eval in flight, a stall question, a retry still
+  // waiting out its window, a cap round the owner can answer.
+  const phase = phaseOf(session.goal);
+  if (phase) {
+    if (session.goal?.pendingEval) return true;
+    if (phase.kind === 'asking' && (phase.ask.kind === 'stall' || !!phase.ask.roundId)) return true;
+    if (phase.kind === 'retrying' && phase.until > input.now) return true;
   }
   const retryAt = Number(session.pendingRetryAt);
   return (

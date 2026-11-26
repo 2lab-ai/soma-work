@@ -1,3 +1,4 @@
+import { slotGoalInFlight, slotHoldOf } from '@soma/slack/goal/read';
 import { Logger } from '../../logger';
 import { validateSessionGoalObjective } from '../../prompt/session-goal-block';
 import type { ConversationSession, SessionGoal } from '../../types';
@@ -146,7 +147,7 @@ export class GoalHandler implements CommandHandler {
     this.deps.userSettingsStore.setUserGoalMaxContinuations(ctx.user, value);
 
     const active = session?.goal;
-    if (active && (active.status === 'active' || active.status === 'paused')) {
+    if (active && session && slotGoalInFlight(session)) {
       active.maxContinuations = value;
       active.updatedAt = Date.now();
       this.persistGoalChange(session as ConversationSession);
@@ -338,7 +339,7 @@ export class GoalHandler implements CommandHandler {
   ): Promise<CommandResult> {
     const shelf = session.goalPaused ?? [];
     const current = session.goal;
-    const slotPaused = current?.status === 'paused' ? current : undefined;
+    const slotPaused = slotHoldOf(session);
 
     if (index === undefined && current?.status === 'active' && current.stall) {
       return this.resumeStalledGoal(channel, threadTs, session, current);

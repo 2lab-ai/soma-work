@@ -67,6 +67,7 @@ import { goalStallRollbackOffer, openGoalStall, trackGoalFirstFailure } from './
 import { advanceGoalQueue, formatGoalObjectiveForSlack } from './session-goal';
 import { announceSessionNotice, recordSessionNotice } from './session-notice';
 import { SessionOccupancy } from './session-occupancy';
+import { capAskOf } from '@soma/slack/goal/read';
 
 /** Default ceiling for a single completion eval before it is aborted. */
 const DEFAULT_GOAL_EVAL_TIMEOUT_MS = 120_000;
@@ -379,6 +380,47 @@ export class GoalLoopController {
     this.queues.set(sessionKey, next);
   }
 
+  /**
+   * Send the cap round's DM to the owner — once per round: a round whose DM landed (`capDmRef`) sends nothing
+   * (codex review #1). The answer may come from the dashboard while the post is in flight: a late DM is rewritten
+   * at once instead of offering buttons (`recordGoalCapDm`).
+   */
+  private async postCapDecisionDm(
+    sessionKey: string,
+    session: ConversationSession,
+    activeGoal: SessionGoal,
+    reason: string,
+  ): Promise<'sent' | 'failed' | 'skipped'> {
+    const { logger } = this.deps;
+    if (!this.deps.postOwnerDm || activeGoal.capDmRef) return 'skipped';
+    const decisionId = activeGoal.capDecisionId as string;
+    const blocks = buildCapDecisionDmBlocks({
+      value: {
+        sessionKey,
+        goalId: activeGoal.goalId,
+        channel: session.channelId,
+        threadTs: session.threadTs,
+        decisionId,
+      },
+      objective: activeGoal.objective,
+      maxContinuations: activeGoal.maxContinuations,
+      reason,
+      formatObjective: formatGoalObjectiveForSlack,
+    });
+    try {
+      const posted = await this.deps.postOwnerDm(activeGoal.createdBy, '⏳ Goal 계속 진행할까요?', blocks);
+      const ref = dmRefOf(posted);
+      if (ref && recordGoalCapDm(activeGoal, decisionId, ref) === 'recorded') this.persist();
+      return 'sent';
+    } catch (err: unknown) {
+      logger.warn('Failed to DM goal owner the cap decision — the dashboard card still asks', {
+        sessionKey,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return 'failed';
+    }
+  }
+
   /** One eval (+ maybe one continuation) for a settled session. */
   private async runOnce(sessionKey: string, cause: GoalLoopTrigger = 'turn'): Promise<void> {
     const { registry, logger } = this.deps;
@@ -389,6 +431,19 @@ export class GoalLoopController {
       return;
     }
     if (!session) return;
+    // .prd/39 A4 (X4) — the owner is being asked whether to keep going: no judge and no notice again. A round whose
+    // DM never landed sends that same round's DM; the dashboard card asks either way.
+    const capAsk = capAskOf(goal);
+    if (capAsk) {
+      if (!capAsk.dmRef && !this.deps.turnHeld(sessionKey) && goal) {
+        openGoalCapDecision(goal, this.now()); // a legacy round without an id gets one for its buttons
+        const dm = await this.postCapDecisionDm(sessionKey, session, goal, goal.lastEvalReason ?? '');
+        logger.info('Goal loop run — the cap question is open; its undelivered DM was sent again', { sessionKey, dm });
+      } else {
+        logger.info('Goal loop run skipped — the cap question is open', { sessionKey, cause });
+      }
+      return;
+    }
     const turnHeld = this.deps.turnHeld(sessionKey);
     if (!shouldRunGoalIdleDriver({ goal, turnHeld, ownerQuestionOpen: SessionOccupancy.ownerQuestionOpen(session) })) {
       // Held only by the turn: that turn (or its run's release) drives the loop again — never a judge beside it.
@@ -725,40 +780,9 @@ export class GoalLoopController {
         this.persist();
         this.deps.registry.broadcastSessionUpdate?.();
       }
-      const decisionId = activeGoal.capDecisionId as string;
-      // The DM goes out once per round: a round whose DM never landed (no ref)
-      // retries it on the next cap trigger (codex review #1).
-      let dmSent = false;
-      let dmFailed = false;
-      if (this.deps.postOwnerDm && !activeGoal.capDmRef) {
-        const blocks = buildCapDecisionDmBlocks({
-          value: {
-            sessionKey,
-            goalId: activeGoal.goalId,
-            channel: session.channelId,
-            threadTs: session.threadTs,
-            decisionId,
-          },
-          objective: activeGoal.objective,
-          maxContinuations: activeGoal.maxContinuations,
-          reason: verdict.reason,
-          formatObjective: formatGoalObjectiveForSlack,
-        });
-        try {
-          const posted = await this.deps.postOwnerDm(activeGoal.createdBy, '⏳ Goal 계속 진행할까요?', blocks);
-          dmSent = true;
-          const ref = dmRefOf(posted);
-          // The answer may have come from the dashboard while the post was in
-          // flight: a late DM is rewritten at once instead of offering buttons.
-          if (ref && recordGoalCapDm(activeGoal, decisionId, ref) === 'recorded') this.persist();
-        } catch (err: unknown) {
-          dmFailed = true;
-          logger.warn('Failed to DM goal owner the cap decision — the dashboard card still asks', {
-            sessionKey,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
-      }
+      const dm = await this.postCapDecisionDm(sessionKey, session, activeGoal, verdict.reason);
+      const dmSent = dm === 'sent';
+      const dmFailed = dm === 'failed';
       if (dmSent) {
         await this.postResultNotice(
           session,

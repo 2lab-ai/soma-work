@@ -29,6 +29,7 @@
  * still one Continue.
  */
 
+import { capAskOf } from '@soma/slack/goal/read';
 import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import { atomicWriteJson, readJsonWithBackup } from '@soma/common/atomic-json';
@@ -89,7 +90,7 @@ export const GOAL_CAP_DECISION_SUPERSEDED_TEXT =
 
 /** True while the goal waits on its owner's cap decision. */
 export function isGoalCapDecisionPending(goal: SessionGoal | undefined): goal is SessionGoal {
-  return !!goal && goal.status === 'active' && goal.capDmPendingAt !== undefined;
+  return capAskOf(goal) !== undefined;
 }
 
 /**
