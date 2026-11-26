@@ -442,7 +442,7 @@ describe('.prd/36 v2 — the lanes, one at a time', () => {
     );
   const { tqLaneHtml } = load<any>(['tqClock', 'tqDur', 'wqReason', 'tqLaneHtml'], {
     esc,
-    TQ_END: { done: '완료', cancelled: '취소', released: '돌려놓음' },
+    TQ_END: { done: '완료', cancelled: '취소', released: '차례 끝남' },
   });
 
   it('says how many run at once, what runs and waits now, and the history oldest first — each run after the last ended', () => {
@@ -451,13 +451,13 @@ describe('.prd/36 v2 — the lanes, one at a time', () => {
     expect(html).toContain('▶ 진행 중: third');
     expect(html).toContain('⏳ 대기 #1: &lt;b&gt;fourth&lt;/b&gt;');
     expect(html.indexOf('wq-1')).toBeLessThan(html.indexOf('wq-2'));
-    expect(html).toContain('돌려놓음');
+    expect(html).toContain('차례 끝남');
     expect(html).toContain('(2시간)');
   });
 
   it("why an entry left says it in the reader's words, as the board's section does (관리자, not admin:U9)", () => {
     const html = tqLaneHtml(lane);
-    expect(html).toContain('돌려놓음 <span class="tq-sub">관리자</span>');
+    expect(html).toContain('차례 끝남 <span class="tq-sub">관리자</span>');
     expect(html).not.toContain('admin:U9');
   });
 });
@@ -483,7 +483,7 @@ describe('the tab speaks the settings grammar (2026-11-26, owner: "ui마다 개�
     const esc = (v: unknown) => String(v);
     const { tqLaneHtml } = load<any>(['tqClock', 'tqDur', 'wqReason', 'tqLaneHtml'], {
       esc,
-      TQ_END: { done: '완료', cancelled: '취소', released: '돌려놓음' },
+      TQ_END: { done: '완료', cancelled: '취소', released: '차례 끝남' },
     });
     const html = tqLaneHtml({ id: 'qa-x', title: 'qa-x', capacity: 1, running: [], waiting: [], recent: [] });
     expect(html).toBe(

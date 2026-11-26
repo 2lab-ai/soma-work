@@ -123,6 +123,7 @@ import {
 } from './conversation';
 import { getArtifactStore } from './conversation/artifacts';
 import { setCodeChangesRefresher } from './conversation/code-changes-routes';
+import { setInstructionProgressListener } from './conversation/instruction-progress';
 import { setMailboxRoutesSessionOwner } from './conversation/mailbox-routes';
 import type { NewTaskAttachment } from './conversation/new-task';
 import { createNewTaskProvider, createSlackSteerUploader } from './conversation/new-task-provider';
@@ -1178,6 +1179,8 @@ async function start() {
       act: (request) => slackHandler.handleDashboardFollowupAction(request),
     });
     slackHandler.setFollowupChangeListener((sessionKey) => scheduleLiveSessionUpdate(sessionKey));
+    // #1466 — a dashboard send's stage moved (received, queued, starting, model received): its card goes to the panels.
+    setInstructionProgressListener((sessionKey) => scheduleLiveSessionUpdate(sessionKey));
 
     // Connect dashboard: model switch (SSOT 2026-10-22 T4/T5) — representative
     // models only; a context above the target's auto-compact threshold is
