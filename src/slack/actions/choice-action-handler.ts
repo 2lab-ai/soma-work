@@ -46,6 +46,8 @@ interface DashboardAnswerClaim {
   question: NonNullable<ConversationSession['actionPanel']>['pendingQuestion'];
   /** The `working` transition the claim made. */
   claimedAt: ConversationSession['activityStateChangedAt'];
+  /** #1474 — the question's open bit before the claim took it down: a give-back puts it back as it was. */
+  openBit: boolean | undefined;
 }
 
 /**
@@ -65,6 +67,26 @@ export function isAnswerableFromDashboard(
 ): boolean {
   if (session.activityState === 'waiting') return true;
   return (session.activityState ?? 'idle') === 'idle' && session.actionPanel?.pendingQuestion?.type === kind;
+}
+
+/**
+ * #1474 — an answer to the model's question is taken: the question stops being open NOW, before any of the
+ * answer's Slack writes. Those writes wait in the one Slack line, which on a busy host ran an hour behind (#1470).
+ * A turn that asked the question and ends meanwhile reads the open bit (`actionPanel.waitingForChoice`): left up,
+ * the turn ended `waiting`, its run settled `blocked: awaiting user choice`, the follow-up drain the answer joins
+ * was held behind a question that already had its answer, and the card read NEEDS YOU again. A question the model
+ * asks after this raises the bit again and still holds.
+ *
+ * The session reads `working` from here: its owner answered, and the answer is on its way to the model.
+ */
+export function markAnswerTaken(
+  claudeHandler: Pick<ClaudeHandler, 'setActivityStateByKey'>,
+  session: ConversationSession | undefined,
+  sessionKey: string,
+): void {
+  if (!session) return;
+  if (session.actionPanel) session.actionPanel.waitingForChoice = false;
+  if (session.activityState === 'waiting') claudeHandler.setActivityStateByKey(sessionKey, 'working');
 }
 
 /**
@@ -190,6 +212,8 @@ export class ChoiceActionHandler {
           return;
         }
         hold = { key: sessionKey, value: taken };
+        // #1474 — recorded before the Slack writes below: a turn ending while they wait reads it answered.
+        markAnswerTaken(this.ctx.claudeHandler, session, sessionKey);
       }
 
       if (branch === 'p3' && session && channel) {
@@ -214,7 +238,7 @@ export class ChoiceActionHandler {
           try {
             const say = this.createSayFn(channel);
             await this.ctx.messageHandler(
-              { user: userId, channel, thread_ts: threadTs, ts: messageTs, text: choiceId },
+              { user: userId, channel, thread_ts: threadTs, ts: messageTs, text: choiceId, questionAnswer: true },
               say,
             );
           } catch (handlerError) {
@@ -313,7 +337,7 @@ export class ChoiceActionHandler {
         try {
           const say = this.createSayFn(channel);
           await this.ctx.messageHandler(
-            { user: userId, channel, thread_ts: threadTs, ts: messageTs, text: choiceId },
+            { user: userId, channel, thread_ts: threadTs, ts: messageTs, text: choiceId, questionAnswer: true },
             say,
           );
         } catch (handlerError) {
@@ -514,6 +538,8 @@ export class ChoiceActionHandler {
       // submit returns, past its dispatch, though the form store entry is
       // deleted on the way. Another chunk of the same form still submits.
       const hold = session ? this.holdAnswer(sessionKey, session, formId) : undefined;
+      // #1474 — recorded before the submit's Slack writes: a turn ending while they wait reads it answered.
+      markAnswerTaken(this.ctx.claudeHandler, session, sessionKey);
       pendingForm.submitting = true;
       try {
         await this.submitMultiChoiceForm(body, pendingForm, sessionKey, channel, userId, messageTs);
@@ -658,6 +684,13 @@ export class ChoiceActionHandler {
       formId: pendingForm.formId,
       selections: pendingForm.selections,
     });
+    // #1474 — the form is answered: recorded before its Slack writes (markAnswerTaken). A typed answer that
+    // completes a form comes in here without a submit of its own (form-action-handler).
+    markAnswerTaken(
+      this.ctx.claudeHandler,
+      this.ctx.claudeHandler.getSessionByKey(pendingForm.sessionKey),
+      pendingForm.sessionKey,
+    );
 
     const responses = pendingForm.questions.map((q) => {
       const sel = pendingForm.selections[q.id];
@@ -729,7 +762,14 @@ export class ChoiceActionHandler {
       try {
         const say = this.createSayFn(channel);
         await this.ctx.messageHandler(
-          { user: userId, channel, thread_ts: resolvedThreadTs, ts: messageTs, text: combinedMessage },
+          {
+            user: userId,
+            channel,
+            thread_ts: resolvedThreadTs,
+            ts: messageTs,
+            text: combinedMessage,
+            questionAnswer: true,
+          },
           say,
         );
       } catch (handlerError) {
@@ -812,7 +852,14 @@ export class ChoiceActionHandler {
       try {
         const say = this.createSayFn(channel);
         await this.ctx.messageHandler(
-          { user: userId, channel, thread_ts: resolvedThreadTs, ts: messageTs, text: combinedMessage },
+          {
+            user: userId,
+            channel,
+            thread_ts: resolvedThreadTs,
+            ts: messageTs,
+            text: combinedMessage,
+            questionAnswer: true,
+          },
           say,
         );
       } catch (handlerError) {
@@ -965,6 +1012,8 @@ export class ChoiceActionHandler {
       if (answeredCount === totalCount) {
         // Held until the submit returns, as a form submit's chunk hold is.
         const hold = session ? this.holdAnswer(sessionKey, session, formId) : undefined;
+        // #1474 — recorded before the form's Slack writes (markAnswerTaken).
+        markAnswerTaken(this.ctx.claudeHandler, session, sessionKey);
         try {
           pendingForm.submitting = true;
           this.formStore.set(formId, pendingForm);
@@ -1195,6 +1244,7 @@ export class ChoiceActionHandler {
               thread_ts: threadTs,
               ts: String(Date.now() / 1000),
               text: turnText,
+              questionAnswer: true,
             },
             say,
           );
@@ -1290,7 +1340,14 @@ export class ChoiceActionHandler {
       // Send choiceId (or the direct input) as user message to Claude
       const say = this.createSayFn(channel);
       await this.ctx.messageHandler(
-        { user: turnUser, channel, thread_ts: threadTs, ts: String(Date.now() / 1000), text: turnText },
+        {
+          user: turnUser,
+          channel,
+          thread_ts: threadTs,
+          ts: String(Date.now() / 1000),
+          text: turnText,
+          questionAnswer: true,
+        },
         say,
       );
     } catch (error) {
@@ -1422,7 +1479,14 @@ export class ChoiceActionHandler {
             await this.afterP3Resolve(session, sessionKey, channel);
             const say = this.createSayFn(channel);
             await this.ctx.messageHandler(
-              { user: userId, channel, thread_ts: threadTs, ts: String(Date.now() / 1000), text: combinedMessage },
+              {
+                user: userId,
+                channel,
+                thread_ts: threadTs,
+                ts: String(Date.now() / 1000),
+                text: combinedMessage,
+                questionAnswer: true,
+              },
               say,
             );
           } catch (error) {
@@ -1521,7 +1585,14 @@ export class ChoiceActionHandler {
         // Send combined response to Claude
         const say = this.createSayFn(channel);
         await this.ctx.messageHandler(
-          { user: userId, channel, thread_ts: threadTs, ts: String(Date.now() / 1000), text: combinedMessage },
+          {
+            user: userId,
+            channel,
+            thread_ts: threadTs,
+            ts: String(Date.now() / 1000),
+            text: combinedMessage,
+            questionAnswer: true,
+          },
           say,
         );
       } catch (error) {
@@ -1550,8 +1621,16 @@ export class ChoiceActionHandler {
       });
       throw new Error('Session is not waiting for a choice');
     }
+    // #1474 — the question stops being open now, before the answer's Slack writes (markAnswerTaken).
+    const openBit = session.actionPanel?.waitingForChoice;
+    if (session.actionPanel) session.actionPanel.waitingForChoice = false;
     this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'working');
-    return { hold, question: session.actionPanel?.pendingQuestion, claimedAt: session.activityStateChangedAt };
+    return {
+      hold,
+      question: session.actionPanel?.pendingQuestion,
+      claimedAt: session.activityStateChangedAt,
+      openBit,
+    };
   }
 
   /**
@@ -1622,6 +1701,8 @@ export class ChoiceActionHandler {
     }
     try {
       if (panel && claim.question) panel.pendingQuestion = claim.question;
+      // The question is open again: a turn that ends from here reads it so (#1474).
+      if (panel && claim.openBit !== undefined) panel.waitingForChoice = claim.openBit;
       this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'waiting');
       this.ctx.claudeHandler.getSessionRegistry?.()?.persistAndBroadcast?.(sessionKey);
     } catch (rollbackError) {

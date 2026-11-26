@@ -15,6 +15,8 @@ export interface MessageEvent {
   thread_ts?: string;
   ts: string;
   text?: string;
+  /** #1474 — the owner's answer to a question the model asked (`pipeline/types.ts` MessageEvent.questionAnswer). */
+  questionAnswer?: true;
 }
 
 export type MessageHandler = (event: MessageEvent, say: SayFn) => Promise<void>;

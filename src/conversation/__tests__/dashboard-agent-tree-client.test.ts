@@ -194,6 +194,9 @@ const CARD_OF_FNS = [
   '_hashStr',
   'ownerBadgeHue',
   'isSiblingSession',
+  // #1474 — cardOf's status words: a turn still holding the session, an answer on its way to the model.
+  'turnHolds',
+  'answerAwaitsModel',
   'cardOf',
 ];
 const CARD_OF_VARS = [

@@ -5,7 +5,7 @@ import type { UserChoices } from '../../types';
 import type { SlackApiHelper } from '../slack-api-helper';
 import type { ThreadPanel } from '../thread-panel';
 import { UserChoiceHandler } from '../user-choice-handler';
-import type { ChoiceActionHandler } from './choice-action-handler';
+import { type ChoiceActionHandler, markAnswerTaken } from './choice-action-handler';
 import { classifyClick, markClickAsStale } from './click-classifier';
 import type { PendingFormStore } from './pending-form-store';
 import type { MessageHandler, SayFn } from './types';
@@ -206,6 +206,9 @@ export class FormActionHandler {
       return;
     }
 
+    // #1474 — recorded before the Slack writes below: a turn ending while they wait reads it answered.
+    markAnswerTaken(this.ctx.claudeHandler, session, sessionKey);
+
     if (branch === 'p3' && session && channel) {
       const resolved = await this.ctx.threadPanel
         ?.resolveChoice(session, sessionKey, channel, completedText, completedBlocks)
@@ -232,7 +235,7 @@ export class FormActionHandler {
         const say = this.createSayFn(channel);
         const resolvedThreadTs = this.resolveSessionThreadTs(sessionKey, threadTs);
         await this.ctx.messageHandler(
-          { user: userId, channel, thread_ts: resolvedThreadTs, ts: messageTs, text: inputValue },
+          { user: userId, channel, thread_ts: resolvedThreadTs, ts: messageTs, text: inputValue, questionAnswer: true },
           say,
         );
         return;
@@ -272,7 +275,7 @@ export class FormActionHandler {
       const say = this.createSayFn(channel);
       const resolvedThreadTs = this.resolveSessionThreadTs(sessionKey, threadTs);
       await this.ctx.messageHandler(
-        { user: userId, channel, thread_ts: resolvedThreadTs, ts: messageTs, text: inputValue },
+        { user: userId, channel, thread_ts: resolvedThreadTs, ts: messageTs, text: inputValue, questionAnswer: true },
         say,
       );
     }
