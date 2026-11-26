@@ -65,8 +65,8 @@ export { GOAL_SUMMARY_PERSIST_MAX };
 
 import { goalStallRollbackOffer, openGoalStall, trackGoalFirstFailure } from './goal-stall';
 import { advanceGoalQueue, formatGoalObjectiveForSlack } from './session-goal';
-import { SessionOccupancy } from './session-occupancy';
 import { announceSessionNotice, recordSessionNotice } from './session-notice';
+import { SessionOccupancy } from './session-occupancy';
 
 /** Default ceiling for a single completion eval before it is aborted. */
 const DEFAULT_GOAL_EVAL_TIMEOUT_MS = 120_000;

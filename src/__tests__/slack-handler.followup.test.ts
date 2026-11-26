@@ -22,6 +22,7 @@ import { parseFollowupQueueSnapshot } from '@soma/slack/followup-queue-store';
 import { getMetricsEmitter } from '../metrics/event-emitter';
 import { ChoiceActionHandler } from '../slack/actions/choice-action-handler';
 import { QueueHandler } from '../slack/commands/queue-handler';
+import { GoalLoopController } from '../slack/goal-loop-controller';
 import { ThreadSurface } from '../slack/thread-surface';
 import { SlackHandler } from '../slack-handler';
 import { userSettingsStore } from '../user-settings-store';
@@ -1460,6 +1461,73 @@ describe('SlackHandler — follow-up queue host', () => {
 
         expect(fired).toEqual([{ phase: 'settling', held: false }]);
         expect(registrySession.goalLastTurnText).toBe('재실행된 지시를 끝냈습니다');
+      });
+
+      /** The real loop controller on this handler: its gate asks the handler's occupancy (as `src/index.ts` wires it). */
+      function wireLoop() {
+        const judged: string[] = [];
+        const controller = new GoalLoopController({
+          registry: { getSessionByKey: () => registrySession, saveSessions: () => {} },
+          requestCoordinator: { isRequestActive: (key) => handlerAny.requestCoordinator.isRequestActive(key) },
+          turnHeld: (key) => handler.isTurnHeld(key),
+          holdForTurn: (key, cause) => handler.holdGoalDriverForTurn(key, cause),
+          dispatcher: async () => {
+            judged.push(handlerAny.occupancy.runPhase(SESSION_KEY));
+            return JSON.stringify({ completed: true, reason: 'done', remaining: [] });
+          },
+          injectContinuation: async () => undefined,
+          postNotice: async () => undefined,
+          logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+          fallbackModel: () => ({ model: 'claude-sonnet-4' }),
+        });
+        handler.setGoalTurnSettledHandler((key: string, opts?: { cause?: 'turn' | 'kick' }) =>
+          controller.onTurnSettled(key, opts),
+        );
+        return { controller, judged };
+      }
+
+      it('A23 (PR2): the loop starts judging at the turn end, while its run still settles on the slot', async () => {
+        registrySession.goal = {
+          goalId: 'g1',
+          status: 'active',
+          objective: '릴리즈',
+          epoch: 0,
+          continuationCount: 0,
+          maxContinuations: 10,
+        };
+        const { controller, judged } = wireLoop();
+        const { settle } = await startBusyTurn();
+        report('working');
+        report('idle');
+        handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, ['배포 확인까지 끝냈습니다']);
+        await controller.settled(SESSION_KEY);
+
+        expect(judged).toEqual(['settling']);
+        await settle();
+      });
+
+      it('A1 (PR2): a kick while a run prepares on the slot does not judge beside it; the run’s release drives it once', async () => {
+        registrySession.goal = {
+          goalId: 'g1',
+          status: 'active',
+          objective: '릴리즈',
+          epoch: 0,
+          continuationCount: 0,
+          maxContinuations: 10,
+        };
+        registrySession.goalLastTurnText = '이전 턴의 결과';
+        const { controller, judged } = wireLoop();
+        const { settle } = await startBusyTurn(); // the slot is held; no controller, no report yet — preparing
+        expect(handlerAny.occupancy.runPhase(SESSION_KEY)).toBe('preparing');
+
+        handlerAny.goalTurnSettledHandler(SESSION_KEY, { cause: 'kick' });
+        await controller.settled(SESSION_KEY);
+        expect(judged).toEqual([]);
+
+        // That run never started a turn (a command answered without one): its release drives the held kick.
+        await settle();
+        await controller.settled(SESSION_KEY);
+        expect(judged).toEqual(['none']);
       });
 
       it('A26: a follow-up queued at the goal turn end runs first; the driver fires once, after the queue drained', async () => {

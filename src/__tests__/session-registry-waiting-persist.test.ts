@@ -44,6 +44,9 @@ function askedQuestion(set: (r: SessionRegistry, state: 'working' | 'waiting' | 
   vi.setSystemTime(T0 + 1 * MINUTE);
   set(writer, 'working');
   vi.setSystemTime(T0 + 5 * MINUTE);
+  // The turn runtime records the question before it reports waiting (`StreamExecutor`); the load keeps a waiting
+  // session waiting only while its question is open (.prd/39 D3).
+  session.actionPanel = { waitingForChoice: true, pendingQuestion: { type: 'user_choice', question: '진행할까요?', choices: [] } } as any;
   set(writer, 'waiting');
   return writer;
 }

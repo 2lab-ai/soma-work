@@ -71,13 +71,13 @@ import { type ArchivedSession, getArchiveStore, type SessionLifecycleOutcome } f
 import { buildLegacySessionKey, buildWorkSessionKey, normalizeSessionKey } from './session-identity';
 import { getSessionLifecyclePolicy, idleSinceMs, isSessionLifecyclePolicyDegraded } from './session-lifecycle-policy';
 import { DEFAULT_AUTO_HANDOFF_BUDGET } from './slack/handoff-budget';
-import { SessionOccupancy } from './slack/session-occupancy';
 import {
   creditActiveGoalMs,
   migrateLegacyGoal,
   migrateLegacyGoalArray,
   stampActiveLegGoalOwner,
 } from './slack/session-goal-lifecycle';
+import { SessionOccupancy } from './slack/session-occupancy';
 import {
   applyPlanWrite,
   consumeEpicEvents,
@@ -4792,7 +4792,8 @@ export class SessionRegistry {
             sessionKey: derivedKey,
             title: serialized.title,
             workflow: serialized.workflow,
-            shouldAutoResume: (resumeOnBoot = !sleptOnLoad && serialized.wasWorkingAtShutdown === true && !personStopped),
+            shouldAutoResume: (resumeOnBoot =
+              !sleptOnLoad && serialized.wasWorkingAtShutdown === true && !personStopped),
             ...(stoppedAgents.length > 0 ? { stoppedAgents } : {}),
           });
         } else if (!sleptOnLoad && serialized.activityState && serialized.activityState !== 'idle') {
