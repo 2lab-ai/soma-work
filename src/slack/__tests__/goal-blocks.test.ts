@@ -68,14 +68,17 @@ describe('buildGoalStatusBlocks (S1)', () => {
     expect(ids).toContain(`${GOAL_DELETE_ACTION_PREFIX}goal-2`);
     expect(ids).toContain(`${GOAL_UPDATE_ACTION_PREFIX}goal-2`);
 
-    // each button's value decodes to the goal it controls
+    // each button's value decodes to the goal it controls, and the place its line was shown (.prd/39 D12, X14)
     const firstDelete = actionRows[0].elements.find((e: any) => e.action_id.startsWith(GOAL_DELETE_ACTION_PREFIX));
     expect(decodeGoalActionValue(firstDelete.value)).toEqual({
       sessionKey: 'C1:T1',
       goalId: 'goal-1',
       channel: 'C1',
       threadTs: 'T1',
+      place: 'current',
     });
+    const queuedDelete = actionRows[1].elements.find((e: any) => e.action_id.startsWith(GOAL_DELETE_ACTION_PREFIX));
+    expect(decodeGoalActionValue(queuedDelete.value)?.place).toBe('queued');
   });
 
   it('does NOT render buttons for completed history rows', () => {
