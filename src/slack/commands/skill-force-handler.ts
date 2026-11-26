@@ -336,6 +336,22 @@ export class SkillForceHandler implements CommandHandler {
   }
 
   /**
+   * Does `token` — one `$skill`, `$plugin:skill` or `$<user>:skill` — name a skill that exists for `userId`? Read-only:
+   * nothing is posted, asked, granted or run. Unlike {@link canHandle}, a qualified token must resolve to a SKILL.md
+   * on disk (so `$REDIS_HOST:6379` in prose is no skill), and an ambiguous bare name is none. The dashboard goal
+   * composer splits an objective only on such a token (`CommandRouter.splitGoalSkill`).
+   */
+  skillExists(token: string, userId?: string): boolean {
+    const { refs, ambiguous } = this.collectTopLevelRefs(token.trim(), userId);
+    if (ambiguous.length > 0 || refs.length !== 1) return false;
+    try {
+      return fs.existsSync(this.resolveSkillPath(refs[0], userId));
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * #1304 — may a model's RUN_ENV_SKILL hand `text` (`$<env>:<skill> …`) to an environment user? Read-only: the same
    * top-level resolution {@link execute} applies, and nothing is posted, asked, granted or run. Accepted only when the
    * message names exactly one skill, it is an existing skill of an environment user other than `user`, and the message

@@ -112,7 +112,7 @@ describe('#1074 T2 — one entry per artifact, its latest version, with the vers
       artLatestOnly(list: Art[]): Art[];
       artVersionLabel(a: Art): string;
       artFileItem(cid: string, a: Art): Record<string, unknown>;
-      renderPanelArtifacts(list: Art[], cid: string, variant?: string): string;
+      renderPanelArtifacts(list: Art[], cid: string): string;
       renderCardArtifacts(s: unknown): string;
       renderTurnArtifacts(list: Art[], cid: string, startTs: number, endTs: number): string;
     }>(
@@ -154,7 +154,7 @@ describe('#1074 T2 — one entry per artifact, its latest version, with the vers
   });
 
   it('the panel strip lists the report once (its version 2, with its pill) and counts artifacts, not uploads', () => {
-    const out = api().renderPanelArtifacts([v1, png, v2], 'c', 'chip');
+    const out = api().renderPanelArtifacts([v1, png, v2], 'c');
     expect(out).toContain('<span class="art-count">2</span>');
     expect(out).toContain('data-art-id="R2"');
     expect(out).not.toContain('data-art-id="R1"');

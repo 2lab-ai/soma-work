@@ -390,3 +390,205 @@ describe('qa-report build.mjs — preconditions first', { timeout: 30_000 }, () 
     expect(run.stderr).toContain('preconditions for keys with no row: PROJ-9');
   });
 });
+
+describe('qa-report build.mjs — the first screen is a summary picture', () => {
+  const failCase = (id: string) => ({ ...evidenceCase(id, `data:image/png;base64,${PNG_B64}`), status: 'fail' });
+  const mixed = (meta: Record<string, unknown> = {}) => ({
+    meta: {
+      repo: 'acme/app',
+      target: 'deploy/staging',
+      range: 'a1b2c3d..e4f5a6b',
+      generatedAt: '2026-10-30T01:00:00Z',
+      ...meta,
+    },
+    issues: [
+      passIssue('PROJ-1', true),
+      {
+        ...passIssue('PROJ-2', true),
+        verdict: 'fail',
+        cases: [failCase('QA-1'), evidenceCase('QA-2', `data:image/png;base64,${PNG_B64}`)],
+      },
+    ],
+    links: { 'PROJ-1': { commits: [{ repo: 'acme/app', sha: 'a1b2c3d4e5f6' }] } },
+    nonQa: [{ key: 'PROJ-3', status: 'deferred', reason: 'open PR' }],
+    outcomes: {
+      'PROJ-1': { outcome: 'pass', reason: '' },
+      'PROJ-2': { outcome: 'fail', reason: 'the page does not render' },
+      'PROJ-3': { outcome: 'deferred', reason: 'open PR' },
+    },
+  });
+
+  it('leads with the summary: verdict band, a conclusion sentence, big numbers and bars, before any table or row', () => {
+    const { run, out } = build(mixed());
+    expect(run.status, run.stderr).toBe(0);
+    const { left } = runReport(readFileSync(out, 'utf8'));
+    const exec = left.indexOf('<section id="exec"');
+    expect(exec).toBeGreaterThan(left.indexOf('<h1>'));
+    expect(exec).toBeLessThan(left.indexOf('class="kpis"'));
+    expect(exec).toBeLessThan(left.indexOf('class="row '));
+    expect(left).toMatch(/<div class="vband bad">[^<]*1 of 3 issues passed QA/);
+    expect(left).toContain('<p class="headline">3 issues in scope: 1 passed, 1 failed and 1 not finished.</p>');
+    expect(left.match(/<div class="big"><b>/g)?.length).toBeGreaterThanOrEqual(3);
+    expect(left).toContain('<b>2/3</b>');
+    // one outcome bar for the issues, one case bar per QA'd issue
+    expect(left).toMatch(/<div class="obar">(<i class="(ok|bad|warn)" style="width:[\d.]+%"[^>]*><\/i>){3}<\/div>/);
+    expect(left).toMatch(
+      /data-k="PROJ-2"[^>]*><span class="ik">PROJ-2<\/span><span class="cbar"><i class="ok" style="width:50%"><\/i><i class="bad" style="width:50%"><\/i>/,
+    );
+  });
+
+  it('uses the caller headline when given, and marks raw provenance (range, time, commits, verdict lines) as data-raw', () => {
+    const { run, out } = build(mixed({ headline: 'One issue still fails on the order page.' }));
+    expect(run.status, run.stderr).toBe(0);
+    const { left } = runReport(readFileSync(out, 'utf8'));
+    expect(left).toContain('<p class="headline">One issue still fails on the order page.</p>');
+    expect(left).toMatch(/<div class="sub" data-raw="provenance">[^<]*a1b2c3d\.\.e4f5a6b/);
+    expect(left).toMatch(/<span class="links" data-raw="links">/);
+    expect(left).toMatch(/<div class="meta" data-raw="verdict">qa-issue verdict pass/);
+  });
+
+  it('lang=ko renders the summary, the status tags and the hint in Korean; the counts stay the same', () => {
+    const { run, out } = build(mixed({ lang: 'ko' }));
+    expect(run.status, run.stderr).toBe(0);
+    expect(JSON.parse(run.stdout)).toMatchObject({ keys: 3, pass: 1, fail: 1, other: 1 });
+    const { left, right } = runReport(readFileSync(out, 'utf8'));
+    expect(left).toMatch(/<div class="vband bad">[^<]*이슈 3개 중 1개 QA 통과/);
+    expect(left).toContain(
+      '<p class="headline">이번 범위의 이슈 3개 중 1개 통과, 1개 실패, 1개는 끝나지 않았습니다.</p>',
+    );
+    expect(row(left, 'PROJ-1')).toEqual({ cls: 'ok', status: '통과' });
+    expect(row(left, 'PROJ-2')).toEqual({ cls: 'bad', status: '실패' });
+    expect(row(left, 'PROJ-3')).toEqual({ cls: 'warn', status: '보류' });
+    expect(left).toContain('줄을 누르면 오른쪽에 증거가 나옵니다');
+    expect(right).toContain('<span class="tag bad">실패</span>');
+  });
+
+  it('names what a person must do: open preconditions and failed issues', () => {
+    const input = mixed();
+    (input as Record<string, unknown>).preconditions = [
+      {
+        key: 'PROJ-3',
+        id: 'P1',
+        kind: 'account',
+        need: 'a test account',
+        cases: ['QA-1'],
+        status: 'missing',
+        decision: 'pending',
+      },
+    ];
+    const { run, out } = build(input);
+    expect(run.status, run.stderr).toBe(0);
+    const { left } = runReport(readFileSync(out, 'utf8'));
+    expect(left).toMatch(
+      /<ol class="todo"><li>Answer 1 open precondition[^<]*<\/li><li>Fix 1 failed issue: PROJ-2<\/li><\/ol>/,
+    );
+  });
+
+  it('nothing ran: the sentence says no case ran, open preconditions are drawn as bars by kind, and a long gap table is folded', () => {
+    const keys = ['PROJ-1', 'PROJ-2', 'PROJ-3', 'PROJ-4'];
+    const kinds = [
+      'write-permission',
+      'write-permission',
+      'account',
+      'test-data',
+      'write-permission',
+      'account',
+      'test-data',
+    ];
+    const { run, out } = build({
+      meta: { lang: 'ko', status: 'deployed, QA incomplete: waiting for precondition confirmation' },
+      issues: [],
+      nonQa: keys.map((key) => ({ key, status: 'not-run', reason: 'waiting for precondition confirmation' })),
+      outcomes: Object.fromEntries(keys.map((k) => [k, { outcome: 'not-run', reason: 'waiting' }])),
+      preconditions: kinds.map((kind, i) => ({
+        key: keys[i % 4],
+        id: `P${i + 1}`,
+        kind,
+        need: 'x',
+        cases: ['QA-1'],
+        status: 'missing',
+        decision: 'pending',
+      })),
+    });
+    expect(run.status, run.stderr).toBe(0);
+    const { left } = runReport(readFileSync(out, 'utf8'));
+    expect(left).toContain(
+      '<p class="headline">이번 범위의 이슈 4개 중 0개 통과, 0개 실패, 4개는 끝나지 않았습니다. 케이스는 하나도 실행되지 않았습니다. 없는 준비물 7개가 답을 기다립니다.</p>',
+    );
+    expect(left).toMatch(
+      /<div class="wrow"><span class="wk">쓰기 권한<\/span><span class="wbar"><i class="warn" style="width:100%"><\/i><\/span><span class="in">3<\/span>/,
+    );
+    expect(left.indexOf('쓰기 권한')).toBeLessThan(left.indexOf('>계정<'));
+    expect(left).toMatch(/<details class="pret"><summary>[^<]*7[^<]*<\/summary><table>/);
+    expect(left).toContain('<th>막는 케이스</th>');
+  });
+
+  it('a precondition the requester already decided (waived, provided, skipped) is not asked again', () => {
+    const pre = (id: string, decision: string) => ({
+      key: 'PROJ-3',
+      id,
+      kind: 'account',
+      need: 'a test account',
+      cases: ['QA-1'],
+      status: 'missing',
+      decision,
+      confirmedBy: 'U1',
+    });
+    const en = mixed();
+    (en as Record<string, unknown>).preconditions = [pre('P1', 'waived'), pre('P2', 'provided'), pre('P3', 'skipped')];
+    const a = build(en);
+    expect(a.run.status, a.run.stderr).toBe(0);
+    const left = runReport(readFileSync(a.out, 'utf8')).left;
+    expect(left).not.toContain('Answer ');
+    expect(left).not.toContain('await an answer');
+    expect(left).toMatch(/<ol class="todo"><li>Fix 1 failed issue: PROJ-2<\/li><\/ol>/);
+    // still missing, so the band and the big number keep counting them
+    expect(left).toMatch(/<div class="vband bad">[^<]*3 preconditions open/);
+
+    const ko = mixed({ lang: 'ko' });
+    (ko as Record<string, unknown>).preconditions = [pre('P1', 'waived'), pre('P2', 'pending')];
+    const b = build(ko);
+    expect(b.run.status, b.run.stderr).toBe(0);
+    const kl = runReport(readFileSync(b.out, 'utf8')).left;
+    expect(kl).toContain('없는 준비물 1개가 답을 기다립니다.');
+    expect(kl).toContain('<li>없는 준비물 1개에 답하기');
+  });
+
+  it('a precondition without a kind, or with a kind named like a built-in property, still renders', () => {
+    const input = mixed();
+    (input as Record<string, unknown>).preconditions = [
+      { key: 'PROJ-3', id: 'P1', need: 'x', cases: ['QA-1'], status: 'missing', decision: 'pending' },
+      { key: 'PROJ-3', id: 'P2', kind: 'toString', need: 'x', cases: ['QA-1'], status: 'missing', decision: 'pending' },
+      {
+        key: 'PROJ-3',
+        id: 'P3',
+        kind: 'constructor',
+        need: 'x',
+        cases: ['QA-1'],
+        status: 'missing',
+        decision: 'pending',
+      },
+    ];
+    const { run, out } = build(input);
+    expect(run.status, run.stderr).toBe(0);
+    const { left } = runReport(readFileSync(out, 'utf8'));
+    expect(left).toContain('<section id="exec"');
+    expect(left).not.toContain('undefined');
+    expect(left).not.toContain('NaN');
+    expect(left).not.toContain('native code');
+    expect(left).toMatch(/<div class="wrow"><span class="wk">\?<\/span>/);
+    expect(left).toMatch(/<div class="wrow"><span class="wk">toString<\/span>/);
+    expect(left).toMatch(/<div class="wrow"><span class="wk">constructor<\/span>[\s\S]*?<span class="in">1<\/span>/);
+  });
+
+  it('QA ran but returned no case: the sentence does not claim that no case ran', () => {
+    const input = mixed();
+    (input as Record<string, unknown>).issues = [{ ...passIssue('PROJ-1', true), cases: [] }];
+    delete (input.outcomes as Record<string, unknown>)['PROJ-2'];
+    const { run, out } = build(input);
+    expect(run.status, run.stderr).toBe(0);
+    const { left } = runReport(readFileSync(out, 'utf8'));
+    expect(left).not.toContain('No case ran.');
+    expect(left).toContain('No case results came back.');
+  });
+});
