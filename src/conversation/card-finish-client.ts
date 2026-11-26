@@ -61,6 +61,14 @@ var CARD_FINISH_CARD_CSS = [
   '    color-mix(in srgb, var(--finish-sheen-5) var(--finish-sheen-a), transparent) 100%);',
   '}',
   'li.ib-card[data-status="idle"] { --finish-base: var(--ib-card-dim); --finish-sheen-a: var(--finish-sheen-a-idle); }',
+  // @2lab.ai/ui 0.48.0 — a card past one core (data-load-step) wears the CPU badge's red tint and ring, which the
+  // finish rules would paint over. A hot card feeds them into the finish's inputs instead: its surface (the foil's base
+  // layer too) takes the tint, the bright edge the ring; the foil edge stays the model's mark. Inputs, not a stronger
+  // selector, so the element's cues (NEEDS YOU, the epic family) still win.
+  'li.ib-card[data-load-step] { --finish-base: color-mix(in srgb, var(--ib-heat) var(--ib-heat-tint, 5%), var(--ib-card));'
+    + ' --finish-bright: color-mix(in srgb, var(--ib-heat) var(--ib-heat-ring, 35%), var(--ib-card-border));'
+    + ' --finish-bright-hover: color-mix(in srgb, var(--ib-heat) var(--ib-heat-ring, 35%), var(--ib-card-border));'
+    + ' --finish-bright-idle: color-mix(in srgb, var(--ib-heat) var(--ib-heat-ring, 35%), var(--ib-card-border)); }',
 ].join('\n');
 // Each finish's rules; & is the finished cards' selector. Hover only where a pointer hovers (the element's rule).
 var CARD_FINISH_RULES = {

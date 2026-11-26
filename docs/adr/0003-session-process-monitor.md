@@ -113,7 +113,9 @@ same snapshot, and work will be placed by each node's free CPU and memory.
    the task's CPU; its look since 0.48.0): a red tint and a red ring, a thin hatched underline along its bottom edge,
    and the node pill as the badge's solid red segment — a step stronger past 2, 4 and 8 cores (deeper tint and ring, a
    thicker underline, the hatch drifting from 4). The first look, thick hazard bands on both edges and a glow, read as
-   tape on the card and went the same day. A card is pushed again only when a gauge crosses a step,
+   tape on the card and went the same day. A card's model finish (the bright
+   or foil edge, `card-finish-client.ts`) keeps the heat: a hot card feeds the tint and the ring into the finish's own
+   inputs, so the foil keeps its edge and the NEEDS YOU and epic cues still win. A card is pushed again only when a gauge crosses a step,
    the level changes or the stripes step; the node's own load is not on the card (the 프로세스 tab's node line has it).
    In the 프로세스 tab each CPU and memory cell is one badge (Task Manager's heat map): its fill is its share of one
    core (memory: of the tree's largest process); past one core it is red with ▲ and its core count as a solid second
