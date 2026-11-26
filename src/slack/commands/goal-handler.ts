@@ -1,3 +1,4 @@
+import { reopenStoppedGoal } from '@soma/slack/goal/machine';
 import { capAskOf, placeOf, slotGoalInFlight, slotHoldOf } from '@soma/slack/goal/read';
 import { Logger } from '../../logger';
 import { validateSessionGoalObjective } from '../../prompt/session-goal-block';
@@ -349,6 +350,16 @@ export class GoalHandler implements CommandHandler {
 
     if (index === undefined && current?.status === 'active' && current.stall) {
       return this.resumeStalledGoal(channel, threadTs, session, current);
+    }
+    // .prd/39 D8 · D12 — a stopped goal (judge-failed, start-failed, resume-failed, person-stopped) runs again.
+    if (index === undefined && current && reopenStoppedGoal(current)) {
+      this.persistGoalChange(session, { drive: 'kick' });
+      await this.deps.slackApi.postSystemMessage(
+        channel,
+        `▶️ The current goal had stopped — it runs again: ${formatGoalObjectiveForSlack(current.objective)}`,
+        { threadTs },
+      );
+      return { handled: true };
     }
     // .prd/39 D12 (X16) — a goal asking the cap question goes on the way the question's ✅ does: its budget back, the
     // question closed (DM rewritten), the loop driven. It used to answer "already running".

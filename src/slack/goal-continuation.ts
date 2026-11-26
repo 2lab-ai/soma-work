@@ -29,7 +29,7 @@ export const GOAL_SUMMARY_PERSIST_MAX = 16_000;
  */
 export { bumpEpoch as bumpGoalEpoch } from '@soma/slack/goal/machine';
 
-import { bumpEpoch as bumpGoalEpoch } from '@soma/slack/goal/machine';
+import { bumpEpoch as bumpGoalEpoch, reopenStoppedGoal } from '@soma/slack/goal/machine';
 
 /**
  * Reset loop state when a real user message arrives. Mirrors codex
@@ -65,6 +65,9 @@ export function resetGoalContinuationOnUserMessage(session: { goal?: Conversatio
   session.goal.evalDispatchRetryCount = undefined;
   session.goal.evalBackoffUntil = undefined;
   session.goal.evalRetryReason = undefined;
+  // .prd/39 S3 · D8 — the person's word opens a stopped goal again (judge-failed, start-failed, resume-failed,
+  // person-stopped): their turn runs and its end drives the loop.
+  reopenStoppedGoal(session.goal);
   // Invalidate any in-flight completion eval — the user just weighed in, so
   // a verdict about the pre-message work must not apply (M1).
   bumpGoalEpoch(session.goal);

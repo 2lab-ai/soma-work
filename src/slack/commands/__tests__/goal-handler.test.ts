@@ -681,3 +681,18 @@ describe('GoalHandler — goal resume on a goal asking the cap question (X16)', 
     expect(posted).not.toContain('already running');
   });
 });
+
+/** .prd/39 D8 · D12 — `goal resume` opens a stopped goal again and drives it. */
+describe('GoalHandler — goal resume on a stopped goal', () => {
+  it('clears stopped and kicks the loop', async () => {
+    const session = makeSession({
+      goal: activeGoalAt({ continuationCount: 2, phase: { kind: 'stopped', why: 'judge-failed', at: 5 } }),
+    });
+    vi.mocked(resumeGoalLoop).mockClear();
+
+    await new GoalHandler(makeDeps(session)).execute(makeCtx({ text: 'goal resume' }));
+
+    expect(session.goal?.phase).toBeUndefined();
+    expect(resumeGoalLoop).toHaveBeenCalledTimes(1);
+  });
+});
