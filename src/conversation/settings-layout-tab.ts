@@ -39,9 +39,9 @@ export const LAYOUT_TAB_HTML = `<div slot="layout" data-tab="layout" class="page
           <option value="theme">서버 슬랙 테마</option>
         </select></label>
         <div class="lay-field lay-quick"><span>한 번에</span><span class="lay-quick-btns" role="group" aria-label="모든 화면을 한 안으로">
-          <button type="button" class="ui-btn is-sm" data-lay="quick" data-v="1">1안</button>
-          <button type="button" class="ui-btn is-sm" data-lay="quick" data-v="2">2안</button>
-          <button type="button" class="ui-btn is-sm" data-lay="quick" data-v="3">3안</button>
+          <button type="button" class="btn" data-lay="quick" data-v="1">1안</button>
+          <button type="button" class="btn" data-lay="quick" data-v="2">2안</button>
+          <button type="button" class="btn" data-lay="quick" data-v="3">3안</button>
         </span></div>
       </div>
     </section>
@@ -65,8 +65,8 @@ export const LAYOUT_TAB_HTML = `<div slot="layout" data-tab="layout" class="page
       <span class="lay-badge" id="lay-badge" hidden>수정됨</span>
       <span class="lay-spacer"></span>
       <span class="status" id="lay-status" role="status" aria-live="polite"></span>
-      <button type="button" class="ui-btn is-sm" data-lay="undo" id="lay-undo" disabled title="되돌리기 (⌘/Ctrl+Z)">되돌리기</button>
-      <button type="button" class="ui-btn is-sm" data-lay="reset" id="lay-reset">이 화면 기본값으로</button>
+      <button type="button" class="btn" data-lay="undo" id="lay-undo" disabled title="되돌리기 (⌘/Ctrl+Z)">되돌리기</button>
+      <button type="button" class="btn" data-lay="reset" id="lay-reset">이 화면 기본값으로</button>
     </div>
     <fieldset class="seg lay-surfaces" id="lay-surface"><legend>화면</legend></fieldset>
     <div class="lay-split">
@@ -82,7 +82,8 @@ export const LAYOUT_TAB_HTML = `<div slot="layout" data-tab="layout" class="page
 </div>`;
 
 export const LAYOUT_TAB_CSS = String.raw`
-.lay-page { grid-template-columns: minmax(0, 1fr); max-width: 1240px; }
+/* One column, the page's own width (.page) — under the tab bar like every other tab. */
+.lay-page { grid-template-columns: minmax(0, 1fr); }
 .lay-defaults .lay-def-body { display: flex; flex-wrap: wrap; gap: 12px 20px; padding: 12px 16px 14px; align-items: flex-end; }
 .lay-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-secondary); min-width: 180px; }
 .lay-field select { min-width: 180px; }

@@ -31,3 +31,21 @@ describe('detail panel — the bar speaks like the section tabs under it', () =>
     expect(decl(rule('.panel-midbar'), 'padding')).toBe(decl(rule('.panel-sections::part(list)'), 'padding'));
   });
 });
+
+describe('detail panel — its head buttons are the kit buttons beside them', () => {
+  // The head's 중지 · 되돌리기 모드 are <ui-status-bar> buttons; the answer's 복사 under them is a kit button. Measured on
+  // dev 2026-11-26 (@2lab.ai/ui 0.51): 30px · 12.5px next to 32px · 13px. @2lab.ai/ui 0.52 draws the bar's buttons at
+  // the kit button size; this reads the shipped library so a version that drifts again fails here.
+  const UI = join(__dirname, '..', '..', '..', 'node_modules', '@2lab.ai', 'ui', 'dist');
+  const block = (css: string, sel: string) => {
+    const at = css.indexOf(`\n${sel} {`);
+    if (at < 0) throw new Error(`${sel} not found`);
+    return css.slice(at, css.indexOf('}', at));
+  };
+  it('the status bar’s .sb-btn has .ui-btn’s height, padding and type', () => {
+    const bar = block(readFileSync(join(UI, 'status-bar.js'), 'utf-8'), '.sb-btn');
+    const kit = block(readFileSync(join(UI, 'ui-kit.css'), 'utf-8'), '.ui-btn');
+    for (const prop of ['min-height', 'padding', 'font-size', 'font-weight', 'border-radius'])
+      expect(decl(bar, prop), prop).toBe(decl(kit, prop));
+  });
+});

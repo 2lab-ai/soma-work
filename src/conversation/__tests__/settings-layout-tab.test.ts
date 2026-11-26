@@ -23,7 +23,7 @@ import {
   threadCardLines,
   threadLines,
 } from '../../view-layout';
-import { LAYOUT_CLIENT_JS, LAYOUT_TAB_HTML } from '../settings-layout-tab';
+import { LAYOUT_CLIENT_JS, LAYOUT_TAB_CSS, LAYOUT_TAB_HTML } from '../settings-layout-tab';
 import { renderSettingsPage } from '../settings-page';
 import { VIEW_LAYOUT_CLIENT_JS } from '../view-layout-client';
 
@@ -953,5 +953,22 @@ describe('E14 — places are ordered by the server’s revision (PR review round
     // A newer one is taken and published.
     expect(api.get("layPlaceAccept({ side: 'right', locked: true, rev: 6 })")).toBe(true);
     expect(JSON.parse(stored['soma-view-layout']).panel).toEqual({ side: 'right', locked: true, rev: 6 });
+  });
+});
+
+describe('E0 — the tab speaks the settings page, not its own size', () => {
+  // Measured on dev 2026-11-26 (1440 px): this tab ran 120–1320 px under a 200–1240 px tab bar, and its 1안 · 2안 · 3안,
+  // 되돌리기 and 이 화면 기본값으로 were 28 px · 12.5 px kit buttons beside 34 px selects — every other tab's buttons are
+  // the page's .btn (34 px · 13 px).
+  it('keeps the page column (no wider max-width of its own)', () => {
+    expect(LAYOUT_TAB_CSS).not.toMatch(/\.lay-page \{[^}]*max-width/);
+  });
+
+  it('its form and toolbar buttons are the page buttons', () => {
+    const pick = [...LAYOUT_TAB_HTML.matchAll(/<button [^>]*>/g)]
+      .map((m) => m[0])
+      .filter((b) => /data-lay="(quick|undo|reset)"/.test(b));
+    expect(pick.length).toBe(5);
+    for (const b of pick) expect(b.match(/class="([^"]*)"/)?.[1], b).toBe('btn');
   });
 });
