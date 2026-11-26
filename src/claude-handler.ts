@@ -1699,8 +1699,11 @@ export class ClaudeHandler implements TurnSteeringPort {
       };
       /** Frames the read-ahead has seen; the loop has caught up when it has processed as many (`frameSeq`). */
       let arrivedFrames = 0;
-      /** #1472 — steers the CLI has handed to the model (their read receipt): they opened or joined a turn. */
-      const readSteers = new Set<string>();
+      /**
+       * #1472 — steers the CLI has handed to the model (their read receipt), by the sequence number of that receipt.
+       * A read steer opened or joined a turn; that turn is over once a result after the receipt has been handled.
+       */
+      const readSteers = new Map<string, number>();
       const frames = pumpFrames(queryFrames(activeQuery), (frame) => {
         arrivedFrames += 1;
         const raw = frame as unknown as Record<string, unknown>;
@@ -1714,7 +1717,8 @@ export class ClaudeHandler implements TurnSteeringPort {
         const uuid = raw.command_uuid;
         // The opening message is reported the same way: only a steer counts.
         if (typeof uuid === 'string' && channel.pushedUuids().includes(uuid)) {
-          readSteers.add(uuid);
+          // `arrivedFrames` already counts this receipt: it is the receipt's own sequence number.
+          readSteers.set(uuid, arrivedFrames);
           this.steerSignals?.read(steerKey, uuid);
         }
       });
@@ -1952,9 +1956,13 @@ export class ClaudeHandler implements TurnSteeringPort {
           turnRunning() ||
           arrivedFrames !== frameSeq ||
           resultTransit.inTransit > 0 ||
-          // A steer pushed but not read yet opens (or joins) a turn the CLI has not started: wait for it. A steer the
-          // SDK gave back opens none.
-          channel.pushedUuids().some((uuid) => !readSteers.has(uuid) && !withdrawnSteers.has(uuid))
+          // A steer pushed but not answered yet: not read (its turn has not started), or read but no result handled
+          // since (its turn runs, even before its `init` is handled). A steer the SDK gave back opens none.
+          channel.pushedUuids().some((uuid) => {
+            if (withdrawnSteers.has(uuid)) return false;
+            const readAt = readSteers.get(uuid);
+            return readAt === undefined || lastResultSeq < readAt;
+          })
         ) {
           holdReleaseAsked = true;
           return false;

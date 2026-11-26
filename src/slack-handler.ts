@@ -6525,6 +6525,8 @@ export class SlackHandler {
     }
     const result = queue.editQueued(request.sessionKey, request.itemId, request.epoch, text);
     if (!result.ok) return { ok: false, status: 409, message: SlackHandler.dashboardEditRefusal(result.reason, item) };
+    // #1472 — an edit can turn the head of the line into a command: the held turn asks its gate again.
+    this.claudeHandler.requestHoldRelease?.(this.canonicalFollowupKey(request.sessionKey));
     await this.refreshFollowupSurface(request.sessionKey);
     return { ok: true };
   }

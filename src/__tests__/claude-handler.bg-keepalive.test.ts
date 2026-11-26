@@ -3376,6 +3376,61 @@ describe('ClaudeHandler — a held run yields to a waiting command (#1472)', () 
     }
   });
 
+  it('a steer read but whose turn has not been handled yet keeps the hold until its result', async () => {
+    const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const held = deferred();
+      const read = deferred();
+      const openTurn = deferred();
+      installScriptedQuery(cli, async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield* openingTurnHead([agentTask(AGENT_ID)]);
+        yield openingResult(cli.opening?.uuid);
+        const drained = drainInputs(inputs, cli);
+        held.resolve();
+        await read.promise;
+        // The CLI hands the steer to the model; its turn's `init` has not come yet.
+        yield { type: 'command_lifecycle', command_uuid: 'u-plain', state: 'started' };
+        await openTurn.promise;
+        yield INIT;
+        yield assistantText('ANSWERED');
+        yield successResult({ result: 'ANSWERED', num_turns: 1, uuid: 'answer-uuid', user_message_uuid: 'u-plain' });
+        await drained;
+        yield taskNotification(AGENT_ID, 'stopped');
+        yield level([]);
+        yield INIT;
+        yield assistantText('REPORTED');
+        yield notifiedResult({ result: 'REPORTED' });
+      });
+      let waiting = false;
+      const handler = newHandler();
+      handler.setHoldReleaseGate(() => waiting);
+
+      const framesPromise = collect(startTurn(handler));
+      await held.promise;
+      await hostCaughtUp();
+      expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-plain', text: '이것도 봐줘' })).toBe(true);
+      read.resolve();
+      await hostCaughtUp();
+
+      // Read, caught up, a command waits — but the steer's turn is about to open: nothing is cut.
+      waiting = true;
+      handler.requestHoldRelease(SESSION_KEY);
+      await hostCaughtUp();
+      expect(cli.stopTask).not.toHaveBeenCalled();
+      expect(cli.inputEnded).toBe(false);
+
+      openTurn.resolve();
+      const frames = await framesPromise;
+      expect(cli.stopTask).toHaveBeenCalledWith(AGENT_ID);
+      expect(callsOf(info, YIELD_LOG)).toHaveLength(1);
+      expect(resultsOf(frames).length).toBeGreaterThanOrEqual(1);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
   it('a request for another session changes nothing', async () => {
     const cli = newFakeCli();
     const agent = installHeldAgent(cli);

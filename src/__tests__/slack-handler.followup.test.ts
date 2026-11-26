@@ -4105,6 +4105,21 @@ describe('SlackHandler — follow-up queue host', () => {
         text: '$autoz 이거 고쳐서 해줘',
       });
       expect(claudeHandler.requestHoldRelease).toHaveBeenCalledWith(SESSION_KEY);
+
+      // So does an edit made from the dashboard.
+      claudeHandler.requestHoldRelease.mockClear();
+      const command = items().find((item: any) => item.message.ts === '333.555');
+      const res = await handler.handleDashboardFollowupAction({
+        sessionKey: SESSION_KEY,
+        itemId: command.id,
+        op: 'edit',
+        epoch: command.epoch,
+        turnEpoch: handlerAny.followupDispatcher.snapshot(SESSION_KEY).turnEpoch,
+        text: '$autoz 이거 다시 고쳐서 해줘',
+        actorUserId: 'U_OWNER',
+      });
+      expect(res.ok).toBe(true);
+      expect(claudeHandler.requestHoldRelease).toHaveBeenCalledWith(SESSION_KEY);
       await settle();
     });
 
