@@ -121,6 +121,64 @@ describe('resumeActiveGoals (T1)', () => {
     expect(settled).not.toHaveBeenCalled();
   });
 
+  /**
+   * .prd/39 A3 (X3) — the pass ran beside a loop that was judging: it kicked again and marked a follow-up resume the
+   * loop never made. The loop acting drives the session (`driven`): leave it.
+   */
+  it('A3: leaves a session the goal loop is acting on — no second kick, no resume mark', () => {
+    const judging = activeGoalSession({ activityState: 'idle' });
+    const sessions = new Map<string, ConversationSession>([['C1-T1', judging]]);
+    const { handler } = createHandler(sessions);
+    const settled = vi.fn();
+    handler.setGoalTurnSettledHandler(settled);
+    handler.setGoalLoopActingProbe((key) => key === 'C1-T1');
+
+    expect(handler.resumeActiveGoals()).toBe(0);
+
+    expect(settled).not.toHaveBeenCalled();
+    expect((handler as any).followupResumeMark.has('C1-T1')).toBe(false);
+  });
+
+  /**
+   * .prd/39 A2 (X2) — a restart resume that never started is handed back while a person's message already holds the
+   * slot, before its controller exists. The hand-off asked only the controller: it wrote idle over the starting turn,
+   * gave a continuation back and kicked beside it. A run in any phase drives the session.
+   */
+  it('A2: the failed-resume hand-off leaves a session whose slot a person’s turn holds', () => {
+    const starting = activeGoalSession({ activityState: 'working' });
+    const goal = starting.goal as NonNullable<ConversationSession['goal']>;
+    goal.continuationCount = 4;
+    const sessions = new Map<string, ConversationSession>([['C1-T1', starting]]);
+    const { handler } = createHandler(sessions);
+    const settled = vi.fn();
+    handler.setGoalTurnSettledHandler(settled);
+    (handler as any).restartGoalPassRan = true;
+    (handler as any).followupDispatcher = { isBusy: (key: string) => key === 'C1-T1', liveTurnEpoch: () => 1 };
+
+    (handler as any).handBackFailedRestartResume('C1-T1');
+
+    expect(starting.activityState).toBe('working');
+    expect(goal.continuationCount).toBe(4);
+    expect(settled).not.toHaveBeenCalled();
+  });
+
+  it('the failed-resume hand-off still frees a session nothing drives — idle without hooks, one refund, one kick', () => {
+    const cut = activeGoalSession({ activityState: 'working' });
+    const goal = cut.goal as NonNullable<ConversationSession['goal']>;
+    goal.continuationCount = 4;
+    const sessions = new Map<string, ConversationSession>([['C1-T1', cut]]);
+    const { handler } = createHandler(sessions);
+    const settled = vi.fn();
+    handler.setGoalTurnSettledHandler(settled);
+    (handler as any).restartGoalPassRan = true;
+
+    (handler as any).handBackFailedRestartResume('C1-T1');
+
+    expect(cut.activityState).toBe('idle');
+    expect(goal.continuationCount).toBe(3);
+    expect(settled).toHaveBeenCalledWith('C1-T1', { cause: 'kick' });
+  });
+
   it('takes the old process’s pending error retry from a session whose turn already runs', () => {
     const running = activeGoalSession({
       activityState: 'working',
