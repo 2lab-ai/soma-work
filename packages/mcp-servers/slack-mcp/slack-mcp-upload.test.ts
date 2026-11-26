@@ -96,7 +96,8 @@ describe("validateFilePath — a non-admin's own root", () => {
     await fs.mkdir(own, { recursive: true });
     await fs.mkdir(other, { recursive: true });
     await fs.writeFile(path.join(own, 'mine.png'), 'png');
-    await fs.writeFile(path.join(other, 'theirs.png'), 'png');
+    // Different bytes, so an upload of the wrong file would show.
+    await fs.writeFile(path.join(other, 'theirs.png'), 'THEIRS');
     // A directory link inside the own root that points at another user's folder.
     await fs.symlink(other, path.join(own, 'via-link'));
   });
@@ -152,7 +153,7 @@ describe("validateFilePath — a non-admin's own root", () => {
   });
 
   it('without roots (an admin) the /tmp rule alone applies', async () => {
-    await expect(validateFilePath(path.join(other, 'theirs.png'))).resolves.toMatchObject({ size: 3 });
+    await expect(validateFilePath(path.join(other, 'theirs.png'))).resolves.toMatchObject({ size: 6 });
   });
 });
 

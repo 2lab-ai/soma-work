@@ -213,6 +213,8 @@ export interface BuildStreamOptionsDeps {
    * the registry can key by attempt without re-deriving it.
    */
   onIncidentEvidence?: (request: IncidentRequestLike, evidence: IncidentEvidence) => void;
+  /** Parent of the non-admin CLI temp directories (default `CLAUDE_TMP_ROOT`); tests point it at a scratch dir. */
+  claudeTmpRoot?: string;
 }
 
 /** A `Skill` call step 6b denied: who asked, for which environment skill, in which thread. */
@@ -1121,6 +1123,7 @@ export async function buildStreamOptions(
         workingDirectory,
         queryEnv,
         grantedSkillDirs: envSkillReadableSkillDirs(envRegistry, contextUser, scope),
+        claudeTmpRoot: deps.claudeTmpRoot,
       },
       logger,
     );
@@ -1142,6 +1145,7 @@ function applyTenantReadBoundary(
     workingDirectory?: string;
     queryEnv: Record<string, string | undefined>;
     grantedSkillDirs: string[];
+    claudeTmpRoot?: string;
   },
   logger: BuildStreamOptionsDeps['logger'],
 ): void {
@@ -1170,14 +1174,13 @@ function applyTenantReadBoundary(
 
   // The CLI's temp directory (cwd tracking, background output, TMPDIR of its commands) is otherwise one directory
   // shared by every user's session, under the closed temp root. Its own directory under a parent only the bot
-  // writes, so the session cannot swap it. Made once the user's root exists (the host makes it with the first
-  // session folder).
-  const claudeTmpDir = fs.existsSync(input.userRoot) ? ensureClaudeTmpDir(input.user) : undefined;
+  // writes, so the session cannot swap it — also for a speaker new to someone else's thread, who has no root yet.
+  const claudeTmpDir = ensureClaudeTmpDir(input.user, input.claudeTmpRoot);
   if (claudeTmpDir) {
     if (!options.env) options.env = {};
     options.env.CLAUDE_CODE_TMPDIR = claudeTmpDir;
     filesystem.allowWrite = [...(filesystem.allowWrite ?? []), claudeTmpDir];
-  } else if (fs.existsSync(input.userRoot)) {
+  } else {
     logger.warn("The session's temp directory could not be made: its shell keeps the CLI's default", {
       user: input.user,
     });

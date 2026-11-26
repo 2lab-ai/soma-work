@@ -199,16 +199,20 @@ async function snapshotInsideRoots(
     const atReal = await fs.lstat(real);
     if (atReal.ino !== opened.ino || atReal.dev !== opened.dev) throw refuse();
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'slack-mcp-upload-'));
+    const remove = () => fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
     const copy = path.join(dir, path.basename(resolvedPath));
-    await pipeline(
-      handle.createReadStream({ autoClose: false }),
-      createWriteStream(copy, { flags: 'wx', mode: 0o600 }),
-    );
-    return {
-      resolvedPath: copy,
-      size: opened.size,
-      cleanup: () => fs.rm(dir, { recursive: true, force: true }),
-    };
+    try {
+      await pipeline(
+        handle.createReadStream({ autoClose: false }),
+        createWriteStream(copy, { flags: 'wx', mode: 0o600 }),
+      );
+    } catch (error) {
+      // No partial copy stays behind.
+      await remove();
+      throw error;
+    }
+    // Removing the copy never turns an upload that happened into a failure.
+    return { resolvedPath: copy, size: opened.size, cleanup: remove };
   } finally {
     await handle.close();
   }
