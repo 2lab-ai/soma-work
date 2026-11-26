@@ -288,20 +288,25 @@ describe("panel body — one scroll area: the task surface, the sticky agent tab
     expect(TEMPLATE).not.toContain('minmax(min(50%, calc(100% - 88px)), 1fr)');
   });
 
-  it('a short body shows artifacts as name chips (no thumbnail), the play button inline; every tile stays reachable sideways', () => {
-    // 560px: below it, full thumbnails would push the conversation out of a short body.
+  it('the 산출물 tab: a grid of preview tiles; a short body keeps the previews in one row that scrolls sideways', () => {
+    // Owner 2026-11-26: the open card's preview tiles, never name chips. A tall body shows every file at once: columns
+    // of at least the open card's 128px, each tile the column's width.
+    expect(rule('.art-strip.art-strip-panel')).toContain(
+      'display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));',
+    );
+    expect(rule('.art-strip-panel .art-tile')).toContain('--fc-tile-w: 100%;');
+    // 560px: below it, a grid of thumbnails would push the conversation out of a short body — one row instead.
     const compact = cssBlock('@container pbody (max-height: 560px) {');
     expect(compact).not.toBe('');
-    // The row is laid out here; the chips are the file cards' chip variant (D2), chosen by the panel body's height.
-    expect(compact).toContain('.art-strip-panel { flex: 1 1 auto;');
-    expect(DASHBOARD_TS).toContain('var ART_PANEL_SHORT_PX = 560;');
-    expect(DASHBOARD_TS).toContain("return !_panelDetail || (h > 0 && h <= ART_PANEL_SHORT_PX) ? 'chip' : 'tile';");
-    expect(DASHBOARD_TS).toContain(
-      'var size = new ResizeObserver(function() { sizePanelSections(); syncPanelArtVariant(); });',
-    );
-    // D4 (T8): the play toggle is the card's own (playable) — the chip wrapper only bounds the width.
-    expect(DASHBOARD_TS).toContain('.art-tile:has(> ui-file-card[variant="chip"]) { max-width: 240px; }');
+    expect(compact).toContain('.art-strip.art-strip-panel { display: flex; overflow-x: auto;');
+    expect(compact).toContain('.art-strip-panel .art-tile { --fc-tile-w: 128px; }');
+    expect(compact).not.toContain('chip');
+    // Nothing chooses the variant by the body's height any more: the CSS lays the same tiles out.
+    expect(DASHBOARD_TS).not.toContain('ART_PANEL_SHORT_PX');
+    expect(DASHBOARD_TS).toContain('var size = new ResizeObserver(function() { sizePanelSections(); });');
+    // D4 (T8): the play toggle is the card's own (playable).
     expect(DASHBOARD_TS).not.toMatch(/\.art-play\b/);
+    expect(DASHBOARD_TS).not.toContain('ui-file-card[variant="chip"]');
     expect(rule('.art-strip')).toContain('overflow-x: auto');
   });
 });

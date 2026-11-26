@@ -457,6 +457,113 @@ describe('T6 — right panel: pinned strip and per-answer attachments', () => {
   });
 });
 
+// Owner 2026-11-26: "디테일 작업 카드 산출물 탭에서 파일 이름이 아니라 작업 카드(extended)처럼 미리 보기 포함한 ui로 표시"
+// — the detail card's 산출물 tab draws every file as the open task card does: the preview tile (a picture, or the kind's
+// glyph on its wash with the extension, then name and size · age). Never the name chip, whatever the layout opens
+// with (처음부터 펼침) and however short the panel body is.
+describe('the detail card’s 산출물 tab — preview tiles like the open task card, never name chips', () => {
+  type Section = { innerHTML: string; style: { display: string } };
+  const paint = (panelDetail: boolean, bodyHeight: number) => {
+    const el: Section = { innerHTML: '', style: { display: '' } };
+    const m = load<{ renderPanelArtifactsSection(): void }>(
+      [
+        ...BASE_FNS,
+        'artSortForDisplay',
+        'artLatestOnly',
+        'artTile',
+        'renderPanelArtifacts',
+        'renderPanelArtifactsSection',
+      ],
+      BASE_VARS,
+      {
+        document: {
+          getElementById: (id: string) => (id === 'panel-artifacts' ? el : null),
+          querySelector: () => ({ clientHeight: bodyHeight }),
+        },
+        panelConvId: 'conv-9',
+        panelSessionKey: 'k',
+        _sessionCache: { k: { conversationId: 'conv-9' } },
+        _artCache: { 'conv-9': { state: 'ok', list: [html, png, wav] } },
+        _umList: {},
+        _umPanelOpen: false,
+        _panelDetail: panelDetail,
+        renderPanelUserMedia: () => '',
+        writePanelPart: (e: Section, h: string) => {
+          e.innerHTML = h;
+        },
+        convPaint: () => {},
+      },
+    );
+    m.renderPanelArtifactsSection();
+    return el.innerHTML;
+  };
+  const variants = (out: string) => [...out.matchAll(/<ui-file-card [^>]*variant="([^"]+)"/g)].map((x) => x[1]);
+
+  it('the default layout (처음부터 펼침 off): every file is a preview tile', () => {
+    const out = paint(false, 800);
+    expect(variants(out)).toEqual(['tile', 'tile', 'tile']);
+  });
+
+  it('a short panel body (a phone held sideways) keeps the previews too', () => {
+    expect(variants(paint(false, 300))).toEqual(['tile', 'tile', 'tile']);
+    expect(variants(paint(true, 300))).toEqual(['tile', 'tile', 'tile']);
+  });
+
+  it('the same tile the open card draws for the same file', () => {
+    const tab = paint(false, 800);
+    const card = load<{ renderCardArtifacts(s: unknown): string }>(
+      [...BASE_FNS, 'artSortForDisplay', 'artLatestOnly', 'artTile', 'artListFor', 'renderCardArtifacts'],
+      BASE_VARS,
+      { _artCache: { 'conv-9': { state: 'ok', list: [html, png, wav] } } },
+    ).renderCardArtifacts({ key: 'k', conversationId: 'conv-9', artifacts: { count: 3, recent: [] } });
+    const tile = (out: string, id: string) =>
+      out.match(new RegExp(`<div class="art-tile[^"]*"><ui-file-card [^>]*data-art-id="${id}"[^>]*>`))?.[0];
+    for (const id of ['A1', 'A2', 'A3']) {
+      expect(tile(tab, id)).toBeTruthy();
+      expect(tile(tab, id)).toBe(tile(card, id));
+    }
+  });
+
+  // The open card's 전체 N개 → opens the detail card on this tab (openPanel(key, 'artifacts')): it lands on the tab bar
+  // — the open 산출물 tab and the grid under it in view — as a 목표 opening lands on the goal, not on the chat below.
+  it('an opening on 산출물 lands the tab bar at the top of the scroll area, once', () => {
+    const calls: number[] = [];
+    const scrollEl = {
+      scrollTop: 0,
+      scrollHeight: 2000,
+      clientHeight: 600,
+      getBoundingClientRect: () => ({ top: 100 }),
+      scrollTo(o: { top: number }) {
+        calls.push(o.top);
+        this.scrollTop = o.top;
+      },
+    };
+    const midbar = { style: { display: '' }, getBoundingClientRect: () => ({ top: 100 + 388 - scrollEl.scrollTop }) };
+    const m = load<{ landPanel(): void }>(['landPanel'], [], {
+      _panelLand: 'artifacts',
+      _panelLanded: false,
+      _panelLandAt: null,
+      _panelScrollGen: 0,
+      _panelHold: false,
+      _panelHoldUntil: 0,
+      _panelOnQuestion: false,
+      _panelMid: 'artifacts',
+      panelTabsHeight: () => 44,
+      panelReading: () => false,
+      rdReset: () => {},
+      psecLandingTop: () => 0,
+      document: {
+        getElementById: (id: string) => (id === 'panel-scroll' ? scrollEl : id === 'panel-midbar' ? midbar : null),
+      },
+    });
+    m.landPanel();
+    // The tab bar's own offset (388), not under the agent tabs (44): it sits above them, in the common surface.
+    expect(calls).toEqual([388]);
+    m.landPanel(); // the turns arrive: landed already, nothing moves
+    expect(calls).toEqual([388]);
+  });
+});
+
 type FakeEl = {
   getAttribute(k: string): string | null;
   hasAttribute(k: string): boolean;
