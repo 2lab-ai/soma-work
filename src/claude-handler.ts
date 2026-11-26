@@ -497,6 +497,12 @@ function isMainThreadToolProgress(raw: Record<string, unknown>): boolean {
 }
 
 /**
+ * Why the host ends a held turn's background work: silence past the cap, the
+ * hard ceiling, or (#1472) a person's command that waits for the turn to end.
+ */
+export type KeepaliveStopReason = 'idle' | 'ceiling' | 'user-work';
+
+/**
  * The host's note to the model when the keepalive cap stops background agents
  * (#1039). The CLI words every `stopTask` as "was stopped by user", whoever
  * asked; without this the model tells the user they stopped work they never
@@ -505,7 +511,7 @@ function isMainThreadToolProgress(raw: Record<string, unknown>): boolean {
  */
 export function buildKeepaliveCapNote(
   agentIds: readonly string[],
-  reason: 'idle' | 'ceiling',
+  reason: KeepaliveStopReason,
   maxMs: number,
   taskIds: readonly string[] = [],
 ): string {
@@ -516,9 +522,11 @@ export function buildKeepaliveCapNote(
       ? `they produced no output for ${minutes(maxMs)} minutes`
       : `the held turn saw no activity from them for ${minutes(maxMs)} minutes`;
   const why =
-    reason === 'idle'
-      ? idle
-      : `they ran past the ${minutes(Math.min(maxMs * BG_KEEPALIVE_HARD_CEILING_FACTOR, MAX_TIMER_DELAY_MS))}-minute ceiling`;
+    reason === 'user-work'
+      ? "a person's message waits in line and can only run once this turn ends (#1472)"
+      : reason === 'idle'
+        ? idle
+        : `they ran past the ${minutes(Math.min(maxMs * BG_KEEPALIVE_HARD_CEILING_FACTOR, MAX_TIMER_DELAY_MS))}-minute ceiling`;
   const stopped = [
     ...(agentIds.length > 0 ? [`background agent(s) ${agentIds.join(', ')}`] : []),
     ...(taskIds.length > 0 ? [`background task(s) ${taskIds.join(', ')}`] : []),
@@ -704,7 +712,36 @@ export class ClaudeHandler implements TurnSteeringPort {
    * the steering methods means exactly "no turn is running for this session",
    * which is the distinction the host needs to decide queue vs. inject.
    */
-  private activeQueries = new Map<string, { query: Query; channel: TurnInputChannel }>();
+  private activeQueries = new Map<
+    string,
+    {
+      query: Query;
+      channel: TurnInputChannel;
+      considerHoldRelease?: () => void;
+      /** #1472 — steers the SDK gave back (`cancelSteeredMessage` → `withdrawn`): they open no turn. */
+      withdrawnSteers?: Set<string>;
+    }
+  >();
+
+  /**
+   * #1472 — the host's answer to "does a person's command wait in line for this
+   * session, one that can never be pushed into the turn?" Asked at every safe
+   * boundary of a held turn; `true` ends the hold so the line can run.
+   */
+  private holdReleaseGate?: (sessionKey: string) => boolean;
+
+  setHoldReleaseGate(gate: ((sessionKey: string) => boolean) | undefined): void {
+    this.holdReleaseGate = gate;
+  }
+
+  /**
+   * #1472 — a command just joined the line of `sessionKey`: if its turn is held
+   * open only for background work and is at a safe boundary now, end the hold.
+   * Otherwise the turn asks again at its next boundary. Never cuts a running turn.
+   */
+  requestHoldRelease(sessionKey: string): void {
+    this.activeQueries.get(sessionKey)?.considerHoldRelease?.();
+  }
 
   // Extracted components
   private sessionRegistry: SessionRegistry;
@@ -1632,8 +1669,10 @@ export class ClaudeHandler implements TurnSteeringPort {
       // `undefined` and `cancelSteeredMessage` answers `unreachable`. The
       // caller's abort controller and the wall-clock budget still stop it.
       const steerKey = incident ? undefined : sessionKey;
+      /** #1472 — steers of this query the SDK gave back (see `cancelSteeredMessage`). */
+      const withdrawnSteers = new Set<string>();
       if (steerKey) {
-        this.activeQueries.set(steerKey, { query: activeQuery, channel });
+        this.activeQueries.set(steerKey, { query: activeQuery, channel, withdrawnSteers });
       }
       // The frames, read as fast as the CLI sends them (`pumpFrames`): the loop
       // below hands each one to a consumer that renders it before asking for
@@ -1658,7 +1697,15 @@ export class ClaudeHandler implements TurnSteeringPort {
         }, HOST_LAG_WATCH_MS);
         hostLagWatch.unref?.();
       };
+      /** Frames the read-ahead has seen; the loop has caught up when it has processed as many (`frameSeq`). */
+      let arrivedFrames = 0;
+      /**
+       * #1472 — steers the CLI has handed to the model (their read receipt), by the sequence number of that receipt.
+       * A read steer opened or joined a turn; that turn is over once a result after the receipt has been handled.
+       */
+      const readSteers = new Map<string, number>();
       const frames = pumpFrames(queryFrames(activeQuery), (frame) => {
+        arrivedFrames += 1;
         const raw = frame as unknown as Record<string, unknown>;
         if (raw.type === 'result') {
           channel.holdPushes();
@@ -1670,6 +1717,8 @@ export class ClaudeHandler implements TurnSteeringPort {
         const uuid = raw.command_uuid;
         // The opening message is reported the same way: only a steer counts.
         if (typeof uuid === 'string' && channel.pushedUuids().includes(uuid)) {
+          // `arrivedFrames` already counts this receipt: it is the receipt's own sequence number.
+          readSteers.set(uuid, arrivedFrames);
           this.steerSignals?.read(steerKey, uuid);
         }
       });
@@ -1819,7 +1868,7 @@ export class ClaudeHandler implements TurnSteeringPort {
       // the CLI words it "was stopped by user" — and the input closes, so the
       // CLI can end the turn with what it has. A CLI that still does not end it
       // is closed outright after the backstop.
-      const fireKeepaliveCap = (reason: 'idle' | 'ceiling') => {
+      const fireKeepaliveCap = (reason: KeepaliveStopReason) => {
         if (keepaliveCapTimer) clearTimeout(keepaliveCapTimer);
         keepaliveCapTimer = undefined;
         // #1425 — only tasks hold the turn and a turn runs (a steer's answer, a task's notification turn): closing the
@@ -1836,13 +1885,16 @@ export class ClaudeHandler implements TurnSteeringPort {
         // #1425 — a live shell or workflow holds the turn too (the CLI outlives it with its input closed): the cap
         // stops it the same way, and the note names it.
         const liveTasks = [...liveNonAgents];
-        this.logger.warn('Background agents outlived the keepalive cap; stopping them', {
-          live: live.length,
-          liveTasks: liveTasks.length,
-          maxMs: keepaliveMaxMs,
-          reason,
-          sessionKey: steerKey,
-        });
+        // #1472 — a person's command is not the cap: that stop is logged where it is decided (considerHoldRelease).
+        if (reason !== 'user-work') {
+          this.logger.warn('Background agents outlived the keepalive cap; stopping them', {
+            live: live.length,
+            liveTasks: liveTasks.length,
+            maxMs: keepaliveMaxMs,
+            reason,
+            sessionKey: steerKey,
+          });
+        }
         for (const taskId of [...live, ...liveTasks]) stopBackgroundAgent(taskId);
         if (live.length + liveTasks.length > 0) {
           // Its own uuid, outside the steer ledger: the held turn waits for the
@@ -1889,6 +1941,63 @@ export class ClaudeHandler implements TurnSteeringPort {
           Math.max(0, Math.min(KEEPALIVE_BACKSTOP_IDLE_MS, left)),
         );
       };
+      // #1472 — end the hold for a person's waiting command, only at a safe boundary: the turn is held (its answer
+      // is out), no turn runs, the loop has handled every frame the CLI sent, and the cap has not fired already.
+      // The host is asked last and at that moment, so the row it sees is the one at the head of the line now.
+      // A request that came while the boundary was not safe yet (a frame still unhandled, a turn running, a steer
+      // pushed but not opened) is kept, and asked again once the loop has handled the frame in front of it.
+      let holdReleaseAsked = false;
+      const considerHoldRelease = (): boolean => {
+        if (!held || keepaliveFiredAt > 0 || channel.isClosed) {
+          holdReleaseAsked = false;
+          return false;
+        }
+        if (
+          turnRunning() ||
+          arrivedFrames !== frameSeq ||
+          resultTransit.inTransit > 0 ||
+          // A steer pushed but not answered yet: not read (its turn has not started), or read but no result handled
+          // since (its turn runs, even before its `init` is handled). A steer the SDK gave back opens none.
+          channel.pushedUuids().some((uuid) => {
+            if (withdrawnSteers.has(uuid)) return false;
+            const readAt = readSteers.get(uuid);
+            return readAt === undefined || lastResultSeq < readAt;
+          })
+        ) {
+          holdReleaseAsked = true;
+          return false;
+        }
+        holdReleaseAsked = false;
+        if (!steerKey) return false;
+        let wanted = false;
+        try {
+          wanted = this.holdReleaseGate?.(steerKey) === true;
+        } catch (error) {
+          // Not knowing is not a reason to end the turn's background work, nor to fail the turn.
+          this.logger.warn('Hold release gate failed — the hold stays', {
+            sessionKey: steerKey,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return false;
+        }
+        if (!wanted) return false;
+        this.logger.info("A person's command waits: ending the background hold", {
+          liveAgents: liveAgents.size,
+          liveTasks: liveNonAgents.size,
+          sessionKey: steerKey,
+        });
+        fireKeepaliveCap('user-work');
+        return true;
+      };
+      if (steerKey) {
+        const entry = this.activeQueries.get(steerKey);
+        if (entry?.query === activeQuery) {
+          entry.considerHoldRelease = () => {
+            holdReleaseAsked = true;
+            considerHoldRelease();
+          };
+        }
+      }
       const armKeepaliveCap = () => {
         keepaliveCapTimer = setTimeout(() => fireKeepaliveCap('idle'), keepaliveMaxMs);
         keepaliveCeilingTimer = setTimeout(
@@ -2130,6 +2239,8 @@ export class ClaudeHandler implements TurnSteeringPort {
               if (raw.user_message_uuid !== pendingCapNoteUuid) continue;
               pendingCapNoteUuid = undefined;
             }
+            // #1472 — a turn of the hold ended here: a person's waiting command takes the next boundary.
+            if (considerHoldRelease()) continue;
             if (liveAgents.size > 0) continue;
             // The agent settled inside the turn this result closes: its report
             // was either folded into that turn or is about to run as a turn of
@@ -2215,6 +2326,8 @@ export class ClaudeHandler implements TurnSteeringPort {
               }
               // The backstop for anything held, whatever a follow-up turn starts.
               armKeepaliveCap();
+              // #1472 — a command that waited for this turn's answer does not wait for the background work too.
+              if (considerHoldRelease()) continue;
               if (liveAgents.size > 0) continue;
               if (agentsOwed) awaitFollowUpTurn();
               // #1425 — a live shell or workflow: the input stays open until it settles (its settle arms the grace).
@@ -2238,6 +2351,8 @@ export class ClaudeHandler implements TurnSteeringPort {
             if (settlement) yield settlement;
           }
           yield message;
+          // #1472 — a release asked while this frame was still unhandled: the loop has handled it now.
+          if (holdReleaseAsked) considerHoldRelease();
         }
         // The stream ended with a result still held: the keepalive cap or its
         // backstop ended the CLI, the silence bound or the follow-up grace closed
@@ -2840,7 +2955,9 @@ export class ClaudeHandler implements TurnSteeringPort {
     const cancel = (entry.query as unknown as { cancelAsyncMessage?: (uuid: string) => Promise<boolean> })
       .cancelAsyncMessage;
     if (typeof cancel !== 'function') return 'unreachable';
-    return (await cancel.call(entry.query, uuid)) === true ? 'withdrawn' : 'already-dequeued';
+    const withdrawn = (await cancel.call(entry.query, uuid)) === true;
+    if (withdrawn) entry.withdrawnSteers?.add(uuid);
+    return withdrawn ? 'withdrawn' : 'already-dequeued';
   }
 
   /**

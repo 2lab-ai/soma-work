@@ -12,6 +12,7 @@ import {
   type RunReport,
 } from '@soma/slack/followup-dispatcher';
 import {
+  FOLLOWUP_PENDING_DISPATCH_STATES,
   FOLLOWUP_REDELIVER_AFTER_RESTART_REASON,
   type FollowupContext,
   type FollowupItem,
@@ -1033,6 +1034,9 @@ export class SlackHandler {
       },
       inputReopened: (sessionKey) => this.onFollowupInputReopened(sessionKey),
     });
+    // #1472 — a turn held open only for background work asks this at each safe boundary: does a person's command
+    // wait at the head of the line, one that can never be pushed into the turn? Then the hold ends and the line runs.
+    this.claudeHandler.setHoldReleaseGate?.((sessionKey) => this.holdReleaseWanted(sessionKey));
     // Goal stall: a question whose round ended without an answer is retracted.
     setGoalStallRetiredListener((goal, stall, cause) => this.onGoalStallRetired(goal, stall, cause));
     // #917 — every Executive Summary verdict on a follow-up: a new one may ask its question, a gone one retracts it.
@@ -1370,6 +1374,8 @@ export class SlackHandler {
       // front of the ephemeral the user is waiting for.
       onItemProcessed: (sessionKey, itemId) => {
         void this.syncFollowupReactions(sessionKey, itemId);
+        // #1472 — a cancel can put a waiting command at the head of the line: the held turn asks its gate again.
+        this.claudeHandler.requestHoldRelease?.(this.canonicalFollowupKey(sessionKey));
       },
       // A goal's queued opening turn IS that goal's start: cancelling it means
       // cancelling the goal (see `onGoalOpeningCancelled`).
@@ -5709,7 +5715,12 @@ export class SlackHandler {
       // authorization policy that throws here used to propagate out of
       // `enqueueFollowup` past the receipt, leaving the message stored and the
       // user told nothing at all.
-      if (!this.isSteerableText(event)) return 'queued';
+      if (!this.isSteerableText(event)) {
+        // #1472 — it can only run once the turn ends: a turn held open only for background work ends its hold for
+        // it at its next safe boundary (the turn re-asks `holdReleaseWanted` there, so this is only a nudge).
+        this.claudeHandler.requestHoldRelease?.(this.canonicalFollowupKey(sessionKey));
+        return 'queued';
+      }
 
       // Steering injects text into a turn someone else is running, so it takes
       // the SAME authorization `Send now` takes (`:3082`). Denied, the message
@@ -6210,6 +6221,8 @@ export class SlackHandler {
         this.logger.debug('Queued item edit refused', { sessionKey, itemId: item.id, reason: result.reason });
         return;
       }
+      // #1472 — an edit can turn the head of the line into a command: the held turn asks its gate again.
+      this.claudeHandler.requestHoldRelease?.(this.canonicalFollowupKey(sessionKey));
       await this.refreshFollowupSurface(sessionKey);
       return;
     }
@@ -6561,6 +6574,8 @@ export class SlackHandler {
     }
     const result = queue.editQueued(request.sessionKey, request.itemId, request.epoch, text);
     if (!result.ok) return { ok: false, status: 409, message: SlackHandler.dashboardEditRefusal(result.reason, item) };
+    // #1472 — an edit can turn the head of the line into a command: the held turn asks its gate again.
+    this.claudeHandler.requestHoldRelease?.(this.canonicalFollowupKey(request.sessionKey));
     await this.refreshFollowupSurface(request.sessionKey);
     return { ok: true };
   }
@@ -7750,6 +7765,51 @@ export class SlackHandler {
     const threadTs = session.threadRootTs || session.threadTs;
     const allowed = this.claudeHandler?.canInterrupt?.(session.channelId, threadTs, requestedBy) === true;
     return allowed ? { allowed: true } : { allowed: false, reason: `<@${requestedBy}> cannot interrupt this session` };
+  }
+
+  /**
+   * #1472 — does a person's command wait at the head of this session's line, one
+   * that can never be pushed into a running turn (`$<skill>`, `new`, `%model …`
+   * — {@link isSteerableText})? A turn held open only for background work then
+   * ends its hold at its next safe boundary, so the drain runs the line.
+   *
+   * The head is the row the drain at the run's end would claim (the canonical
+   * key, lowest `seq`). Only the head row and only a `queued` one: the line keeps its order, and a
+   * plain message refused by the turn waits for the re-offer, never for this
+   * (it would be delivered twice). Only an author who may interrupt the session
+   * (as `Send now` and steering ask) and whose row the drain would run now.
+   * Nothing while the drain is halted: ending the hold could not run the row.
+   */
+  private holdReleaseWanted(sessionKey: string): boolean {
+    const queue = this.followupQueue;
+    const dispatcher = this.followupDispatcher;
+    if (!queue || !dispatcher || this.followupReadFailed) return false;
+    // The line the drain at the run's end takes, in the order it takes it: the canonical key (rows a migrating turn
+    // parked live there too), by `seq` (`FollowupQueue.claimNext`).
+    const slotKey = this.boundFollowupSlot(sessionKey);
+    const keys = slotKey !== undefined ? [sessionKey, slotKey] : [sessionKey];
+    if (keys.some((key) => dispatcher.drainHalt(key))) return false;
+    try {
+      const rows = queue.list(sessionKey);
+      // A `Send now` is already replacing this run (its row is reserved or claimed): that dispatch is the next run.
+      if (keys.some((key) => queue.list(key).some((item) => FOLLOWUP_PENDING_DISPATCH_STATES.includes(item.state)))) {
+        return false;
+      }
+      const head = rows.filter((item) => item.state === 'queued').sort((a, b) => a.seq - b.seq)[0];
+      if (!head) return false;
+      const event = head.message as MessageEvent;
+      if (this.isSteerableText(event)) return false;
+      const author = event.user;
+      if (!author || !this.authorizeFollowupInterrupt(sessionKey, author).allowed) return false;
+      return this.authorizeFollowupDispatch(sessionKey, event, head.context).allowed;
+    } catch (error) {
+      // Not knowing is not a yes: the hold stays, and the drain still runs the row when the run ends.
+      this.logger.warn('Could not tell whether a waiting command should end the hold — it stays', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      });
+      return false;
+    }
   }
 
   /**

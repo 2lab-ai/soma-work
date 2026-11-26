@@ -140,6 +140,8 @@ describe('SlackHandler — follow-up queue host', () => {
       setActivityStateByKey: vi.fn(),
       broadcastSessionUpdate: vi.fn(),
       setSteerSignals: vi.fn(),
+      setHoldReleaseGate: vi.fn(),
+      requestHoldRelease: vi.fn(),
     };
 
     const store = {
@@ -4142,6 +4144,135 @@ describe('SlackHandler — follow-up queue host', () => {
         await settle();
       });
     }
+
+    /**
+     * #1472 — such a command can only run once the turn ends. It asks the turn
+     * to end a hold it keeps only for background work, and the gate the host
+     * gave the turn answers yes while it heads the line.
+     */
+    it('a queued `$skill` asks the running turn to end its background hold, and heads the gate', async () => {
+      const steerTurn = withLiveTurn();
+      const { settle } = await startBusyTurn();
+      const gate = claudeHandler.setHoldReleaseGate.mock.calls[0][0] as (key: string) => boolean;
+      expect(gate(SESSION_KEY)).toBe(false);
+
+      await handler.handleMessage(message({ ts: '333.444', text: '$autoz 이거 해줘' }), say());
+
+      expect(steerTurn).not.toHaveBeenCalled();
+      expect(claudeHandler.requestHoldRelease).toHaveBeenCalledWith(SESSION_KEY);
+      expect(gate(SESSION_KEY)).toBe(true);
+      await settle();
+    });
+
+    it('a plain message never ends a hold, and a `$skill` behind it does not jump it', async () => {
+      // The turn refuses the push: the plain message stays queued at the head of the line.
+      withLiveTurn(false);
+      const { settle } = await startBusyTurn();
+      const gate = claudeHandler.setHoldReleaseGate.mock.calls[0][0] as (key: string) => boolean;
+
+      await handler.handleMessage(message({ ts: '333.444', text: 'PR 이것도 하고 그 다음 것도 해줘' }), say());
+      expect(claudeHandler.requestHoldRelease).not.toHaveBeenCalled();
+      expect(gate(SESSION_KEY)).toBe(false);
+
+      await handler.handleMessage(message({ ts: '333.555', text: '$autoz 이거 해줘' }), say());
+      // Asked, but the head of the line is the plain message: the gate says no.
+      expect(gate(SESSION_KEY)).toBe(false);
+      await settle();
+    });
+
+    it('a gate that cannot classify the head row says no instead of throwing', async () => {
+      withLiveTurn(false);
+      const { settle } = await startBusyTurn();
+      const gate = claudeHandler.setHoldReleaseGate.mock.calls[0][0] as (key: string) => boolean;
+      await handler.handleMessage(message({ ts: '333.444', text: '$autoz 이거 해줘' }), say());
+      expect(gate(SESSION_KEY)).toBe(true);
+
+      handlerAny.commandRouter.classifyText = vi.fn(() => {
+        throw new Error('classifier exploded');
+      });
+
+      expect(gate(SESSION_KEY)).toBe(false);
+      await settle();
+    });
+
+    it('a `Send now` already replacing the run keeps the gate shut', async () => {
+      withLiveTurn(false);
+      const { settle } = await startBusyTurn();
+      const gate = claudeHandler.setHoldReleaseGate.mock.calls[0][0] as (key: string) => boolean;
+      await handler.handleMessage(message({ ts: '333.444', text: '$autoz 이거 해줘' }), say());
+      expect(gate(SESSION_KEY)).toBe(true);
+
+      // A row reserved by a `Send now`: that dispatch is the session's next run.
+      const queue = handlerAny.followupQueue;
+      const original = queue.list.bind(queue);
+      queue.list = (key: string) => {
+        const rows = original(key);
+        return rows.length === 0 ? rows : [...rows, { ...rows[0], id: `${key}#99`, seq: 99, state: 'reserved' }];
+      };
+      try {
+        expect(gate(SESSION_KEY)).toBe(false);
+      } finally {
+        queue.list = original;
+      }
+      await settle();
+    });
+
+    it('a cancel or an edit that changes the head of the line asks the held turn again', async () => {
+      withLiveTurn(false);
+      const { settle } = await startBusyTurn();
+      const gate = claudeHandler.setHoldReleaseGate.mock.calls[0][0] as (key: string) => boolean;
+      await handler.handleMessage(message({ ts: '333.444', text: 'PR 이것도 하고 그 다음 것도 해줘' }), say());
+      await handler.handleMessage(message({ ts: '333.555', text: '$autoz 이거 해줘' }), say());
+      expect(gate(SESSION_KEY)).toBe(false);
+      claudeHandler.requestHoldRelease.mockClear();
+
+      // The person cancels the plain message: the command now heads the line.
+      const plain = items().find((item: any) => item.message.ts === '333.444');
+      handlerAny.getFollowupQueue().cancelItem(SESSION_KEY, plain.id, plain.epoch, '테스트가 취소했습니다');
+      handlerAny.followupActionDeps.onItemProcessed(SESSION_KEY, plain.id);
+      expect(claudeHandler.requestHoldRelease).toHaveBeenCalledWith(SESSION_KEY);
+      expect(gate(SESSION_KEY)).toBe(true);
+
+      // An edit of a queued row asks too.
+      claudeHandler.requestHoldRelease.mockClear();
+      await handlerAny.handleQueuedMessageEdit({
+        channel: CHANNEL,
+        ts: '333.555',
+        threadTs: THREAD_TS,
+        user: 'U_OWNER',
+        text: '$autoz 이거 고쳐서 해줘',
+      });
+      expect(claudeHandler.requestHoldRelease).toHaveBeenCalledWith(SESSION_KEY);
+
+      // So does an edit made from the dashboard.
+      claudeHandler.requestHoldRelease.mockClear();
+      const command = items().find((item: any) => item.message.ts === '333.555');
+      const res = await handler.handleDashboardFollowupAction({
+        sessionKey: SESSION_KEY,
+        itemId: command.id,
+        op: 'edit',
+        epoch: command.epoch,
+        turnEpoch: handlerAny.followupDispatcher.snapshot(SESSION_KEY).turnEpoch,
+        text: '$autoz 이거 다시 고쳐서 해줘',
+        actorUserId: 'U_OWNER',
+      });
+      expect(res.ok).toBe(true);
+      expect(claudeHandler.requestHoldRelease).toHaveBeenCalledWith(SESSION_KEY);
+      await settle();
+    });
+
+    it('a `$skill` from someone who may not interrupt the session does not end a hold', async () => {
+      withLiveTurn();
+      const { settle } = await startBusyTurn();
+      const gate = claudeHandler.setHoldReleaseGate.mock.calls[0][0] as (key: string) => boolean;
+      claudeHandler.canInterrupt.mockReturnValue(false);
+
+      await handler.handleMessage(message({ ts: '333.444', text: '$autoz 이거 해줘' }), say());
+
+      expect(gate(SESSION_KEY)).toBe(false);
+      claudeHandler.canInterrupt.mockReturnValue(true);
+      await settle();
+    });
 
     /**
      * #891 T2 — a dedicated `/compact` turn ends at the compaction's result. A
