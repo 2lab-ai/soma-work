@@ -1,15 +1,14 @@
 # loop — work-queue 구현 드라이브
 
-Status: in-progress · 라운드 5 (남은 실측 하나) · 라운드 1–4 닫힘 · ssot = [`ssot.md`](ssot.md) SSOT_1–5 · 스펙 = [`../36-work-queue-spec.md`](../36-work-queue-spec.md) ·
+Status: done · 라운드 1–5 닫힘 · ssot = [`ssot.md`](ssot.md) SSOT_1–5 · 스펙 = [`../36-work-queue-spec.md`](../36-work-queue-spec.md) ·
 아키텍처 = [`../37-work-queue-architecture.md`](../37-work-queue-architecture.md) · 완료 원장 = [`loop.done.md`](loop.done.md)
 
-## 라운드 5 — 남은 실측 하나
+## 열린 일 없음
 
-라운드 4는 닫혔다(loop.done.md R4).
+라운드 1–5가 닫혔다(loop.done.md R1–R5). 회귀가 나오면 새 행을 Source `regression:<ID>`로 연다.
 
 | ID | 작업 단위 | Status | 다음 |
 |---|---|---|---|
-| W17 | 개인 큐 `그래도 시작` 버튼 실클릭(Slack) | 🟡 | 단위 테스트 GREEN(같은 작업 13 · Slack 표면). 실측에는 Slack에 로그인된 브라우저가 필요하다 — 봇이 쓰는 브라우저는 로그인이 풀려 있다(2026-11-26). 소유자가 같은 작업을 두 번 지시해 ⛔ 안내가 뜨면 그때 눌러 확인 |
 
 ## build facts
 

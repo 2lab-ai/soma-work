@@ -94,3 +94,18 @@ Loop: ./loop.md · Each round close appends one block at the bottom; nothing abo
 - 04:42:03–04:42:18 A15(개인) — Z의 한도를 15초간 1로: 테스트 G가 개인별 큐 #1로 대기(보드 칸에 없음, 개인별 큐 탭에 카드 · `다음 차례 — … 끝나면 바로 시작`), 한도 원복 즉시 시작 → 04:42:51 "G 시작".
 - 테스트 카드 A–G는 대시보드에서 닫았다. 화면 캡처는 작업 스레드(Slack)에 남겼다.
 - #1450 재배포(v0.3.125-dev, `100871b9`) 뒤, 05:11–05:16: 이 세션 `qa-wq-probe [WQ-920]` 진행(`wq-8`), 테스트 H `[WQ-921]` #1(`wq-9`) · I `[WQ-922]` #2(`wq-10`). 관리자 모드로 I 카드를 펼치면 액션 바 = `먼저 진행 · 대기에서 빼기 · 중지 · Slack`. 05:14:09 `먼저 진행` → 로그 `managed by an admin {wq-10, first}`, 대기 = `wq-10 #1 · wq-9 #2`. 05:15:23 `queue_done wq-8` → `waking {wq-10}` → 05:15:34 "I 완료" → 05:15:32 `waking {wq-9}` → 05:15:41 "H 완료". 설정 표: `wq-4 … 돌려놓음 관리자`. 테스트 J(이 세션이 쥔 `2lab-ai/soma-work#1445`) → ⛔, 개인 내역 이유 `same-work` = "같은 키가 다른 스레드에서 진행 중이거나 대기 중"(#1450 전 기록은 영어 문장 그대로 남는다). 카드 정리 · 관리자 모드 원복.
+
+## R5 — closed 2026-11-26
+
+- measured 1✅ · result: the personal queue's `그래도 시작` pressed in Slack sends the refused request on once and it runs · closed rows: W17 · commit/PR: this round's docs PR
+
+### Closed rows
+
+| ID | 작업 단위 | Status | 증거 |
+|---|---|---|---|
+| W17 | 개인 큐 `그래도 시작` 버튼 실클릭(Slack) | ✅ | v0.3.125-dev, 2026-11-26 UTC: 05:42:03 테스트 K(이 세션이 쥔 `2lab-ai/soma-work#1445`) → ⛔ 안내. Slack에 로그인된 소유자 브라우저(Claude in Chrome)로 `그래도 시작` → 05:46:36 호스트 로그 `[UserTaskQueueActions] User task queue: 그래도 시작 {"ok":true}` → 요청이 한 번만 다시 들어가 05:46:59 "K 시작". 응답은 하나, 두 번 시작하지 않음 |
+
+### Round section (as it was in loop.md)
+
+라운드 5 — 남은 실측 하나. 봇의 Aside 브라우저는 Slack 로그인이 풀려 있어(`slack` 도우미: d 쿠키 없음) 소유자 브라우저를 Claude in Chrome으로 썼다. 첫 일반 클릭은 반응이 없었고 스크립트 클릭이 `blocks.actions`(200)를 보냈다 — Slack 웹 쪽 입력 문제로 보이며 봇 동작과는 무관하다. 누른 뒤에도 ⛔ 안내와 버튼은 그대로 남는다(두 번째 누름은 토큰이 이미 쓰여 시작하지 않는다).
+
