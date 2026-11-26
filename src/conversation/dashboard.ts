@@ -8844,16 +8844,20 @@ ${WORK_QUEUE_CSS}
       <!-- 작업 큐 (.prd/36 v2, work-queue-client.ts): every queue a task waits in — 작업 큐 (lanes) | 개인별 큐 (people) —
            with the waiting cards moved here from the board's columns and each queue's history (paintWorkQueues). -->
       <div class="wq-section ui-tok" id="wq-section" role="region" hidden aria-label="작업 큐">
-        <div class="wq-head">
-          <span class="wq-title">작업 큐</span>
-          <span class="wq-sum" id="wq-sum"></span>
-          <button type="button" class="ui-btn is-sm wq-fold" id="wq-fold" onclick="wqToggleFold()" aria-expanded="true">접기</button>
-        </div>
-        <div class="wq-body">
-          <ui-tabs class="wq-tabs" id="wq-tabs" lang="ko" panel-focus="none">
-            <div class="wq-panel" id="wq-lanes" slot="lanes"></div>
-            <div class="wq-panel" id="wq-people" slot="people"></div>
-          </ui-tabs>
+        <div class="wq-lane">
+          <div class="wq-lane-head" id="wq-head">
+            <span class="wq-lane-ic" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 4.5h10M3 8h10M3 11.5h6"/></svg></span>
+            <h2 class="wq-lane-title">작업 큐</h2>
+            <span class="wq-count" id="wq-count">0</span>
+            <span class="wq-pills" id="wq-pills"></span>
+            <button type="button" class="wq-fold" id="wq-fold" onclick="wqToggleFold()" aria-expanded="true" aria-label="작업 큐 접기"><span class="wq-fold-text">접기</span></button>
+          </div>
+          <div class="wq-body">
+            <ui-tabs class="wq-tabs" id="wq-tabs" lang="ko" panel-focus="none">
+              <div class="wq-panel" id="wq-lanes" slot="lanes"></div>
+              <div class="wq-panel" id="wq-people" slot="people"></div>
+            </ui-tabs>
+          </div>
         </div>
       </div>
       <!-- Until the first board answer the columns show skeleton cards, not
