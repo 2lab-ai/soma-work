@@ -1870,13 +1870,16 @@ export class ClaudeHandler implements TurnSteeringPort {
         // #1425 — a live shell or workflow holds the turn too (the CLI outlives it with its input closed): the cap
         // stops it the same way, and the note names it.
         const liveTasks = [...liveNonAgents];
-        this.logger.warn('Background agents outlived the keepalive cap; stopping them', {
-          live: live.length,
-          liveTasks: liveTasks.length,
-          maxMs: keepaliveMaxMs,
-          reason,
-          sessionKey: steerKey,
-        });
+        // #1472 — a person's command is not the cap: that stop is logged where it is decided (considerHoldRelease).
+        if (reason !== 'user-work') {
+          this.logger.warn('Background agents outlived the keepalive cap; stopping them', {
+            live: live.length,
+            liveTasks: liveTasks.length,
+            maxMs: keepaliveMaxMs,
+            reason,
+            sessionKey: steerKey,
+          });
+        }
         for (const taskId of [...live, ...liveTasks]) stopBackgroundAgent(taskId);
         if (live.length + liveTasks.length > 0) {
           // Its own uuid, outside the steer ledger: the held turn waits for the
@@ -1926,10 +1929,38 @@ export class ClaudeHandler implements TurnSteeringPort {
       // #1472 — end the hold for a person's waiting command, only at a safe boundary: the turn is held (its answer
       // is out), no turn runs, the loop has handled every frame the CLI sent, and the cap has not fired already.
       // The host is asked last and at that moment, so the row it sees is the one at the head of the line now.
+      // A request that came while the boundary was not safe yet (a frame still unhandled, a turn running, a steer
+      // pushed but not opened) is kept, and asked again once the loop has handled the frame in front of it.
+      let holdReleaseAsked = false;
       const considerHoldRelease = (): boolean => {
-        if (!held || keepaliveFiredAt > 0 || channel.isClosed) return false;
-        if (turnRunning() || arrivedFrames !== frameSeq || resultTransit.inTransit > 0) return false;
-        if (!steerKey || this.holdReleaseGate?.(steerKey) !== true) return false;
+        if (!held || keepaliveFiredAt > 0 || channel.isClosed) {
+          holdReleaseAsked = false;
+          return false;
+        }
+        if (
+          turnRunning() ||
+          arrivedFrames !== frameSeq ||
+          resultTransit.inTransit > 0 ||
+          // A steer pushed into the hold opens a turn the CLI has not started yet: its result is the next boundary.
+          channel.pushedUuids().length !== held.pushedCount
+        ) {
+          holdReleaseAsked = true;
+          return false;
+        }
+        holdReleaseAsked = false;
+        if (!steerKey) return false;
+        let wanted = false;
+        try {
+          wanted = this.holdReleaseGate?.(steerKey) === true;
+        } catch (error) {
+          // Not knowing is not a reason to end the turn's background work, nor to fail the turn.
+          this.logger.warn('Hold release gate failed — the hold stays', {
+            sessionKey: steerKey,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return false;
+        }
+        if (!wanted) return false;
         this.logger.info("A person's command waits: ending the background hold", {
           liveAgents: liveAgents.size,
           liveTasks: liveNonAgents.size,
@@ -1940,7 +1971,12 @@ export class ClaudeHandler implements TurnSteeringPort {
       };
       if (steerKey) {
         const entry = this.activeQueries.get(steerKey);
-        if (entry?.query === activeQuery) entry.considerHoldRelease = () => void considerHoldRelease();
+        if (entry?.query === activeQuery) {
+          entry.considerHoldRelease = () => {
+            holdReleaseAsked = true;
+            considerHoldRelease();
+          };
+        }
       }
       const armKeepaliveCap = () => {
         keepaliveCapTimer = setTimeout(() => fireKeepaliveCap('idle'), keepaliveMaxMs);
@@ -2295,6 +2331,8 @@ export class ClaudeHandler implements TurnSteeringPort {
             if (settlement) yield settlement;
           }
           yield message;
+          // #1472 — a release asked while this frame was still unhandled: the loop has handled it now.
+          if (holdReleaseAsked) considerHoldRelease();
         }
         // The stream ended with a result still held: the keepalive cap or its
         // backstop ended the CLI, the silence bound or the follow-up grace closed

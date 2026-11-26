@@ -3186,6 +3186,106 @@ describe('ClaudeHandler — a held run yields to a waiting command (#1472)', () 
     }
   });
 
+  it('a request made while the host was a frame behind is kept, and made once the loop catches up', async () => {
+    const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const held = deferred();
+      const emitProgress = deferred();
+      installScriptedQuery(cli, async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield* openingTurnHead([agentTask(AGENT_ID)]);
+        yield openingResult(cli.opening?.uuid);
+        const drained = drainInputs(inputs, cli);
+        held.resolve();
+        await emitProgress.promise;
+        // The agent works on: two of its frames, then silence.
+        yield SUBAGENT_ASSISTANT;
+        yield SUBAGENT_ASSISTANT;
+        await drained;
+        yield taskNotification(AGENT_ID, 'stopped');
+        yield level([]);
+        yield INIT;
+        yield assistantText('REPORTED');
+        yield notifiedResult({ result: 'REPORTED' });
+      });
+      let waiting = false;
+      const handler = newHandler();
+      handler.setHoldReleaseGate(() => waiting);
+
+      // A consumer that can stop pulling: the host's renderer falling behind.
+      let paused: Deferred | undefined;
+      const turn = startTurn(handler);
+      const frames: unknown[] = [];
+      const consumed = (async () => {
+        for (;;) {
+          if (paused) await paused.promise;
+          const next = await turn.next();
+          if (next.done) return;
+          frames.push(next.value);
+        }
+      })();
+
+      await held.promise;
+      await hostCaughtUp();
+      paused = deferred();
+      emitProgress.resolve();
+      await hostCaughtUp();
+
+      // One agent frame is handed to the paused consumer, the second waits unhandled: the host is a frame behind.
+      waiting = true;
+      handler.requestHoldRelease(SESSION_KEY);
+      await hostCaughtUp();
+      expect(cli.stopTask).not.toHaveBeenCalled();
+      expect(cli.inputEnded).toBe(false);
+
+      // The consumer catches up; nothing else arrives and no one asks again.
+      const resume = paused;
+      paused = undefined;
+      resume.resolve();
+      await consumed;
+
+      expect(cli.stopTask).toHaveBeenCalledTimes(1);
+      expect(cli.inputEnded).toBe(true);
+      expect(callsOf(info, YIELD_LOG)).toHaveLength(1);
+      expect(resultsOf(frames)).toHaveLength(1);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  it('a gate that fails keeps the hold and the turn', async () => {
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const agent = installHeldAgent(cli);
+      let fail = true;
+      const handler = newHandler();
+      handler.setHoldReleaseGate(() => {
+        if (fail) throw new Error('classifier down');
+        return true;
+      });
+
+      const framesPromise = collect(startTurn(handler));
+      await agent.held;
+      await hostCaughtUp();
+      handler.requestHoldRelease(SESSION_KEY);
+      await hostCaughtUp();
+
+      expect(cli.stopTask).not.toHaveBeenCalled();
+      expect(cli.inputEnded).toBe(false);
+      expect(callsOf(warn, 'Hold release gate failed — the hold stays').length).toBeGreaterThan(0);
+
+      fail = false;
+      handler.requestHoldRelease(SESSION_KEY);
+      const frames = await framesPromise;
+      expect(cli.stopTask).toHaveBeenCalledWith(AGENT_ID);
+      expect(resultsOf(frames)).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('a request for another session changes nothing', async () => {
     const cli = newFakeCli();
     const agent = installHeldAgent(cli);

@@ -4042,6 +4042,43 @@ describe('SlackHandler — follow-up queue host', () => {
       await settle();
     });
 
+    it('a gate that cannot classify the head row says no instead of throwing', async () => {
+      withLiveTurn(false);
+      const { settle } = await startBusyTurn();
+      const gate = claudeHandler.setHoldReleaseGate.mock.calls[0][0] as (key: string) => boolean;
+      await handler.handleMessage(message({ ts: '333.444', text: '$autoz 이거 해줘' }), say());
+      expect(gate(SESSION_KEY)).toBe(true);
+
+      handlerAny.commandRouter.classifyText = vi.fn(() => {
+        throw new Error('classifier exploded');
+      });
+
+      expect(gate(SESSION_KEY)).toBe(false);
+      await settle();
+    });
+
+    it('a `Send now` already replacing the run keeps the gate shut', async () => {
+      withLiveTurn(false);
+      const { settle } = await startBusyTurn();
+      const gate = claudeHandler.setHoldReleaseGate.mock.calls[0][0] as (key: string) => boolean;
+      await handler.handleMessage(message({ ts: '333.444', text: '$autoz 이거 해줘' }), say());
+      expect(gate(SESSION_KEY)).toBe(true);
+
+      // A row reserved by a `Send now`: that dispatch is the session's next run.
+      const queue = handlerAny.followupQueue;
+      const original = queue.list.bind(queue);
+      queue.list = (key: string) => {
+        const rows = original(key);
+        return rows.length === 0 ? rows : [...rows, { ...rows[0], id: `${key}#99`, seq: 99, state: 'reserved' }];
+      };
+      try {
+        expect(gate(SESSION_KEY)).toBe(false);
+      } finally {
+        queue.list = original;
+      }
+      await settle();
+    });
+
     it('a `$skill` from someone who may not interrupt the session does not end a hold', async () => {
       withLiveTurn();
       const { settle } = await startBusyTurn();

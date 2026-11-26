@@ -12,6 +12,7 @@ import {
   type RunReport,
 } from '@soma/slack/followup-dispatcher';
 import {
+  FOLLOWUP_PENDING_DISPATCH_STATES,
   FOLLOWUP_REDELIVER_AFTER_RESTART_REASON,
   type FollowupContext,
   type FollowupItem,
@@ -7717,7 +7718,8 @@ export class SlackHandler {
    * — {@link isSteerableText})? A turn held open only for background work then
    * ends its hold at its next safe boundary, so the drain runs the line.
    *
-   * Only the head row and only a `queued` one: the line keeps its order, and a
+   * The head is the row the drain at the run's end would claim (the canonical
+   * key, lowest `seq`). Only the head row and only a `queued` one: the line keeps its order, and a
    * plain message refused by the turn waits for the re-offer, never for this
    * (it would be delivered twice). Only an author who may interrupt the session
    * (as `Send now` and steering ask) and whose row the drain would run now.
@@ -7727,19 +7729,32 @@ export class SlackHandler {
     const queue = this.followupQueue;
     const dispatcher = this.followupDispatcher;
     if (!queue || !dispatcher || this.followupReadFailed) return false;
+    // The line the drain at the run's end takes, in the order it takes it: the canonical key (rows a migrating turn
+    // parked live there too), by `seq` (`FollowupQueue.claimNext`).
     const slotKey = this.boundFollowupSlot(sessionKey);
     const keys = slotKey !== undefined ? [sessionKey, slotKey] : [sessionKey];
     if (keys.some((key) => dispatcher.drainHalt(key))) return false;
-    const head = keys
-      .flatMap((key) => queue.list(key))
-      .filter((item) => item.state === 'queued')
-      .sort((a, b) => a.enqueuedAt - b.enqueuedAt || a.seq - b.seq)[0];
-    if (!head) return false;
-    const event = head.message as MessageEvent;
-    if (this.isSteerableText(event)) return false;
-    const author = event.user;
-    if (!author || !this.authorizeFollowupInterrupt(sessionKey, author).allowed) return false;
-    return this.authorizeFollowupDispatch(sessionKey, event, head.context).allowed;
+    try {
+      const rows = queue.list(sessionKey);
+      // A `Send now` is already replacing this run (its row is reserved or claimed): that dispatch is the next run.
+      if (keys.some((key) => queue.list(key).some((item) => FOLLOWUP_PENDING_DISPATCH_STATES.includes(item.state)))) {
+        return false;
+      }
+      const head = rows.filter((item) => item.state === 'queued').sort((a, b) => a.seq - b.seq)[0];
+      if (!head) return false;
+      const event = head.message as MessageEvent;
+      if (this.isSteerableText(event)) return false;
+      const author = event.user;
+      if (!author || !this.authorizeFollowupInterrupt(sessionKey, author).allowed) return false;
+      return this.authorizeFollowupDispatch(sessionKey, event, head.context).allowed;
+    } catch (error) {
+      // Not knowing is not a yes: the hold stays, and the drain still runs the row when the run ends.
+      this.logger.warn('Could not tell whether a waiting command should end the hold — it stays', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      });
+      return false;
+    }
   }
 
   /**
