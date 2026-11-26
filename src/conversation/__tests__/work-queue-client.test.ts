@@ -184,6 +184,9 @@ describe('the history — one at a time', () => {
     expect(t).toMatchObject({ end: '돌려놓음', label: 'task wq-2', keys: ' · ABC-1', why: ' — 관리자' });
     expect(t.when).toMatch(/→ .* \(1시간\)$/);
     expect(wqRecordText({ ...rec('r', undefined, 5 * HOUR, 'refused') }).end).toBe('같은 작업이라 거절');
+    expect(wqRecordText({ ...rec('r', undefined, 5 * HOUR, 'refused'), reason: 'same-work' }).why).toBe(
+      ' — 같은 키가 다른 스레드에서 진행 중이거나 대기 중',
+    );
     expect(wqRecordText({ ...rec('s', undefined, 5 * HOUR, 'started') }).when).toMatch(/시작 \(대기 1시간\)/);
   });
 });

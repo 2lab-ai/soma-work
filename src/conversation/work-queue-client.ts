@@ -68,6 +68,7 @@ export const WQ_REASON_JS = String.raw`function wqReason(reason) {
   if (s === 'person') return '본인';
   if (s === 'admin') return '관리자';
   if (s === 'closed') return '세션 종료';
+  if (s === 'same-work') return '같은 키가 다른 스레드에서 진행 중이거나 대기 중';
   return s;
 }`;
 
