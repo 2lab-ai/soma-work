@@ -1,6 +1,6 @@
 # SSOT — goal-state (goal 처리를 명시적 상태머신으로)
 
-Status: in-progress · 작성 2026-11-26 · 기준 커밋 main `cda77e0a`
+Status: R1 shipped 2026-11-26 ([loop.done.md](loop.done.md)) · R2 open ([loop.md](loop.md)) · 작성 2026-11-26 · 기준 커밋 main `cda77e0a`
 현재 상태 = [`../38-goal-state-as-is.md`](../38-goal-state-as-is.md) ·
 스펙 = [`../39-goal-state-spec.md`](../39-goal-state-spec.md) ·
 아키텍처 = [`../40-goal-state-architecture.md`](../40-goal-state-architecture.md) · 드라이버 = [`loop.md`](loop.md)

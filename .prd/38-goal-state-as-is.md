@@ -1,6 +1,6 @@
 # 38 — goal 현재 상태: 상태머신이 코드에 숨어 있다
 
-Status: in-progress · 실측 2026-11-26 · 기준 커밋 main `cda77e0a` · ssot = [goal-state/ssot.md](goal-state/ssot.md)
+Status: shipped (R1, 2026-11-26 — [goal-state/loop.done.md](goal-state/loop.done.md)) · 실측 2026-11-26 · 기준 커밋 main `cda77e0a` · ssot = [goal-state/ssot.md](goal-state/ssot.md)
 
 > 요약: goal이 선언한 상태는 `status` 하나뿐이고, 루프가 실제로 어디에 있는지(판정 중·재시도 대기·주인 질문 대기·첫 턴
 > 대기)는 필드 조합·메모리 집합·타이머·프록시로 흩어져 있다. 같은 질문("턴이 도는가", "cap 질문이 열렸나", "멈춰 있나")에

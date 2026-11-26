@@ -1,23 +1,17 @@
 # loop — goal-state 구현 드라이브
 
-Status: in-progress · 라운드 1(PR1–PR10) · ssot = [`ssot.md`](ssot.md) SSOT_1–2 · 닫힌 라운드 = [`loop.done.md`](loop.done.md) ·
+Status: R1 closed 2026-11-26 (PR1–PR10 + 리뷰 라운드, 머지 · dev 배포 · 실측 — [`loop.done.md`](loop.done.md) R1) ·
+R2 open (아래 셋, 모두 조건 대기) · ssot = [`ssot.md`](ssot.md) SSOT_1–2 · 닫힌 라운드 = [`loop.done.md`](loop.done.md) ·
 현재 상태 = [`../38-goal-state-as-is.md`](../38-goal-state-as-is.md) · 스펙 = [`../39-goal-state-spec.md`](../39-goal-state-spec.md) ·
 아키텍처 = [`../40-goal-state-architecture.md`](../40-goal-state-architecture.md)
 
-## R1 — PR1–PR10 (40 §4 순서대로, PR마다 머지 → 소유자 dev 배포 → 시나리오 확인)
+## R2 — R1 뒤에 남은 것
 
-| ID | 작업 단위 | Status | 다음 |
+| ID | 작업 | Status | 조건 · 이유 |
 |---|---|---|---|
-| R1.1 | PR1 · WU1 점유 모듈(동작 보존) + A23–A26 기준선 + 계약 규칙 2 | 🟡 | 관련 테스트 재실행 → PR → CI → 머지 → dev 배포 |
-| R1.2 | PR2 · WU1 게이트 교체 · 로드 레코드 · releaseRecovered | 🔴 | R1.1 뒤 |
-| R1.3 | PR3 · WU2 모델 · 읽기 한 곳(phaseOf · placeOf) | 🔴 | R1.2 뒤 |
-| R1.4 | PR4 · WU3 전이 이동(goal/machine.ts) | 🔴 | R1.3 뒤 |
-| R1.5 | PR5 · WU3 커밋 한 길(goal-commit.ts) | 🔴 | R1.4 뒤 |
-| R1.6 | PR6 · WU3 표면 수정(D11 · D12) | 🔴 | R1.5 뒤 |
-| R1.7 | PR7 · WU4 저장 모양 + 화면(D4–D6 · D17 · A27) | 🔴 | R1.6 뒤, 배포 뒤 재시작 1회 |
-| R1.8 | PR8 · WU5 루프 구동기(LoopState · PendingDrive · AutoResume) | 🔴 | R1.7 뒤 |
-| R1.9 | PR9 · WU6 재시작 복구(restart-recovery.ts) | 🔴 | R1.8 뒤 |
-| R1.10 | PR10 · WU7 칸 · 문서 · dev 실측(A22) | 🔴 | R1.9 뒤 |
+| R2.1 | 옛 필드 함께 쓰기 제거(40 §3 · D17): 저장은 `phase`만, 로드는 `phase`를 펼친다 | ⏸ 조건 대기 | `phase`를 못 읽는 빌드(PR7 #1498 이전)가 기록을 다시 읽을 수 있는 동안 지우면 안 된다: 그 빌드가 goal의 첫 턴을 시작하면 `openingPending`만 지우는데, `phase`만 있는 기록은 `opening`으로 남아 루프가 그 goal을 영영 몰지 않는다(A27 4행). 조건 = PR7을 포함한 prod 릴리스 뒤 1주, 되돌릴 빌드가 남지 않았을 때. 그때 cap 질문의 저장 모양도 라운드 필드를 품도록 넓힌다 |
+| R2.2 | A22 전체 흐름(대시보드에서 goal 생성 → 한도 1 → cap 질문 한 번 → `goal max`로 재개 → 재시작 중 카드 칸) | ⏸ 사람 필요 | 대시보드 새 작업은 Slack으로 로그인한 사람만 만든다. 봇이 쓰는 브라우저 도구는 대시보드에 로그인돼 있지 않고, 로그인은 2단계 인증 코드에서 멈춘다(사람만 넣을 수 있다). R1은 그 대신 서버 쪽 실측으로 닫았다(loop.done R1 · 실측) |
+| R2.3 | Slack `goal` 블록을 같은 투영(`goalCardPhase`)으로 | 💤 선택 | 39 §범위 밖 "작으면 WU7" — WU7은 보드 칸까지만 했다 |
 
 ## build facts
 

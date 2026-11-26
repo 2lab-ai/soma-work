@@ -1,6 +1,6 @@
 # 39 — goal 상태 스펙: 숨은 상태를 이름 있는 상태와 전이로
 
-Status: in-progress · 작성 2026-11-26 · trinity R1 반영(2026-11-26) · 현재 상태 = [38-goal-state-as-is.md](38-goal-state-as-is.md) ·
+Status: shipped (R1, 2026-11-26 — [goal-state/loop.done.md](goal-state/loop.done.md); R2 open) · 작성 2026-11-26 · trinity R1 반영(2026-11-26) · 현재 상태 = [38-goal-state-as-is.md](38-goal-state-as-is.md) ·
 아키텍처 = [40-goal-state-architecture.md](40-goal-state-architecture.md) · ssot = [goal-state/ssot.md](goal-state/ssot.md)
 
 > 요약: goal 동작을 여섯 개의 명시적 상태로 다시 적는다 — 턴 점유, goal 위치, 활성 goal의 루프 단계, 루프 구동기(지금 하는 일과
