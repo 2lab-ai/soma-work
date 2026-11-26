@@ -130,3 +130,48 @@ export function slotHoldOf(session: GoalPlaces): SessionGoal | undefined {
   const g = session.goal;
   return g && placeOf(session, g) === 'slot-hold' ? g : undefined;
 }
+
+const sameObjective = (a: string, b: string): boolean =>
+  a.trim().replace(/\s+/g, ' ') === b.trim().replace(/\s+/g, ' ');
+
+/**
+ * Where a goal with this objective already waits: `0` — it is the goal in
+ * flight (active or paused); `n` — position `n` of the queue. `undefined` when
+ * none does. Whitespace differences do not make a different goal.
+ *
+ * The SET_GOAL host-apply asks it first: a model that reads the user's
+ * request again on a later turn calls SET_GOAL again, and the same goal would
+ * queue behind itself (#865, live on dev 2026-11-03).
+ */
+/**
+ * The paused goal (set aside in `goalPaused`) with this objective, if any.
+ * The SET_GOAL host-apply asks it after {@link findPendingGoalPosition}: a goal
+ * the owner paused is not gone, and a model that reads the request again must
+ * not start a second copy of it behind the owner's back.
+ */
+export function findPausedGoal(session: GoalPlaces, objective: string): SessionGoal | undefined {
+  return session.goalPaused?.find((g) => sameObjective(g.objective, objective));
+}
+
+export function findPendingGoalPosition(session: GoalPlaces, objective: string): number | undefined {
+  if (slotGoalInFlight(session) !== undefined && sameObjective(session.goal?.objective ?? '', objective)) return 0;
+  const at = session.goalQueue?.findIndex((g) => sameObjective(g.objective, objective)) ?? -1;
+  return at >= 0 ? at + 1 : undefined;
+}
+
+/**
+ * Resolve a goal by `goalId` across the active goal, the pending queue, the
+ * paused goals, and the completed history. Used by per-goal accounting so a turn's spend is
+ * credited to the goal that owned the leg even after it has been advanced into
+ * `goalHistory`. Returns `undefined` when `goalId` is absent/unknown.
+ */
+export function findGoalById(session: GoalPlaces, goalId: string | undefined): SessionGoal | undefined {
+  if (!goalId) return undefined;
+  if (session.goal?.goalId === goalId) return session.goal;
+  const inQueue = session.goalQueue?.find((g) => g.goalId === goalId);
+  if (inQueue) return inQueue;
+  // A goal paused mid-turn still owns that turn's spend.
+  const paused = session.goalPaused?.find((g) => g.goalId === goalId);
+  if (paused) return paused;
+  return session.goalHistory?.find((g) => g.goalId === goalId);
+}

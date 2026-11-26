@@ -1,4 +1,5 @@
 import type { WebClient } from '@slack/web-api';
+import { bumpEpoch } from '@soma/slack/goal/machine';
 import type { ClaudeHandler } from '../../claude-handler';
 import { Logger } from '../../logger';
 import { validateSessionGoalObjective } from '../../prompt/session-goal-block';
@@ -272,7 +273,7 @@ export class GoalActionHandler {
       // Bump the intent epoch so an in-flight completion eval for the OLD
       // objective resolves into a discard (M1). Drop the cached system prompt
       // so the new objective is injected into the next turn.
-      goal.epoch = (goal.epoch ?? 0) + 1;
+      bumpEpoch(goal);
       session.systemPrompt = undefined;
       // codex review #5: the prior turn's output (runtime stash + persisted
       // mirror + eval-cache) was evidence for the OLD objective — clear it so

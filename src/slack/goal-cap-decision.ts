@@ -32,6 +32,7 @@
 import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import { atomicWriteJson, readJsonWithBackup } from '@soma/common/atomic-json';
+import { bumpEpoch } from '@soma/slack/goal/machine';
 import { capAskOf } from '@soma/slack/goal/read';
 import { DATA_DIR } from '../env-paths';
 import { Logger } from '../logger';
@@ -195,6 +196,8 @@ export function answerGoalCapDecision(args: AnswerGoalCapDecisionArgs): GoalCapD
     status: goal.status,
     updatedAt: goal.updatedAt,
     epoch: goal.epoch,
+    evalBackoffUntil: goal.evalBackoffUntil,
+    evalRetryReason: goal.evalRetryReason,
     systemPrompt: session.systemPrompt,
   };
   endDecision(goal);
@@ -208,7 +211,7 @@ export function answerGoalCapDecision(args: AnswerGoalCapDecisionArgs): GoalCapD
   // The same invalidation every goal-state change applies: an in-flight
   // completion eval discards its verdict, and the next turn rebuilds the
   // `<session-goal>` block.
-  goal.epoch = (goal.epoch ?? 0) + 1;
+  bumpEpoch(goal);
   session.systemPrompt = undefined;
   try {
     args.save();
@@ -222,6 +225,8 @@ export function answerGoalCapDecision(args: AnswerGoalCapDecisionArgs): GoalCapD
     goal.status = before.status;
     goal.updatedAt = before.updatedAt;
     goal.epoch = before.epoch;
+    goal.evalBackoffUntil = before.evalBackoffUntil;
+    goal.evalRetryReason = before.evalRetryReason;
     session.systemPrompt = before.systemPrompt;
     if (rewrite) withdrawDmSync(rewrite);
     logger.error('Goal cap decision refused — the sessions could not be saved', {
