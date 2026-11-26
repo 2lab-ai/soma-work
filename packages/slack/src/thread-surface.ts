@@ -1132,8 +1132,9 @@ export class ThreadSurface {
 
   /**
    * The rendered blocks with the date tokens of the progress and liveness
-   * stamps replaced by one placeholder — only those two: a wait's start or any
-   * other date is content. A token is taken out only when its second appears
+   * stamps replaced by one placeholder — only the ones the line draws
+   * (`ActionPanelBuilder.progressAgeStamps`): a wait's start or any other date
+   * is content. A token is taken out only when its second appears
    * once in the blocks: a second shared with another date (a wait that started
    * in the same second as the last progress) cannot be told apart, so it stays
    * in and that edit is drawn — the safe side, as is a stamp whose token was
@@ -1214,7 +1215,10 @@ export class ThreadSurface {
     }
 
     // Only the ages moved: hold the edit until a minute after the last one.
-    const withoutAges = ThreadSurface.withoutAges(renderKey, panelState.lastProgressAt, panelState.lastSignalAt);
+    const withoutAges = ThreadSurface.withoutAges(
+      renderKey,
+      ...ActionPanelBuilder.progressAgeStamps(panelState.lastProgressAt, panelState.lastSignalAt),
+    );
     if (
       !force &&
       panelState.renderKey !== undefined &&

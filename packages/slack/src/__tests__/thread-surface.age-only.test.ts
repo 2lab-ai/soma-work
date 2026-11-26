@@ -134,6 +134,23 @@ describe('ThreadSurface — an edit that only moves the ages waits a minute', ()
     expect(last(updates)).toContain(`${token(T0 + 15_000)}부터 기다림`);
   });
 
+  it('a wait start that shares its second with an undrawn liveness signal is drawn at once', async () => {
+    // The liveness signal is drawn only once it outruns the progress by a minute; 5 s later it is not drawn, so its
+    // second is not an age of the header — here it is the wait's start, which is content.
+    session.activityState = 'waiting';
+    session.activityStateChangedAt = T0 + 5_000;
+    await vi.advanceTimersByTimeAsync(5_000);
+    await surface.setStatus(session, KEY, { waitingForChoice: true, lastSignalAt: T0 + 5_000 });
+    expect(updates).toHaveLength(2);
+
+    session.activityStateChangedAt = T0 + 15_000;
+    await vi.advanceTimersByTimeAsync(10_000);
+    await surface.setStatus(session, KEY, { lastSignalAt: T0 + 15_000 });
+
+    expect(updates).toHaveLength(3);
+    expect(last(updates)).toContain(`${token(T0 + 15_000)}부터 기다림`);
+  });
+
   it('a badge change is drawn at once', async () => {
     session.activityState = 'idle';
     await vi.advanceTimersByTimeAsync(5_000);
