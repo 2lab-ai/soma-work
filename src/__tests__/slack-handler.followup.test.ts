@@ -1970,6 +1970,29 @@ describe('SlackHandler — follow-up queue host', () => {
 
       expect(registrySession.goal).toMatchObject({ objective: '도슨트북 커버 고쳐줘', status: 'active' });
     });
+
+    // .prd/39 D12 · A15 (X15) — a goal the owner paused waits on the shelf: a chat line is not a new goal beside it.
+    it('does not start a goal while the shelf holds one', async () => {
+      vi.spyOn(userSettingsStore, 'getUserAutoGoalEnabled').mockReturnValue(true);
+      registrySession.goalPaused = [
+        {
+          goalId: 'p1',
+          objective: '쉬는 목표',
+          status: 'paused',
+          createdAt: 1,
+          updatedAt: 1,
+          createdBy: 'U_OWNER',
+          continuationCount: 0,
+          maxContinuations: 10,
+        },
+      ];
+      try {
+        await handler.handleMessage(message({ ts: '444.556', text: '오늘 점심 뭐 먹지' }), say());
+        expect(registrySession.goal).toBeUndefined();
+      } finally {
+        registrySession.goalPaused = undefined;
+      }
+    });
   });
 
   /**
