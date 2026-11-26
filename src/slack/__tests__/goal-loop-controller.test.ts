@@ -1284,6 +1284,8 @@ describe('GoalLoopController — the loop gate reads turnHeld and the owner ques
     const goal = makeGoal();
     const session = makeSession(goal);
     if (opts.panel) (session as any).actionPanel = opts.panel;
+    // The display word on the session itself too (review #1490): a gate that read it would see the stale value.
+    if (opts.activityState) (session as any).activityState = opts.activityState;
     const dispatched: string[] = [];
     const held: Array<[string, string]> = [];
     const controller = new GoalLoopController({

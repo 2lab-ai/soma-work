@@ -1499,8 +1499,9 @@ describe('SlackHandler — follow-up queue host', () => {
       });
 
       /** The real loop controller on this handler: its gate asks the handler's occupancy (as `src/index.ts` wires it). */
-      function wireLoop() {
+      function wireLoop(verdict: Record<string, unknown> = { completed: true, reason: 'done', remaining: [] }) {
         const judged: string[] = [];
+        const injected: unknown[] = [];
         const controller = new GoalLoopController({
           registry: { getSessionByKey: () => registrySession, saveSessions: () => {} },
           requestCoordinator: { isRequestActive: (key) => handlerAny.requestCoordinator.isRequestActive(key) },
@@ -1508,9 +1509,11 @@ describe('SlackHandler — follow-up queue host', () => {
           holdForTurn: (key, cause) => handler.holdGoalDriverForTurn(key, cause),
           dispatcher: async () => {
             judged.push(handlerAny.occupancy.runPhase(SESSION_KEY));
-            return JSON.stringify({ completed: true, reason: 'done', remaining: [] });
+            return JSON.stringify(verdict);
           },
-          injectContinuation: async () => undefined,
+          injectContinuation: async (event) => {
+            injected.push(event);
+          },
           postNotice: async () => undefined,
           logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
           fallbackModel: () => ({ model: 'claude-sonnet-4' }),
@@ -1518,7 +1521,7 @@ describe('SlackHandler — follow-up queue host', () => {
         handler.setGoalTurnSettledHandler((key: string, opts?: { cause?: 'turn' | 'kick' }) =>
           controller.onTurnSettled(key, opts),
         );
-        return { controller, judged };
+        return { controller, judged, injected };
       }
 
       it('A23 (PR2): the loop starts judging at the turn end, while its run still settles on the slot', async () => {
@@ -1563,6 +1566,34 @@ describe('SlackHandler — follow-up queue host', () => {
         await settle();
         await controller.settled(SESSION_KEY);
         expect(judged).toEqual(['none']);
+      });
+
+      // Review #1490 — a kick held for the slot is taken over by the turn that then ends with text: one judge, one
+      // continuation, nothing replayed at the release (an incomplete verdict keeps the goal active, so a replay shows).
+      it('A1 (PR2): a held kick is taken over by the turn that ends with text — one judge, one continuation', async () => {
+        registrySession.goal = {
+          goalId: 'g1',
+          status: 'active',
+          objective: '릴리즈',
+          epoch: 0,
+          continuationCount: 0,
+          maxContinuations: 10,
+        };
+        const { controller, judged, injected } = wireLoop({ completed: false, reason: 'not yet', remaining: ['x'] });
+        const { settle } = await startBusyTurn();
+        handlerAny.goalTurnSettledHandler(SESSION_KEY, { cause: 'kick' });
+        await controller.settled(SESSION_KEY);
+        expect(judged).toEqual([]);
+
+        report('working');
+        report('idle');
+        handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, ['이번 턴의 결과']);
+        await controller.settled(SESSION_KEY);
+        await settle();
+        await controller.settled(SESSION_KEY);
+
+        expect(judged).toEqual(['settling']);
+        expect(injected).toHaveLength(1);
       });
 
       it('A26: a follow-up queued at the goal turn end runs first; the driver fires once, after the queue drained', async () => {
