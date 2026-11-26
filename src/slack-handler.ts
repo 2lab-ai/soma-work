@@ -5389,7 +5389,16 @@ export class SlackHandler {
     // Words answer a question; a file alone does not (round 5, astra).
     if (!text || shouldForwardAsLocalSlashCommand(text, false)) return false;
     const panel = this.claudeHandler.getSessionByKey?.(sessionKey)?.actionPanel;
-    return panel?.waitingForChoice === true || panel?.pendingQuestion !== undefined;
+    if (panel?.waitingForChoice !== true && panel?.pendingQuestion === undefined) return false;
+    // Only a message that reaches the model as a turn answers: a command that only answers itself (`help`, bare
+    // `%model x` — `control`) never does, and leaves the question open (review-of-legends, correctness). It runs live
+    // and is not queued (`isQueueableFollowup`); this keeps the rule here too, for any other way into the queue. A
+    // classifier that fails closes nothing: the message is still stored, as it is.
+    try {
+      return this.commandRouter?.classifyText?.(text, event.user) !== 'control';
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -9703,7 +9712,9 @@ export class SlackHandler {
         admitted,
         // pr-watch reserved this event's slot as it sent it (`reserveHostTurn`): it runs on that reservation.
         hostReserved: route?.userTaskReady === true,
-        sameWorkOk: route?.userTaskSameWorkOk === true,
+        // #1474 — an answer to the model's question goes on with the thread's own work: it is never refused as the
+        // same work another thread of the person runs (its question is already recorded answered) (round 9, astra).
+        sameWorkOk: route?.userTaskSameWorkOk === true || event.questionAnswer === true,
       });
       if (result.action === 'same-work') {
         this.logger.info('User task queue: the same work is already running or waiting — not started', {

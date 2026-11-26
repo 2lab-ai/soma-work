@@ -1707,7 +1707,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           logger: this.logger,
         });
       }
-      carriedChoice = session.actionPanel?.waitingForChoice === true && session.actionPanel?.pendingChoice !== undefined;
+      carriedChoice =
+        session.actionPanel?.waitingForChoice === true && session.actionPanel?.pendingChoice !== undefined;
       // The turn works, carried question or not: `working` moves the activity clock an answer's give-back reads, and
       // keeps a cron fire queued instead of injected into the running turn (round 6, fable). The carried question's
       // bit stays up below, and the turn ends waiting on it.

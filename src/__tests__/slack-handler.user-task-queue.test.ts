@@ -254,6 +254,29 @@ describe('SlackHandler — per-user task queue gate', () => {
     await first;
   });
 
+  // #1474 round 9 (astra): an answer to the model's question goes on with its own thread's work — naming a key another
+  // thread of the person runs does not make it the same work (its question is already recorded answered).
+  it('#1474 — an answer naming a key another thread runs is not refused as the same work: it runs', async () => {
+    limits.set(OWNER, UNLIMITED);
+    const gate = deferred<any>();
+    startWithContinuation.mockImplementationOnce(() => gate.promise);
+    const first = handler.handleMessage(
+      message('100.0', { text: 'ABC-1 구현해줘' }),
+      vi.fn().mockResolvedValue({ ts: 'x' }),
+    );
+    await tick();
+    expect(handler.runningTasksOf(OWNER)[0].keys).toEqual(['ABC-1']);
+
+    await handler.handleMessage(
+      message('200.0', { ts: '200.01', text: 'ABC-1 기준으로 설명해 줘', questionAnswer: true } as any),
+      vi.fn(),
+    );
+    expect(startWithContinuation).toHaveBeenCalledTimes(2);
+    expect(startWithContinuation.mock.calls[1][0]).toContain('ABC-1 기준으로 설명해 줘');
+    gate.resolve({ hasPendingChoice: false });
+    await first;
+  });
+
   it('a thread’s keys are its latest keyed request’s: a thread that did ABC-1 and now does ABC-2 is not doing ABC-1', async () => {
     limits.set(OWNER, UNLIMITED);
     await handler.handleMessage(message('100.0', { text: 'ABC-1 해줘' }), vi.fn().mockResolvedValue({ ts: 'x' }));

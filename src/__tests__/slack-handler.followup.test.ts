@@ -9265,6 +9265,31 @@ describe('SlackHandler — follow-up queue host', () => {
       await first;
     });
 
+    // #1474 round 9 (review-of-legends, correctness): a command that only answers itself (`help`, a bare `%model x`) never
+    // reaches the model as a turn — it is no answer, and the question stays open.
+    it.each([
+      ['help'],
+      ['%model sonnet'],
+    ])('T2 a command that starts no turn (%s), typed while the question is open, leaves it open', async (text) => {
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const first = handler.handleMessage(message({ ts: '333.525', text: '작업해' }), say());
+      await tick();
+      registrySession.actionPanel = { waitingForChoice: true, pendingQuestion: singleQuestion() };
+      handlerAny.threadPanel.clearChoice.mockClear();
+      routeCommand.mockResolvedValueOnce({ handled: true }); // the router answers it (its card), no prompt
+
+      await handler.handleMessage(message({ ts: '333.526', text }), say());
+
+      expect(registrySession.actionPanel.waitingForChoice).toBe(true);
+      expect(registrySession.actionPanel.pendingQuestion).toEqual(singleQuestion());
+      expect(handlerAny.threadPanel.clearChoice).not.toHaveBeenCalled();
+      expect(items().find((item: any) => item.message.ts === '333.526')).toBeUndefined();
+
+      gate.resolve({ hasPendingChoice: true });
+      await first;
+    });
+
     // #1474 round 6 (grok): a file alone does not answer the question — the person's words do.
     it('T2 a message with only a file leaves the open question open', async () => {
       registrySession.activityState = 'waiting';
