@@ -5628,25 +5628,64 @@ export async function registerDashboardRoutes(
 
   // ── Goal list (work item) ──
 
+  // add takes the goal composer's files (base64 in JSON, the panel composer's limits and body limit); move and edit
+  // act on a goal still in the queue.
   server.post<{
     Params: { key: string };
-    Body: { action?: unknown; objective?: unknown; goalId?: unknown; expect?: unknown };
+    Body: {
+      action?: unknown;
+      objective?: unknown;
+      goalId?: unknown;
+      expect?: unknown;
+      attachments?: unknown;
+      to?: unknown;
+    };
   }>(
     '/api/dashboard/session/:key/goal',
-    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    { bodyLimit: NEW_TASK_BODY_LIMIT, preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
       const body = request.body || {};
+      const objectiveError = (v: unknown): string | null =>
+        typeof v !== 'string' || !v.trim()
+          ? 'objective is required and must be a non-empty string'
+          : v.length > 4000
+            ? 'objective exceeds max length (4000 chars)'
+            : null;
+      const goalIdError = (v: unknown): string | null =>
+        typeof v !== 'string' || !v || v.length > 200 ? 'goalId is required and must be a string' : null;
       let action: HostGoalAction;
+      // Decoded only after the session gate below (a sender it refuses never gets files parsed).
+      let rawAttachments: unknown;
       if (body.action === 'add') {
-        if (typeof body.objective !== 'string' || !body.objective.trim()) {
-          reply.status(400).send({ error: 'objective is required and must be a non-empty string' });
+        const bad = objectiveError(body.objective);
+        if (bad) {
+          reply.status(400).send({ error: bad });
           return;
         }
-        if (body.objective.length > 4000) {
-          reply.status(400).send({ error: 'objective exceeds max length (4000 chars)' });
+        if (body.attachments !== undefined && !Array.isArray(body.attachments)) {
+          reply.status(400).send({ error: 'attachments must be an array' });
           return;
         }
-        action = { action: 'add', objective: body.objective };
+        rawAttachments = body.attachments;
+        action = { action: 'add', objective: body.objective as string };
+      } else if (body.action === 'move') {
+        const bad = goalIdError(body.goalId);
+        if (bad) {
+          reply.status(400).send({ error: bad });
+          return;
+        }
+        if (typeof body.to !== 'number' || !Number.isSafeInteger(body.to) || body.to < 0 || body.to > 1000) {
+          reply.status(400).send({ error: 'to must be a queue index (an integer from 0)' });
+          return;
+        }
+        action = { action: 'move', goalId: body.goalId as string, to: body.to };
+      } else if (body.action === 'edit') {
+        const bad = goalIdError(body.goalId) ?? objectiveError(body.objective);
+        if (bad) {
+          reply.status(400).send({ error: bad });
+          return;
+        }
+        action = { action: 'edit', goalId: body.goalId as string, objective: body.objective as string };
       } else if (body.action === 'delete') {
         if (typeof body.goalId !== 'string' || !body.goalId || body.goalId.length > 200) {
           reply.status(400).send({ error: 'goalId is required and must be a string' });
@@ -5664,12 +5703,20 @@ export async function registerDashboardRoutes(
         }
         action = { action: body.action, goalId: body.goalId };
       } else {
-        reply.status(400).send({ error: "action must be 'add', 'delete', 'pause' or 'resume'" });
+        reply.status(400).send({ error: "action must be 'add', 'delete', 'pause', 'resume', 'move' or 'edit'" });
         return;
       }
       const resolved = resolveSelfActionKeyAndOwner(request, reply);
       if (!resolved) return;
       const { originalKey } = resolved;
+      if (action.action === 'add' && Array.isArray(rawAttachments) && rawAttachments.length) {
+        const files = parseAttachments(rawAttachments);
+        if (!files.ok) {
+          reply.status(400).send({ error: files.error });
+          return;
+        }
+        action = { ...action, attachments: files.value };
+      }
       if (!_goalActionHandlerFn) {
         reply.status(501).send({ error: 'Goal action handler not configured' });
         return;
@@ -7715,11 +7762,13 @@ body:not([data-detail~="agenthead"]) #panel-agents { display: none !important; }
 .slide-panel:not([data-midtab="agents"]):not([data-agent-scoped]) .panel-tabs::part(list),
 body:not([data-detail~="agenttabs"]) .panel-tabs::part(list),
 body:not([data-detail~="sections"]):not([data-detail~="logtab"]) .panel-sections::part(list) { display: none; }
-.panel-midbar { display: flex; flex-wrap: wrap; align-items: stretch; gap: 0 2px; padding: 0 10px; min-height: 36px; }
+/* The bar speaks like the section tabs under it (<ui-tabs>, as on the settings page): 13px, weight 500, 12px each
+   side, the labels starting where theirs start; the open one is told by colour and underline, not weight. */
+.panel-midbar { display: flex; flex-wrap: wrap; align-items: stretch; gap: 0 2px; padding: 0 12px; min-height: 36px; }
 .panel-midbar[hidden] { display: none; }
-.pm-tab { display: inline-flex; align-items: center; gap: 5px; min-height: 36px; padding: 0 8px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--text-secondary); font: inherit; font-size: 12.5px; cursor: pointer; white-space: nowrap; }
+.pm-tab { display: inline-flex; align-items: center; gap: 5px; min-height: 36px; padding: 0 12px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--text-secondary); font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap; }
 .pm-tab:hover:not(:disabled) { color: var(--text); }
-.pm-tab[aria-expanded="true"] { color: var(--text); font-weight: 600; border-bottom-color: var(--text); }
+.pm-tab[aria-expanded="true"] { color: var(--text); border-bottom-color: var(--text); }
 .pm-tab:disabled { cursor: default; opacity: .45; }
 .pm-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 4px; }
 .pm-count { font-variant-numeric: tabular-nums; color: var(--text-tertiary); font-weight: 500; }
@@ -8420,11 +8469,15 @@ body.nt-open .new-task-fab { display: none !important; }
    thumbnail, name and meta, its own hover, press and 44px chip on touch. The audio play button (T8) sits on the
    thumbnail's lower right: 4px card inset + the 16:10 thumbnail of a (--fc-tile-w − 8px) wide box. */
 .art-tile > ui-file-card { display: block; }
-.art-tile:has(> ui-file-card[variant="chip"]) { max-width: 240px; }
 .panel-artifacts { padding: 10px 16px 4px; border-bottom: 1px solid var(--border); min-height: 44px; }
 .panel-arts-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; font-size: 12px; font-weight: 600; color: var(--text); }
 .panel-arts-hint { margin-left: auto; font-size: 11px; font-weight: 400; color: var(--text-tertiary); }
-.art-strip-panel .art-tile { --fc-tile-w: 152px; }
+/* The detail card's 산출물 tab (owner 2026-11-26): the open card's preview tiles, as a grid that shows every file at
+   once — columns of at least the open card's 128px, each tile the column's width. A short panel body (a phone held
+   sideways, a docked drawer under a tall top bar) keeps them in one row that scrolls sideways, as the open card's
+   strip does, so the conversation keeps its rows (@container pbody below). */
+.art-strip.art-strip-panel { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); overflow-x: visible; scroll-snap-type: none; }
+.art-strip-panel .art-tile { min-width: 0; --fc-tile-w: 100%; }
 .turn-arts-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 /* Phone calls (.prd/30 §3.2–3.3): a call card in the chat, and the call view. */
 .ph-cards { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
@@ -8507,9 +8560,8 @@ body.nt-open .new-task-fab { display: none !important; }
 .um-file.is-remote { opacity: 0.8; }
 .um-compact .um-file { width: auto; max-width: 200px; }
 .io-row .um-media { margin: 4px 0 6px; }
-/* A row of its own above the 산출물 (the section lays its head and chips out as one flex row in the minimal
-   view and on a short body: this one wraps onto a full line of its own there). */
-.panel-user-media { flex: 1 1 100%; margin-bottom: 6px; }
+/* The 지시 첨부 row sits above the 산출물 in the tab. */
+.panel-user-media { margin-bottom: 6px; }
 /* The 지시 첨부 row (D4 K-06): the summary slotted into <ui-disclosure> — glyph · 지시 첨부 · count · hint. */
 .panel-um-head { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--text); font-size: 12px; font-weight: 600; }
 .panel-um-body { padding: 4px 0 2px; }
@@ -8590,22 +8642,12 @@ body.nt-open .new-task-fab { display: none !important; }
    100vw, so a narrow window never pushes its left edge off screen. */
 .cron-drawer::part(panel) { padding-right: env(safe-area-inset-right, 0px); }
 .cron-drawer::part(header) { padding-top: max(14px, env(safe-area-inset-top, 0px)); }
-/* Task view (T1.6): minimal — the artifacts are one row of name chips, like a
-   short panel body below; 자세히 shows them as thumbnails. The chips are the file cards' chip variant
-   (artPanelVariant); this row only lays them out. */
-.slide-panel:not(.is-detail) .panel-artifacts { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-top: 6px; padding-bottom: 6px; }
-.slide-panel:not(.is-detail) .panel-arts-head { flex: none; margin-bottom: 0; }
-.slide-panel:not(.is-detail) .panel-arts-hint { display: none; }
-.slide-panel:not(.is-detail) .art-strip-panel { flex: 1 1 auto; min-width: 0; padding-top: 2px; padding-bottom: 2px; }
-/* A short panel body (landscape phones, the unfolded Duo, a docked drawer under a
-   tall top bar; below 560px R/2 cannot hold full thumbnails plus a couple of task
-   rows): artifacts become name chips with the play button inline, so the
-   pinned strip stays one short row; every tile is still reachable sideways. */
+/* A short panel body (landscape phones, the unfolded Duo, a docked drawer under a tall top bar; below 560px R/2
+   cannot hold a grid of thumbnails plus a couple of task rows): the 산출물 tab's tiles stay previews, in one row
+   that scrolls sideways at the open card's 128px, so every tile is still reachable. */
 @container pbody (max-height: 560px) {
-  .panel-artifacts { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-top: 6px; padding-bottom: 6px; }
-  .panel-arts-head { flex: none; margin-bottom: 0; }
-  .panel-arts-hint { display: none; }
-  .art-strip-panel { flex: 1 1 auto; min-width: 0; padding-top: 2px; padding-bottom: 2px; }
+  .art-strip.art-strip-panel { display: flex; overflow-x: auto; scroll-snap-type: x proximity; }
+  .art-strip-panel .art-tile { --fc-tile-w: 128px; }
 }
 /* Plan mode (SSOT 2026-11-02): the plan on the open task card, the detail card's plan and its bottom bar; a simple
    question's choices as buttons on the task card. */
@@ -15645,7 +15687,6 @@ var _panelDetail = false;
 function applyPanelDetail() {
   var panel = document.getElementById('slide-panel');
   if (panel) panel.classList.toggle('is-detail', _panelDetail);
-  syncPanelArtVariant();
 }
 // The sections an opening starts with: every one open in 어드밴스드 — except the goal,
 // which always opens folded (SSOT 2026-10-29) — else the defaults.
@@ -16327,7 +16368,7 @@ function loadOlderWorkLog() {
     });
   }
   if (typeof ResizeObserver === 'function') {
-    var size = new ResizeObserver(function() { sizePanelSections(); syncPanelArtVariant(); });
+    var size = new ResizeObserver(function() { sizePanelSections(); });
     ['panel-scroll', 'panel-surface', 'panel-tabs', 'panel-agents', 'panel-tasks', 'panel-sections'].forEach(function(id) {
       var el = document.getElementById(id);
       if (el) size.observe(el);
@@ -16945,7 +16986,10 @@ function panelMidTabHtml(t, on) {
 // now — 세부 the full record, 작업 the list unfolded, 에이전트 the strip — and the section boxes below are sized again.
 function selectPanelMid(id) {
   rdReset();
+  var wasGoal = _panelMid === 'goal';
   _panelMid = _panelMid === id || !MID_TAB_LABEL[id] ? '' : id;
+  // Leaving the 목표 tab hides the goal composer: no recording or dictation goes on out of sight.
+  if (wasGoal && _panelMid !== 'goal' && typeof goalComposerReset === 'function') goalComposerReset();
   if (_panelMid === 'info') _panelInfoOpen = true;
   if (_panelMid === 'tasks') {
     _panelTasksOpen = true;
@@ -17748,6 +17792,8 @@ function renderPanelGoal() {
   renderPanelGoalPaused(s, canEdit);
   // Read-only viewers and closed sessions only see a goal list that exists.
   if (!s || !(g || canEdit)) {
+    // No card: the goal composer leaves with it, quiet (no recording or dictation goes on in a removed element).
+    paintGoalComposer(null, s, false);
     el.style.display = 'none';
     if (el._key) { el.innerHTML = ''; el._key = null; }
     return;
@@ -17776,6 +17822,7 @@ function renderPanelGoal() {
     card._gcSig = sig;
     card.data = d;
   }
+  paintGoalComposer(card, s, canEdit);
 }
 // Paused goals (SSOT 2026-11-06): the goals the owner set aside — they no longer hold the queue back. The card has
 // no paused list, so the page draws one under it on the kit's buttons: 재개 (now when no goal runs, otherwise right
@@ -17819,6 +17866,9 @@ function renderPanelGoalPaused(s, canEdit) {
 // the open shadow root by element / role, as uiTabsFocus does (the card has no focus API of its own).
 function goalCardFocusTarget() {
   var card = document.querySelector('#panel-goal > ui-goal-card');
+  // The goal composer in its add slot: focus opens it (one line → the whole composer).
+  var composer = card && card.querySelector ? card.querySelector('ui-composer[slot="add"]') : null;
+  if (composer) return composer;
   var root = card && card.shadowRoot;
   return root ? (root.querySelector('textarea') || root.querySelector('[role="group"]')) : null;
 }
@@ -19489,9 +19539,9 @@ var GOAL_STATUS_TONE = { active: 'run', paused: 'wait', complete: 'done' };
 var GOAL_SVG = '<i data-ui-icon="target"></i>';
 var GOAL_VIA_LABELS = { user: '직접 완료', 'eval-model': '평가 모델 완료' };
 var GOAL_OBJECTIVE_MAX = 4000; // the route's cap on an objective
-var GOAL_ACTIONS = ['delete', 'pause', 'resume']; // what the goal route answers besides add
+var GOAL_ACTIONS = ['delete', 'pause', 'resume', 'move', 'edit']; // what the goal route answers besides add
 var _goalErrors = Object.create(null); // session key → last refused goal action (shown until the next success)
-var _goalBusy = Object.create(null); // session key → { op: 'add' | 'delete' | 'pause' | 'resume', id } while that write is out
+var _goalBusy = Object.create(null); // session key → { op: 'add' | 'delete' | 'pause' | 'resume' | 'move' | 'edit', id } while that write is out
 // One past goal for the element: time spent · tokens · cost · continuation turns · how it closed on its meta
 // line, the evaluator's reason as its note (when it ended is the element's, from endedAt).
 function goalPastItem(h) {
@@ -19590,6 +19640,139 @@ async function addGoal(key, objective, card) {
   var ok = await goalAction(key, { action: 'add', objective: objective });
   if (ok && card && card.isConnected && card.getAttribute('data-goal-key') === key && card.draft.trim() === objective) card.draft = '';
 }
+// ── The goal composer (2026-11-26): the add box is the instruction composer ──
+// "신규 goal 추가 … 포커스를 받으면 이 창이 지시창 처럼": the card's add slot holds a <ui-composer collapse> — one line
+// while idle, the whole composer on focus: a multiline objective, files, images and voice notes (the panel
+// composer's limits), 받아쓰기, the counter. Its send is a goal add: the objective and the files (base64, as the
+// command route takes them) go to POST /goal; the server puts the files into the thread and on the goal's opening
+// turn — now, or when it leaves the queue. The trigger menus (/ % $) and model · effort stay with the instruction
+// composer under the panel: a goal's words run as written, so a command typed into a goal would not run.
+// One element per session (its text, files and a recording carry across openings of that session; another
+// session gets a fresh one), slotted into whichever card the panel shows.
+var _gcComposer = null; // { key, el, sig } — the goal composer of the session the panel shows
+function goalComposerData(s) {
+  var g = s.goal || null;
+  var cur = g && g.current;
+  var next = !!(cur && cur.status !== 'complete');
+  var busy = _goalBusy[s.key];
+  var d = {
+    label: '목표 추가',
+    placeholder: next ? '목표 추가 — 지금 목표 다음에 시작' : '목표 추가 — 바로 시작',
+    submitLabel: '추가',
+    hint: true,
+    minRows: 2,
+    maxRows: 8,
+    maxLength: GOAL_OBJECTIVE_MAX,
+    maxFiles: PC_LIMITS.maxFiles,
+    maxFileSize: PC_LIMITS.maxFileBytes,
+    maxTotalBytes: PC_LIMITS.maxTotalBytes,
+    busy: !!(busy && busy.op === 'add'),
+  };
+  if (ntDictationUsable(typeof window !== 'undefined' ? window : null)) d.tools = [ntDictationTool(ntDictating('gc'))];
+  return d;
+}
+// Recording discarded, a preview stopped, a dictation ended — the text and files stay.
+function goalComposerQuiet(c) {
+  ntDictateStopIn('gc');
+  if (!c) return;
+  if (typeof c.cancelRecording === 'function') c.cancelRecording();
+  if (typeof c.pause === 'function') c.pause();
+}
+function paintGoalComposer(card, s, canEdit) {
+  var cur = _gcComposer;
+  if (!canEdit || !s) {
+    if (cur) {
+      goalComposerQuiet(cur.el);
+      if (cur.el.parentNode) cur.el.parentNode.removeChild(cur.el);
+    }
+    return;
+  }
+  if (cur && cur.key !== s.key) {
+    goalComposerQuiet(cur.el);
+    if (cur.el.parentNode) cur.el.parentNode.removeChild(cur.el);
+    cur = null;
+  }
+  if (!cur) {
+    var c = document.createElement('ui-composer');
+    c.slot = 'add';
+    c.setAttribute('collapse', '');
+    c.setAttribute('lang', document.documentElement && document.documentElement.lang === 'en' ? 'en' : 'ko');
+    c.setAttribute('data-goal-key', s.key);
+    cur = _gcComposer = { key: s.key, el: c, sig: '' };
+  }
+  if (cur.el.parentNode !== card) card.appendChild(cur.el);
+  var d = goalComposerData(s);
+  var sig = JSON.stringify(d);
+  if (cur.sig !== sig) {
+    cur.sig = sig;
+    cur.el.data = d;
+  }
+}
+// The panel closed: the goal composer goes quiet with it (no microphone stays open in a hidden drawer).
+function goalComposerReset() {
+  if (_gcComposer) goalComposerQuiet(_gcComposer.el);
+}
+function isGoalComposer(el) {
+  return !!el && el.tagName === 'UI-COMPOSER' && el.slot === 'add' && !!el.getAttribute('data-goal-key');
+}
+// A goal from the composer: the words are the objective (files alone are not a goal), the files ride with it.
+// The send is prevented, so the composer keeps the words and files until the add went through — a refusal
+// leaves them to fix; only the composer that sent them, still holding those words, is cleared.
+async function addGoalFromComposer(key, text, files, c) {
+  var objective = String(text || '').trim();
+  if (!objective) {
+    dashToast({ title: '목표를 글로 적어 주세요', description: '파일만으로는 목표를 추가할 수 없어요', tone: 'error' });
+    return false;
+  }
+  var list = files || [];
+  var attachments = [];
+  if (list.length) {
+    try {
+      attachments = await Promise.all(list.map(ntReadFile));
+    } catch (err) {
+      setGoalError(key, '첨부 파일을 읽지 못했어요 — 다시 붙여 주세요');
+      return false;
+    }
+  }
+  var payload = { action: 'add', objective: objective };
+  if (attachments.length) payload.attachments = attachments;
+  var ok = await goalAction(key, payload);
+  if (ok && c && c.isConnected && c.getAttribute('data-goal-key') === key && String(c.value || '').trim() === objective && typeof c.clear === 'function') c.clear();
+  return ok;
+}
+document.addEventListener('ui-submit', function(e) {
+  var c = e.target;
+  if (!isGoalComposer(c)) return;
+  e.preventDefault();
+  ntDictateStopIn('gc');
+  var key = c.getAttribute('data-goal-key');
+  if (!key || !_sessionCache[key]) return;
+  var d = e.detail || {};
+  addGoalFromComposer(key, d.text, d.files, c);
+});
+// 받아쓰기 in the goal composer: its press starts and stops it; typing stops it.
+document.addEventListener('ui-tool', function(e) {
+  if (isGoalComposer(e.target)) ntOnComposerTool(e, ntDictationHost('gc'));
+});
+document.addEventListener('ui-input', function(e) {
+  if (isGoalComposer(e.target)) ntDictateStopIn('gc');
+});
+// A goal's queue order changed in the page's copy at once (the card's next data keeps it), then on the server; a
+// refusal (the goal started meanwhile) reloads the sessions, which puts the order back.
+function goalQueueReorder(s, order) {
+  var q = s && s.goal && s.goal.queue;
+  if (!Array.isArray(q) || !Array.isArray(order) || order.length !== q.length) return false;
+  var byId = Object.create(null);
+  for (var i = 0; i < q.length; i++) byId[String(q[i].goalId)] = q[i];
+  var next = [];
+  for (var j = 0; j < order.length; j++) {
+    var g = byId[String(order[j])];
+    if (!g) return false;
+    next.push(g);
+  }
+  s.goal.queue = next;
+  return true;
+}
 // The element's events: a confirmed Delete (the current goal, or a queued one — its own remove spins), an Add.
 document.addEventListener('ui-delete', function(e) {
   var el = e.target;
@@ -19606,6 +19789,28 @@ document.addEventListener('ui-add', function(e) {
   var key = el.getAttribute('data-goal-key');
   if (!key || !_sessionCache[key]) return;
   addGoal(key, e.detail.objective, el);
+});
+// A queued goal dragged (or moved with ↑ ↓) to another place: the page's copy takes the order at once, then the route.
+document.addEventListener('ui-move', function(e) {
+  var el = e.target;
+  if (!el || el.tagName !== 'UI-GOAL-CARD' || !e.detail) return;
+  var key = el.getAttribute('data-goal-key');
+  var s = key ? _sessionCache[key] : null;
+  if (!s || isBusy(key, 'goal')) { e.preventDefault(); return; }
+  var id = String(e.detail.id || '');
+  goalQueueReorder(s, e.detail.order);
+  goalAction(key, { action: 'move', goalId: id, to: Number(e.detail.to) || 0 }, id);
+});
+// A queued goal's text saved from its editor: prevented, so the editor stays (Save spins) until the data carries the
+// new text; a refusal leaves the text to fix.
+document.addEventListener('ui-edit', function(e) {
+  var el = e.target;
+  if (!el || el.tagName !== 'UI-GOAL-CARD' || !e.detail) return;
+  e.preventDefault();
+  var key = el.getAttribute('data-goal-key');
+  if (!key || !_sessionCache[key]) return;
+  var id = String(e.detail.id || '');
+  goalAction(key, { action: 'edit', goalId: id, objective: String(e.detail.objective || '') }, id);
 });
 // ⏸️ on the current goal: it moves to the paused goals and the next queued goal starts (or the goal work ends);
 // ▶️ on a current goal stopped in place (the cap question's 취소) resumes it.
@@ -23205,6 +23410,8 @@ function wlIsCard(el) {
 //   goal / agent / tasks (관리 →, a tree item, 전체 N개 → 상세, 전체 task →):
 //     that section at the top of the scroll area (under the sticky agent tabs),
 //     once per opening — the turns loading below it never drag it away;
+//   artifacts (the open card's 산출물 전체 N개 →): the same, on the tab bar — its open 산출물 tab and the
+//     preview grid under it in view (owner 2026-11-26), not the chat below them;
 //   answer, default: the permission or question the session waits on, which
 //     sits in the common surface at the top, so the answer form is in view at
 //     once. The question landing is made once per opening: turns load below the
@@ -23222,16 +23429,16 @@ function landPanel() {
   if (!scrollEl) return;
   // Task view: Tasks sit in the tab under the sticky agent tabs — a tasks
   // opening lands on the (unfolded) plan's head, just under the tab strip.
-  if (_panelLand === 'goal' || _panelLand === 'agent' || _panelLand === 'tasks') {
+  if (_panelLand === 'goal' || _panelLand === 'agent' || _panelLand === 'tasks' || _panelLand === 'artifacts') {
     if (_panelLanded) return;
-    var sec = document.getElementById(_panelLand === 'goal' ? 'panel-goal' : _panelLand === 'tasks' ? 'panel-tasks' : 'panel-agents');
+    var sec = document.getElementById(_panelLand === 'goal' ? 'panel-goal' : _panelLand === 'tasks' ? 'panel-tasks' : _panelLand === 'artifacts' ? 'panel-midbar' : 'panel-agents');
     if (sec && sec.style.display !== 'none') {
       // The reader scrolled since the last try: they stay where they are.
       if (_panelLandAt !== null && Math.abs(scrollEl.scrollTop - _panelLandAt) > 1) { _panelLanded = true; return; }
       // Phone chrome (#918): a landing while reading starts the card over first — head and composer in, the box as it
       // opens — as the question landing does; the target is measured after.
       if (panelReading()) rdReset();
-      var under = _panelLand === 'goal' ? 0 : panelTabsHeight();
+      var under = _panelLand === 'goal' || _panelLand === 'artifacts' ? 0 : panelTabsHeight();
       var target = scrollEl.scrollTop + sec.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top - under;
       // The landing is the reader's new place: an anchor the layout coordinator
       // captured before it (layoutBeforeChange) must not pull the panel back.
@@ -23307,11 +23514,11 @@ function holdPanelLanding() {
   // Past the settle window a move with no input (find in page, a scrollbar) is the reader's.
   if (Date.now() > _panelHoldUntil) { _panelHold = false; return; }
   var scrollEl = document.getElementById('panel-scroll');
-  var sec = document.getElementById(_panelLand === 'goal' ? 'panel-goal' : _panelLand === 'tasks' ? 'panel-tasks' : 'panel-agents');
+  var sec = document.getElementById(_panelLand === 'goal' ? 'panel-goal' : _panelLand === 'tasks' ? 'panel-tasks' : _panelLand === 'artifacts' ? 'panel-midbar' : 'panel-agents');
   if (!scrollEl || !sec || sec.style.display === 'none') return;
   // Phone chrome (#918): held while reading, the card starts over first (as landPanel does).
   if (panelReading()) rdReset();
-  var under = _panelLand === 'goal' ? 0 : panelTabsHeight();
+  var under = _panelLand === 'goal' || _panelLand === 'artifacts' ? 0 : panelTabsHeight();
   var drift = sec.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top - under;
   var top = Math.max(0, Math.min(scrollEl.scrollTop + drift, scrollEl.scrollHeight - scrollEl.clientHeight));
   if (Math.abs(top - scrollEl.scrollTop) <= 1) return;
@@ -23613,13 +23820,15 @@ function deckStop(panel) {
   }
 }
 // The landing target of this opening, for the keyboard: the answer form, the
-// goal section, the focused node's header, the Tasks head, the 작업 로그 tab —
-// else the heading.
+// goal section, the focused node's header, the Tasks head, the 산출물 tab, the
+// 작업 로그 tab — else the heading.
 function focusPanelLanding() {
   var t = null;
   if (_panelLand === 'goal') t = goalCardFocusTarget() || document.getElementById('panel-goal');
   else if (_panelLand === 'agent') t = document.querySelector('#panel-agents .pa-focus');
   else if (_panelLand === 'tasks') t = document.getElementById('panel-tasks');
+  // 산출물 (the open card's 전체 N개 →): the tab it landed on — focus where the eye is.
+  else if (_panelLand === 'artifacts') t = document.querySelector('#panel-midbar .pm-tab[data-mid="artifacts"]');
   // The 작업 로그 tab is <ui-tabs>' own (D4 E-24): its selected tab — the one this opening chose — takes focus.
   else if (_panelLand === 'worklog' && uiTabsFocus(document.getElementById('panel-sections'))) return;
   if (!t || t.style.display === 'none') {
@@ -24955,6 +25164,8 @@ function closePanel() {
   if (typeof chgCloseViewer === 'function') chgCloseViewer();
   // Task view: a closed panel keeps no mic, no files and watches no answers.
   pcReset();
+  // The goal composer too: no recording or dictation goes on in a closed drawer (its text and files stay).
+  if (typeof goalComposerReset === 'function') goalComposerReset();
   if (_ansIo) { _ansIo.disconnect(); _ansIo = null; }
   layoutBeforeChange();
   // An opening still waiting for the element is dropped; a drawer not yet defined has nothing open to close.
@@ -25064,7 +25275,7 @@ document.addEventListener('keydown', function(e) {
       if (_panelHold && panelOpen) holdPanelLanding();
       // A section landing the body was still too short for (the parts load
       // after the opening) lands as it grows; a reader who scrolled meanwhile stays.
-      else if (panelOpen && !_panelLanded && (_panelLand === 'goal' || _panelLand === 'agent' || _panelLand === 'tasks')) landPanel();
+      else if (panelOpen && !_panelLanded && (_panelLand === 'goal' || _panelLand === 'agent' || _panelLand === 'tasks' || _panelLand === 'artifacts')) landPanel();
     });
     land.observe(scrollEl);
     ['panel-surface', 'panel-sections-body'].forEach(function(id) {
@@ -26903,10 +27114,10 @@ function artSortForDisplay(list) {
   return files.sort(function(x, y) { return toNum(y.createdAt) - toNum(x.createdAt); });
 }
 
-// A strip tile: the file card (thumbnail, name, meta; a play / pause toggle on audio — T8 — and video tiles, one
-// clip at a time across the page: playable); variant 'chip' in the panel's minimal row.
-function artTile(cid, a, variant) {
-  return '<div class="art-tile' + (a.stored ? '' : ' is-remote') + '">' + artCard(cid, a, variant || 'tile', true) + artVerBadge(a) + '</div>';
+// A tile — the open card's strip and the detail card's 산출물 tab: the file card (thumbnail, name, meta; a play /
+// pause toggle on audio — T8 — and video tiles, one clip at a time across the page: playable).
+function artTile(cid, a) {
+  return '<div class="art-tile' + (a.stored ? '' : ' is-remote') + '">' + artCard(cid, a, 'tile', true) + artVerBadge(a) + '</div>';
 }
 
 // The full list once fetched, else the card's summary (the newest few).
@@ -26933,13 +27144,16 @@ function renderCardArtifacts(s) {
     + '</div>';
 }
 
-// Panel (T6): pinned above the conversation, so it is in view wherever the reader is.
-function renderPanelArtifacts(list, cid, variant) {
+// The detail card's 산출물 tab (T6; owner 2026-11-26): every file as the open card draws it — the preview tile (a
+// picture, or the kind's glyph on its wash with the extension, then name and size · age), never a name chip. The
+// tab is the gallery the open card's 전체 N개 → lands on: a grid of every file (one row that scrolls sideways on a
+// short panel body — the CSS of .art-strip-panel).
+function renderPanelArtifacts(list, cid) {
   var sorted = artLatestOnly(artSortForDisplay(list));
   if (!sorted.length || !cid) return '';
   return '<div class="panel-arts-head"><span>산출물</span><span class="art-count">' + sorted.length + '</span>'
     + '<span class="panel-arts-hint">올리면 미리보기 · 누르면 크게</span></div>'
-    + '<div class="art-strip art-strip-panel">' + sorted.map(function(a) { return artTile(cid, a, variant); }).join('') + '</div>';
+    + '<div class="art-strip art-strip-panel">' + sorted.map(function(a) { return artTile(cid, a); }).join('') + '</div>';
 }
 
 // Did this artifact come from the turn that ran between startTs and endTs?
@@ -27426,27 +27640,13 @@ function renderPanelArtifactsSection() {
   var list = c && c.list ? c.list : ((s && s.artifacts && s.artifacts.recent) || []);
   // The user's files (지시 첨부) first, one collapsed line; then the model's 산출물.
   var umHtml = cid ? renderPanelUserMedia(_umList[cid] || [], cid, _umPanelOpen === true, _umPanelOpen === 'folding') : '';
-  var html = cid ? (umHtml ? '<div class="panel-user-media" id="panel-user-media">' + umHtml + '</div>' : '') + renderPanelArtifacts(list, cid, artPanelVariant()) : '';
+  var html = cid ? (umHtml ? '<div class="panel-user-media" id="panel-user-media">' + umHtml + '</div>' : '') + renderPanelArtifacts(list, cid) : '';
   // Morphed (D4 K-06): the 지시 첨부 disclosure keeps its node across a repaint, so its open grows in place.
   writePanelPart(el, html);
   el.style.display = html ? '' : 'none';
   // The files each answer produced go under it (convTurnsOf: an artifact goes to
   // the first answer whose turn window holds its turn start).
   convPaint();
-}
-
-// The panel's strip is a row of name chips in the minimal view (자세히 off) or on a short panel body (≤ 560px:
-// landscape phones, a docked drawer under a tall top bar), else thumbnails — the file card's variant.
-var ART_PANEL_SHORT_PX = 560;
-function artPanelVariant() {
-  var body = document.querySelector('#slide-panel .panel-body');
-  var h = body ? body.clientHeight : 0;
-  return !_panelDetail || (h > 0 && h <= ART_PANEL_SHORT_PX) ? 'chip' : 'tile';
-}
-function syncPanelArtVariant() {
-  var v = artPanelVariant();
-  var cards = document.querySelectorAll('#panel-artifacts .art-strip-panel ui-file-card');
-  for (var i = 0; i < cards.length; i++) if (cards[i].getAttribute('variant') !== v) cards[i].setAttribute('variant', v);
 }
 
 // ── The peek (I-05) is @2lab.ai/ui <ui-hovercard id="art-peek">: one card for every tile — the board's face chips
@@ -28594,6 +28794,23 @@ function ntDictateStopIn(id) {
 // Where a dictation writes: the composer, what follows its text, where its status goes, its repaint. The new task
 // has a status line and a saved draft; the session panel has neither — its why is a toast.
 function ntDictationHost(id) {
+  if (id === 'gc') {
+    // The goal composer (the add slot of the panel's goal card): no status line — its why is a toast.
+    return {
+      id: 'gc',
+      el: function () {
+        return _gcComposer ? _gcComposer.el : null;
+      },
+      text: function () {},
+      status: function (msg, final) {
+        if (final && msg) dashToast({ title: msg });
+      },
+      clear: function () {},
+      paint: function () {
+        repaintPanelGoalFor(panelSessionKey);
+      },
+    };
+  }
   if (id === 'pc') {
     return {
       id: 'pc',

@@ -1111,21 +1111,19 @@ describe('T1.3 / SSOT 2026-10-29 · 지시와 답변 opens on its latest turns; 
     expect(CSS).toMatch(/\.psec\.psec-el \{ overflow: hidden;/);
   });
 
-  it('minimal shows the artifacts as one row of name chips; 자세히 keeps the thumbnails', () => {
-    // D2: the chips are the file cards' chip variant — minimal (자세히 off) is chips, 자세히 thumbnails; 자세히
-    // re-chooses it (applyPanelDetail → syncPanelArtVariant). This row only lays them out.
-    expect(TEMPLATE).toContain("return !_panelDetail || (h > 0 && h <= ART_PANEL_SHORT_PX) ? 'chip' : 'tile';");
-    expect(TEMPLATE).toMatch(/function applyPanelDetail\(\) \{[\s\S]*?syncPanelArtVariant\(\);\n\}/);
-    expect(TEMPLATE).toContain('renderPanelArtifacts(list, cid, artPanelVariant())');
-    expect(CSS).toContain('.slide-panel:not(.is-detail) .panel-artifacts { display: flex;');
-    // D4 K-06 review: the pinned 지시 첨부 row (the section's first child) is a row of its own above the chips —
-    // the chip row wraps and that row takes the whole width, in the minimal view and on a short body alike
-    // (else the disclosure is squeezed beside the chips, its label one character per line).
-    expect(CSS).toContain('.slide-panel:not(.is-detail) .panel-artifacts { display: flex; flex-wrap: wrap;');
-    expect(CSS).toMatch(
-      /@container pbody \(max-height: 560px\) \{\n {2}\.panel-artifacts \{ display: flex; flex-wrap: wrap;/,
+  it('the 산출물 tab draws preview tiles in every layout: no name-chip row, no variant chosen by 자세히', () => {
+    // Owner 2026-11-26: the detail card's 산출물 tab shows the open card's preview tiles, not file names — the
+    // minimal view (처음부터 펼침 off) included. The behaviour is pinned in dashboard-artifacts-client.test.ts; here
+    // the old chip path is gone: nothing re-chooses the cards' variant, and no CSS lays chips out in a row.
+    expect(TEMPLATE).not.toContain('artPanelVariant');
+    expect(TEMPLATE).not.toContain('syncPanelArtVariant');
+    expect(TEMPLATE).toContain("renderPanelArtifacts(list, cid) : '';");
+    expect(TEMPLATE).toMatch(
+      /function applyPanelDetail\(\) \{\n {2}var panel = [^\n]*\n {2}if \(panel\) panel\.classList\.toggle\('is-detail', _panelDetail\);\n\}/,
     );
-    expect(CSS).toMatch(/^\.panel-user-media \{ flex: 1 1 100%; margin-bottom: 6px; \}/m);
+    expect(CSS).not.toContain('.slide-panel:not(.is-detail) .panel-artifacts');
+    // The pinned 지시 첨부 row (the section's first child) stays a row of its own above the tiles.
+    expect(CSS).toMatch(/^\.panel-user-media \{ margin-bottom: 6px; \}/m);
   });
 
   it('every opening loads the latest 20 turns; each older page is the 20 before the oldest held', () => {
@@ -1169,14 +1167,14 @@ describe('T1.3 / SSOT 2026-10-29 · 지시와 답변 opens on its latest turns; 
 });
 
 describe('browser receipt · a section landing cut short by a short body lands once the body grows', () => {
-  it('the scroll area ResizeObserver tries a pending goal / agent / tasks landing again', () => {
+  it('the scroll area ResizeObserver tries a pending goal / agent / tasks / artifacts landing again', () => {
     const init = TEMPLATE.slice(
       TEMPLATE.indexOf('(function initPanelScrollHandler()'),
       TEMPLATE.indexOf('})();', TEMPLATE.indexOf('(function initPanelScrollHandler()')),
     );
     const ro = init.slice(init.indexOf('new ResizeObserver('));
     expect(ro).toMatch(
-      /else if \(panelOpen && !_panelLanded && \(_panelLand === 'goal' \|\| _panelLand === 'agent' \|\| _panelLand === 'tasks'\)\) landPanel\(\);/,
+      /else if \(panelOpen && !_panelLanded && \(_panelLand === 'goal' \|\| _panelLand === 'agent' \|\| _panelLand === 'tasks' \|\| _panelLand === 'artifacts'\)\) landPanel\(\);/,
     );
   });
 });

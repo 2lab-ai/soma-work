@@ -123,9 +123,9 @@ describe('goal card data — what the page hands <ui-goal-card> (T2)', () => {
     ]);
   });
 
-  it('only what the goal route answers: delete, pause and resume; the add box is canEdit; the route cap is maxLength', () => {
+  it('only what the goal route answers: delete, pause, resume, move and edit (queued goals); the add box is canEdit; the route cap is maxLength', () => {
     const d = m.goalCardData(card(), true);
-    expect(d.actions).toEqual(['delete', 'pause', 'resume']);
+    expect(d.actions).toEqual(['delete', 'pause', 'resume', 'move', 'edit']);
     expect(d.canEdit).toBe(true);
     expect(d.maxLength).toBe(4000);
     expect(m.goalCardData(card(), false).canEdit).toBe(false);
@@ -161,7 +161,7 @@ describe('goal card data — what the page hands <ui-goal-card> (T2)', () => {
   it('no goal at all: current null, empty queue and history (the element says 아직 목표가 없습니다 and shows the add box)', () => {
     expect(m.goalCardData(card({ goal: undefined }), true)).toEqual({
       canEdit: true,
-      actions: ['delete', 'pause', 'resume'],
+      actions: ['delete', 'pause', 'resume', 'move', 'edit'],
       maxLength: 4000,
       current: null,
       queue: [],
@@ -267,6 +267,7 @@ describe('the panel goal — one <ui-goal-card> per session, data only when it c
         return el;
       },
     };
+    const composer = vi.fn();
     const m = load<{ renderPanelGoal(): void; __set(n: string, v: unknown): void }>(
       [...DATA_FNS, 'renderPanelGoalPaused', 'renderPanelGoal'],
       [...DATA_VARS, '_gpArmed'],
@@ -278,11 +279,21 @@ describe('the panel goal — one <ui-goal-card> per session, data only when it c
         currentUserId: opts.user ?? 'U1',
         isSiblingSession: () => !!opts.sibling,
         _panelGen: 1,
+        paintGoalComposer: composer,
       },
     );
-    return { m, host, writes, classes, made: () => made, child: () => child };
+    return { m, host, writes, classes, made: () => made, child: () => child, composer };
   }
   const owned = (over: Record<string, unknown> = {}) => ({ ...card(over), ownerId: 'U1' });
+
+  it('every paint hands the card its goal composer (the add slot) with the edit gate', () => {
+    const r = rig({ 'self::C1:t1': owned() });
+    r.m.renderPanelGoal();
+    expect(r.composer).toHaveBeenCalledWith(r.child(), expect.objectContaining({ key: 'self::C1:t1' }), true);
+    const ro = rig({ 'self::C1:t1': owned() }, { user: 'U2' });
+    ro.m.renderPanelGoal();
+    expect(ro.composer).toHaveBeenCalledWith(ro.child(), expect.anything(), false);
+  });
 
   it('the owner of a live session: the element, lang ko, keyed by session; data once; an equal repaint writes nothing', () => {
     const r = rig({ 'self::C1:t1': owned() });
@@ -293,7 +304,7 @@ describe('the panel goal — one <ui-goal-card> per session, data only when it c
     expect(r.host._key).toBe('self::C1:t1');
     expect(r.writes).toHaveLength(1);
     expect(r.writes[0].canEdit).toBe(true);
-    expect(r.writes[0].actions).toEqual(['delete', 'pause', 'resume']);
+    expect(r.writes[0].actions).toEqual(['delete', 'pause', 'resume', 'move', 'edit']);
     expect(r.host.style.display).toBe('');
     expect(r.classes.has('is-empty')).toBe(false);
   });
@@ -555,6 +566,10 @@ describe("the element's events on document (executed)", () => {
     const goalAction = vi.fn();
     const addGoal = vi.fn();
     const repaintPanelGoalFor = vi.fn();
+    const busy = { k: false };
+    const isBusy = vi.fn((key: string) => !!(busy as any)[key]);
+    const goalQueueReorder = vi.fn();
+    const cache = { k: { key: 'k' } };
     new Function(
       'document',
       '_sessionCache',
@@ -564,16 +579,20 @@ describe("the element's events on document (executed)", () => {
       'repaintPanelGoalFor',
       '_gpArmed',
       'setTimeout',
+      'isBusy',
+      'goalQueueReorder',
       GOAL_LISTENERS,
     )(
       { addEventListener: (t: string, fn: (e: any) => void) => (on[t] = fn) },
-      { k: { key: 'k' } },
+      cache,
       goalAction,
       addGoal,
       'k',
       repaintPanelGoalFor,
       null,
       () => 0,
+      isBusy,
+      goalQueueReorder,
     );
     const target = (key: string | null, tag = 'UI-GOAL-CARD') => ({
       tagName: tag,
@@ -599,12 +618,20 @@ describe("the element's events on document (executed)", () => {
       };
       on.click({ target: { closest: (sel: string) => (sel.includes('#panel-goal-paused') ? button : null) } });
     };
-    return { on, goalAction, addGoal, repaintPanelGoalFor, target, fire, press };
+    return { on, goalAction, addGoal, repaintPanelGoalFor, target, fire, press, busy, goalQueueReorder, cache };
   }
 
   it('ui-delete names where the goal was seen: the current goal, or a queued one whose remove spins (busyId)', () => {
     const l = listeners();
-    expect(Object.keys(l.on).sort()).toEqual(['click', 'ui-add', 'ui-delete', 'ui-pause', 'ui-resume']);
+    expect(Object.keys(l.on).sort()).toEqual([
+      'click',
+      'ui-add',
+      'ui-delete',
+      'ui-edit',
+      'ui-move',
+      'ui-pause',
+      'ui-resume',
+    ]);
     l.fire('ui-delete', l.target('k'), { id: 'g1', queued: false });
     l.fire('ui-delete', l.target('k'), { id: 'g2', queued: true });
     expect(l.goalAction.mock.calls).toEqual([
@@ -645,6 +672,32 @@ describe("the element's events on document (executed)", () => {
     const e = l.fire('ui-add', t, { objective: '새 goal' });
     expect(e.prevented).toBe(true);
     expect(l.addGoal).toHaveBeenCalledWith('k', '새 goal', t);
+  });
+
+  it('ui-move: the page copy takes the new order at once, then the route moves the goal (its handle spins)', () => {
+    const l = listeners();
+    const e = l.fire('ui-move', l.target('k'), { id: 'g3', from: 1, to: 0, order: ['g3', 'g2'] });
+    expect(e.prevented).toBe(false);
+    expect(l.goalQueueReorder).toHaveBeenCalledWith(l.cache.k, ['g3', 'g2']);
+    expect(l.goalAction).toHaveBeenCalledWith('k', { action: 'move', goalId: 'g3', to: 0 }, 'g3');
+  });
+
+  it('ui-move while a goal write is out, or on a card the page no longer knows: prevented, nothing sent', () => {
+    const l = listeners();
+    l.busy.k = true;
+    expect(l.fire('ui-move', l.target('k'), { id: 'g3', from: 1, to: 0, order: ['g3', 'g2'] }).prevented).toBe(true);
+    expect(l.fire('ui-move', l.target('gone'), { id: 'g3', from: 1, to: 0, order: [] }).prevented).toBe(true);
+    expect(l.goalQueueReorder).not.toHaveBeenCalled();
+    expect(l.goalAction).not.toHaveBeenCalled();
+  });
+
+  it('ui-edit is prevented (the editor stays until the data carries the text) and sends the queued goal’s new objective', () => {
+    const l = listeners();
+    const e = l.fire('ui-edit', l.target('k'), { id: 'g2', objective: '고친 목표' });
+    expect(e.prevented).toBe(true);
+    expect(l.goalAction).toHaveBeenCalledWith('k', { action: 'edit', goalId: 'g2', objective: '고친 목표' }, 'g2');
+    l.fire('ui-edit', l.target('gone'), { id: 'g2', objective: 'x' });
+    expect(l.goalAction).toHaveBeenCalledTimes(1);
   });
 
   it("another element's event, or a card of a session the page no longer knows: nothing is sent", () => {
@@ -694,6 +747,16 @@ describe('the page around the element', () => {
       },
     });
     expect(m.goalCardFocusTarget()).toBe('box');
+    // The goal composer in the card's add slot comes first (focusing it opens it).
+    const withComposer = load<{ goalCardFocusTarget(): unknown }>(['goalCardFocusTarget'], [], {
+      document: {
+        querySelector: (sel: string) =>
+          sel === '#panel-goal > ui-goal-card'
+            ? { querySelector: (s: string) => (s === 'ui-composer[slot="add"]' ? 'composer' : null), shadowRoot: null }
+            : null,
+      },
+    });
+    expect(withComposer.goalCardFocusTarget()).toBe('composer');
     const none = load<{ goalCardFocusTarget(): unknown }>(['goalCardFocusTarget'], [], {
       document: { querySelector: () => null },
     });

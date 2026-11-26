@@ -8163,6 +8163,193 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(registrySession.goal).toMatchObject({ goalId: 'g1', epoch: 7 });
     });
   });
+  // 2026-11-26 — the dashboard's goal composer: files on a goal, a queued goal moved and edited.
+  describe('host goal actions — goal composer files, move and edit (2026-11-26)', () => {
+    const goalOf = (overrides: Record<string, any> = {}) => ({
+      goalId: 'g1',
+      objective: '릴리즈',
+      status: 'active',
+      createdAt: 1,
+      updatedAt: 1,
+      createdBy: 'U_OWNER',
+      continuationCount: 0,
+      maxContinuations: 10,
+      epoch: 7,
+      ...overrides,
+    });
+    const slackFile = (id: string) => ({
+      id,
+      name: `${id}.png`,
+      mimetype: 'image/png',
+      filetype: 'png',
+      url_private: `https://files.slack.com/${id}`,
+      url_private_download: `https://files.slack.com/${id}/download`,
+      size: 9,
+    });
+    const attachment = (name: string) => ({ name, mimetype: 'image/png', data: Buffer.from('png') });
+
+    beforeEach(() => {
+      registrySession.goal = undefined;
+      registrySession.goalQueue = undefined;
+      registrySession.goalPaused = undefined;
+      registrySession.goalHistory = undefined;
+      registrySession.terminated = undefined;
+    });
+
+    it('add with files while a turn runs: uploaded into the thread under the anchor, carried by the opening turn', async () => {
+      const order: string[] = [];
+      const uploadFiles = vi.fn(async (_c: string, _t: string, files: any[]) => {
+        order.push('upload');
+        return files.map((_f, i) => slackFile(`F${i + 1}`));
+      });
+      const { settle } = await startBusyTurn();
+      postSystemMessage.mockImplementationOnce(async () => {
+        order.push('anchor');
+        return { ts: 'anchor' };
+      });
+
+      const result = await handler.handleHostGoalAction(
+        SESSION_KEY,
+        { action: 'add', objective: '스크린샷 고쳐줘', attachments: [attachment('a.png'), attachment('b.png')] },
+        undefined,
+        { uploadFiles },
+      );
+
+      expect(result).toMatchObject({ outcome: 'started', opening: 'queued' });
+      expect(order).toEqual(['anchor', 'upload']);
+      expect(uploadFiles).toHaveBeenCalledWith(CHANNEL, expect.any(String), [
+        expect.objectContaining({ name: 'a.png' }),
+        expect.objectContaining({ name: 'b.png' }),
+      ]);
+      expect(registrySession.goal.openingFiles.map((f: any) => f.id)).toEqual(['F1', 'F2']);
+      expect(items()[0].message.files.map((f: any) => f.id)).toEqual(['F1', 'F2']);
+      // The opening carries them: the loop's continuations need not again.
+      expect(registrySession.goal.openingFilesSent).toBe(true);
+      await settle();
+    });
+
+    it('a queued goal keeps its files: when it is promoted later, its opening turn carries them', async () => {
+      registrySession.goal = goalOf();
+      const uploadFiles = vi.fn(async () => [slackFile('FQ')]);
+      const added = await handler.handleHostGoalAction(
+        SESSION_KEY,
+        { action: 'add', objective: '다음 목표', attachments: [attachment('q.png')] },
+        undefined,
+        { uploadFiles },
+      );
+      expect(added).toMatchObject({ outcome: 'queued', position: 1 });
+      expect(registrySession.goalQueue[0].openingFiles.map((f: any) => f.id)).toEqual(['FQ']);
+      expect(items()).toHaveLength(0);
+
+      const { settle } = await startBusyTurn();
+      await handler.handleHostGoalAction(SESSION_KEY, { action: 'delete', goalId: 'g1', expect: 'current' });
+
+      expect(registrySession.goal).toMatchObject({ objective: '다음 목표', status: 'active' });
+      expect(items()).toHaveLength(1);
+      expect(items()[0].message.files.map((f: any) => f.id)).toEqual(['FQ']);
+      await settle();
+    });
+
+    it('a goal without files: no files on its opening (another goal’s files never ride it)', async () => {
+      registrySession.goal = goalOf({ openingFiles: [slackFile('OLD')] });
+      registrySession.goalQueue = [goalOf({ goalId: 'g2', objective: '파일 없는 목표', status: 'queued' })];
+      const { settle } = await startBusyTurn();
+      await handler.handleHostGoalAction(SESSION_KEY, { action: 'delete', goalId: 'g1', expect: 'current' });
+      expect(items()[0].message.files).toBeUndefined();
+      await settle();
+    });
+
+    it('files but no uploader (503, nothing posted), or Slack refusing them (502, the anchor says so): no goal is added', async () => {
+      await expect(
+        handler.handleHostGoalAction(SESSION_KEY, {
+          action: 'add',
+          objective: 'x',
+          attachments: [attachment('a.png')],
+        }),
+      ).rejects.toMatchObject({ statusCode: 503 });
+      expect(postSystemMessage).not.toHaveBeenCalled();
+      await expect(
+        handler.handleHostGoalAction(
+          SESSION_KEY,
+          { action: 'add', objective: 'x', attachments: [attachment('a.png')] },
+          undefined,
+          { uploadFiles: vi.fn().mockRejectedValue(new Error('ratelimited')) },
+        ),
+      ).rejects.toMatchObject({ statusCode: 502 });
+      await expect(
+        handler.handleHostGoalAction(
+          SESSION_KEY,
+          { action: 'add', objective: 'x', attachments: [attachment('a.png'), attachment('b.png')] },
+          undefined,
+          { uploadFiles: vi.fn().mockResolvedValue([slackFile('F1')]) },
+        ),
+      ).rejects.toMatchObject({ statusCode: 502 });
+      expect(registrySession.goal).toBeUndefined();
+      expect(postSystemMessage).toHaveBeenCalledWith(
+        CHANNEL,
+        expect.stringContaining('파일을 스레드에 올리지 못했습니다'),
+        expect.anything(),
+      );
+    });
+
+    it('move: a queued goal to another place, quietly (no notice, the running goal and its epoch untouched)', async () => {
+      registrySession.goal = goalOf();
+      registrySession.goalQueue = ['g2', 'g3', 'g4'].map((id) =>
+        goalOf({ goalId: id, objective: id, status: 'queued' }),
+      );
+
+      const result = await handler.handleHostGoalAction(SESSION_KEY, { action: 'move', goalId: 'g4', to: 0 });
+
+      expect(result).toEqual({ outcome: 'moved', goalId: 'g4', position: 1 });
+      expect(registrySession.goalQueue.map((g: any) => g.goalId)).toEqual(['g4', 'g2', 'g3']);
+      expect(registrySession.goal).toMatchObject({ goalId: 'g1', epoch: 7 });
+      expect(postSystemMessage).not.toHaveBeenCalled();
+      expect(items()).toHaveLength(0);
+      // Past the end: clamped to the last place.
+      await handler.handleHostGoalAction(SESSION_KEY, { action: 'move', goalId: 'g4', to: 99 });
+      expect(registrySession.goalQueue.map((g: any) => g.goalId)).toEqual(['g2', 'g3', 'g4']);
+    });
+
+    it('edit: a queued goal’s objective is replaced and the thread gets one line; the running goal is untouched', async () => {
+      registrySession.goal = goalOf();
+      registrySession.goalQueue = [goalOf({ goalId: 'g2', objective: '예전 목표', status: 'queued' })];
+
+      const result = await handler.handleHostGoalAction(SESSION_KEY, {
+        action: 'edit',
+        goalId: 'g2',
+        objective: '  고친 목표  ',
+      });
+
+      expect(result).toEqual({ outcome: 'edited', goalId: 'g2' });
+      expect(registrySession.goalQueue[0]).toMatchObject({ goalId: 'g2', objective: '고친 목표', status: 'queued' });
+      expect(registrySession.goal).toMatchObject({ goalId: 'g1', objective: '릴리즈', epoch: 7 });
+      expect(postSystemMessage).toHaveBeenCalledTimes(1);
+      expect(postSystemMessage).toHaveBeenCalledWith(CHANNEL, expect.stringContaining('고친 목표'), expect.anything());
+      // The same text again changes nothing and says nothing.
+      await handler.handleHostGoalAction(SESSION_KEY, { action: 'edit', goalId: 'g2', objective: '고친 목표' });
+      expect(postSystemMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it('move and edit of a goal that is no longer queued are refused as stale (409); an invalid text is 400', async () => {
+      registrySession.goal = goalOf();
+      registrySession.goalQueue = [goalOf({ goalId: 'g2', objective: '다음', status: 'queued' })];
+      registrySession.goalPaused = [goalOf({ goalId: 'p1', objective: '쉬는 중', status: 'paused' })];
+
+      for (const req of [
+        { action: 'move', goalId: 'g1', to: 0 },
+        { action: 'move', goalId: 'p1', to: 0 },
+        { action: 'edit', goalId: 'g1', objective: '현재 목표를 고침' },
+        { action: 'edit', goalId: 'gone', objective: 'x' },
+      ]) {
+        await expect(handler.handleHostGoalAction(SESSION_KEY, req as any)).rejects.toMatchObject({ statusCode: 409 });
+      }
+      await expect(
+        handler.handleHostGoalAction(SESSION_KEY, { action: 'edit', goalId: 'g2', objective: 'x'.repeat(4001) }),
+      ).rejects.toMatchObject({ statusCode: 400 });
+      expect(registrySession.goal.objective).toBe('릴리즈');
+      expect(registrySession.goalQueue[0].objective).toBe('다음');
+    });
+  });
   /**
    * SSOT 2026-11-02 — "goal이 10/10이 되서 goal을 계속 진행할지를 묻고 그리고 동시에
    * 유저에게 질문이 올경우 이거 질문에 답하면 에러나서 답변을 못하고 goal을 진행하는

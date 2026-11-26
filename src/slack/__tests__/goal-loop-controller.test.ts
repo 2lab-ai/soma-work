@@ -227,6 +227,42 @@ describe('GoalLoopController', () => {
     expect(h.notices.some((n) => n.includes('Starting next queued goal'))).toBe(true);
   });
 
+  // 2026-11-26 (#1465): a goal added from the dashboard with files, promoted by the eval verdict — the loop starts
+  // it itself (no opening turn), so its first continuation carries the files, once.
+  it('a promoted goal with files: its first continuation carries them, once; a goal whose opening carried them does not', async () => {
+    const file = {
+      id: 'F1',
+      name: 'shot.png',
+      mimetype: 'image/png',
+      filetype: 'png',
+      url_private: 'https://files.slack.com/F1',
+      url_private_download: 'https://files.slack.com/F1/download',
+      size: 9,
+    };
+    const h = makeHarness({ verdict: { completed: true, reason: 'all done', remaining: [] } });
+    h.session.goalQueue = [
+      makeGoal({ goalId: 'goal-2', objective: 'with a file', status: 'queued', openingFiles: [file] }),
+    ];
+
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+
+    expect(h.session.goal?.goalId).toBe('goal-2');
+    expect(h.injected).toHaveLength(1);
+    expect(h.injected[0].files).toEqual([file]);
+    expect(h.session.goal?.openingFilesSent).toBe(true);
+
+    // Its next continuation (not done yet) carries no files again.
+    const again = makeHarness({
+      verdict: { completed: false, reason: 'more', remaining: ['x'] },
+      goal: { openingFiles: [file], openingFilesSent: true },
+    });
+    again.controller.onTurnSettled(SESSION_KEY);
+    await again.controller.settled(SESSION_KEY);
+    expect(again.injected).toHaveLength(1);
+    expect(again.injected[0].files).toBeUndefined();
+  });
+
   it('completed=false under cap → bumps counter, posts 🔄, injects one continuation', async () => {
     const h = makeHarness({ verdict: { completed: false, reason: 'missing tests', remaining: ['add tests'] } });
     h.controller.onTurnSettled(SESSION_KEY);
