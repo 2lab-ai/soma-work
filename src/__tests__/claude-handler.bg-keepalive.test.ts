@@ -481,6 +481,76 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
     await stopping;
   });
 
+  // #1473 round 4 (grok): the reader of a stopped turn gives up after a bound, and the session's next turn may start
+  // while the stopped one still closes its query — two CLIs on one transcript. The next query starts after that end.
+  it('starts the next turn’s query only after the abandoned turn before it closed its query', async () => {
+    const cli = newFakeCli();
+    const quiet = deferred();
+    installScriptedQuery(cli, async function* (inputs) {
+      await readOpening(inputs, cli);
+      yield INIT;
+      yield assistantText('working');
+      await quiet.promise;
+    });
+    const handler = newHandler();
+    const first = startTurn(handler);
+    await first.next();
+    await hostCaughtUp();
+    const query = queryMock.mock.results[0].value as { return: (v?: unknown) => Promise<unknown> };
+    const close = query.return.bind(query);
+    const closeGate = deferred();
+    query.return = vi.fn(async (v?: unknown) => {
+      await closeGate.promise; // a CLI slow to exit
+      return close(v);
+    });
+
+    const stopping = first.return!(undefined); // the reader stops; its loop still closes the query
+    await hostCaughtUp();
+    expect(query.return).toHaveBeenCalledTimes(1);
+
+    const second = startTurn(handler);
+    const secondFrame = second.next();
+    await hostCaughtUp();
+    expect(queryMock).toHaveBeenCalledTimes(1); // waits for the first turn's end
+
+    closeGate.resolve();
+    await stopping;
+    await vi.waitFor(() => expect(queryMock).toHaveBeenCalledTimes(2));
+
+    quiet.resolve();
+    await second.return!(undefined);
+    await secondFrame.catch(() => undefined);
+  });
+
+  // #1473 round 4 (grok): a close that failed did not close — the turn's controller stops the CLI.
+  it('stops the CLI through the turn’s controller when the abandoned query’s close fails', async () => {
+    const cli = newFakeCli();
+    const quiet = deferred();
+    installScriptedQuery(cli, async function* (inputs) {
+      await readOpening(inputs, cli);
+      yield INIT;
+      yield assistantText('working');
+      await quiet.promise;
+    });
+    const handler = newHandler();
+    const controller = new AbortController();
+    const turn = handler
+      .streamQuery('ping', undefined, controller, undefined, TEST_SLACK_CONTEXT, SESSION_KEY)
+      [Symbol.asyncIterator]() as AsyncIterator<unknown>;
+    await turn.next();
+    await hostCaughtUp();
+    const query = queryMock.mock.results[0].value as { return: (v?: unknown) => Promise<unknown> };
+    query.return = vi.fn(async () => {
+      throw new Error('close failed');
+    });
+
+    await turn.return!(undefined);
+
+    expect(query.return).toHaveBeenCalledTimes(1);
+    expect(controller.signal.aborted).toBe(true);
+    quiet.resolve();
+  });
+
   // #1473 round 2 (grok): the settlement of a held turn goes through the query (an interrupt when the CLI still counts
   // queued turns) — the query is closed only after it, or the interrupt is refused and a read steer runs again.
   it('settles a held turn through its query before the query is closed, when its reader stops', async () => {

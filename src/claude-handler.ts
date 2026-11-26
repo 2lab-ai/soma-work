@@ -470,6 +470,13 @@ const frameAnchors = new WeakMap<object, string | undefined>();
 const ABANDONED_QUERY_CLOSE_MS = 5_000;
 
 /**
+ * #1473 — how long a turn waits, before it starts its query, for an abandoned turn of the same session to end: the
+ * held turn's settlement and the bounded close of its query, plus a grace for a CLI killed at that bound. Two CLIs
+ * never write one transcript; a run that does not end within this is logged and the new turn goes on.
+ */
+const PREVIOUS_RUN_END_WAIT_MS = STEER_SETTLEMENT_BOUND_MS + ABANDONED_QUERY_CLOSE_MS + 1_000;
+
+/**
  * The keepalive cap's hard ceiling, as a multiple of `SOMA_BG_KEEPALIVE_MAX_MS`
  * (#1039). The cap itself measures silence: it re-arms on every activity frame
  * while a turn is held, so a background agent that keeps working is never
@@ -1538,44 +1545,71 @@ export class ClaudeHandler implements TurnSteeringPort {
     const renderWait = new ResultTransit();
     /** The drawn-frame anchor this run set last (cleared at the reader's end only if it is still this one). */
     let lastDrawn: { value: string | undefined } | undefined;
-    return runAhead(
-      this.streamOrdinaryTurn(prompt, session, abortController, workingDirectory, slackContext, sessionKey, run),
-      {
-        onYield: (message) => {
-          if (message.type === 'result') renderWait.arrived();
-        },
-        onTake: (message) => {
-          const anchored = session as ContextAnchorSession | undefined;
-          if (anchored && frameAnchors.has(message)) {
-            lastDrawn = { value: frameAnchors.get(message) };
-            anchored.renderedAnchor = lastDrawn;
-          }
-          if (message.type !== 'result') return;
-          // The turn is drawn to its end: from here the session's own anchor is the one.
-          if (anchored) delete anchored.renderedAnchor;
-          // One terminal result per run (the loop ends at it): one line per run, so a p95 can be read across runs.
-          // The time the turn's end waited for the renderer — what decides whether settling leaves the render path
-          // too (#1473 follow-up).
-          renderWait.handled();
-          const drawn = renderWait.summary();
-          const waitedMs = drawn?.maxWaitMs ?? 0;
-          const fields = { renderWaitMs: waitedMs, sessionKey };
-          if (waitedMs >= HOST_LAG_WARN_MS) this.logger.warn('A turn result waited for the renderer', fields);
-          else this.logger.info('A turn result reached the renderer', fields);
-        },
-        onAbandon: () => {
-          run.abandoned = true;
-          run.abandon?.();
-        },
-        // Whatever ended the reading (the result taken, a stop after the loop ended, a failure): no frame is being
-        // drawn behind the loop any more, and the session's own anchor is the one (round 2, fable/astra).
-        onClose: () => {
-          // Only the anchor this run drew (a later turn's reader may have set its own).
-          const anchored = session as ContextAnchorSession | undefined;
-          if (anchored?.renderedAnchor && anchored.renderedAnchor === lastDrawn) delete anchored.renderedAnchor;
-        },
-      },
+    // The loop's end — its cleanup done, its query closed (or killed at the bound) — for the session's next turn to
+    // wait on when this one is abandoned (round 4, grok).
+    let markEnded: () => void = () => {};
+    const ended = new Promise<void>((resolve) => {
+      markEnded = resolve;
+    });
+    const loop = this.streamOrdinaryTurn(
+      prompt,
+      session,
+      abortController,
+      workingDirectory,
+      slackContext,
+      sessionKey,
+      run,
     );
+    const tracked = async function* (): AsyncGenerator<SDKMessage, void, unknown> {
+      try {
+        yield* loop;
+      } finally {
+        markEnded();
+      }
+    };
+    return runAhead(tracked(), {
+      onYield: (message) => {
+        if (message.type === 'result') renderWait.arrived();
+      },
+      onTake: (message) => {
+        const anchored = session as ContextAnchorSession | undefined;
+        if (anchored && frameAnchors.has(message)) {
+          lastDrawn = { value: frameAnchors.get(message) };
+          anchored.renderedAnchor = lastDrawn;
+        }
+        if (message.type !== 'result') return;
+        // The turn is drawn to its end: from here the session's own anchor is the one.
+        if (anchored) delete anchored.renderedAnchor;
+        // One terminal result per run (the loop ends at it): one line per run, so a p95 can be read across runs.
+        // The time the turn's end waited for the renderer — what decides whether settling leaves the render path
+        // too (#1473 follow-up).
+        renderWait.handled();
+        const drawn = renderWait.summary();
+        const waitedMs = drawn?.maxWaitMs ?? 0;
+        const fields = { renderWaitMs: waitedMs, sessionKey };
+        if (waitedMs >= HOST_LAG_WARN_MS) this.logger.warn('A turn result waited for the renderer', fields);
+        else this.logger.info('A turn result reached the renderer', fields);
+      },
+      onAbandon: () => {
+        run.abandoned = true;
+        // The reader is gone but the loop still settles a held turn and closes the query: the session's next turn
+        // starts its query only after (`awaitPreviousRunEnd`).
+        if (sessionKey) {
+          this.runsEnding.set(sessionKey, ended);
+          void ended.then(() => {
+            if (this.runsEnding.get(sessionKey) === ended) this.runsEnding.delete(sessionKey);
+          });
+        }
+        run.abandon?.();
+      },
+      // Whatever ended the reading (the result taken, a stop after the loop ended, a failure): no frame is being
+      // drawn behind the loop any more, and the session's own anchor is the one (round 2, fable/astra).
+      onClose: () => {
+        // Only the anchor this run drew (a later turn's reader may have set its own).
+        const anchored = session as ContextAnchorSession | undefined;
+        if (anchored?.renderedAnchor && anchored.renderedAnchor === lastDrawn) delete anchored.renderedAnchor;
+      },
+    });
   }
 
   /** The ordinary turn: refused without a Slack user, else the SDK loop (`streamSdkQuery`) under the run handle. */
@@ -1595,6 +1629,11 @@ export class ClaudeHandler implements TurnSteeringPort {
     if (!slackContext?.user) {
       throw new ExecutionContextMissingError('no Slack user');
     }
+    // #1473 — an abandoned turn of this session may still be settling its held turn and closing its query (its reader
+    // gave up after a bound): this turn's query starts after that one has ended, so two CLIs never write one
+    // transcript (round 4, grok).
+    const previous = sessionKey ? this.runsEnding.get(sessionKey) : undefined;
+    if (previous) await this.awaitPreviousRunEnd(previous, sessionKey as string);
     yield* this.streamSdkQuery(
       prompt,
       session,
@@ -1605,6 +1644,31 @@ export class ClaudeHandler implements TurnSteeringPort {
       undefined,
       run,
     );
+  }
+
+  /** Wait, bounded, for an abandoned run of the session to end (`runsEnding`). */
+  private async awaitPreviousRunEnd(previous: Promise<void>, sessionKey: string): Promise<void> {
+    const startedAt = Date.now();
+    let bound: ReturnType<typeof setTimeout> | undefined;
+    const endedInTime = await Promise.race([
+      previous.then(() => true),
+      new Promise<boolean>((resolve) => {
+        bound = setTimeout(() => resolve(false), PREVIOUS_RUN_END_WAIT_MS);
+        (bound as { unref?: () => void }).unref?.();
+      }),
+    ]);
+    if (bound) clearTimeout(bound);
+    if (endedInTime) {
+      this.logger.info('A turn waited for the abandoned turn before it to end', {
+        sessionKey,
+        waitedMs: Date.now() - startedAt,
+      });
+    } else {
+      this.logger.warn('The abandoned turn before this one did not end in time — this turn starts anyway', {
+        sessionKey,
+        boundMs: PREVIOUS_RUN_END_WAIT_MS,
+      });
+    }
   }
 
   /**
@@ -1712,7 +1776,11 @@ export class ClaudeHandler implements TurnSteeringPort {
       // turn would take from the session (a waiting rollback, its Redo) is taken (round 2, astra). A Stop reaches here
       // as the abort (the outer stream's `return()` waits behind its pending read) (round 3, astra).
       if (run?.abandoned || abortController?.signal.aborted) {
-        this.logger.info('Turn abandoned before its query started — not started', { sessionKey });
+        this.logger.info('Turn abandoned before its query started — not started', {
+          sessionKey,
+          readerStopped: run?.abandoned === true,
+          aborted: abortController?.signal.aborted === true,
+        });
         return;
       }
 
@@ -2575,9 +2643,10 @@ export class ClaudeHandler implements TurnSteeringPort {
         if (run?.abandoned) {
           let bound: ReturnType<typeof setTimeout> | undefined;
           const closedInTime = await Promise.race([
+            // A close that failed did not close: the CLI may still run.
             Promise.resolve(activeQuery.return(undefined)).then(
               () => true,
-              () => true,
+              () => false,
             ),
             new Promise<boolean>((resolve) => {
               bound = setTimeout(() => resolve(false), ABANDONED_QUERY_CLOSE_MS);
@@ -2586,10 +2655,13 @@ export class ClaudeHandler implements TurnSteeringPort {
           ]);
           if (bound) clearTimeout(bound);
           if (!closedInTime) {
-            this.logger.warn('An abandoned turn’s query did not close in time — its CLI may still run', {
+            // The turn is over for everyone: its controller stops the CLI, so the session's next turn (waiting on this
+            // loop's end) does not run beside it (round 4, grok).
+            this.logger.warn('An abandoned turn’s query did not close in time — its CLI is stopped', {
               sessionKey: steerKey,
               boundMs: ABANDONED_QUERY_CLOSE_MS,
             });
+            abortController?.abort('abandoned-query-close-timeout');
           }
         }
         if (steerKey && this.activeQueries.get(steerKey)?.query === activeQuery) {
@@ -3056,6 +3128,8 @@ export class ClaudeHandler implements TurnSteeringPort {
   /** Who is told what a running turn knows at frame arrival ({@link SteerSignals}). */
   private steerSignals?: SteerSignals;
   /** #1473 — when each session's turn loop last ended, until the host reads it as the run settles. */
+  /** #1473 — an abandoned run's end, by session key, while it settles and closes its query (`awaitPreviousRunEnd`). */
+  private readonly runsEnding = new Map<string, Promise<void>>();
   private readonly turnLoopEndedAt = new Map<string, number>();
 
   /**

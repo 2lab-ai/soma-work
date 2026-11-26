@@ -1255,7 +1255,10 @@ export class AgentStreamProcessor {
           };
         }
 
-        const step = await this.raceNextStep(iterator, abortSignal);
+        const raced = await this.raceNextStep(iterator, abortSignal);
+        // A stream that ended because the turn was stopped (a turn stopped while it was prepared yields nothing) is a
+        // stop, not an empty turn — whichever of the two settled first (#1473 round 4, fable).
+        const step = raced.kind === 'done' && abortSignal.aborted ? ({ kind: 'aborted' } as const) : raced;
         if (step.kind === 'done') break;
         if (step.kind === 'aborted') {
           // Mirror the idleTimeout branch: best-effort tell the abandoned

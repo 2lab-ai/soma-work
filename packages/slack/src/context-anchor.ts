@@ -123,7 +123,9 @@ export function anchorRefusal(session: ContextAnchorSession, raw: string | undef
 export function turnStartAnchor(session: ContextAnchorSession): string | undefined {
   // #1473 — a work-log entry is made as its frame is drawn: it carries that frame's cut point, not the one the loop
   // has reached since.
-  return session.pendingRewind?.anchor ?? (session.renderedAnchor ? session.renderedAnchor.value : session.contextAnchor);
+  return (
+    session.pendingRewind?.anchor ?? (session.renderedAnchor ? session.renderedAnchor.value : session.contextAnchor)
+  );
 }
 
 // Outstanding main-agent tool calls per session (runtime only — a turn that
