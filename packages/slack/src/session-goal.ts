@@ -101,6 +101,12 @@ export interface SessionGoalState {
    * when a paused goal is resumed — so a queued goal does not lose what it was given.
    */
   openingFiles?: SessionGoalFile[];
+  /**
+   * {@link openingFiles} rode a turn of this goal already (its opening, or the first continuation when the loop
+   * itself started the goal — an eval verdict promoting it from the queue, a restart repairing a stranded queue). The
+   * loop's continuations carry them only while this is unset; an explicit opening (start, promote, resume) always does.
+   */
+  openingFilesSent?: boolean;
   status: SessionGoalStatus;
   createdAt: number;
   updatedAt: number;

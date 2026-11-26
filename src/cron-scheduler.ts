@@ -52,6 +52,11 @@ export interface SyntheticMessageEvent {
    * is named after it and filed under it on the dashboard.
    */
   cron?: { jobId: string; jobName: string };
+  /**
+   * Slack files the turn carries (a goal's files on the first turn the loop runs for it — the pipeline downloads them
+   * like a person's attachments).
+   */
+  files?: import('./slack/session-goal').SessionGoalFile[];
   /** Route context — skipAutoBotThread prevents duplicate root message creation */
   routeContext?: {
     skipAutoBotThread?: boolean;

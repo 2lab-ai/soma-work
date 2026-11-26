@@ -124,7 +124,7 @@ import { getArtifactStore } from './conversation/artifacts';
 import { setCodeChangesRefresher } from './conversation/code-changes-routes';
 import { setMailboxRoutesSessionOwner } from './conversation/mailbox-routes';
 import type { NewTaskAttachment } from './conversation/new-task';
-import { createNewTaskProvider, createSlackSteerUploader, uploadFiles } from './conversation/new-task-provider';
+import { createNewTaskProvider, createSlackSteerUploader } from './conversation/new-task-provider';
 import { setProjectRepoSource } from './conversation/project-memory-routes';
 import { effectiveViewerUrl } from './conversation/public-url';
 import { createSessionWorkLogAppender } from './conversation/session-work-log';
@@ -1252,7 +1252,8 @@ async function start() {
     // A goal added with files (the goal composer) puts them into the thread first, like a panel instruction's.
     setDashboardGoalHandler((sessionKey, action, actorUserId) =>
       slackHandler.handleHostGoalAction(sessionKey, action, actorUserId, {
-        uploadFiles: (channel, threadTs, files) => uploadFiles(app.client, channel, threadTs, files),
+        // The panel composer's uploader: what Slack took is kept, so a retried add never posts a file twice (#488).
+        uploadFiles: (channel, threadTs, files) => uploadSteerFiles(channel, threadTs, files),
       }),
     );
 

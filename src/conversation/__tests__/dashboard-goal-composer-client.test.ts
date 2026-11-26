@@ -220,8 +220,24 @@ describe('the goal composer — one element per session, slotted into whichever 
     expect(clientFn('closePanel')).toContain("if (typeof goalComposerReset === 'function') goalComposerReset();");
   });
 
-  it('renderPanelGoal paints it after the card’s data', () => {
-    expect(clientFn('renderPanelGoal')).toContain('paintGoalComposer(card, s, canEdit);');
+  it('renderPanelGoal paints it after the card’s data, and takes it out (quiet) when there is no card', () => {
+    const src = clientFn('renderPanelGoal');
+    expect(src).toContain('paintGoalComposer(card, s, canEdit);');
+    expect(src).toContain('paintGoalComposer(null, s, false);');
+    const { m, made } = composerRig();
+    const card = el('ui-goal-card');
+    m.paintGoalComposer(card, session('k'), true);
+    m.paintGoalComposer(null, null, false);
+    expect(card.children).toEqual([]);
+    expect(made[0].cancelRecording).toHaveBeenCalled();
+  });
+
+  it('leaving the 목표 tab quiets it (a recording or dictation does not go on out of sight)', () => {
+    const src = clientFn('selectPanelMid');
+    expect(src).toContain("var wasGoal = _panelMid === 'goal';");
+    expect(src).toContain(
+      "if (wasGoal && _panelMid !== 'goal' && typeof goalComposerReset === 'function') goalComposerReset();",
+    );
   });
 });
 

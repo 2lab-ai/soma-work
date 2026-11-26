@@ -4593,6 +4593,8 @@ export class SlackHandler {
     const goalFiles =
       liveGoal?.goalId === opening.goalId && liveGoal.openingFiles?.length ? liveGoal.openingFiles : undefined;
     const files = anchor.files?.length ? anchor.files : goalFiles;
+    // The loop's continuations need not carry them again (the snapshot a refused admission restores undoes this).
+    if (goalFiles && liveGoal) liveGoal.openingFilesSent = true;
     const openingEvent = {
       type: 'message',
       channel: anchor.channel,
@@ -9763,14 +9765,27 @@ export class SlackHandler {
       // unconditionally (the drain would refuse a queued goal's opening later
       // anyway) and the anchor text promises neither outcome.
       this.assertGoalOpeningAuthor(sessionKey, actor, channel, threadTs);
-      // The goal's files go into the thread first (like a panel instruction's): the opening turn reads them from
-      // Slack. A failed upload adds no goal — it is never set without the files it was given.
-      const openingFiles = await this.uploadHostGoalFiles(channel, threadTs, request.attachments, options);
+      if (request.attachments?.length && !options.uploadFiles) {
+        throw new HostGoalActionError(503, 'This server cannot attach files to a goal');
+      }
       const anchorTs = await this.postGoalAnchor(
         channel,
         threadTs,
         `🎯 Goal added via dashboard: ${formatGoalObjectiveForSlack(objective)}`,
       );
+      // The goal's files go into the thread under its notice (the opening turn reads them from Slack). A failed upload
+      // adds no goal and says so there; the uploader keeps what Slack took, so a retry never posts a file twice.
+      let openingFiles: SessionGoalFile[] | undefined;
+      try {
+        openingFiles = await this.uploadHostGoalFiles(channel, threadTs, request.attachments, options);
+      } catch (error) {
+        await this.postGoalNoticeBestEffort(
+          channel,
+          threadTs,
+          '⚠️ 위 goal은 설정되지 않았습니다 — 파일을 스레드에 올리지 못했습니다.',
+        );
+        throw error;
+      }
 
       // ── synchronous from here: re-check → mutate → persist → admit ──
       let live: ConversationSession;

@@ -8196,7 +8196,7 @@ describe('SlackHandler — follow-up queue host', () => {
       registrySession.terminated = undefined;
     });
 
-    it('add with files while a turn runs: uploaded into the thread before the anchor, carried by the opening turn', async () => {
+    it('add with files while a turn runs: uploaded into the thread under the anchor, carried by the opening turn', async () => {
       const order: string[] = [];
       const uploadFiles = vi.fn(async (_c: string, _t: string, files: any[]) => {
         order.push('upload');
@@ -8216,13 +8216,15 @@ describe('SlackHandler — follow-up queue host', () => {
       );
 
       expect(result).toMatchObject({ outcome: 'started', opening: 'queued' });
-      expect(order).toEqual(['upload', 'anchor']);
+      expect(order).toEqual(['anchor', 'upload']);
       expect(uploadFiles).toHaveBeenCalledWith(CHANNEL, expect.any(String), [
         expect.objectContaining({ name: 'a.png' }),
         expect.objectContaining({ name: 'b.png' }),
       ]);
       expect(registrySession.goal.openingFiles.map((f: any) => f.id)).toEqual(['F1', 'F2']);
       expect(items()[0].message.files.map((f: any) => f.id)).toEqual(['F1', 'F2']);
+      // The opening carries them: the loop's continuations need not again.
+      expect(registrySession.goal.openingFilesSent).toBe(true);
       await settle();
     });
 
@@ -8257,7 +8259,7 @@ describe('SlackHandler — follow-up queue host', () => {
       await settle();
     });
 
-    it('files but no uploader (503), or Slack refusing them (502): no goal is added and nothing is posted', async () => {
+    it('files but no uploader (503, nothing posted), or Slack refusing them (502, the anchor says so): no goal is added', async () => {
       await expect(
         handler.handleHostGoalAction(SESSION_KEY, {
           action: 'add',
@@ -8265,6 +8267,7 @@ describe('SlackHandler — follow-up queue host', () => {
           attachments: [attachment('a.png')],
         }),
       ).rejects.toMatchObject({ statusCode: 503 });
+      expect(postSystemMessage).not.toHaveBeenCalled();
       await expect(
         handler.handleHostGoalAction(
           SESSION_KEY,
@@ -8282,7 +8285,11 @@ describe('SlackHandler — follow-up queue host', () => {
         ),
       ).rejects.toMatchObject({ statusCode: 502 });
       expect(registrySession.goal).toBeUndefined();
-      expect(postSystemMessage).not.toHaveBeenCalled();
+      expect(postSystemMessage).toHaveBeenCalledWith(
+        CHANNEL,
+        expect.stringContaining('파일을 스레드에 올리지 못했습니다'),
+        expect.anything(),
+      );
     });
 
     it('move: a queued goal to another place, quietly (no notice, the running goal and its epoch untouched)', async () => {

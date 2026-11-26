@@ -299,6 +299,8 @@ export interface SessionGoal {
    * Every opening turn of this goal carries them (`admitGoalOpeningTurn`), so a queued goal keeps them until it starts.
    */
   openingFiles?: SessionGoalFile[];
+  /** `openingFiles` rode a turn of this goal already; the loop's continuations carry them only while unset. */
+  openingFilesSent?: boolean;
   /**
    * The open task ids the session's task list had when this goal was paused —
    * its own work. While it stays in `goalPaused` they hold no other goal's

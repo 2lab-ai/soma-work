@@ -16982,7 +16982,10 @@ function panelMidTabHtml(t, on) {
 // now — 세부 the full record, 작업 the list unfolded, 에이전트 the strip — and the section boxes below are sized again.
 function selectPanelMid(id) {
   rdReset();
+  var wasGoal = _panelMid === 'goal';
   _panelMid = _panelMid === id || !MID_TAB_LABEL[id] ? '' : id;
+  // Leaving the 목표 tab hides the goal composer: no recording or dictation goes on out of sight.
+  if (wasGoal && _panelMid !== 'goal' && typeof goalComposerReset === 'function') goalComposerReset();
   if (_panelMid === 'info') _panelInfoOpen = true;
   if (_panelMid === 'tasks') {
     _panelTasksOpen = true;
@@ -17785,6 +17788,8 @@ function renderPanelGoal() {
   renderPanelGoalPaused(s, canEdit);
   // Read-only viewers and closed sessions only see a goal list that exists.
   if (!s || !(g || canEdit)) {
+    // No card: the goal composer leaves with it, quiet (no recording or dictation goes on in a removed element).
+    paintGoalComposer(null, s, false);
     el.style.display = 'none';
     if (el._key) { el.innerHTML = ''; el._key = null; }
     return;
