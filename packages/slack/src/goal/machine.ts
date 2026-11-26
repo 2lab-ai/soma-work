@@ -6,11 +6,14 @@
 import { formatGoalObjectiveForSlack } from './format';
 import {
   DEFAULT_GOAL_MAX_CONTINUATIONS,
+  type GoalPhaseFingerprint,
   type GoalQueueSession,
   MAX_GOAL_HISTORY,
   type SessionGoal,
   type SessionGoalFile,
+  type StoredGoalPhase,
 } from './model';
+import { phaseOf } from './read';
 
 type SessionGoalState = SessionGoal;
 
@@ -677,14 +680,55 @@ export function restoreGoalState(session: GoalQueueSession, snapshot: GoalStateS
   session.systemPrompt = snapshot.systemPrompt;
 }
 
+const fingerprintOf = (goal: SessionGoal): GoalPhaseFingerprint => ({
+  epoch: goal.epoch ?? 0,
+  updatedAt: goal.updatedAt,
+  continuationCount: goal.continuationCount,
+});
+
+/** The phase as stored: what `phaseOf` reads, with the question named by kind (its fields stay where they are). */
+function storedPhaseOf(goal: SessionGoal): StoredGoalPhase | undefined {
+  const phase = phaseOf(goal);
+  if (!phase) return undefined;
+  if (phase.kind === 'asking') return { kind: 'asking', ask: phase.ask.kind };
+  return phase;
+}
+
 /**
- * .prd/39 D4 — the goal as stored: without the judge's lease (`pendingEval`). A judge lives only in the process that
- * runs it (S4); the load used to drop the field, now it is never written.
+ * .prd/39 D4 · D17 — the goal as stored. Without the judge's lease (`pendingEval`: a judge lives only in the process
+ * that runs it, D4). With its phase and the fingerprint an older version would move (`phaseFp`), written beside the
+ * legacy fields until PR10 drops them.
  */
-export function storedGoal<T extends { pendingEval?: unknown } | undefined>(goal: T): T {
-  if (!goal || goal.pendingEval === undefined) return goal;
-  const { pendingEval: _lease, ...rest } = goal as { pendingEval?: unknown } & Record<string, unknown>;
-  return rest as T;
+export function storedGoal<T extends SessionGoal | undefined>(goal: T): T {
+  if (!goal) return goal;
+  const { pendingEval: _lease, ...rest } = goal as SessionGoal;
+  const phase = storedPhaseOf(goal as SessionGoal);
+  return { ...rest, phase, phaseFp: fingerprintOf(goal as SessionGoal) } as T;
+}
+
+/**
+ * .prd/39 D17 — the phase a loaded goal starts with. A phase with a legacy form is recomputed from the legacy fields
+ * (an older version changes only those — a first turn starting clears `openingPending`, a retry arms its fields, a cap
+ * question opens its fields — without moving the epoch, `updatedAt` or the count), so the stored one is dropped.
+ * `stopped` and a hold's `why` have no legacy form: they are kept while the fingerprint matches and the legacy fields
+ * say nothing else; an older version that changed the goal moved the fingerprint, and they lapse.
+ */
+export function settleLoadedPhase(goal: SessionGoal): SessionGoal {
+  const fp = goal.phaseFp;
+  const unchanged =
+    !!fp &&
+    fp.epoch === (goal.epoch ?? 0) &&
+    fp.updatedAt === goal.updatedAt &&
+    fp.continuationCount === goal.continuationCount;
+  const legacyRunning = phaseOf({ ...goal, phase: undefined })?.kind === 'running';
+  const keepStopped = goal.phase?.kind === 'stopped' && unchanged && legacyRunning;
+  const keepHold = goal.holdWhy !== undefined && unchanged && goal.status === 'paused';
+  if (goal.phase === undefined && goal.holdWhy === undefined) return goal;
+  return {
+    ...goal,
+    phase: keepStopped ? goal.phase : undefined,
+    holdWhy: keepHold ? goal.holdWhy : undefined,
+  };
 }
 
 /**

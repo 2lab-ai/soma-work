@@ -15,6 +15,7 @@
  * - `creditActiveGoalMs` / `stampActiveLegGoalOwner` mutate the live
  *   session/goal in place — the turn timer relies on identity.
  */
+import { settleLoadedPhase } from '@soma/slack/goal/machine';
 import { DEFAULT_GOAL_MAX_CONTINUATIONS, type SessionGoal } from '../types';
 import { findGoalById } from './session-goal';
 
@@ -84,6 +85,8 @@ export function stampActiveLegGoalOwner(session: GoalLifecycleSession): void {
  */
 export function migrateLegacyGoal(goal: SessionGoal | undefined): SessionGoal | undefined {
   if (!goal) return goal;
+  // .prd/39 D17 — the stored phase: recomputed where the legacy fields say it, kept only for `stopped` / a hold's why.
+  goal = settleLoadedPhase(goal);
   // Stale lease cleanup — see doc comment. Rebind so both the fast path
   // and the backfill path below return a goal without `pendingEval`.
   if (goal.pendingEval !== undefined) {
