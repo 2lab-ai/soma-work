@@ -39,6 +39,7 @@ import { isAwaitingUserChoice, TurnRunner, V1QueryAdapter } from './agent-sessio
 import type { ClaudeHandler } from './claude-handler';
 import { getFollowupQueueCapacity, getReleaseNotesChannels } from './config';
 import { isClientRef } from './conversation/client-ref';
+import { noteInstructionReachedModel, noteInstructionStage } from './conversation/instruction-progress';
 import { captureUserMedia, getConversation, recordUserTurn } from './conversation/recorder';
 import { readWorkLog } from './conversation/work-log';
 import { FileHandler, type ProcessedFile } from './file-handler';
@@ -2170,12 +2171,15 @@ export class SlackHandler {
     }
     if (userTask === 'queued') {
       // Durably stored, like a follow-up behind a busy slot: a host waiting for the receipt hears it now.
+      // #1466 — a dashboard send's chat says it waits in the person's task queue.
+      noteInstructionStage(sessionKey, event.dashboardClientRef, 'queued');
       this.noteTurnAccepted(event.channel, event.ts);
       return;
     }
     if (userTask === 'same-work') {
       // .prd/36 v2 D12 — every key it names already runs or waits in another thread of the person: nothing starts,
       // the thread was told who has it (그래도 시작 sends it on once).
+      noteInstructionStage(sessionKey, event.dashboardClientRef, 'same-work');
       this.noteTurnAccepted(event.channel, event.ts);
       return;
     }
@@ -2186,7 +2190,11 @@ export class SlackHandler {
     // (`followup-dispatcher.ts:329`, `:567`) — so this never leaks across runs.
     this.rememberInitialSay(sessionKey, say);
     const started = dispatcher.runInitial(sessionKey, event, this.captureFollowupContext(event));
-    if (started.status === 'dispatched') this.noteUserTaskSlot(sessionKey, event);
+    if (started.status === 'dispatched') {
+      this.noteUserTaskSlot(sessionKey, event);
+      // #1466 — its turn is dispatched: the session is set up next, then the prompt reaches the model.
+      noteInstructionStage(sessionKey, event.dashboardClientRef, 'starting');
+    }
     // --- end of fence ---
 
     if (started.status !== 'dispatched') {
@@ -6979,6 +6987,8 @@ export class SlackHandler {
     turnEpoch?: number;
     replayEpoch?: number;
   }): void {
+    // #1466 — a dashboard send whose turn was starting: the model has it now.
+    noteInstructionReachedModel(sessionKey);
     const dispatcher = this.followupDispatcher;
     if (!dispatcher) return;
     // The executor speaks the session's canonical key; the run holds its slot

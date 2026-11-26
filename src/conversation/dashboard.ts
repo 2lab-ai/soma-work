@@ -153,6 +153,7 @@ import { type CardLink, cardLinksOf, followupLinksOf, settledLinkUrlsOf } from '
 import { cardFields, cardPushMessage, type SentCards, WS_RESYNC } from './card-push';
 import { archivedCardClocks, cardWhereOf, liveCardClocks } from './card-where';
 import { isClientRef } from './client-ref';
+import { type InstructionProgress, instructionProgressOf, noteInstructionStage } from './instruction-progress';
 import { type ComposerMenuWhere, type ComposerTriggerRow, composerTriggers } from './composer-menus';
 import { buildCronEditPatch, cronJobDetail } from './cron-edit';
 import { buildCronJobsView, type CronRunSessionLookup } from './cron-view';
@@ -556,6 +557,11 @@ export interface KanbanSession {
    * another of theirs could go first — `resume`). The board puts it in 응답 필요, under 대기큐. Absent otherwise.
    */
   userQueue?: { entryId: string; kind: 'request' | 'resume'; position: number; since: number };
+  /**
+   * #1466 — where the latest instruction the dashboard sent this session is: the stage the server reached for it
+   * (instruction-progress.ts), by the panel's ref. The chat shows it under that instruction until its answer.
+   */
+  instructionProgress?: InstructionProgress;
   /**
    * Anthropic safeguards halted the session: nothing runs in it until an admin
    * lifts the lock from the Slack notice. The card says so instead of "대기".
@@ -3096,6 +3102,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
   // .prd/36 D8 — the session waits on the host: a work-queue entry, or an environment hand-off it asked for.
   const queueWait = hostWaitFor(s?.channelId, s?.threadTs);
   const userQueue = userQueueOfSession(key);
+  const instructionProgress = instructionProgressOf(key);
   const taskView = _getTasksFn ? _getTasksFn(key) : undefined;
   const aggregate = computeThreadAggregate(s.channelId, s.threadTs, getAllSessions(), Date.now());
   const headline = displayTitle(s);
@@ -3227,6 +3234,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     ...(autoResume ? { autoResume } : {}),
     ...(queueWait ? { queueWait } : {}),
     ...(userQueue ? { userQueue } : {}),
+    ...(instructionProgress ? { instructionProgress } : {}),
     ...(s.safeguardHalt && Number.isFinite(Number(s.safeguardHalt.atMs))
       ? {
           safeguardHalt: {
@@ -5529,6 +5537,8 @@ export async function registerDashboardRoutes(
             session: _getSessionsFn?.()?.get(originalKey),
             senderId: sender,
           });
+        // #1466 — the chat under this instruction says what the server did with it: taken, or held for the owner.
+        noteInstructionStage(originalKey, ref, waits ? 'approval' : 'received');
         if (_commandHandlerFn) {
           // #785: the panel's ref rides along only when there is one (the handler's other callers pass four).
           if (ref) await _commandHandlerFn(originalKey, message, files.value, sender, ref);
@@ -16478,14 +16488,45 @@ var STEER_CHIP_STARTING = '처리 중 · 이 메시지로 새 작업을 시작�
 var STEER_CHIP_FAILED = '보내지 못했어요 · 입력창의 대기열에서 다시 보내거나 취소하세요';
 var STEER_CHIP_APPLIED = '반영됨 · 진행 중이던 작업이 이 메시지를 읽었어요';
 // kind → [tone, words]. Tones: wait (nothing runs it yet), work (on its way into a turn), fail, done.
-var STEER_CHIP = { sending: ['wait', STEER_CHIP_SENDING], queued: ['wait', STEER_CHIP_QUEUED], steered: ['work', STEER_CHIP_STEERED], starting: ['work', STEER_CHIP_STARTING], failed: ['fail', STEER_CHIP_FAILED], applied: ['done', STEER_CHIP_APPLIED] };
+// #1466 — the stages the server reports for an instruction sent to a card with no turn running (convProgressChip).
+var STEER_CHIP_RECEIVED = '접수됨 · 서버가 받았어요, 시작할 수 있는지 확인하고 있어요';
+var STEER_CHIP_APPROVAL = '승인 대기 · 작업 소유자가 승인하면 실행돼요';
+var STEER_CHIP_USERQUEUE = '작업 큐 대기 · 내 다른 작업이 끝나면 시작해요';
+var STEER_CHIP_USERQUEUE_AT = '작업 큐 대기 · {0}번째 — 내 다른 작업이 끝나면 시작해요';
+var STEER_CHIP_SAMEWORK = '시작 안 함 · 같은 작업이 다른 스레드에서 이미 진행 중이에요';
+var STEER_CHIP_DELIVERED = '모델이 받았어요 · 답을 쓰고 있어요';
+var STEER_CHIP = { sending: ['wait', STEER_CHIP_SENDING], queued: ['wait', STEER_CHIP_QUEUED], steered: ['work', STEER_CHIP_STEERED], starting: ['work', STEER_CHIP_STARTING], failed: ['fail', STEER_CHIP_FAILED], applied: ['done', STEER_CHIP_APPLIED], received: ['wait', STEER_CHIP_RECEIVED], approval: ['wait', STEER_CHIP_APPROVAL], userqueue: ['wait', STEER_CHIP_USERQUEUE], samework: ['fail', STEER_CHIP_SAMEWORK], delivered: ['work', STEER_CHIP_DELIVERED] };
 // The element's five states (STEER_STATE) as the chat's kinds.
 var STEER_CHIP_OF = { queued: 'queued', steered: 'steered', sending: 'starting', failed: 'failed' };
 // The state above a turn's words (the turn's media slot — the page's own light DOM).
+// A kind may carry a number after ':' — 'userqueue:2' is the 2nd in the person's task queue.
 function steerChipHtml(kind) {
-  var c = STEER_CHIP[kind];
+  var parts = String(kind || '').split(':');
+  var c = STEER_CHIP[parts[0]];
   if (!c) return '';
-  return '<div class="cv-steer cv-steer-' + c[0] + '" role="status"><span class="cv-steer-dot" aria-hidden="true"></span><span>' + esc(c[1]) + '</span></div>';
+  var n = Number(parts[1]) || 0;
+  var words = parts[0] === 'userqueue' && n > 0 ? adminFmt(STEER_CHIP_USERQUEUE_AT, n) : c[1];
+  return '<div class="cv-steer cv-steer-' + c[0] + '" role="status"><span class="cv-steer-dot" aria-hidden="true"></span><span>' + esc(words) + '</span></div>';
+}
+// #1466 (Z 2026-11-26) — where an instruction sent from here really is: the stage the server reported for it
+// (s.instructionProgress — by its ref, the optimistic turn's id, which the recorded turn keeps as clientRef), on
+// that instruction until an answer follows it. Nothing the server has not reported: no record, no chip.
+var PROGRESS_CHIP = { received: 'received', approval: 'approval', queued: 'userqueue', 'same-work': 'samework', starting: 'starting', delivered: 'delivered' };
+function convProgressChip(list, s) {
+  var p = s && s.instructionProgress;
+  var kind = p && p.ref ? PROGRESS_CHIP[p.stage] : '';
+  if (!kind) return null;
+  for (var i = list.length - 1; i >= 0; i--) {
+    var t = list[i];
+    if (!t) continue;
+    if (String(t.id) === String(p.ref) || (t.clientRef && String(t.clientRef) === String(p.ref))) {
+      var at = kind === 'userqueue' && s.userQueue ? Number(s.userQueue.position) || 0 : 0;
+      return { id: String(t.id), kind: at > 0 ? kind + ':' + at : kind };
+    }
+    // An answer after it (or the instruction is older than the latest answer): its stage is history.
+    if (t.role === 'assistant') return null;
+  }
+  return null;
 }
 // Pure: the session's queue (s.followups) over the turns the panel holds (list) —
 //   chips: turn id → kind. This browser's own turn the queue lists carries the row's state; one sent while a
@@ -16550,8 +16591,20 @@ function convQueueTurns(list, fu, ownerName) {
     });
     out.chips[id] = kind;
   }
+  // Sent from here and not heard of yet — a running turn's queue has not listed it, or (#1466) no stage came back for
+  // it — it reads 보내는 중 (convPaint puts the stage the server reported in its place). One with an answer after it
+  // (its recorded turn not in yet) is on its way no more.
+  var lastAnswer = -1;
+  for (var li = list.length - 1; li >= 0; li--) {
+    if (list[li] && list[li].role === 'assistant') {
+      lastAnswer = li;
+      break;
+    }
+  }
   for (var k in own) {
-    if (own[k]._running && !own[k]._rowSeen && !out.chips[k] && out.seen.indexOf(k) < 0) out.chips[k] = 'sending';
+    if (own[k]._rowSeen || out.chips[k] || out.seen.indexOf(k) >= 0) continue;
+    if (!own[k]._running && list.indexOf(own[k]) < lastAnswer) continue;
+    out.chips[k] = 'sending';
   }
   return out;
 }
@@ -24354,6 +24407,9 @@ function convPaint() {
     }
   }
   var shown = q.extra.length ? _panelTurnsList.concat(q.extra) : _panelTurnsList;
+  // #1466 — the stage the server reported for the latest instruction sent from here, on that instruction.
+  var pc = convProgressChip(shown, s);
+  if (pc) q.chips[pc.id] = pc.kind;
   var built = convTurnsOf(shown, {
     cid: cid, bot: botNameOf(s), now: Date.now(), working: working,
     rewinds: rewindSpansOf(s, shown),
@@ -24375,10 +24431,10 @@ function convPaint() {
     loading: msg === 'loading' || !!_panelTurnsLoading,
     // D12 — the writing row: the session works and the latest turn is the instruction. Not while 입력 필요 is the
     // last turn: the agent waits on the reader, and the ask stays the chat's last message (SSOT 2026-11-13).
-    // The writing row's orb follows the agent's last tool (convPendingOf, 2026-11-21). An instruction sent from here
-    // shows the row at once, before the session turns working (sentAwaitsStart, Z 2026-11-26).
+    // The writing row's orb follows the agent's last tool (convPendingOf, 2026-11-21). #1466: not while the latest
+    // instruction's own stage says the model does not have it yet (its chip says where it is instead).
     pending:
-      !needs && ansPendingShow(s, panelConvId, last ? last.role : '', panelSessionKey)
+      !needs && ansPendingShow(s, panelConvId, last ? last.role : '') && !(pc && last && pc.id === String(last.id) && pc.kind !== 'delivered')
         ? typeof convPendingOf === 'function'
           ? convPendingOf(s && s.agentRoot && s.agentRoot.lastTool, s && s.agentRoot && s.agentRoot.lastToolAt, last && last.timestamp)
           : true
@@ -24605,42 +24661,8 @@ function convPendingOf(lastTool, lastToolAt, since) {
   var fresh = since === undefined || (at > 0 && at >= (Number(since) || 0));
   return { activity: orbActivityOf(fresh ? lastTool : '') };
 }
-// Sent, not started yet (Z 2026-11-26): an instruction this browser sent to a card no turn was running on shows the
-// writing row at once. The session turns working only after the server echoed the words to Slack, let them through
-// the task queue and set the turn up — until then the chat showed the instruction with nothing under it. Session
-// key → { at: when it was sent (this browser's clock), fin: the session's finishedAt then (the server's), ref: the send's
-// optimistic turn id }; marked by sendCommand, cleared when the server answered that send. Only the chat: the card's
-// 응답 line holds the previous pair until the new turn is recorded, which happens after the session turns working.
-var SENT_AWAIT_MS = 180000;
-var _sentAwait = Object.create(null);
-function sentAwaitMark(key, ref) {
-  if (!key) return;
-  var s = _sessionCache[key];
-  _sentAwait[key] = { at: Date.now(), fin: Number(s && s.finishedAt) || 0, ref: ref || '' };
-  // Overdue, the row leaves on its own: nothing else repaints an idle card.
-  setTimeout(convPaintSoon, SENT_AWAIT_MS + 50);
-}
-// The server answered the send with this ref: an idle send is answered only once its turn is over, or at once when no
-// turn starts from it (refused as the same work, held for the owner, answered in the thread, failed). Its mark goes;
-// a later send's mark stays.
-function sentAwaitClear(key, ref) {
-  var a = key ? _sentAwait[key] : null;
-  if (a && a.ref === ref) delete _sentAwait[key];
-}
-// The send still waits for its turn: not answered (the caller checks the latest turn), no turn ran and ended after it
-// (finishedAt — the switch to idle — moved since the send; compared with itself, never with this browser's clock), the
-// session does not ask its reader, the person's task queue does not hold it (its card waits in 개인별 큐), and it is
-// not overdue.
-function sentAwaitsStart(key, s, now) {
-  var a = key ? _sentAwait[key] : null;
-  if (!a || !s) return false;
-  var done = (Number(s.finishedAt) || 0) > (a.fin || 0) || s.activityState === 'waiting' || !!s.userQueue || now - a.at > SENT_AWAIT_MS;
-  if (done) delete _sentAwait[key];
-  return !done;
-}
-function ansPendingShow(s, convId, lastRole, key) {
-  if (!(s && convId && s.conversationId === convId && lastRole === 'user')) return false;
-  return s.activityState === 'working' || sentAwaitsStart(key, s, Date.now());
+function ansPendingShow(s, convId, lastRole) {
+  return !!(s && convId && s.conversationId === convId && s.activityState === 'working' && lastRole === 'user');
 }
 // One-time wiring: the element's requests (older page, try again) and, once its
 // module has loaded, a paint of what it was handed before it could render.
@@ -25112,8 +25134,6 @@ async function sendCommand(text, ref, files) {
   var optimisticId = 'optimistic-' + Date.now();
   optimisticId += '-' + Math.random().toString(36).slice(2, 8); // two tabs in the same ms never share a ref (#785)
   const shown = msg + (list.length ? (msg ? '\\n' : '') + '📎 ' + list.map(function(f) { return f.name; }).join(', ') : '');
-  // Idle: the writing row shows under it at once, until the turn this starts takes over (Z 2026-11-26, sentAwaitsStart).
-  if (!running) sentAwaitMark(sendingSessionKey, optimisticId);
   appendTurnToPanel({
     id: optimisticId,
     role: 'user',
@@ -25151,8 +25171,6 @@ async function sendCommand(text, ref, files) {
   } finally {
     _pcInFlight--;
   }
-  // Answered: the turn it started is over, or none starts from it — the writing row no longer waits on this send.
-  sentAwaitClear(sendingSessionKey, optimisticId);
   if (awaitsOwner) dashToast({ title: '작업 소유자의 승인을 기다려요', description: '소유자가 승인하면 실행됩니다 — 소유자에게 DM과 대시보드로 요청했어요', tone: 'wait' });
   if (answeredInThread) {
     // The turn shown at once (idle) or the note's row (running) would wait for a turn that never comes.
