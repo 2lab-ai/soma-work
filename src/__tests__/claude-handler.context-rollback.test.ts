@@ -223,6 +223,43 @@ describe('ClaudeHandler — context rollback', () => {
     expect(decodeContextAnchor(turnStartAnchor(session))?.uuid).toBe(U(31));
   });
 
+  // #1473 round 2 (fable/astra): a reader that stops after the loop already ended leaves no drawn-frame anchor behind.
+  it('a stop after the loop ended clears the drawn frame’s anchor: the session’s own is the one', async () => {
+    const session: any = { sessionId: SID, compactionCount: 0, ownerId: 'U1', channelId: 'C1', threadTs: '1.1' };
+    installTurn((opening) => [
+      { type: 'system', subtype: 'init', session_id: SID, model: 'claude-test', tools: [] },
+      { type: 'assistant', uuid: U(40), message: { content: [{ type: 'text', text: 'first' }] } },
+      { type: 'assistant', uuid: U(41), message: { content: [{ type: 'text', text: 'second' }] } },
+      result(opening),
+    ]);
+    const handler = new ClaudeHandler({ getPluginManager: () => null } as unknown as McpManager);
+    const it = handler.streamQuery('hi', session, undefined, undefined, SLACK, 'C1:1.1')[Symbol.asyncIterator]();
+    await it.next();
+    await it.next(); // drawing the first reply
+    await new Promise((resolve) => setTimeout(resolve, 0)); // the loop ran to its end
+    expect(session.renderedAnchor).toBeDefined();
+
+    await it.return(undefined); // Stop, with the loop already over
+
+    expect(session.renderedAnchor).toBeUndefined();
+    expect(decodeContextAnchor(turnStartAnchor(session))?.uuid).toBe(U(41));
+  });
+
+  // #1473 round 2 (astra): a reader that stops while the turn is prepared takes nothing from the session.
+  it('a stop while the turn is prepared leaves a waiting rollback waiting', async () => {
+    const session = rollingBack();
+    const pending = session.pendingRewind;
+    installTurn((opening) => opened(opening, 9));
+    const handler = new ClaudeHandler({ getPluginManager: () => null } as unknown as McpManager);
+    const it = handler.streamQuery('hi', session, undefined, undefined, SLACK, 'C1:1.1')[Symbol.asyncIterator]();
+    const first = it.next();
+    await it.return(undefined);
+    expect((await first).done).toBe(true);
+
+    expect(queryMock).not.toHaveBeenCalled();
+    expect(session.pendingRewind).toBe(pending);
+  });
+
   it('a waiting rollback becomes resumeSessionAt once, and the anchor follows the new chain', async () => {
     const session: any = {
       sessionId: SID,

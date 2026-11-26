@@ -36,6 +36,11 @@ export interface RunAheadOptions<T> {
    * once, before the loop's `return()` is awaited; a throw (or a rejection) is dropped.
    */
   onAbandon?: () => unknown;
+  /**
+   * The reader is done with this stream — the loop's end or failure reached it, or it stopped (`return()`), whether
+   * the loop still ran or not. Called once; an observer: synchronous, a throw is dropped.
+   */
+  onClose?: () => void;
 }
 
 export function runAhead<T>(
@@ -88,10 +93,21 @@ export function runAhead<T>(
     }
   };
 
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    try {
+      options.onClose?.();
+    } catch {
+      // An observer's fault is not the turn's.
+    }
+  };
   /** The loop is over for every reader: any other waiting `next()` answers `done`. */
   const finish = () => {
     stopped = true;
     for (const w of waiters.splice(0)) w(undefined);
+    close();
   };
   const deliver = (slot: Slot<T> | undefined): IteratorResult<T, void> => {
     if (!slot || slot.kind === 'end') {
@@ -126,6 +142,7 @@ export function runAhead<T>(
       stopped = true;
       buffered.length = 0;
       for (const w of waiters.splice(0)) w(undefined);
+      close();
       if (wasStopped || loopOver) return { done: true, value: undefined };
       if (!started) {
         // Never pulled: the loop has not started, and ending it runs nothing but its own `finally`.

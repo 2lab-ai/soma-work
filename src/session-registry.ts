@@ -3427,6 +3427,8 @@ export class SessionRegistry {
     session.compactionCount = 0;
     // A fresh conversation has no cut points of its own yet (#743).
     session.contextAnchor = undefined;
+    // #1473 — and the anchor of a frame still being drawn from the old conversation.
+    delete (session as { renderedAnchor?: unknown }).renderedAnchor;
     session.pendingRewind = undefined;
     // What applied rollbacks dropped stays (SSOT 2026-11-25): its spans are times, not cut points of the old SDK
     // session, and the dashboard chat keeps leaving those turns out after new/renew.

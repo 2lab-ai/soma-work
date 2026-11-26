@@ -41,7 +41,14 @@ type Slot<T> = { kind: 'frame'; frame: T } | { kind: 'end' } | { kind: 'error'; 
 export async function* pumpFrames<T>(
   source: AsyncIterable<T>,
   onArrival: (frame: T) => void,
-  options: { until?: Promise<unknown> } = {},
+  options: {
+    until?: Promise<unknown>;
+    /**
+     * Asked when the consumer is done: true leaves the source open — its owner closes it later (#1473: a run whose
+     * reader stopped still settles its held turn through the query before the query is closed).
+     */
+    keepSource?: () => boolean;
+  } = {},
 ): AsyncGenerator<T, void, unknown> {
   const reader = source[Symbol.asyncIterator]();
   const buffered: Slot<T>[] = [];
@@ -116,6 +123,6 @@ export async function* pumpFrames<T>(
     // failed is no clean exit. (The read-ahead is usually parked in a read
     // here, so the source's `return()` must answer while one is outstanding —
     // a bare async generator does not: it queues the return behind the read.)
-    if (!sourceOver) await reader.return?.();
+    if (!sourceOver && options.keepSource?.() !== true) await reader.return?.();
   }
 }

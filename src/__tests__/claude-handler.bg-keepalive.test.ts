@@ -481,6 +481,63 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
     await stopping;
   });
 
+  // #1473 round 2 (grok): the settlement of a held turn goes through the query (an interrupt when the CLI still counts
+  // queued turns) — the query is closed only after it, or the interrupt is refused and a read steer runs again.
+  it('settles a held turn through its query before the query is closed, when its reader stops', async () => {
+    const cli = newFakeCli();
+    const pulledPastOpening = deferred();
+    const steerGate = deferred();
+    const quiet = deferred();
+    installScriptedQuery(cli, async function* (inputs) {
+      await readOpening(inputs, cli);
+      yield* openingTurnHead([agentTask(AGENT_ID)]);
+      yield openingResult(cli.opening?.uuid);
+      pulledPastOpening.resolve();
+      await steerGate.promise;
+      cli.received.push((await inputs.next()).value);
+      yield INIT;
+      yield assistantText('ACK');
+      yield successResult({
+        result: 'ACK',
+        num_turns: 1,
+        uuid: 'steer-result-uuid',
+        user_message_uuid: 'u-steer',
+        queued_turn_count: 1, // the CLI still counts a queued turn: the settlement asks it (interrupt)
+      });
+      await quiet.promise;
+    });
+    const handler = newHandler();
+    const settled = vi.fn();
+    handler.setSteerSignals({ read: vi.fn(), inputReopened: vi.fn(), settled });
+    const turn = startTurn(handler);
+    await turn.next();
+    await pulledPastOpening.promise;
+    const query = queryMock.mock.results[0].value as {
+      interrupt: ReturnType<typeof vi.fn>;
+      cancelAsyncMessage: ReturnType<typeof vi.fn>;
+      return: unknown;
+    };
+    query.cancelAsyncMessage = vi.fn(query.cancelAsyncMessage);
+    const closeQuery = vi.fn((query.return as (v?: unknown) => Promise<unknown>).bind(query));
+    query.return = closeQuery;
+    await hostCaughtUp();
+    expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-steer', text: 'and also' })).toBe(true);
+    steerGate.resolve();
+    await hostCaughtUp();
+
+    const stopping = turn.return!(undefined);
+    await vi.waitFor(() => expect(settled).toHaveBeenCalledTimes(1));
+    // The settlement asked the open query; the query was closed only after.
+    const asked = [...query.interrupt.mock.invocationCallOrder, ...query.cancelAsyncMessage.mock.invocationCallOrder];
+    expect(asked.length).toBeGreaterThan(0);
+    if (closeQuery.mock.calls.length > 0) {
+      expect(closeQuery.mock.invocationCallOrder[0]).toBeGreaterThan(Math.max(...asked));
+    }
+
+    quiet.resolve();
+    await stopping;
+  });
+
   it('stops every live agent at the keepalive cap, ends the input, and ends the turn on the result that follows', async () => {
     vi.useFakeTimers();
     vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));

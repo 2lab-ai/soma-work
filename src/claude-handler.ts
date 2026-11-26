@@ -466,6 +466,9 @@ interface RunHandle {
  */
 const frameAnchors = new WeakMap<object, string | undefined>();
 
+/** #1473 — how long an abandoned run's query close may take before the loop stops waiting on it. */
+const ABANDONED_QUERY_CLOSE_MS = 5_000;
+
 /**
  * The keepalive cap's hard ceiling, as a multiple of `SOMA_BG_KEEPALIVE_MAX_MS`
  * (#1039). The cap itself measures silence: it re-arms on every activity frame
@@ -1557,8 +1560,12 @@ export class ClaudeHandler implements TurnSteeringPort {
         },
         onAbandon: () => {
           run.abandoned = true;
-          if (session) delete (session as ContextAnchorSession).renderedAnchor;
           run.abandon?.();
+        },
+        // Whatever ended the reading (the result taken, a stop after the loop ended, a failure): no frame is being
+        // drawn behind the loop any more, and the session's own anchor is the one (round 2, fable/astra).
+        onClose: () => {
+          if (session) delete (session as ContextAnchorSession).renderedAnchor;
         },
       },
     );
@@ -1694,6 +1701,13 @@ export class ClaudeHandler implements TurnSteeringPort {
         },
       );
 
+      // #1473 — the reader stopped while the turn was being prepared: no CLI is started for nobody, and nothing the
+      // turn would take from the session (a waiting rollback, its Redo) is taken (round 2, astra).
+      if (run?.abandoned) {
+        this.logger.info('Turn abandoned before its query started — not started', { sessionKey });
+        return;
+      }
+
       // Context rollback (#743): a rollback the owner asked for runs this turn
       // from its anchor — `resumeSessionAt` drops every transcript entry after
       // it. One-shot: the request is cleared here whatever the turn does, so a
@@ -1740,11 +1754,6 @@ export class ClaudeHandler implements TurnSteeringPort {
       // that answers this prompt, which is how that result is told apart from
       // one closing an orphan drain (#257).
       const openingUuid = randomUUID();
-      // #1473 — the reader stopped while the turn was being prepared (auth, options): no CLI is started for nobody.
-      if (run?.abandoned) {
-        this.logger.info('Turn abandoned before its query started — not started', { sessionKey });
-        return;
-      }
       const channel = new TurnInputChannel(buildInitialUserMessage(prompt, openingUuid));
       const activeQuery = query({ prompt: channel, options });
       // An incident attempt is never registered, whatever key reaches here: its
@@ -1824,7 +1833,9 @@ export class ClaudeHandler implements TurnSteeringPort {
             this.steerSignals?.read(steerKey, uuid);
           }
         },
-        { until: framesReleased },
+        // Abandoned: the frames end but the query stays open until the loop has settled what it holds (a held turn's
+        // interrupt goes through it); the loop's cleanup closes it (round 2, grok).
+        { until: framesReleased, keepSource: () => run?.abandoned === true },
       );
 
       // Set once the turn's steered sends have been settled (the settlement
@@ -2552,6 +2563,20 @@ export class ClaudeHandler implements TurnSteeringPort {
         const transit = resultTransit.summary();
         if (transit) this.logger.info('Turn results handled by the host', { ...transit, sessionKey: steerKey });
         channel.close();
+        // #1473 — the reader stopped: the frames left the query open for the held turn's settlement, done above. Close
+        // it now — its own `return()` closes the CLI and awaits its exit — bounded, so a wedged CLI cannot hold the
+        // loop's end.
+        if (run?.abandoned) {
+          let bound: ReturnType<typeof setTimeout> | undefined;
+          await Promise.race([
+            Promise.resolve(activeQuery.return(undefined)).catch(() => undefined),
+            new Promise<void>((resolve) => {
+              bound = setTimeout(resolve, ABANDONED_QUERY_CLOSE_MS);
+              (bound as { unref?: () => void }).unref?.();
+            }),
+          ]);
+          if (bound) clearTimeout(bound);
+        }
         if (steerKey && this.activeQueries.get(steerKey)?.query === activeQuery) {
           this.activeQueries.delete(steerKey);
         }

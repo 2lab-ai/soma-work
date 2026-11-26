@@ -51,6 +51,38 @@ describe('runAhead — the loop does not wait for its reader', () => {
     expect(await reader.next()).toEqual({ done: true, value: undefined });
   });
 
+  it('says once that the reader is done — at the loop’s end, at a stop after it, and at a failure (round 2)', async () => {
+    const ended = vi.fn();
+    async function* two() {
+      yield 1;
+      yield 2;
+    }
+    const a = runAhead(two(), { onClose: ended });
+    await a.next();
+    await tick(); // the loop is over; the reader is still on the first value
+    expect(ended).not.toHaveBeenCalled();
+    await a.return(undefined);
+    expect(ended).toHaveBeenCalledTimes(1);
+
+    const read = vi.fn();
+    const b = runAhead(two(), { onClose: read });
+    for (let n = await b.next(); !n.done; n = await b.next()) {
+      // read to the end
+    }
+    await b.return(undefined);
+    expect(read).toHaveBeenCalledTimes(1);
+
+    const failed = vi.fn();
+    async function* boom() {
+      yield 1;
+      throw new Error('boom');
+    }
+    const c = runAhead(boom(), { onClose: failed });
+    await c.next();
+    await expect(c.next()).rejects.toThrow('boom');
+    expect(failed).toHaveBeenCalledTimes(1);
+  });
+
   it('pulls nothing before the first next()', async () => {
     const started = vi.fn();
     async function* loop() {
