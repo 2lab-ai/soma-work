@@ -22,17 +22,23 @@ import { WQ_REASON_JS } from './work-queue-client';
 
 export const TASK_QUEUE_TAB_HTML = `<div slot="task-queue" data-tab="task-queue" class="page" hidden>
   <aside class="side" aria-label="작업 큐 영역">
+    <nav>
+      <button type="button" class="navbtn" onclick="tqJump('tq-sec-lanes')">작업 큐 (레인)</button>
+      <button type="button" class="navbtn" onclick="tqJump('tq-sec-people')">개인별 큐</button>
+    </nav>
     <input type="search" class="ui-input" id="tq-filter" placeholder="이름 검색" aria-label="이름 검색" oninput="renderTaskQueue()">
   </aside>
   <main>
-    <p class="intro">사람마다 동시에 진행할 수 있는 작업(스레드) 수입니다. 이보다 많이 시키면 새 요청은 그 사람의 대기큐에 들어가고, 진행 중인 작업이 끝나면 자동으로 시작합니다. 기본은 1개, 관리자는 무제한입니다. 노브를 볼륨처럼 돌려 정하세요 — 위·오른쪽으로 끌거나 휠·화살표 키로 돌리고, 손을 떼면 저장됩니다. 끝까지 돌리면 ∞(무제한)입니다.</p>
-    <p class="intro">CPU 한도는 그 사람의 작업 하나가 쓸 수 있는 CPU입니다(100% = 코어 1개). 기본은 100%, 관리자는 무제한입니다. 작업의 프로세스 트리 전체가 한도를 넘으면 그 아래 프로세스를 아주 짧게 멈췄다 이어 가며 한도에 맞춥니다(Claude Code 자체는 멈추지 않습니다).</p>
+    <p class="intro">작업이 줄을 서는 두 곳입니다 — 한 번에 하나만 도는 작업 큐(레인)와 사람마다 동시에 돌릴 수 있는 수를 정하는 개인별 큐. 대시보드 보드의 작업 큐 칸(작업 큐 | 개인별 큐)과 같은 줄입니다.</p>
     <div id="tq-status" class="status" role="status" aria-live="polite"></div>
-    <h3 class="tq-h">레인 큐 — 한 번에 하나씩</h3>
-    <p class="intro">QA · 배포처럼 한 번에 하나만 돌아야 하는 일은 레인(예: <code>qa-dev2</code>)에 줄을 섭니다. 레인은 작업이 처음 줄을 설 때 생기고, 앞 작업이 끝나면 다음 차례가 자동으로 시작합니다. 아래 내역은 레인마다 들어온 순서대로 하나씩 끝낸 기록입니다.</p>
-    <section class="group" id="tq-lanes"><div class="notice">불러오는 중…</div></section>
-    <h3 class="tq-h">개인별 큐 — 사람마다 동시 작업 수</h3>
-    <section class="group" id="tq-body"><div class="notice">불러오는 중…</div></section>
+    <section class="group" id="tq-sec-lanes" aria-labelledby="h-tq-lanes">
+      <header><h2 id="h-tq-lanes">작업 큐 — 한 번에 하나씩</h2><p>QA · 배포처럼 한 번에 하나만 돌아야 하는 일은 레인(예: <code>qa-dev2</code>)에 줄을 섭니다. 레인은 작업이 처음 줄을 설 때 생기고, 앞 작업이 끝나면 다음 차례가 자동으로 시작합니다. 내역은 레인마다 들어온 순서대로 하나씩 끝낸 기록입니다.</p></header>
+      <div id="tq-lanes"><div class="notice">불러오는 중…</div></div>
+    </section>
+    <section class="group" id="tq-sec-people" aria-labelledby="h-tq-people">
+      <header><h2 id="h-tq-people">개인별 큐 — 사람마다 동시 작업 수</h2><p>사람마다 동시에 진행할 수 있는 작업(스레드) 수입니다. 이보다 많이 시키면 새 요청은 그 사람의 대기큐에 들어가고, 진행 중인 작업이 끝나면 자동으로 시작합니다. 기본은 1개, 관리자는 무제한입니다. 노브를 볼륨처럼 돌려 정하세요 — 위·오른쪽으로 끌거나 휠·화살표 키로 돌리고, 손을 떼면 저장됩니다. 끝까지 돌리면 ∞(무제한)입니다. CPU 한도는 그 사람의 작업 하나가 쓸 수 있는 CPU입니다(100% = 코어 1개). 기본은 100%, 관리자는 무제한입니다. 작업의 프로세스 트리 전체가 한도를 넘으면 그 아래 프로세스를 아주 짧게 멈췄다 이어 가며 한도에 맞춥니다(Claude Code 자체는 멈추지 않습니다).</p></header>
+      <div id="tq-body"><div class="notice">불러오는 중…</div></div>
+    </section>
   </main>
 </div>`;
 
@@ -60,7 +66,6 @@ export const TASK_QUEUE_TAB_CSS = `
 .tq-knob.is-default .tq-fill { stroke: var(--text-tertiary); }
 .tq-cpu { font-size: 12px; color: var(--text-secondary); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .tq-cpu select { font: inherit; font-size: 12px; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text); }
-.tq-h { font-size: 14px; font-weight: 650; margin: 18px 0 6px; }
 #tq-lanes { padding: 16px; display: grid; gap: 12px; }
 .tq-lane { border: 1px solid var(--border); border-radius: 12px; background: var(--surface); padding: 12px 14px; display: grid; gap: 8px; }
 .tq-lane-h { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
@@ -265,8 +270,13 @@ function tqLaneHtml(q) {
   }).concat(q.waiting.map(function(e) {
     return '<div>⏳ 대기 #' + e.position + ': ' + who(e) + ' · <span class="tq-keys">' + esc((e.keys || []).join(', ')) + '</span> · ' + tqDur(now - e.enteredAt) + '째</div>';
   }));
-  if (!lines.length) lines.push('<div class="tq-sub">비어 있음 — 다음 작업이 줄을 서면 바로 시작합니다.</div>');
   var ran = (q.recent || []).slice().reverse();
+  // A lane with nothing in it and no history is one line, as on the board's 작업 큐 칸 (no empty block).
+  if (!lines.length && !ran.length) {
+    return '<div class="tq-lane is-idle"><div class="tq-lane-h"><span class="tq-lane-name">' + esc(q.title) + '</span>'
+      + '<span class="tq-sub">비어 있음 · 아직 내역 없음</span></div></div>';
+  }
+  if (!lines.length) lines.push('<div class="tq-sub">비어 있음 — 다음 작업이 줄을 서면 바로 시작합니다.</div>');
   var rows = ran.map(function(r) {
     var run = r.startedAt != null ? tqClock(r.startedAt) + ' → ' + tqClock(r.endedAt) + ' (' + tqDur(r.endedAt - r.startedAt) + ')' : '실행 안 함';
     return '<tr><td>' + esc(r.id) + '</td><td>' + esc((r.task && r.task.title) || r.label || '') + '</td><td class="tq-keys">' + esc((r.keys || []).join(', ')) + '</td>'
@@ -277,8 +287,16 @@ function tqLaneHtml(q) {
     + '<div class="tq-lane-now">' + lines.join('') + '</div>'
     + (rows.length
       ? '<table class="tq-hist"><thead><tr><th>항목</th><th>작업</th><th>키</th><th>줄 선 시각</th><th>진행</th><th>끝</th></tr></thead><tbody>' + rows.join('') + '</tbody></table>'
-      : '<div class="tq-sub">아직 내역이 없습니다.</div>')
+      : '')
     + '</div>';
+}
+// The side nav's jump, as the 기억 tab's (memJump): the section under the sticky bar, focus on its heading.
+function tqJump(id) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  el.scrollIntoView({ block: 'start' });
+  var h = el.querySelector('h2');
+  if (h) { h.setAttribute('tabindex', '-1'); h.focus({ preventScroll: true }); }
 }
 function renderTaskQueueLanes() {
   var el = document.getElementById('tq-lanes');

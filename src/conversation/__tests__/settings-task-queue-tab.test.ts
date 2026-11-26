@@ -6,7 +6,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import { renderSettingsPage, SETTINGS_CLIENT_JS, SETTINGS_TABS } from '../settings-page';
-import { TASK_QUEUE_CLIENT_JS } from '../settings-task-queue-tab';
+import { TASK_QUEUE_CLIENT_JS, TASK_QUEUE_TAB_HTML } from '../settings-task-queue-tab';
 
 const ALL_JS = `${TASK_QUEUE_CLIENT_JS}\n${SETTINGS_CLIENT_JS}`;
 
@@ -459,5 +459,35 @@ describe('.prd/36 v2 — the lanes, one at a time', () => {
     const html = tqLaneHtml(lane);
     expect(html).toContain('돌려놓음 <span class="tq-sub">관리자</span>');
     expect(html).not.toContain('admin:U9');
+  });
+});
+
+describe('the tab speaks the settings grammar (2026-11-26, owner: "ui마다 개성을 뽐내고 있음")', () => {
+  it('two section.group cards, each with its header (h2 + p) inside, and a side nav that jumps to them', () => {
+    const groups = [
+      ...TASK_QUEUE_TAB_HTML.matchAll(
+        /<section class="group" id="([\w-]+)" aria-labelledby="([\w-]+)">\s*<header><h2 id="([\w-]+)">([^<]+)<\/h2><p>/g,
+      ),
+    ];
+    expect(groups.map((m) => [m[1], m[2] === m[3], m[4]])).toEqual([
+      ['tq-sec-lanes', true, '작업 큐 — 한 번에 하나씩'],
+      ['tq-sec-people', true, '개인별 큐 — 사람마다 동시 작업 수'],
+    ]);
+    expect(TASK_QUEUE_TAB_HTML).toContain(`onclick="tqJump('tq-sec-lanes')">작업 큐 (레인)</button>`);
+    expect(TASK_QUEUE_TAB_HTML).toContain(`onclick="tqJump('tq-sec-people')">개인별 큐</button>`);
+    expect(TASK_QUEUE_TAB_HTML).not.toContain('tq-h');
+    expect(TASK_QUEUE_TAB_HTML).not.toContain('레인 큐');
+  });
+
+  it('a lane with nothing in it and no history is one line', () => {
+    const esc = (v: unknown) => String(v);
+    const { tqLaneHtml } = load<any>(['tqClock', 'tqDur', 'wqReason', 'tqLaneHtml'], {
+      esc,
+      TQ_END: { done: '완료', cancelled: '취소', released: '돌려놓음' },
+    });
+    const html = tqLaneHtml({ id: 'qa-x', title: 'qa-x', capacity: 1, running: [], waiting: [], recent: [] });
+    expect(html).toBe(
+      '<div class="tq-lane is-idle"><div class="tq-lane-h"><span class="tq-lane-name">qa-x</span><span class="tq-sub">비어 있음 · 아직 내역 없음</span></div></div>',
+    );
   });
 });
