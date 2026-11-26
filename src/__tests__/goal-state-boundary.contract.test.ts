@@ -156,13 +156,15 @@ describe('goal state boundary (.prd/40 §6)', () => {
     ];
     const ALLOWED: Record<string, string> = {
       'src/slack/goal-cap-decision.ts#openGoalCapDecision': 'the open transition — PR4 (goal/machine)',
-      'src/slack/goal-cap-decision.ts#answerGoalCapDecision': "the answer's snapshot and its undo on a failed save — PR4",
+      'src/slack/goal-cap-decision.ts#answerGoalCapDecision':
+        "the answer's snapshot and its undo on a failed save — PR4",
       'src/slack/goal-cap-decision.ts#endDecision': 'the retire transition — PR4',
       'src/slack/goal-cap-decision.ts#retireGoalStall': 'the retirer the stall shares (declared after it) — PR4',
       'src/slack/follow-up-question.ts#FollowUpQuestionSession': 'the structural session type the surface accepts',
       'packages/slack/src/session-goal.ts#endGoalCapDecision': 'the default retirer clears the round — PR4',
       'packages/slack/src/session-goal.ts#restoreGoalState': 'undoPause clears the round it took back — PR4',
-      'src/conversation/dashboard.ts#goalDecisionToKanban': 'the board card shows when it was asked — PR10 (goal/board)',
+      'src/conversation/dashboard.ts#goalDecisionToKanban':
+        'the board card shows when it was asked — PR10 (goal/board)',
     };
     const found = [...sitesOf(/capDmPendingAt/, files)].sort();
     const unlisted = found.filter((key) => !(key in ALLOWED));
