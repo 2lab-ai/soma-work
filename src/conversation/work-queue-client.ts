@@ -29,7 +29,7 @@ export const WORK_QUEUE_CSS = String.raw`
 .wq-body { padding: 0 12px 12px; }
 .wq-section.is-folded .wq-body { display: none; }
 .wq-tabs { display: block; }
-.wq-panel { display: grid; gap: 12px; padding-top: 8px; }
+.wq-panel { display: grid; gap: 8px; padding-top: 8px; }
 .wq-q { border: 1px solid var(--border); border-radius: 10px; padding: 10px; display: grid; gap: 8px; min-width: 0; }
 .wq-qh { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; }
 .wq-qname { font-family: var(--mono); font-weight: 600; color: var(--text); }
@@ -52,7 +52,23 @@ export const WORK_QUEUE_CSS = String.raw`
 .wq-axis { display: flex; justify-content: space-between; font-size: 10px; color: var(--text-tertiary); }
 .wq-rec { font-size: 12px; color: var(--text-secondary); display: flex; flex-wrap: wrap; gap: 2px 8px; min-width: 0; }
 .wq-rec b { color: var(--text); font-weight: 500; }
-.wq-empty { color: var(--text-tertiary); font-size: 13px; padding: 4px 0; }
+.wq-empty { color: var(--text-tertiary); font-size: 13px; padding: 2px 0; }
+.wq-more > summary { cursor: pointer; font-size: 12px; color: var(--text-secondary); list-style: none; }
+.wq-more > summary::-webkit-details-marker { display: none; }
+.wq-more > summary::before { content: '\25B8'; display: inline-block; width: 1em; color: var(--text-tertiary); }
+.wq-more[open] > summary::before { content: '\25BE'; }
+.wq-more[open] > summary { margin-bottom: 6px; }
+.wq-person { display: block; padding: 8px 10px; }
+.wq-person > summary .wq-qh { display: inline-flex; }
+.wq-person > :not(summary) { margin-top: 6px; }
+.wq-idle { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.wq-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 2px 4px 2px 10px; border: 1px solid var(--border); border-radius: 999px; font-size: 12px; min-height: 28px; }
+.wq-chip-name { font-family: var(--mono); color: var(--text); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wq-chip-name:hover { text-decoration: underline; }
+.wq-chip-last { color: var(--text-tertiary); white-space: nowrap; }
+.wq-chip-x { border: 0; background: none; color: var(--text-secondary); cursor: pointer; min-width: 24px; min-height: 24px; border-radius: 999px; font: inherit; padding: 0 6px; }
+.wq-chip-x:hover { background: var(--bg); color: var(--text); }
+.wq-chip-x.is-armed { color: var(--red, #e5484d); }
 `;
 
 // Why an entry left a lane, in the reader's words — the board's section and the settings tab (TASK_QUEUE_CLIENT_JS)
@@ -267,7 +283,6 @@ function wqHistory(q, now) {
     box.appendChild(strip);
     var axis = wqEl('div', 'wq-axis');
     axis.appendChild(wqEl('span', '', '24시간 전'));
-    axis.appendChild(wqEl('span', '', '한 번에 ' + (q.capacity == null ? '제한 없음' : q.capacity + '개')));
     axis.appendChild(wqEl('span', '', '지금'));
     box.appendChild(axis);
   }
@@ -287,6 +302,31 @@ function wqHistory(q, now) {
     box.appendChild(line);
   });
   return box;
+}
+
+// A fold the reader opens (최근 내역, a person's line): its open state survives the 15-second repaint.
+var _wqOpen = Object.create(null);
+function wqFold(id, summary, openByDefault, cls) {
+  var d = wqEl('details', 'wq-more' + (cls ? ' ' + cls : ''));
+  if (id in _wqOpen ? _wqOpen[id] : !!openByDefault) d.open = true;
+  var s = document.createElement('summary');
+  if (typeof summary === 'string') s.textContent = summary;
+  else s.appendChild(summary);
+  d.appendChild(s);
+  d.addEventListener('toggle', function() { _wqOpen[id] = d.open; });
+  return d;
+}
+
+// Pure: a lane worth a block — an entry runs or waits in it, or the board moved a card into it. The rest are idle.
+function wqLaneActive(q, cards) {
+  return q.running.length > 0 || q.waiting.length > 0 || !!(cards && cards.length);
+}
+
+// Pure: an idle lane's chip — its name and how its last entry ended.
+function wqIdleText(q) {
+  var r = (q.recent || [])[0];
+  if (!r) return { name: q.title || q.id, last: '내역 없음' };
+  return { name: q.title || q.id, last: (WQ_END_LABEL[r.end] || r.end) + ' ' + wqClock(r.endedAt) };
 }
 
 // The cards box of one queue: its own <ui-agent-inbox view="list">, one bare column (the CRON lane's way).
@@ -318,10 +358,8 @@ function wqLaneBlock(q, cards, now) {
   sec.setAttribute('data-q', q.id);
   var head = wqEl('div', 'wq-qh');
   head.appendChild(wqEl('span', 'wq-qname', q.title));
-  head.appendChild(wqEl('span', 'ui-chip', '한 번에 ' + (q.capacity == null ? '제한 없음' : q.capacity + '개')));
-  head.appendChild(wqEl('span', 'wq-meta', '진행 ' + q.running.length + ' · 대기 ' + q.waiting.length));
+  head.appendChild(wqEl('span', 'wq-meta', '진행 ' + q.running.length + ' · 대기 ' + Math.max(q.waiting.length, cards.length)));
   sec.appendChild(head);
-  if (!q.running.length) sec.appendChild(wqEl('div', 'wq-row is-empty', '비어 있음 — 다음 차례가 바로 시작합니다'));
   q.running.forEach(function(e) { sec.appendChild(wqEntryRow(q, e, now)); });
   // The waiting entries: the card where the board has it (moved here), else a row (another owner's, a private one).
   var carded = Object.create(null);
@@ -343,29 +381,77 @@ function wqLaneBlock(q, cards, now) {
   keys.forEach(function(k) { _cardHost[k] = box._inbox; });
   sec.appendChild(box);
   wqPaintCards(box, keys);
-  sec.appendChild(wqHistory(q, now));
+  // The history is folded: the board shows what runs and waits; one tap shows what ran (the settings tab has it all).
+  var more = wqFold('h:' + q.id, '최근 내역 ' + (q.recent || []).length, false);
+  more.appendChild(wqHistory(q, now));
+  sec.appendChild(more);
   return sec;
 }
 
+// The idle lanes on one line: a chip each (name · how it last ended), linked to the settings tab's history; an admin
+// (admin mode) can forget one — two presses, the first arms it.
+var _wqArmed = null;
+function wqIdleLine(idle) {
+  var row = wqEl('div', 'wq-idle');
+  row.appendChild(wqEl('span', 'wq-meta', '쉬는 레인'));
+  idle.forEach(function(q) {
+    var t = wqIdleText(q);
+    var chip = wqEl('span', 'wq-chip');
+    var a = wqEl('a', 'wq-chip-name', t.name);
+    a.href = '/dashboard/settings#task-queue';
+    a.title = t.name + ' — 최근: ' + t.last + ' (설정 › 작업 큐에서 내역)';
+    chip.appendChild(a);
+    chip.appendChild(wqEl('span', 'wq-chip-last', t.last));
+    if (wqCanManage()) {
+      var armed = _wqArmed && _wqArmed.id === q.id && Date.now() - _wqArmed.at < 4000;
+      var x = wqEl('button', 'wq-chip-x' + (armed ? ' is-armed' : ''), armed ? '한 번 더 눌러 지우기' : '×');
+      x.type = 'button';
+      x.setAttribute('aria-label', armed ? q.id + ' 레인 지우기 — 한 번 더 누르세요' : q.id + ' 레인 지우기');
+      x.title = '레인 지우기 — 내역이 사라지고, 고정 레인이 아니면 목록에서 빠집니다';
+      x.addEventListener('click', function(e) {
+        e.stopPropagation();
+        if (armed) { _wqArmed = null; wqForget(q.id); return; }
+        _wqArmed = { id: q.id, at: Date.now() };
+        wqRepaint();
+        setTimeout(function() { if (_wqArmed && _wqArmed.id === q.id) { _wqArmed = null; wqRepaint(); } }, 4000);
+      });
+      chip.appendChild(x);
+    }
+    row.appendChild(chip);
+  });
+  return row;
+}
+
+async function wqForget(queue) {
+  try {
+    var res = await acPost('/api/dashboard/work-queues/lane/' + encodeURIComponent(queue) + '/forget', '{}');
+    if (res.ok) dashToast({ title: '레인을 지웠어요', description: queue, tone: 'success' });
+    else dashToast({ title: '레인을 지우지 못했어요', description: (await acRefusal(res)).message, tone: 'warning' });
+  } catch (_e) {
+    dashToast({ title: '레인을 지우지 못했어요', description: '네트워크 오류 — 다시 시도하세요', tone: 'warning' });
+  }
+  _wqLoadedAt = 0;
+  loadWorkQueues();
+}
+
 function wqPersonBlock(q, line, now) {
-  var sec = wqEl('section', 'wq-q');
-  sec.setAttribute('data-q', q.id);
-  var head = wqEl('div', 'wq-qh');
+  var waits = Math.max(q.waiting.length, line.length);
+  var head = wqEl('span', 'wq-qh');
   head.appendChild(wqEl('span', 'wq-qname', q.title));
-  head.appendChild(wqEl('span', 'ui-chip', '한 번에 ' + (q.capacity == null ? '제한 없음' : q.capacity + '개')));
-  head.appendChild(wqEl('span', 'wq-meta', '진행 ' + q.running.length + ' · 대기 ' + q.waiting.length));
-  sec.appendChild(head);
-  if (!q.running.length) sec.appendChild(wqEl('div', 'wq-row is-empty', '진행 중인 작업 없음'));
-  q.running.forEach(function(e) { sec.appendChild(wqEntryRow(q, e, now)); });
+  head.appendChild(wqEl('span', 'wq-meta', '진행 ' + q.running.length + ' · 대기 ' + waits + ' · 한 번에 ' + (q.capacity == null ? '제한 없음' : q.capacity + '개')));
+  // A person's line opens by itself while something of theirs waits; otherwise it is one line until tapped.
+  var sec = wqFold('p:' + q.id, head, waits > 0, 'wq-q wq-person');
+  sec.setAttribute('data-q', q.id);
   var box = wqCardsBox(q.id);
   var keys = line.length ? uqPlace(line, box._inbox) : [];
+  sec.appendChild(box);
+  wqPaintCards(box, keys);
   // A waiting entry the board did not send (another instance's line, a filter): its row.
   var shown = Object.create(null);
   line.forEach(function(it) { shown[it.entryId] = true; });
   q.waiting.forEach(function(e) { if (!shown[e.id]) sec.appendChild(wqEntryRow(q, e, now)); });
-  sec.appendChild(box);
-  wqPaintCards(box, keys);
-  sec.appendChild(wqHistory(q, now));
+  q.running.forEach(function(e) { sec.appendChild(wqEntryRow(q, e, now)); });
+  if ((q.recent || []).length) sec.appendChild(wqHistory(q, now));
   return sec;
 }
 
@@ -427,12 +513,19 @@ function paintWorkQueues(byLane, line) {
   var peopleEl = document.getElementById('wq-people');
   if (lanesEl) {
     lanesEl.textContent = '';
-    if (!lanes.length) lanesEl.appendChild(wqEl('div', 'wq-empty', '아직 쓰인 레인이 없습니다 — 작업이 queue_enter로 줄을 서면 여기 생깁니다'));
-    lanes.forEach(function(q) { lanesEl.appendChild(wqLaneBlock(q, _wqLast.byLane[q.id] || [], now)); });
+    var idle = [];
+    lanes.forEach(function(q) {
+      var cards = _wqLast.byLane[q.id] || [];
+      if (wqLaneActive(q, cards)) lanesEl.appendChild(wqLaneBlock(q, cards, now));
+      else idle.push(q);
+    });
+    if (!lanes.length) lanesEl.appendChild(wqEl('div', 'wq-empty', '레인 없음 — 작업이 줄을 서면 생깁니다'));
+    else if (idle.length === lanes.length) lanesEl.appendChild(wqEl('div', 'wq-empty', '진행·대기 없음'));
+    if (idle.length) lanesEl.appendChild(wqIdleLine(idle));
   }
   if (peopleEl) {
     peopleEl.textContent = '';
-    if (!people.length) peopleEl.appendChild(wqEl('div', 'wq-empty', '기다리는 개인 작업이 없습니다'));
+    if (!people.length) peopleEl.appendChild(wqEl('div', 'wq-empty', '진행·대기 중인 개인 작업 없음'));
     people.forEach(function(q) { peopleEl.appendChild(wqPersonBlock(q, byOwner[q.id.replace(/^user:/, '')] || [], now)); });
   }
 }

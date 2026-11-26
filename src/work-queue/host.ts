@@ -24,6 +24,7 @@ import type { WorkQueueEntry, WorkQueueHolder, WorkQueueLedger } from 'somalib/w
 import {
   emptyLedger,
   endEntry,
+  forgetQueue,
   markNotified,
   putFirst,
   queuePosition,
@@ -227,6 +228,17 @@ export class WorkQueueHost {
     this.wake();
     this.settleFree();
     return { ok: true };
+  }
+
+  /**
+   * An admin forgets an idle lane: its history goes and an unpinned lane leaves the board (a lane named once by a test
+   * or a typo). A lane with a running or waiting entry is refused (`BUSY`).
+   */
+  forget(queue: string, by: string): { ok: true; removed: number } | { ok: false; code: 'INVALID_QUEUE' | 'BUSY' } {
+    const result = this.deps.store.mutate((ledger) => forgetQueue(ledger, queue));
+    this.refresh(true);
+    if (result.ok) this.logger.info('Work queue lane forgotten by an admin', { queue, removed: result.removed, by });
+    return result;
   }
 
   /**

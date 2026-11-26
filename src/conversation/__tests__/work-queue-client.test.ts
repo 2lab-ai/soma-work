@@ -206,6 +206,143 @@ describe('the summary', () => {
   });
 });
 
+describe('the section stays small: a block only where something runs or waits (2026-11-26, owner: "이 개병신같은 뷰")', () => {
+  const { wqLaneActive, wqIdleText } = load<any>(['wqLaneActive', 'wqIdleText', 'wqClock'], ['WQ_END_LABEL']);
+  it('a lane is active while an entry runs or waits in it, or the board moved a card into it', () => {
+    const q = (running: number, waiting: number) => ({
+      running: Array(running).fill({}),
+      waiting: Array(waiting).fill({}),
+    });
+    expect(wqLaneActive(q(0, 0), [])).toBe(false);
+    expect(wqLaneActive(q(1, 0), [])).toBe(true);
+    expect(wqLaneActive(q(0, 1), [])).toBe(true);
+    expect(wqLaneActive(q(0, 0), [{ key: 'k' }])).toBe(true);
+  });
+  it("an idle lane's chip: its name and how it last ended", () => {
+    expect(wqIdleText({ id: 'qa-x', title: 'qa-x', recent: [] })).toEqual({ name: 'qa-x', last: '내역 없음' });
+    expect(wqIdleText({ id: 'qa-x', title: 'qa-x', recent: [{ end: 'done', endedAt: 0 }] }).last).toMatch(
+      /^완료 \d\d:\d\d$/,
+    );
+  });
+
+  function mount(data: unknown, admin = false) {
+    const { document } = globalThis as unknown as { document: any };
+    document.body.innerHTML =
+      '<div id="wq-section"><span id="wq-sum"></span><button id="wq-fold"></button><div id="wq-tabs"></div>' +
+      '<div id="wq-lanes"></div><div id="wq-people"></div></div>';
+    const posts: string[] = [];
+    const stubs: Record<string, unknown> = {
+      placeCard: () => undefined,
+      uqPlace: (line: Array<{ key: string }>) => line.map((it) => it.key),
+      inboxPaint: () => undefined,
+      wireInbox: () => undefined,
+      openPanel: () => undefined,
+      _sessionCache: {},
+      _cardHost: {},
+      _cardData: {},
+      _isAdminModeOn: () => admin,
+      _viewerUserId: 'U1',
+      dashToast: () => undefined,
+      acRefusal: async () => ({ message: '' }),
+      acPost: async (url: string) => {
+        posts.push(url);
+        return { ok: true };
+      },
+      esc: (x: string) => x,
+      escJs: (x: string) => x,
+    };
+    const names = Object.keys(stubs);
+    const body = `${WORK_QUEUE_CLIENT_JS.replace(/\(function wqWire\(\) \{[\s\S]*\}\)\(\);\s*$/, '')}
+      return { paint: paintWorkQueues, set: function (d) { _wqData = d; } };`;
+    const api = new Function(...names, body)(...names.map((n) => stubs[n])) as any;
+    api.set(data);
+    return { document, posts, api };
+  }
+  const lane = (id: string, running: unknown[] = [], waiting: unknown[] = [], recent: unknown[] = []) => ({
+    id,
+    kind: 'lane',
+    title: id,
+    capacity: 1,
+    running,
+    waiting,
+    recent,
+  });
+  const run = {
+    id: 'wq-1',
+    state: 'running',
+    position: 0,
+    keys: ['ABC-1'],
+    enteredAt: 0,
+    startedAt: 0,
+    task: { title: 'deploy' },
+  };
+  const done = {
+    id: 'wq-0',
+    end: 'done',
+    keys: ['ABC-0'],
+    enteredAt: 0,
+    startedAt: 0,
+    endedAt: 1,
+    task: { title: 'old' },
+  };
+
+  it('a busy lane is a block with its history folded; idle lanes are one line of chips', () => {
+    const { document, api } = mount({
+      lanes: [lane('deploy-dev2', [run], [], [done]), lane('qa-dev2', [], [], [done]), lane('qa-x')],
+      people: [],
+      canManage: false,
+    });
+    api.paint({}, []);
+    const blocks = [...document.querySelectorAll('#wq-lanes .wq-q')].map((b: any) => b.getAttribute('data-q'));
+    expect(blocks).toEqual(['deploy-dev2']);
+    const fold = document.querySelector('#wq-lanes .wq-q details.wq-more');
+    expect(fold.open).toBe(false);
+    expect(fold.querySelector('summary').textContent).toBe('최근 내역 1');
+    const chips = [...document.querySelectorAll('#wq-lanes .wq-idle .wq-chip-name')].map((a: any) => a.textContent);
+    expect(chips).toEqual(['qa-dev2', 'qa-x']);
+    expect(document.querySelector('#wq-lanes .wq-chip-x')).toBeNull();
+    expect(document.querySelectorAll('#wq-lanes .wq-strip')).toHaveLength(1);
+  });
+
+  it('an admin (admin mode) forgets an idle lane with two presses', async () => {
+    const { document, api, posts } = mount(
+      { lanes: [lane('qa-x', [], [], [done])], people: [], canManage: true },
+      true,
+    );
+    api.paint({}, []);
+    document.querySelector('.wq-chip-x').click();
+    expect(posts).toEqual([]);
+    expect(document.querySelector('.wq-chip-x').textContent).toBe('한 번 더 눌러 지우기');
+    document.querySelector('.wq-chip-x').click();
+    await Promise.resolve();
+    expect(posts).toEqual(['/api/dashboard/work-queues/lane/qa-x/forget']);
+  });
+
+  it('a person is one line until tapped, and opens by itself while something of theirs waits', () => {
+    const person = (id: string, waiting: unknown[]) => ({
+      id: `user:${id}`,
+      kind: 'person',
+      title: id,
+      capacity: null,
+      running: [run],
+      waiting,
+      recent: [],
+    });
+    const wait = { id: 'utq_1', state: 'waiting', position: 1, keys: [], enteredAt: 0, task: { title: 'x' } };
+    const { document, api } = mount({ lanes: [], people: [person('U1', []), person('U2', [wait])], canManage: false });
+    api.paint({}, []);
+    const folds = [...document.querySelectorAll('#wq-people details.wq-person')].map((d: any) => [
+      d.getAttribute('data-q'),
+      d.open,
+    ]);
+    expect(folds).toEqual([
+      ['user:U1', false],
+      ['user:U2', true],
+    ]);
+    expect(document.querySelector('#wq-people summary').textContent).toContain('진행 1 · 대기 0 · 한 번에 제한 없음');
+  });
+});
+
 describe('the page', () => {
   const page = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
 
