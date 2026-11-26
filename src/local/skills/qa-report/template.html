@@ -85,15 +85,17 @@ i.ok { background:var(--ok); } i.bad { background:var(--bad); } i.warn { backgro
   var KO = M.lang === 'ko';
   var KO_ST = { pass: '통과', 'pass (not moved)': '통과(전환 안 됨)', fail: '실패', partial: '일부만 확인', blocked: '막힘', superseded: '대체됨', deferred: '보류', 'not-run': '실행 안 함', 'report-only': '보고만' };
   function T(en, ko) { return KO ? ko : en; }
-  function lab(v) { return KO && KO_ST[v] ? KO_ST[v] : v; }
+  // Own keys only: an input value such as 'toString' must never resolve to an Object.prototype member.
+  function own(m, k) { return Object.prototype.hasOwnProperty.call(m, k) ? m[k] : undefined; }
+  function lab(v) { return KO && own(KO_ST, v) ? KO_ST[v] : v; }
   function pl(n, w) { return n + ' ' + w + (n === 1 ? '' : 's'); }
   var KIND = { account: ['accounts', '계정'], 'test-data': ['test data', '시험 데이터'], 'write-permission': ['write permission', '쓰기 권한'],
     'env-config': ['environment settings', '환경 설정'], 'external-system': ['external systems', '외부 시스템'], observability: ['logs and observability', '로그·관측'],
     'device-locale': ['device and language', '기기·언어'], 'time-control': ['time control', '시간 조작'] };
-  function kindName(k) { return KIND[k] ? KIND[k][KO ? 1 : 0] : String(k || '?'); }
+  function kindName(k) { return own(KIND, k) ? KIND[k][KO ? 1 : 0] : String(k || '?'); }
   var PST = { met: ['met', '있음'], provisionable: ['provisionable', '만들 수 있음'], missing: ['missing', '없음'] };
   var PDC = { provided: ['provided', '제공함'], waived: ['waived', '없이 진행'], skipped: ['skipped', '건너뜀'] };
-  function pick(map, v) { return map[v] ? map[v][KO ? 1 : 0] : v; }
+  function pick(map, v) { return own(map, v) ? map[v][KO ? 1 : 0] : v; }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function safeUrl(u) { return /^https?:\/\//i.test(String(u || '')) ? esc(u) : ''; }
   function cls(v) { return v === 'pass' ? 'ok' : v === 'fail' ? 'bad' : 'warn'; }
@@ -245,12 +247,15 @@ i.ok { background:var(--ok); } i.bad { background:var(--bad); } i.warn { backgro
       (d.cases || []).forEach(function (c) { ct++; if (c.status === 'pass') cp++; });
     });
     var nf = n - pass - fail - ro;
-    var open = PRE.filter(function (p) { return p.status !== 'met' && p.status !== 'provisionable'; }).length;
+    var openList = PRE.filter(function (p) { return p.status !== 'met' && p.status !== 'provisionable'; }), open = openList.length;
+    // Still missing but already decided (waived / provided / skipped) is not a question for anyone any more.
+    var waiting = openList.filter(function (p) { return !p.decision || p.decision === 'pending'; }).length;
+    var qad = I.filter(function (d) { return d.qa; }).length;
     var tone = fail ? 'bad' : n && pass === n && !open ? 'ok' : 'warn';
     var band = KO ? '이슈 ' + n + '개 중 ' + pass + '개 QA 통과' + (fail ? ' · 실패 ' + fail : '') + (nf ? ' · 끝나지 않음 ' + nf : '') + (ro ? ' · 보고만 ' + ro : '') + (open ? ' · 없는 준비물 ' + open : '')
       : pass + ' of ' + pl(n, 'issue') + ' passed QA' + (fail ? ' · ' + fail + ' failed' : '') + (nf ? ' · ' + nf + ' not finished' : '') + (ro ? ' · ' + ro + ' report only' : '') + (open ? ' · ' + pl(open, 'precondition') + ' open' : '');
-    var auto = KO ? '이번 범위의 이슈 ' + n + '개 중 ' + pass + '개 통과, ' + fail + '개 실패' + (ro ? ', ' + ro + '개 보고만' : '') + ', ' + nf + '개는 끝나지 않았습니다.' + (ct ? '' : ' 케이스는 하나도 실행되지 않았습니다.') + (open ? ' 없는 준비물 ' + open + '개가 답을 기다립니다.' : '')
-      : pl(n, 'issue') + ' in scope: ' + pass + ' passed, ' + fail + ' failed' + (ro ? ', ' + ro + ' report only' : '') + ' and ' + nf + ' not finished.' + (ct ? '' : ' No case ran.') + (open ? ' ' + pl(open, 'precondition') + ' still open.' : '');
+    var auto = KO ? '이번 범위의 이슈 ' + n + '개 중 ' + pass + '개 통과, ' + fail + '개 실패' + (ro ? ', ' + ro + '개 보고만' : '') + ', ' + nf + '개는 끝나지 않았습니다.' + (ct ? '' : qad ? ' 돌려받은 케이스 결과가 없습니다.' : ' 케이스는 하나도 실행되지 않았습니다.') + (waiting ? ' 없는 준비물 ' + waiting + '개가 답을 기다립니다.' : '')
+      : pl(n, 'issue') + ' in scope: ' + pass + ' passed, ' + fail + ' failed' + (ro ? ', ' + ro + ' report only' : '') + ' and ' + nf + ' not finished.' + (ct ? '' : qad ? ' No case results came back.' : ' No case ran.') + (waiting ? ' ' + pl(waiting, 'open precondition') + (waiting === 1 ? ' awaits' : ' await') + ' an answer.' : '');
     var h = '<section id="exec"><div class="vband ' + tone + '">' + (tone === 'ok' ? '✓ ' : tone === 'bad' ? '✗ ' : '! ') + esc(band) + '</div>' +
       '<p class="headline">' + esc(M.headline || auto) + '</p><div class="bigs">' +
       '<div class="big"><b>' + pass + '/' + n + '</b>' + T('issues passed', '통과한 이슈') + '</div>' +
@@ -263,10 +268,9 @@ i.ok { background:var(--ok); } i.bad { background:var(--bad); } i.warn { backgro
     if (n) h += '<div class="obar">' + seg.map(function (x) { return '<i class="' + x[0] + '" style="width:' + W(x[1], n) + '%" title="' + x[1] + '"></i>'; }).join('') + '</div>' +
       '<div class="lg"><span><i class="ok"></i>' + T('passed', '통과') + ' ' + pass + '</span><span><i class="bad"></i>' + T('failed', '실패') + ' ' + fail + '</span><span><i class="warn"></i>' + T('not finished', '끝나지 않음') + ' ' + nf + '</span>' + (ro ? '<span><i class="gray"></i>' + T('report only', '보고만') + ' ' + ro + '</span>' : '') + '</div>';
     // What blocks QA: open preconditions by kind, largest first.
-    var byKind = {};
-    PRE.forEach(function (p) {
-      if (p.status === 'met' || p.status === 'provisionable') return;
-      var k = byKind[p.kind] = byKind[p.kind] || { n: 0, keys: {} };
+    var byKind = Object.create(null);
+    openList.forEach(function (p) {
+      var kk = p.kind ? String(p.kind) : '?', k = byKind[kk] = byKind[kk] || { n: 0, keys: Object.create(null) };
       k.n++; k.keys[p.key] = 1;
     });
     var kinds = Object.keys(byKind).sort(function (a, b) { return byKind[b].n - byKind[a].n; }), top = kinds.length ? byKind[kinds[0]].n : 0;
@@ -282,7 +286,7 @@ i.ok { background:var(--ok); } i.bad { background:var(--bad); } i.warn { backgro
       return '<div class="irow" tabindex="0" data-k="' + esc(d.key) + '"><span class="ik">' + esc(d.key) + '</span><span class="cbar">' + bars + '</span><span class="in">' + p + '/' + t + '</span><span class="tag ' + cls(d.status) + '">' + esc(lab(d.status)) + '</span></div>';
     }).join('') + (qa.length > MAX ? '<div class="meta">' + T('+' + (qa.length - MAX) + ' more below', '아래에 ' + (qa.length - MAX) + '개 더') + '</div>' : '') + '</div>';
     var todo = [];
-    if (open) todo.push(KO ? '없는 준비물 ' + open + '개에 답하기 — 아래 표에 무엇이 필요한지 있음' : 'Answer ' + pl(open, 'open precondition') + ' — the table below says what each needs');
+    if (waiting) todo.push(KO ? '없는 준비물 ' + waiting + '개에 답하기 — 아래 표에 무엇이 필요한지 있음' : 'Answer ' + pl(waiting, 'open precondition') + ' — the table below says what each needs');
     if (fail) todo.push(KO ? '실패한 이슈 ' + fail + '개 고치기: ' + failed.join(', ') : 'Fix ' + pl(fail, 'failed issue') + ': ' + failed.join(', '));
     if (todo.length) h += '<div class="lbl2">' + T('What a person must do', '사람이 할 일') + '</div><ol class="todo">' + todo.map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ol>';
     return h + '</section>';

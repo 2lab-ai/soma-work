@@ -522,4 +522,73 @@ describe('qa-report build.mjs — the first screen is a summary picture', () => 
     expect(left).toMatch(/<details class="pret"><summary>[^<]*7[^<]*<\/summary><table>/);
     expect(left).toContain('<th>막는 케이스</th>');
   });
+
+  it('a precondition the requester already decided (waived, provided, skipped) is not asked again', () => {
+    const pre = (id: string, decision: string) => ({
+      key: 'PROJ-3',
+      id,
+      kind: 'account',
+      need: 'a test account',
+      cases: ['QA-1'],
+      status: 'missing',
+      decision,
+      confirmedBy: 'U1',
+    });
+    const en = mixed();
+    (en as Record<string, unknown>).preconditions = [pre('P1', 'waived'), pre('P2', 'provided'), pre('P3', 'skipped')];
+    const a = build(en);
+    expect(a.run.status, a.run.stderr).toBe(0);
+    const left = runReport(readFileSync(a.out, 'utf8')).left;
+    expect(left).not.toContain('Answer ');
+    expect(left).not.toContain('await an answer');
+    expect(left).toMatch(/<ol class="todo"><li>Fix 1 failed issue: PROJ-2<\/li><\/ol>/);
+    // still missing, so the band and the big number keep counting them
+    expect(left).toMatch(/<div class="vband bad">[^<]*3 preconditions open/);
+
+    const ko = mixed({ lang: 'ko' });
+    (ko as Record<string, unknown>).preconditions = [pre('P1', 'waived'), pre('P2', 'pending')];
+    const b = build(ko);
+    expect(b.run.status, b.run.stderr).toBe(0);
+    const kl = runReport(readFileSync(b.out, 'utf8')).left;
+    expect(kl).toContain('없는 준비물 1개가 답을 기다립니다.');
+    expect(kl).toContain('<li>없는 준비물 1개에 답하기');
+  });
+
+  it('a precondition without a kind, or with a kind named like a built-in property, still renders', () => {
+    const input = mixed();
+    (input as Record<string, unknown>).preconditions = [
+      { key: 'PROJ-3', id: 'P1', need: 'x', cases: ['QA-1'], status: 'missing', decision: 'pending' },
+      { key: 'PROJ-3', id: 'P2', kind: 'toString', need: 'x', cases: ['QA-1'], status: 'missing', decision: 'pending' },
+      {
+        key: 'PROJ-3',
+        id: 'P3',
+        kind: 'constructor',
+        need: 'x',
+        cases: ['QA-1'],
+        status: 'missing',
+        decision: 'pending',
+      },
+    ];
+    const { run, out } = build(input);
+    expect(run.status, run.stderr).toBe(0);
+    const { left } = runReport(readFileSync(out, 'utf8'));
+    expect(left).toContain('<section id="exec"');
+    expect(left).not.toContain('undefined');
+    expect(left).not.toContain('NaN');
+    expect(left).not.toContain('native code');
+    expect(left).toMatch(/<div class="wrow"><span class="wk">\?<\/span>/);
+    expect(left).toMatch(/<div class="wrow"><span class="wk">toString<\/span>/);
+    expect(left).toMatch(/<div class="wrow"><span class="wk">constructor<\/span>[\s\S]*?<span class="in">1<\/span>/);
+  });
+
+  it('QA ran but returned no case: the sentence does not claim that no case ran', () => {
+    const input = mixed();
+    (input as Record<string, unknown>).issues = [{ ...passIssue('PROJ-1', true), cases: [] }];
+    delete (input.outcomes as Record<string, unknown>)['PROJ-2'];
+    const { run, out } = build(input);
+    expect(run.status, run.stderr).toBe(0);
+    const { left } = runReport(readFileSync(out, 'utf8'));
+    expect(left).not.toContain('No case ran.');
+    expect(left).toContain('No case results came back.');
+  });
 });
