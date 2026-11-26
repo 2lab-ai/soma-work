@@ -139,8 +139,8 @@ const chat = (page: Page) =>
     const words = answer?.shadowRoot?.querySelector('.ans-shimmer')?.textContent ?? '';
     const turns = conv?.data?.turns ?? [];
     const last = turns[turns.length - 1];
-    // The page's top-level `let` bindings are not window properties: read them by name.
-    const s = (0, eval)('_sessionCache[panelSessionKey]');
+    // The page's top-level `let` bindings are not window properties: a Function body (global scope) reads them.
+    const s = new Function('return _sessionCache[panelSessionKey]')();
     return {
       pending: !!conv?.data?.pending,
       drawn: !!pendingRow,
@@ -166,7 +166,7 @@ async function main() {
     await installMocks(page);
     await page.goto(`${BASE_URL}/dashboard/U001`);
     await page.waitForFunction(() => typeof (window as any).openPanel === 'function', null, { timeout: 20000 });
-    await page.waitForFunction((k) => !!(0, eval)('_sessionCache')[k], KEY, { timeout: 15000 });
+    await page.waitForFunction((k) => !!new Function('k', 'return _sessionCache[k]')(k), KEY, { timeout: 15000 });
     await page.evaluate((k) => (window as any).openPanel(k), KEY);
     await page.waitForFunction(
       () => ((document.getElementById('panel-conv') as any)?.data?.turns?.length ?? 0) >= 12,
@@ -184,13 +184,24 @@ async function main() {
     const field = page.locator('#pc-composer textarea');
     await field.click();
     await field.fill(SENT);
-    const sentAt = Date.now();
+    // Measured in the page from the Enter keydown to the first frame the row is drawn in.
+    await page.evaluate(() => {
+      const w = window as any;
+      w.__drawnMs = -1;
+      const t0 = performance.now();
+      const look = () => {
+        const conv = document.getElementById('panel-conv') as any;
+        const row = [...(conv?.shadowRoot?.querySelectorAll('[aria-busy="true"]') ?? [])].find((r: any) =>
+          r.querySelector?.('ui-ai-answer'),
+        );
+        if (row) w.__drawnMs = Math.round(performance.now() - t0);
+        else if (performance.now() - t0 < 10_000) requestAnimationFrame(look);
+      };
+      requestAnimationFrame(look);
+    });
     await page.keyboard.press('Enter');
-    if (!commands.length) {
-      await sleep(150);
-      if (!commands.length) await page.locator('#pc-composer .cp-send').click();
-    }
     await sleep(300);
+    const drawnMs = await page.evaluate(() => (window as any).__drawnMs as number);
     const s1 = await chat(page);
     await page.screenshot({ path: path.join(OUT, '1-sent-idle.png') });
     check(commands.length === 1 && commands[0].message === SENT, `S1 the command went out (${commands.length})`);
@@ -199,8 +210,8 @@ async function main() {
       `S1 the instruction is the chat's last turn ${JSON.stringify(s1)}`,
     );
     check(
-      s1.state === 'idle' && s1.pending && s1.drawn && s1.words.length > 0,
-      `S1 within ${Date.now() - sentAt} ms, session still idle: the writing row is drawn ("${s1.words}")`,
+      s1.state === 'idle' && s1.pending && s1.drawn && s1.words.length > 0 && drawnMs >= 0 && drawnMs <= 300,
+      `S1 drawn ${drawnMs} ms after Enter, session still idle: the writing row ("${s1.words}")`,
     );
 
     // S2 — the session turns working.
