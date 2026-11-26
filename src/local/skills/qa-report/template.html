@@ -48,11 +48,30 @@ pre { white-space:pre-wrap; word-break:break-word; background:var(--code); borde
 .pre table { border-collapse:collapse; width:100%; font-size:12px; }
 .pre th, .pre td { text-align:left; vertical-align:top; padding:4px 8px 4px 0; border-bottom:1px solid var(--line); }
 .shot { display:block; max-width:100%; margin-top:8px; border:1px solid var(--line); border-radius:8px; }
+/* Summary first: verdict band, conclusion, big numbers, bars, what a person must do. */
+#exec { margin:4px 0 20px; }
+.vband { font-size:17px; font-weight:700; padding:10px 14px; background:var(--card); border:1px solid var(--line); border-left:8px solid var(--warn); border-radius:8px; margin:12px 0 8px; }
+.vband.ok { border-left-color:var(--ok); } .vband.bad { border-left-color:var(--bad); }
+.headline { font-size:16px; line-height:1.55; margin:8px 0 12px; }
+.bigs { display:flex; flex-wrap:wrap; gap:8px; }
+.big { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:8px 14px; min-width:120px; font-size:12px; color:var(--muted); }
+.big b { display:block; font-size:36px; line-height:1.1; color:var(--ink); }
+.obar, .cbar { display:flex; overflow:hidden; border-radius:4px; background:var(--line); }
+.obar { height:18px; margin:14px 0 4px; } .cbar { height:10px; flex:1; } .obar i, .cbar i { display:block; height:100%; }
+i.ok { background:var(--ok); } i.bad { background:var(--bad); } i.warn { background:#d97706; } i.gray { background:#94a3b8; }
+.wrow { display:flex; align-items:center; gap:8px; font-size:12px; margin:4px 0; } .wk { width:112px; flex:none; font-weight:600; }
+.wbar { flex:1; height:10px; display:flex; background:var(--line); border-radius:4px; overflow:hidden; } .wbar i { display:block; height:100%; } .wn { width:64px; flex:none; color:var(--muted); }
+.pret summary { cursor:pointer; font-size:12px; font-weight:600; margin:4px 0; }
+.lg { display:flex; flex-wrap:wrap; gap:12px; font-size:12px; color:var(--muted); }
+.lg i { display:inline-block; width:12px; height:10px; margin-right:4px; border-radius:2px; vertical-align:-1px; }
+.irows { margin:10px 0; } .irow { display:flex; align-items:center; gap:8px; font-size:12px; margin:4px 0; cursor:pointer; }
+.ik { font-family:var(--mono); font-weight:700; width:112px; flex:none; } .in { width:44px; flex:none; text-align:right; color:var(--muted); }
+.lbl2 { font-size:12px; font-weight:700; margin-top:12px; } .todo { margin:4px 0 8px; padding-left:20px; font-weight:600; }
 @media (max-width:900px) { .app { display:block; } .left, .right { width:100%; position:static; height:auto; border-left:0; } }
 </style>
 </head>
 <body>
-<div class="app"><main class="left" id="left"></main><aside class="right" id="right"></aside></div>
+<div class="app"><main class="left" id="left"></main><aside class="right" id="right" data-raw="evidence"></aside></div>
 <script type="application/json" id="qa-data">/*QA_DATA*/</script>
 <script>
 (function () {
@@ -62,6 +81,19 @@ pre { white-space:pre-wrap; word-break:break-word; background:var(--code); borde
   var ST = D.status || {}, OC = D.outcomes || {};
   var NONE = '<span class="w">[—]</span>';
   var SHOTS = [];
+  // meta.lang 'ko' renders the reader-facing words (summary, status tags, hints) in Korean; evidence stays as recorded.
+  var KO = M.lang === 'ko';
+  var KO_ST = { pass: '통과', 'pass (not moved)': '통과(전환 안 됨)', fail: '실패', partial: '일부만 확인', blocked: '막힘', superseded: '대체됨', deferred: '보류', 'not-run': '실행 안 함', 'report-only': '보고만' };
+  function T(en, ko) { return KO ? ko : en; }
+  function lab(v) { return KO && KO_ST[v] ? KO_ST[v] : v; }
+  function pl(n, w) { return n + ' ' + w + (n === 1 ? '' : 's'); }
+  var KIND = { account: ['accounts', '계정'], 'test-data': ['test data', '시험 데이터'], 'write-permission': ['write permission', '쓰기 권한'],
+    'env-config': ['environment settings', '환경 설정'], 'external-system': ['external systems', '외부 시스템'], observability: ['logs and observability', '로그·관측'],
+    'device-locale': ['device and language', '기기·언어'], 'time-control': ['time control', '시간 조작'] };
+  function kindName(k) { return KIND[k] ? KIND[k][KO ? 1 : 0] : String(k || '?'); }
+  var PST = { met: ['met', '있음'], provisionable: ['provisionable', '만들 수 있음'], missing: ['missing', '없음'] };
+  var PDC = { provided: ['provided', '제공함'], waived: ['waived', '없이 진행'], skipped: ['skipped', '건너뜀'] };
+  function pick(map, v) { return map[v] ? map[v][KO ? 1 : 0] : v; }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function safeUrl(u) { return /^https?:\/\//i.test(String(u || '')) ? esc(u) : ''; }
   function cls(v) { return v === 'pass' ? 'ok' : v === 'fail' ? 'bad' : 'warn'; }
@@ -112,7 +144,7 @@ pre { white-space:pre-wrap; word-break:break-word; background:var(--code); borde
     if (!safeUrl(L.issue)) miss.push('issue');
     if (!cm.length) miss.push('commit');
     if (!pr.length) miss.push('PR');
-    return '<span class="links">' + out.join(' ') + (miss.length ? '<span class="w">no ' + esc(miss.join('/')) + ' link</span>' : '') + '</span>';
+    return '<span class="links" data-raw="links">' + out.join(' ') + (miss.length ? '<span class="w">no ' + esc(miss.join('/')) + ' link</span>' : '') + '</span>';
   }
   function key(d) { return safeUrl(d.links.issue) ? a(d.links.issue, d.key, 'k') : '<span class="k">' + esc(d.key) + '</span>'; }
   var stats = { calls: 0, shots: 0, missing: 0, noEvidence: 0 }, counts = {};
@@ -131,7 +163,7 @@ pre { white-space:pre-wrap; word-break:break-word; background:var(--code); borde
     var n = calls(c), s = shot(c), hi = c.status === 'fail' && /^P[01]$/.test(c.severity || '');
     var k = c.status === 'pass' && (n.length || s) ? '' : hi ? 'bad' : 'warn';
     var h = '<div class="case ' + k + '"><div class="cs">' + esc(c.id) + ' · ' + esc(c.type || '?') + ' · ' + esc(c.severity || '?') +
-      ' <span class="tag ' + (c.status === 'pass' ? 'ok' : hi ? 'bad' : 'warn') + '">' + esc(c.status) + '</span></div>';
+      ' <span class="tag ' + (c.status === 'pass' ? 'ok' : hi ? 'bad' : 'warn') + '">' + esc(lab(c.status)) + '</span></div>';
     if (c.desc) h += '<div>' + esc(c.desc) + '</div>';
     if (c.precondition) h += '<div class="w">precondition ' + esc(c.precondition) + ' — not run for real</div>';
     if (c.evidence && c.evidence.mocked && [].concat(c.evidence.mocked).length) h += '<div class="w">mocked: ' + esc([].concat(c.evidence.mocked).join(', ')) + ' — does not prove server behaviour</div>';
@@ -156,58 +188,111 @@ pre { white-space:pre-wrap; word-break:break-word; background:var(--code); borde
     SHOTS = [];
     Array.prototype.forEach.call(document.querySelectorAll('.row'), function (r) { r.classList.toggle('sel', r.getAttribute('data-k') === k); });
     var t = d.statusTransition, dc = d.deployConfirm, e = (d.env && typeof d.env === 'object') ? d.env : {};
-    var h = '<div class="rtop">' + key(d) + ' <span class="tag ' + cls(d.status) + '">' + esc(d.status) + '</span>' + (d.dmSent ? '<span class="w">assignee notified</span>' : '') + '</div>' + links(d);
+    var h = '<div class="rtop">' + key(d) + ' <span class="tag ' + cls(d.status) + '">' + esc(lab(d.status)) + '</span>' + (d.dmSent ? '<span class="w">' + T('assignee notified', '담당자에게 알림') + '</span>' : '') + '</div>' + links(d);
     if (d.qa) h += '<div class="bv">' + ver(d) + (d.qaLevel ? ' · qa=' + esc(d.qaLevel) : '') + (e.profile ? ' · ' + esc(e.profile) : '') +
       (dc ? '<br>deployed ' + esc(dc.version || '?') + (dc.state ? ' (' + esc(dc.state) + ')' : '') + (dc.provenance ? ' · from ' + esc(dc.provenance) : '') : '') + '</div>';
     if (t) h += '<div class="meta">transition ' + esc(t.from) + ' → ' + esc(t.to) + ' · performed=' + esc(t.performed) + ' · verified=' + esc(t.verified) + (t.reason ? ' · ' + esc(t.reason) : '') + '</div>';
     if (d.trackerComment) h += '<div class="meta">tracker comment ' + esc(d.trackerComment) + '</div>';
     if (d.why) h += '<p class="w">' + esc(d.why) + '</p>';
     if (d.qa) h += '<div class="meta">qa-issue verdict ' + esc(d.verdict) + (d.reason && d.reason !== d.why ? ' · ' + esc(d.reason) : '') + '</div>';
-    h += (d.cases && d.cases.length) ? d.cases.map(caseHtml).join('') : '<p class="meta">' + (d.qa ? 'No cases returned.' : 'Not QA\'d in this run.') + '</p>';
+    h += (d.cases && d.cases.length) ? d.cases.map(caseHtml).join('') : '<p class="meta">' + (d.qa ? T('No cases returned.', '돌려받은 케이스가 없습니다.') : T('Not QA\'d in this run.', '이번 회차에 QA 하지 않았습니다.')) + '</p>';
     document.getElementById('right').innerHTML = h;
     Array.prototype.forEach.call(document.querySelectorAll('#right img[data-shot]'), function (img) { img.src = SHOTS[Number(img.getAttribute('data-shot'))]; });
   }
-  var L = '<h1>' + esc(M.title || 'QA report') + '</h1><div class="sub">' +
+  var L = '<h1>' + esc(M.title || T('QA report', 'QA 리포트')) + '</h1><div class="sub" data-raw="provenance">' +
     esc([M.repo, M.target, M.range, M.status, M.versionStart || M.versionEnd ? 'version ' + (M.versionStart || '?') + ' → ' + (M.versionEnd || '?') : '', M.generatedAt].filter(Boolean).join(' · ')) + '</div>';
-  // Preconditions lead: what was missing, which cases it blocked, and who decided what.
   var PRE = [].concat(D.preconditions || []);
+  L += summary();
+  // Preconditions lead the detail: what was missing, which cases it blocked, and who decided what.
   function decided(p) {
     var d = p.decision;
-    if (!d || d === 'pending') return p.status === 'met' || p.status === 'provisionable' ? 'not needed' : 'waiting for the requester';
-    return esc(d) + ' by ' + esc(p.confirmedBy || '?') + (p.confirmRef ? ' · ref ' + esc(p.confirmRef) : '') + (p.confirmedAt ? ' · ' + esc(p.confirmedAt) : '');
+    if (!d || d === 'pending') return p.status === 'met' || p.status === 'provisionable' ? T('not needed', '필요 없음') : T('waiting for the requester', '요청자 답 대기');
+    return esc(pick(PDC, d)) + T(' by ', ' · ') + esc(p.confirmedBy || '?') + (p.confirmRef ? ' · ref ' + esc(p.confirmRef) : '') + (p.confirmedAt ? ' · ' + esc(p.confirmedAt) : '');
   }
   if (PRE.length) {
     var open = PRE.filter(function (p) { return p.status !== 'met' && p.status !== 'provisionable'; });
-    L += '<h2>Preconditions — ' + open.length + ' open of ' + PRE.length + '</h2><div class="pre">' +
-      (open.length ? '<p class="w">QA could not test the cases below for real because these preconditions were missing.</p>' : '') +
-      '<table><thead><tr><th>key</th><th>precondition</th><th>needed</th><th>blocks cases</th><th>status</th><th>decision</th></tr></thead><tbody>' +
+    L += '<h2>' + T('Preconditions — ' + open.length + ' open of ' + PRE.length, '준비물 — 없는 것 ' + open.length + ' / 전체 ' + PRE.length) + '</h2><div class="pre">' +
+      (open.length ? '<p class="w">' + T('QA could not test the cases below for real because these preconditions were missing.', '아래 준비물이 없어서 QA가 해당 케이스를 실제로 시험하지 못했습니다.') + '</p>' : '') +
+      (PRE.length > 6 ? '<details class="pret"><summary>' + T('Show the table (' + PRE.length + ' rows)', '표 펼치기 (' + PRE.length + '행)') + '</summary>' : '') +
+      '<table><thead><tr><th>' + [T('key', '키'), T('precondition', '준비물'), T('needed', '필요한 것'), T('blocks cases', '막는 케이스'), T('status', '상태'), T('decision', '결정')].join('</th><th>') + '</th></tr></thead><tbody>' +
       PRE.map(function (p) {
-        return '<tr><td class="k">' + esc(p.key) + '</td><td>' + esc(p.id) + ' · ' + esc(p.kind || '?') + '</td><td>' + esc(p.need || '') + '</td><td>' +
-          esc([].concat(p.cases || []).join(', ')) + '</td><td>' + esc(p.status || '?') + '</td><td>' + decided(p) + '</td></tr>';
-      }).join('') + '</tbody></table></div>';
+        return '<tr><td class="k">' + esc(p.key) + '</td><td data-raw="id">' + esc(p.id) + ' · ' + esc(kindName(p.kind)) + '</td><td>' + esc(p.need || '') + '</td><td data-raw="cases">' +
+          esc([].concat(p.cases || []).join(', ')) + '</td><td>' + esc(pick(PST, p.status) || '?') + '</td><td>' + decided(p) + '</td></tr>';
+      }).join('') + '</tbody></table>' + (PRE.length > 6 ? '</details>' : '') + '</div>';
   }
-  if (M.ssot) L += '<h2>Request</h2><div class="ssot">' + esc(M.ssot) + '</div>';
+  if (M.ssot) L += '<h2>' + T('Request', '요청') + '</h2><div class="ssot" data-raw="request">' + esc(M.ssot) + '</div>';
   L += '<div class="kpis">' + ORDER.concat(Object.keys(counts).filter(function (v) { return ORDER.indexOf(v) < 0; })).filter(function (v) { return counts[v]; })
-    .map(function (v) { return '<div class="kpi"><b>' + counts[v] + '</b>' + esc(v) + '</div>'; }).join('') +
-    '<div class="kpi"><b>' + stats.calls + '</b>API calls</div><div class="kpi"><b>' + stats.shots + '</b>screenshots</div>' +
-    (stats.noEvidence ? '<div class="kpi"><b class="w">' + stats.noEvidence + '</b>pass without evidence</div>' : '') +
-    (stats.missing ? '<div class="kpi"><b class="w">' + stats.missing + '</b>missing case fields</div>' : '') +
-    (M.masked ? '<div class="kpi"><b>' + esc(M.masked) + '</b>secret values masked</div>' : '') + '</div>';
-  if (M.notes && M.notes.length) L += '<ul class="notes">' + [].concat(M.notes).map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul>';
-  L += '<div class="hint">Click a key to open the tracker issue; click a row to show its evidence.</div>';
+    .map(function (v) { return '<div class="kpi"><b>' + counts[v] + '</b>' + esc(lab(v)) + '</div>'; }).join('') +
+    '<div class="kpi"><b>' + stats.calls + '</b>' + T('API calls', 'API 호출') + '</div><div class="kpi"><b>' + stats.shots + '</b>' + T('screenshots', '스크린샷') + '</div>' +
+    (stats.noEvidence ? '<div class="kpi"><b class="w">' + stats.noEvidence + '</b>' + T('pass without evidence', '증거 없는 통과') + '</div>' : '') +
+    (stats.missing ? '<div class="kpi"><b class="w">' + stats.missing + '</b>' + T('missing case fields', '빈 케이스 칸') + '</div>' : '') +
+    (M.masked ? '<div class="kpi"><b>' + esc(M.masked) + '</b>' + T('secret values masked', '가린 비밀 값') + '</div>' : '') + '</div>';
+  if (M.notes && M.notes.length) L += '<ul class="notes" data-raw="notes">' + [].concat(M.notes).map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul>';
+  L += '<div class="hint">' + T('Click a key to open the tracker issue; click a row to show its evidence.', '키를 누르면 트래커 이슈가 열리고, 줄을 누르면 오른쪽에 증거가 나옵니다.') + '</div>';
   L += I.map(function (d) {
     var cs = d.cases || [], n = 0, s = 0;
     cs.forEach(function (c) { n += calls(c).length; s += shot(c) ? 1 : 0; });
-    return '<div class="row ' + cls(d.status) + '" tabindex="0" data-k="' + esc(d.key) + '"><div class="rtop">' + key(d) + links(d) + '<span class="tag ' + cls(d.status) + '">' + esc(d.status) + '</span></div>' +
+    return '<div class="row ' + cls(d.status) + '" tabindex="0" data-k="' + esc(d.key) + '"><div class="rtop">' + key(d) + links(d) + '<span class="tag ' + cls(d.status) + '">' + esc(lab(d.status)) + '</span></div>' +
       '<div>' + esc([tally(d), d.why].filter(Boolean).join(' · ')) + '</div>' +
-      (d.qa ? '<div class="meta">qa-issue verdict ' + esc(d.verdict) + ' · ' + cs.length + ' cases · ' + n + ' calls · ' + s + ' screenshots · ' + ver(d) + '</div>' : '') + '</div>';
+      (d.qa ? '<div class="meta" data-raw="verdict">qa-issue verdict ' + esc(d.verdict) + ' · ' + cs.length + ' cases · ' + n + ' calls · ' + s + ' screenshots · ' + ver(d) + '</div>' : '') + '</div>';
   }).join('');
+  // The first screen: verdict band, one conclusion sentence, big numbers, an outcome bar, one case bar per QA'd issue,
+  // and what a person must do. Counts use the same row status as everything below.
+  function summary() {
+    var n = I.length, pass = 0, fail = 0, ro = 0, failed = [], cp = 0, ct = 0;
+    I.forEach(function (d) {
+      if (d.status === 'pass') pass++; else if (d.status === 'fail') { fail++; failed.push(d.key); } else if (d.status === 'report-only') ro++;
+      (d.cases || []).forEach(function (c) { ct++; if (c.status === 'pass') cp++; });
+    });
+    var nf = n - pass - fail - ro;
+    var open = PRE.filter(function (p) { return p.status !== 'met' && p.status !== 'provisionable'; }).length;
+    var tone = fail ? 'bad' : n && pass === n && !open ? 'ok' : 'warn';
+    var band = KO ? '이슈 ' + n + '개 중 ' + pass + '개 QA 통과' + (fail ? ' · 실패 ' + fail : '') + (nf ? ' · 끝나지 않음 ' + nf : '') + (ro ? ' · 보고만 ' + ro : '') + (open ? ' · 없는 준비물 ' + open : '')
+      : pass + ' of ' + pl(n, 'issue') + ' passed QA' + (fail ? ' · ' + fail + ' failed' : '') + (nf ? ' · ' + nf + ' not finished' : '') + (ro ? ' · ' + ro + ' report only' : '') + (open ? ' · ' + pl(open, 'precondition') + ' open' : '');
+    var auto = KO ? '이번 범위의 이슈 ' + n + '개 중 ' + pass + '개 통과, ' + fail + '개 실패' + (ro ? ', ' + ro + '개 보고만' : '') + ', ' + nf + '개는 끝나지 않았습니다.' + (ct ? '' : ' 케이스는 하나도 실행되지 않았습니다.') + (open ? ' 없는 준비물 ' + open + '개가 답을 기다립니다.' : '')
+      : pl(n, 'issue') + ' in scope: ' + pass + ' passed, ' + fail + ' failed' + (ro ? ', ' + ro + ' report only' : '') + ' and ' + nf + ' not finished.' + (ct ? '' : ' No case ran.') + (open ? ' ' + pl(open, 'precondition') + ' still open.' : '');
+    var h = '<section id="exec"><div class="vband ' + tone + '">' + (tone === 'ok' ? '✓ ' : tone === 'bad' ? '✗ ' : '! ') + esc(band) + '</div>' +
+      '<p class="headline">' + esc(M.headline || auto) + '</p><div class="bigs">' +
+      '<div class="big"><b>' + pass + '/' + n + '</b>' + T('issues passed', '통과한 이슈') + '</div>' +
+      '<div class="big"><b>' + fail + '</b>' + T('failed', '실패') + '</div>' +
+      '<div class="big"><b>' + nf + '</b>' + T('not finished', '끝나지 않음') + '</div>' +
+      (ct ? '<div class="big"><b>' + cp + '/' + ct + '</b>' + T('cases passed', '통과한 케이스') + '</div>' : '') +
+      (open ? '<div class="big"><b>' + open + '</b>' + T('preconditions open', '없는 준비물') + '</div>' : '') + '</div>';
+    var W = function (k, t) { return Math.round(k * 1000 / t) / 10; };
+    var seg = [['ok', pass], ['bad', fail], ['warn', nf], ['gray', ro]].filter(function (x) { return x[1]; });
+    if (n) h += '<div class="obar">' + seg.map(function (x) { return '<i class="' + x[0] + '" style="width:' + W(x[1], n) + '%" title="' + x[1] + '"></i>'; }).join('') + '</div>' +
+      '<div class="lg"><span><i class="ok"></i>' + T('passed', '통과') + ' ' + pass + '</span><span><i class="bad"></i>' + T('failed', '실패') + ' ' + fail + '</span><span><i class="warn"></i>' + T('not finished', '끝나지 않음') + ' ' + nf + '</span>' + (ro ? '<span><i class="gray"></i>' + T('report only', '보고만') + ' ' + ro + '</span>' : '') + '</div>';
+    // What blocks QA: open preconditions by kind, largest first.
+    var byKind = {};
+    PRE.forEach(function (p) {
+      if (p.status === 'met' || p.status === 'provisionable') return;
+      var k = byKind[p.kind] = byKind[p.kind] || { n: 0, keys: {} };
+      k.n++; k.keys[p.key] = 1;
+    });
+    var kinds = Object.keys(byKind).sort(function (a, b) { return byKind[b].n - byKind[a].n; }), top = kinds.length ? byKind[kinds[0]].n : 0;
+    if (kinds.length) h += '<div class="lbl2">' + T('What blocks QA', 'QA를 막고 있는 준비물') + '</div>' + kinds.slice(0, 8).map(function (k) {
+      var x = byKind[k], nk = Object.keys(x.keys).length;
+      return '<div class="wrow"><span class="wk">' + esc(kindName(k)) + '</span><span class="wbar"><i class="warn" style="width:' + W(x.n, top) + '%"></i></span><span class="in">' + x.n + '</span><span class="wn">' + T(pl(nk, 'issue'), '이슈 ' + nk) + '</span></div>';
+    }).join('');
+    var qa = I.filter(function (d) { return d.cases && d.cases.length; }), MAX = 12;
+    if (qa.length) h += '<div class="lbl2">' + T('Cases per issue', '이슈별 케이스') + '</div><div class="irows">' + qa.slice(0, MAX).map(function (d) {
+      var t = d.cases.length, p = 0, f = 0;
+      d.cases.forEach(function (c) { if (c.status === 'pass') p++; else if (c.status === 'fail') f++; });
+      var bars = [['ok', p], ['bad', f], ['warn', t - p - f]].filter(function (x) { return x[1]; }).map(function (x) { return '<i class="' + x[0] + '" style="width:' + W(x[1], t) + '%"></i>'; }).join('');
+      return '<div class="irow" tabindex="0" data-k="' + esc(d.key) + '"><span class="ik">' + esc(d.key) + '</span><span class="cbar">' + bars + '</span><span class="in">' + p + '/' + t + '</span><span class="tag ' + cls(d.status) + '">' + esc(lab(d.status)) + '</span></div>';
+    }).join('') + (qa.length > MAX ? '<div class="meta">' + T('+' + (qa.length - MAX) + ' more below', '아래에 ' + (qa.length - MAX) + '개 더') + '</div>' : '') + '</div>';
+    var todo = [];
+    if (open) todo.push(KO ? '없는 준비물 ' + open + '개에 답하기 — 아래 표에 무엇이 필요한지 있음' : 'Answer ' + pl(open, 'open precondition') + ' — the table below says what each needs');
+    if (fail) todo.push(KO ? '실패한 이슈 ' + fail + '개 고치기: ' + failed.join(', ') : 'Fix ' + pl(fail, 'failed issue') + ': ' + failed.join(', '));
+    if (todo.length) h += '<div class="lbl2">' + T('What a person must do', '사람이 할 일') + '</div><ol class="todo">' + todo.map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ol>';
+    return h + '</section>';
+  }
   function list(title, xs, f) { return xs && xs.length ? '<h2>' + esc(title) + '</h2><ul class="notes">' + xs.map(function (x) { return '<li>' + f(x) + '</li>'; }).join('') + '</ul>' : ''; }
   function prRef(p) { return a(p.url || (p.repo && p.number ? 'https://github.com/' + p.repo + '/pull/' + p.number : ''), short(p.repo) + '#' + p.number, 'pr'); }
   L += list('Mentioned only in a PR body (never transitioned)', D.bodyMentions, function (x) { return esc(x.key) + ' ← ' + prRef(x.pr || {}); });
   L += list('Excluded PRs', D.excludedPrs, function (x) { return prRef(x) + (x.reason ? ' · ' + esc(x.reason) : ''); });
   document.getElementById('left').innerHTML = L;
-  Array.prototype.forEach.call(document.querySelectorAll('.row'), function (r) {
+  Array.prototype.forEach.call(document.querySelectorAll('.row, .irow'), function (r) {
     r.addEventListener('click', function () { showEv(r.getAttribute('data-k')); });
     r.addEventListener('keydown', function (e) { if (e.key === 'Enter') showEv(r.getAttribute('data-k')); });
   });
