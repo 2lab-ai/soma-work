@@ -2645,9 +2645,7 @@ async function start() {
       );
       // DM rewrites the previous process could not deliver.
       flushGoalCapDmSync((decisionId) =>
-        [...registry.getAllSessions().values()].some(
-          (s) => capAskOf(s.goal)?.roundId === decisionId,
-        ),
+        [...registry.getAllSessions().values()].some((s) => capAskOf(s.goal)?.roundId === decisionId),
       );
       timing('Goal turn-settled driver installed');
     } catch (error) {

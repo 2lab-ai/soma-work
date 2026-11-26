@@ -1,4 +1,3 @@
-import { slotHoldOf } from '../goal/read';
 import { randomUUID } from 'node:crypto';
 import { displayLangOf, runWithDisplayLang, stripEchoedDisplayLangTag } from '@soma/common/i18n';
 import { Logger, redactAnthropicSecrets } from '@soma/common/logger';
@@ -30,6 +29,7 @@ import {
 import type { CompletionMessageTracker } from '../completion-message-tracker';
 import { turnStartAnchor } from '../context-anchor';
 import type { ContextWindowManager } from '../context-window-manager';
+import { slotHoldOf } from '../goal/read';
 import {
   buildInstructionConfirmBlocks,
   buildInstructionConfirmFallbackText,

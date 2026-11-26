@@ -19,7 +19,6 @@
 
 import { DEFAULT_GOAL_MAX_CONTINUATIONS, MAX_GOAL_HISTORY, type SessionGoal } from './goal/model';
 
-export { DEFAULT_GOAL_MAX_CONTINUATIONS, MAX_GOAL_HISTORY } from './goal/model';
 export type {
   GoalCompletedVia,
   SessionGoal,
@@ -29,6 +28,7 @@ export type {
   SessionGoalStall,
   SessionGoalStatus,
 } from './goal/model';
+export { DEFAULT_GOAL_MAX_CONTINUATIONS, MAX_GOAL_HISTORY } from './goal/model';
 
 /** The queue helpers' goal: the one model (`./goal/model`). The name stays for its callers. */
 export type SessionGoalState = SessionGoal;

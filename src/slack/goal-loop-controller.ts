@@ -63,11 +63,11 @@ import { gateGoalVerdictOnTasks, goalTaskListLines, heldByWaitingGoals, taskGate
 
 export { GOAL_SUMMARY_PERSIST_MAX };
 
+import { capAskOf } from '@soma/slack/goal/read';
 import { goalStallRollbackOffer, openGoalStall, trackGoalFirstFailure } from './goal-stall';
 import { advanceGoalQueue, formatGoalObjectiveForSlack } from './session-goal';
 import { announceSessionNotice, recordSessionNotice } from './session-notice';
 import { SessionOccupancy } from './session-occupancy';
-import { capAskOf } from '@soma/slack/goal/read';
 
 /** Default ceiling for a single completion eval before it is aborted. */
 const DEFAULT_GOAL_EVAL_TIMEOUT_MS = 120_000;

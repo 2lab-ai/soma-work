@@ -29,10 +29,10 @@
  * still one Continue.
  */
 
-import { capAskOf } from '@soma/slack/goal/read';
 import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import { atomicWriteJson, readJsonWithBackup } from '@soma/common/atomic-json';
+import { capAskOf } from '@soma/slack/goal/read';
 import { DATA_DIR } from '../env-paths';
 import { Logger } from '../logger';
 import type { ConversationSession, SessionGoal } from '../types';

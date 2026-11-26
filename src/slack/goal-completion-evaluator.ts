@@ -16,8 +16,8 @@
  */
 
 import fs from 'node:fs';
-import { loopDrives, phaseOf } from '@soma/slack/goal/read';
 import path from 'node:path';
+import { loopDrives, phaseOf } from '@soma/slack/goal/read';
 import { Logger } from '../logger';
 import type { EffortLevel } from '../user-settings-store';
 import { retireGoalCapDecision } from './goal-cap-decision';

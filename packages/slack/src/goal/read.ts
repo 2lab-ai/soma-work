@@ -84,7 +84,9 @@ export function stallAskOf(goal: GoalPhaseFields | undefined): GoalStallAsk | un
 }
 
 /** The phases the loop drives (D2): it judges a running goal, and a retrying one once its window has passed. */
-export function loopDrives(phase: GoalPhase | undefined): phase is Extract<GoalPhase, { kind: 'running' | 'retrying' }> {
+export function loopDrives(
+  phase: GoalPhase | undefined,
+): phase is Extract<GoalPhase, { kind: 'running' | 'retrying' }> {
   return phase?.kind === 'running' || phase?.kind === 'retrying';
 }
 

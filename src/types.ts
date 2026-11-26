@@ -193,7 +193,6 @@ export interface ActionPanelState {
 // .prd/40 §1 — the goal model lives in `@soma/slack/goal/model`; this is its re-export for the composition root.
 import type { SessionGoal } from '@soma/slack/goal/model';
 
-export { DEFAULT_GOAL_MAX_CONTINUATIONS } from '@soma/slack/goal/model';
 export type {
   GoalCompletedVia,
   SessionGoal,
@@ -203,6 +202,7 @@ export type {
   SessionGoalStall,
   SessionGoalStatus,
 } from '@soma/slack/goal/model';
+export { DEFAULT_GOAL_MAX_CONTINUATIONS } from '@soma/slack/goal/model';
 
 /**
  * The verified Eagle incident request that owns a session.

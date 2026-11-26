@@ -1,4 +1,3 @@
-import { slotGoalInFlight, slotHoldOf } from '@soma/slack/goal/read';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { App } from '@slack/bolt';
@@ -24,6 +23,7 @@ import {
 } from '@soma/slack/followup-queue';
 import { FOLLOWUP_RESTART_FREEZE_REASON, type FollowupQueueView } from '@soma/slack/followup-queue-blocks';
 import { FollowupQueueStore } from '@soma/slack/followup-queue-store';
+import { slotGoalInFlight, slotHoldOf } from '@soma/slack/goal/read';
 import { OutputFlag } from '@soma/slack/output-flags';
 import { isLocalSlashCommand, shouldForwardAsLocalSlashCommand } from '@soma/slack/pipeline/local-slash-command';
 import { runWithTimeout } from '@soma/slack/pipeline/stream-executor-cleanup-helpers';
