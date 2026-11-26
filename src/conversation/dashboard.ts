@@ -153,7 +153,7 @@ import { type CardLink, cardLinksOf, followupLinksOf, settledLinkUrlsOf } from '
 import { cardFields, cardPushMessage, type SentCards, WS_RESYNC } from './card-push';
 import { archivedCardClocks, cardWhereOf, liveCardClocks } from './card-where';
 import { isClientRef } from './client-ref';
-import { type InstructionProgress, instructionProgressOf, noteInstructionStage } from './instruction-progress';
+import { type InstructionProgress, instructionStagesOf, noteInstructionStage } from './instruction-progress';
 import { type ComposerMenuWhere, type ComposerTriggerRow, composerTriggers } from './composer-menus';
 import { buildCronEditPatch, cronJobDetail } from './cron-edit';
 import { buildCronJobsView, type CronRunSessionLookup } from './cron-view';
@@ -558,10 +558,10 @@ export interface KanbanSession {
    */
   userQueue?: { entryId: string; kind: 'request' | 'resume'; position: number; since: number };
   /**
-   * #1466 — where the latest instruction the dashboard sent this session is: the stage the server reached for it
-   * (instruction-progress.ts), by the panel's ref. The chat shows it under that instruction until its answer.
+   * #1466 — where the session's latest dashboard instructions are (newest first, a few): the stage the server reached
+   * for each (instruction-progress.ts), by the panel's ref. The chat shows each on its instruction until its answer.
    */
-  instructionProgress?: InstructionProgress;
+  instructionStages?: InstructionProgress[];
   /**
    * Anthropic safeguards halted the session: nothing runs in it until an admin
    * lifts the lock from the Slack notice. The card says so instead of "대기".
@@ -3102,7 +3102,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
   // .prd/36 D8 — the session waits on the host: a work-queue entry, or an environment hand-off it asked for.
   const queueWait = hostWaitFor(s?.channelId, s?.threadTs);
   const userQueue = userQueueOfSession(key);
-  const instructionProgress = instructionProgressOf(key);
+  const instructionStages = instructionStagesOf(key);
   const taskView = _getTasksFn ? _getTasksFn(key) : undefined;
   const aggregate = computeThreadAggregate(s.channelId, s.threadTs, getAllSessions(), Date.now());
   const headline = displayTitle(s);
@@ -3234,7 +3234,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     ...(autoResume ? { autoResume } : {}),
     ...(queueWait ? { queueWait } : {}),
     ...(userQueue ? { userQueue } : {}),
-    ...(instructionProgress ? { instructionProgress } : {}),
+    ...(instructionStages.length ? { instructionStages } : {}),
     ...(s.safeguardHalt && Number.isFinite(Number(s.safeguardHalt.atMs))
       ? {
           safeguardHalt: {
@@ -16488,14 +16488,15 @@ var STEER_CHIP_STARTING = '처리 중 · 이 메시지로 새 작업을 시작�
 var STEER_CHIP_FAILED = '보내지 못했어요 · 입력창의 대기열에서 다시 보내거나 취소하세요';
 var STEER_CHIP_APPLIED = '반영됨 · 진행 중이던 작업이 이 메시지를 읽었어요';
 // kind → [tone, words]. Tones: wait (nothing runs it yet), work (on its way into a turn), fail, done.
-// #1466 — the stages the server reports for an instruction sent to a card with no turn running (convProgressChip).
+// #1466 — the stages the server reports for an instruction sent to a card with no turn running (convProgressChips).
 var STEER_CHIP_RECEIVED = '접수됨 · 서버가 받았어요, 시작할 수 있는지 확인하고 있어요';
 var STEER_CHIP_APPROVAL = '승인 대기 · 작업 소유자가 승인하면 실행돼요';
 var STEER_CHIP_USERQUEUE = '작업 큐 대기 · 내 다른 작업이 끝나면 시작해요';
 var STEER_CHIP_USERQUEUE_AT = '작업 큐 대기 · {0}번째 — 내 다른 작업이 끝나면 시작해요';
 var STEER_CHIP_SAMEWORK = '시작 안 함 · 같은 작업이 다른 스레드에서 이미 진행 중이에요';
 var STEER_CHIP_DELIVERED = '모델이 받았어요 · 답을 쓰고 있어요';
-var STEER_CHIP = { sending: ['wait', STEER_CHIP_SENDING], queued: ['wait', STEER_CHIP_QUEUED], steered: ['work', STEER_CHIP_STEERED], starting: ['work', STEER_CHIP_STARTING], failed: ['fail', STEER_CHIP_FAILED], applied: ['done', STEER_CHIP_APPLIED], received: ['wait', STEER_CHIP_RECEIVED], approval: ['wait', STEER_CHIP_APPROVAL], userqueue: ['wait', STEER_CHIP_USERQUEUE], samework: ['fail', STEER_CHIP_SAMEWORK], delivered: ['work', STEER_CHIP_DELIVERED] };
+var STEER_CHIP_UNDELIVERED = '모델에 전달되지 않았어요 · 스레드의 메시지를 확인하세요';
+var STEER_CHIP = { sending: ['wait', STEER_CHIP_SENDING], queued: ['wait', STEER_CHIP_QUEUED], steered: ['work', STEER_CHIP_STEERED], starting: ['work', STEER_CHIP_STARTING], failed: ['fail', STEER_CHIP_FAILED], applied: ['done', STEER_CHIP_APPLIED], received: ['wait', STEER_CHIP_RECEIVED], approval: ['wait', STEER_CHIP_APPROVAL], userqueue: ['wait', STEER_CHIP_USERQUEUE], samework: ['fail', STEER_CHIP_SAMEWORK], delivered: ['work', STEER_CHIP_DELIVERED], undelivered: ['fail', STEER_CHIP_UNDELIVERED] };
 // The element's five states (STEER_STATE) as the chat's kinds.
 var STEER_CHIP_OF = { queued: 'queued', steered: 'steered', sending: 'starting', failed: 'failed' };
 // The state above a turn's words (the turn's media slot — the page's own light DOM).
@@ -16508,25 +16509,36 @@ function steerChipHtml(kind) {
   var words = parts[0] === 'userqueue' && n > 0 ? adminFmt(STEER_CHIP_USERQUEUE_AT, n) : c[1];
   return '<div class="cv-steer cv-steer-' + c[0] + '" role="status"><span class="cv-steer-dot" aria-hidden="true"></span><span>' + esc(words) + '</span></div>';
 }
-// #1466 (Z 2026-11-26) — where an instruction sent from here really is: the stage the server reported for it
-// (s.instructionProgress — by its ref, the optimistic turn's id, which the recorded turn keeps as clientRef), on
-// that instruction until an answer follows it. Nothing the server has not reported: no record, no chip.
-var PROGRESS_CHIP = { received: 'received', approval: 'approval', queued: 'userqueue', 'same-work': 'samework', starting: 'starting', delivered: 'delivered' };
-function convProgressChip(list, s) {
-  var p = s && s.instructionProgress;
-  var kind = p && p.ref ? PROGRESS_CHIP[p.stage] : '';
-  if (!kind) return null;
-  for (var i = list.length - 1; i >= 0; i--) {
-    var t = list[i];
-    if (!t) continue;
-    if (String(t.id) === String(p.ref) || (t.clientRef && String(t.clientRef) === String(p.ref))) {
-      var at = kind === 'userqueue' && s.userQueue ? Number(s.userQueue.position) || 0 : 0;
-      return { id: String(t.id), kind: at > 0 ? kind + ':' + at : kind };
+// #1466 (Z 2026-11-26) — where the instructions sent from here really are: the stage the server reported for each
+// (s.instructionStages — by its ref, the optimistic turn's id, which the recorded turn keeps as clientRef), on that
+// instruction until an answer follows it. Nothing the server has not reported: no record, no chip. A message the
+// follow-up queue owns — the server says so (followup), it was sent into a running turn (_running), or the running
+// turn read it (origin.steered) — keeps the queue's chips (review on #1468): no stage of this record on it.
+var PROGRESS_CHIP = { received: 'received', approval: 'approval', queued: 'userqueue', 'same-work': 'samework', starting: 'starting', delivered: 'delivered', 'not-delivered': 'undelivered' };
+// The stages before the model has it: the writing row waits (its chip says where the instruction is instead).
+var STAGE_BEFORE_MODEL = /^(received|approval|userqueue|samework|starting|undelivered)(:|$)/;
+function convProgressChips(list, s) {
+  var recs = (s && Array.isArray(s.instructionStages)) ? s.instructionStages : [];
+  var out = [];
+  for (var r = 0; r < recs.length; r++) {
+    var p = recs[r];
+    var kind = p && p.ref ? PROGRESS_CHIP[p.stage] : '';
+    if (!kind) continue;
+    var answered = false;
+    for (var i = list.length - 1; i >= 0; i--) {
+      var t = list[i];
+      if (!t) continue;
+      if (String(t.id) === String(p.ref) || (t.clientRef && String(t.clientRef) === String(p.ref))) {
+        // An answer after it: its stage is history.
+        if (answered || t._running || (t.origin && t.origin.steered)) break;
+        var at = kind === 'userqueue' && s.userQueue ? Number(s.userQueue.position) || 0 : 0;
+        out.push({ id: String(t.id), kind: at > 0 ? kind + ':' + at : kind });
+        break;
+      }
+      if (t.role === 'assistant') answered = true;
     }
-    // An answer after it (or the instruction is older than the latest answer): its stage is history.
-    if (t.role === 'assistant') return null;
   }
-  return null;
+  return out;
 }
 // Pure: the session's queue (s.followups) over the turns the panel holds (list) —
 //   chips: turn id → kind. This browser's own turn the queue lists carries the row's state; one sent while a
@@ -24408,8 +24420,12 @@ function convPaint() {
   }
   var shown = q.extra.length ? _panelTurnsList.concat(q.extra) : _panelTurnsList;
   // #1466 — the stage the server reported for the latest instruction sent from here, on that instruction.
-  var pc = convProgressChip(shown, s);
-  if (pc) q.chips[pc.id] = pc.kind;
+  // Only in 보내는 중's place: a chip the follow-up queue gave it is the queue's to say (review on #1468).
+  var pcs = convProgressChips(shown, s);
+  for (var pci = 0; pci < pcs.length; pci++) {
+    if (q.chips[pcs[pci].id] && q.chips[pcs[pci].id] !== 'sending') continue;
+    q.chips[pcs[pci].id] = pcs[pci].kind;
+  }
   var built = convTurnsOf(shown, {
     cid: cid, bot: botNameOf(s), now: Date.now(), working: working,
     rewinds: rewindSpansOf(s, shown),
@@ -24434,7 +24450,7 @@ function convPaint() {
     // The writing row's orb follows the agent's last tool (convPendingOf, 2026-11-21). #1466: not while the latest
     // instruction's own stage says the model does not have it yet (its chip says where it is instead).
     pending:
-      !needs && ansPendingShow(s, panelConvId, last ? last.role : '') && !(pc && last && pc.id === String(last.id) && pc.kind !== 'delivered')
+      !needs && ansPendingShow(s, panelConvId, last ? last.role : '') && !(last && q.chips[String(last.id)] && STAGE_BEFORE_MODEL.test(q.chips[String(last.id)]))
         ? typeof convPendingOf === 'function'
           ? convPendingOf(s && s.agentRoot && s.agentRoot.lastTool, s && s.agentRoot && s.agentRoot.lastToolAt, last && last.timestamp)
           : true

@@ -660,6 +660,7 @@
   "작업 큐 대기 · {0}번째 — 내 다른 작업이 끝나면 시작해요": "In your task queue · #{0} — starts when your other task ends",
   "시작 안 함 · 같은 작업이 다른 스레드에서 이미 진행 중이에요": "Not started · the same work already runs in another thread",
   "모델이 받았어요 · 답을 쓰고 있어요": "The model has it · writing the answer",
+  "모델에 전달되지 않았어요 · 스레드의 메시지를 확인하세요": "Not delivered to the model · check the thread's message",
   "보내지 못했어요 (HTTP {0})": "Could not send (HTTP {0})",
   "브라우저가 이 사이트의 알림을 막았습니다 — 사이트 설정에서 알림을 허용하세요": "The browser blocks this site's notifications — allow them in the site settings",
   "빠른 모델": "Fast model",

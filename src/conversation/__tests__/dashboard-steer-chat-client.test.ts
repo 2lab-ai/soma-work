@@ -348,6 +348,7 @@ describe('what is happening to a message, above its words', () => {
     'STEER_CHIP_USERQUEUE_AT',
     'STEER_CHIP_SAMEWORK',
     'STEER_CHIP_DELIVERED',
+    'STEER_CHIP_UNDELIVERED',
     'STEER_CHIP',
   ];
   const chips = () => load<{ steerChipHtml(kind: string): string }>(['esc', 'adminFmt', 'steerChipHtml'], CHIP_VARS);

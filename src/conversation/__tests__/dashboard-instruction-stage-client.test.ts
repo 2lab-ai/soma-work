@@ -6,7 +6,7 @@
  *
  *   sent ─► 보내는 중…          (this browser, before the server said anything about it)
  *        ─► 접수됨              (the route took it)          ─┐
- *        ─► 승인 대기 / 작업 큐 대기 · N번째 / 시작 안 함       ├ the server's stages (s.instructionProgress, by ref)
+ *        ─► 승인 대기 / 작업 큐 대기 · N번째 / 시작 안 함       ├ the server's stages (s.instructionStages, by ref)
  *        ─► 처리 중 · 새 작업을 시작하고 있어요                 │
  *        ─► 모델이 받았어요      (the turn's first SDK event) ─┘
  *        ─► the answer          (the chip goes; 응답 작성 중 shows only once the model has it)
@@ -89,32 +89,52 @@ const CHIP_VARS = [
   'STEER_CHIP_USERQUEUE_AT',
   'STEER_CHIP_SAMEWORK',
   'STEER_CHIP_DELIVERED',
+  'STEER_CHIP_UNDELIVERED',
   'STEER_CHIP',
 ];
 
 describe('the stage the server reported, on that instruction (convProgressChip)', () => {
-  const { convProgressChip } = load<{
-    convProgressChip(list: Turn[], s: unknown): { id: string; kind: string } | null;
-  }>(['convProgressChip'], ['PROGRESS_CHIP']);
+  const { convProgressChips } = load<{
+    convProgressChips(list: Turn[], s: unknown): { id: string; kind: string }[];
+  }>(['convProgressChips'], ['PROGRESS_CHIP']);
+  // The chip of the one instruction a case is about (null: none).
+  const convProgressChip = (list: Turn[], s: unknown) => convProgressChips(list, s)[0] ?? null;
 
   it('each server stage has its chip — on this browser’s own turn, then on the recorded turn that keeps its ref', () => {
     const list = [earlier, answered, optimistic];
-    expect(convProgressChip(list, { instructionProgress: at('received') })).toEqual({ id: REF, kind: 'received' });
-    expect(convProgressChip(list, { instructionProgress: at('approval') })).toEqual({ id: REF, kind: 'approval' });
-    expect(convProgressChip(list, { instructionProgress: at('queued') })).toEqual({ id: REF, kind: 'userqueue' });
-    expect(convProgressChip(list, { instructionProgress: at('same-work') })).toEqual({ id: REF, kind: 'samework' });
-    expect(convProgressChip(list, { instructionProgress: at('starting') })).toEqual({ id: REF, kind: 'starting' });
-    expect(convProgressChip(list, { instructionProgress: at('delivered') })).toEqual({ id: REF, kind: 'delivered' });
+    expect(convProgressChip(list, { instructionStages: [at('received')] })).toEqual({ id: REF, kind: 'received' });
+    expect(convProgressChip(list, { instructionStages: [at('approval')] })).toEqual({ id: REF, kind: 'approval' });
+    expect(convProgressChip(list, { instructionStages: [at('queued')] })).toEqual({ id: REF, kind: 'userqueue' });
+    expect(convProgressChip(list, { instructionStages: [at('same-work')] })).toEqual({ id: REF, kind: 'samework' });
+    expect(convProgressChip(list, { instructionStages: [at('starting')] })).toEqual({ id: REF, kind: 'starting' });
+    expect(convProgressChip(list, { instructionStages: [at('delivered')] })).toEqual({ id: REF, kind: 'delivered' });
     // The recorded turn took the optimistic one's place: same ref, its own id.
-    expect(convProgressChip([earlier, answered, recorded], { instructionProgress: at('delivered') })).toEqual({
+    expect(convProgressChip([earlier, answered, recorded], { instructionStages: [at('delivered')] })).toEqual({
       id: 'srv-3',
       kind: 'delivered',
     });
   });
 
+  it('review on #1468 — a message the follow-up queue owns carries the queue’s chips, never a stage of this record', () => {
+    // The server says so (sent into a running turn: the follow-up queue took it).
+    expect(convProgressChip([earlier, answered, optimistic], { instructionStages: [at('followup')] })).toBeNull();
+    // This browser sent it into a running turn, or the running turn already read it (applied).
+    const running = { ...optimistic, _running: true };
+    expect(convProgressChip([earlier, answered, running], { instructionStages: [at('received')] })).toBeNull();
+    const steered = { ...recorded, origin: { by: 'user', steered: true } };
+    expect(convProgressChip([earlier, answered, steered], { instructionStages: [at('received')] })).toBeNull();
+  });
+
+  it('its run ended before the model had it: not delivered', () => {
+    expect(convProgressChip([earlier, answered, recorded], { instructionStages: [at('not-delivered')] })).toEqual({
+      id: 'srv-3',
+      kind: 'undelivered',
+    });
+  });
+
   it('waiting in the person’s task queue: its place in line, from the card', () => {
     const s = {
-      instructionProgress: at('queued'),
+      instructionStages: [at('queued')],
       userQueue: { entryId: 'e1', kind: 'request', position: 2, since: T0 },
     };
     expect(convProgressChip([earlier, answered, recorded], s)).toEqual({ id: 'srv-3', kind: 'userqueue:2' });
@@ -123,12 +143,12 @@ describe('the stage the server reported, on that instruction (convProgressChip)'
   it('nothing the server did not report: no record, an unknown stage, another instruction, or an answer after it', () => {
     expect(convProgressChip([earlier, optimistic], {})).toBeNull();
     expect(convProgressChip([earlier, optimistic], null)).toBeNull();
-    expect(convProgressChip([earlier, optimistic], { instructionProgress: at('thinking') })).toBeNull();
+    expect(convProgressChip([earlier, optimistic], { instructionStages: [at('thinking')] })).toBeNull();
     expect(
-      convProgressChip([earlier, optimistic], { instructionProgress: { ...at('starting'), ref: 'optimistic-2-zzz' } }),
+      convProgressChip([earlier, optimistic], { instructionStages: [{ ...at('starting'), ref: 'optimistic-2-zzz' }] }),
     ).toBeNull();
     // Answered: its stage is history.
-    expect(convProgressChip([earlier, recorded, answer], { instructionProgress: at('delivered') })).toBeNull();
+    expect(convProgressChip([earlier, recorded, answer], { instructionStages: [at('delivered')] })).toBeNull();
   });
 });
 
@@ -156,6 +176,8 @@ describe('the chips’ words and tones', () => {
       'work',
       'work',
     ]);
+    expect(steerChipHtml('undelivered')).toContain('모델에 전달되지 않았어요');
+    expect(tone('undelivered')).toBe('fail');
     expect(steerChipHtml('delivered')).toContain('role="status"');
     expect(steerChipHtml('thinking')).toBe('');
   });
@@ -163,14 +185,19 @@ describe('the chips’ words and tones', () => {
 
 describe('the chat: the chip on the instruction, and 응답 작성 중 only once the model has it (convPaint)', () => {
   type Env = Record<string, unknown>;
-  function paint(session: Env, list: Turn[]) {
+  function paint(session: Env, list: Turn[], realQueue = false) {
     const sets: Record<string, unknown>[] = [];
     const chips: Record<string, string>[] = [];
     const el = { data: undefined };
+    const queueFns = realQueue
+      ? ['toNum', 'decodeSlackEntities', 'ptSentKey', 'ptSameSend', 'ptRecorded', 'convQueueTurns']
+      : [];
+    const queueVars = realQueue ? ['STEER_STATE', 'STEER_CHIP_OF'] : [];
     const m = load<{ convPaint(): void }>(
-      ['botNameOf', 'ansLinkTitles', 'ansSession', 'ansPendingShow', 'convProgressChip', 'convPaint'],
-      ['CONV_EMPTY', '_resumSent', 'PROGRESS_CHIP'],
+      ['botNameOf', 'ansLinkTitles', 'ansSession', 'ansPendingShow', 'convProgressChips', ...queueFns, 'convPaint'],
+      ['CONV_EMPTY', '_resumSent', 'PROGRESS_CHIP', 'STAGE_BEFORE_MODEL', ...queueVars],
       {
+        _viewerUserId: 'U_Z',
         convEl: () => el,
         _psec: 'conv',
         _panelAgent: '',
@@ -205,14 +232,18 @@ describe('the chat: the chip on the instruction, and 응답 작성 중 only once
     return { data: sets[sets.length - 1], chips: chips[chips.length - 1] };
   }
 
+  function paintWithQueue(session: Env, list: Turn[]) {
+    return paint(session, list, true);
+  }
+
   it('working but not yet the model’s: the instruction says where it is, and no 응답 작성 중', () => {
-    const r = paint({ activityState: 'working', instructionProgress: at('starting') }, [earlier, answered, recorded]);
+    const r = paint({ activityState: 'working', instructionStages: [at('starting')] }, [earlier, answered, recorded]);
     expect(r.chips).toEqual({ 'srv-3': 'starting' });
     expect(r.data.pending).toBe(false);
   });
 
   it('the model has it: 모델이 받았어요 on the instruction, and the writing row under it', () => {
-    const r = paint({ activityState: 'working', instructionProgress: at('delivered') }, [earlier, answered, recorded]);
+    const r = paint({ activityState: 'working', instructionStages: [at('delivered')] }, [earlier, answered, recorded]);
     expect(r.chips).toEqual({ 'srv-3': 'delivered' });
     expect(r.data.pending).toBe(true);
   });
@@ -221,13 +252,67 @@ describe('the chat: the chip on the instruction, and 응답 작성 중 only once
     const r = paint(
       {
         activityState: 'idle',
-        instructionProgress: at('queued'),
+        instructionStages: [at('queued')],
         userQueue: { entryId: 'e1', kind: 'request', position: 1, since: T0 },
       },
       [earlier, answered, optimistic],
     );
     expect(r.chips).toEqual({ [REF]: 'userqueue:1' });
     expect(r.data.pending).toBe(false);
+  });
+
+  it('review on #1468 — the queue’s chip wins: a stage only takes the place of 보내는 중', () => {
+    const r = paintWithQueue(
+      {
+        activityState: 'working',
+        instructionStages: [at('received')],
+        followups: {
+          turnEpoch: 3,
+          items: [
+            {
+              id: 'k#1',
+              text: 'stage0 리포트에도 적용해줘',
+              files: [],
+              enqueuedAt: T0,
+              state: 'queued',
+              epoch: 1,
+              editable: true,
+              authorId: 'U_Z',
+              clientRef: REF,
+            },
+          ],
+        },
+      },
+      [
+        earlier,
+        answered,
+        { ...optimistic, _running: true, _sent: 'stage0 리포트에도 적용해줘', _files: 0, _by: 'U_Z' },
+      ],
+    );
+    expect(r.chips).toEqual({ [REF]: 'queued' });
+    // Idle, not listed by any queue: the stage takes 보내는 중's place.
+    const idle = paintWithQueue({ activityState: 'idle', instructionStages: [at('received')] }, [
+      earlier,
+      answered,
+      { ...optimistic, _sent: 'stage0 리포트에도 적용해줘', _files: 0, _by: 'U_Z' },
+    ]);
+    expect(idle.chips).toEqual({ [REF]: 'received' });
+  });
+
+  it('review on #1468 — two instructions held for the owner: each says so (the first is not left at 보내는 중)', () => {
+    const REF2 = 'optimistic-1795680009999-def456';
+    const second: Turn = { ...optimistic, id: REF2, rawContent: '하나 더', _sent: '하나 더', _files: 0, _by: 'U_Z' };
+    const r = paintWithQueue(
+      {
+        activityState: 'idle',
+        instructionStages: [
+          { ref: REF2, stage: 'approval', at: T0 + 2_000 },
+          { ref: REF, stage: 'approval', at: T0 + 1_000 },
+        ],
+      },
+      [earlier, answered, { ...optimistic, _sent: 'stage0 리포트에도 적용해줘', _files: 0, _by: 'U_Z' }, second],
+    );
+    expect(r.chips).toEqual({ [REF]: 'approval', [REF2]: 'approval' });
   });
 
   it('a message from Slack (no stage recorded): the writing row follows the session as before', () => {

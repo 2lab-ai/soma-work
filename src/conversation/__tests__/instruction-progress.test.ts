@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   instructionProgressOf,
+  instructionStagesOf,
   noteInstructionReachedModel,
+  noteInstructionRunEnded,
   noteInstructionStage,
   resetInstructionProgressForTests,
   setInstructionProgressListener,
@@ -18,9 +20,9 @@ describe('instruction-progress', () => {
   it('records the stages one instruction passes, in order, with when each was reached', () => {
     noteInstructionStage('k', REF, 'received', 100);
     expect(instructionProgressOf('k')).toEqual({ ref: REF, stage: 'received', at: 100 });
-    noteInstructionStage('k', REF, 'starting', 200);
+    noteInstructionStage('k', REF, 'starting', 200, 7);
     expect(instructionProgressOf('k')).toEqual({ ref: REF, stage: 'starting', at: 200 });
-    noteInstructionReachedModel('k', 300);
+    noteInstructionReachedModel('k', { turnEpoch: 7 }, 300);
     expect(instructionProgressOf('k')).toEqual({ ref: REF, stage: 'delivered', at: 300 });
   });
 
@@ -36,8 +38,8 @@ describe('instruction-progress', () => {
     noteInstructionStage('k', REF, 'received', 100);
     noteInstructionStage('k', REF, 'queued', 110);
     expect(instructionProgressOf('k')).toMatchObject({ stage: 'queued' });
-    noteInstructionStage('k', REF, 'starting', 5_000);
-    noteInstructionReachedModel('k', 6_000);
+    noteInstructionStage('k', REF, 'starting', 5_000, 3);
+    noteInstructionReachedModel('k', { turnEpoch: 3 }, 6_000);
     expect(instructionProgressOf('k')).toMatchObject({ stage: 'delivered', at: 6_000 });
   });
 
@@ -49,23 +51,77 @@ describe('instruction-progress', () => {
     expect(instructionProgressOf('k')).toMatchObject({ stage: 'starting' });
   });
 
-  it('the model receiving a turn marks only an instruction whose turn is starting', () => {
+  it('the model receiving a turn marks only an instruction whose own run is starting (its epoch)', () => {
     noteInstructionStage('k', REF, 'received', 100);
-    noteInstructionReachedModel('k', 150); // another turn's first event (one already running)
+    noteInstructionReachedModel('k', { turnEpoch: 4 }, 150); // another turn's first event (one already running)
     expect(instructionProgressOf('k')).toMatchObject({ stage: 'received' });
     noteInstructionStage('k', REF, 'queued', 160);
-    noteInstructionReachedModel('k', 170);
+    noteInstructionReachedModel('k', { turnEpoch: 4 }, 170);
     expect(instructionProgressOf('k')).toMatchObject({ stage: 'queued' });
-    noteInstructionReachedModel('other', 180);
+    noteInstructionStage('k', REF, 'starting', 180, 5);
+    noteInstructionReachedModel('k', { turnEpoch: 4 }, 190); // a late event of the run before
+    noteInstructionReachedModel('k', {}, 195); // no run named
+    expect(instructionProgressOf('k')).toMatchObject({ stage: 'starting' });
+    // Review on #1468: a post-compact replay reports the run it runs in as its replayEpoch.
+    noteInstructionReachedModel('k', { replayEpoch: 5 }, 200);
+    expect(instructionProgressOf('k')).toMatchObject({ stage: 'delivered', at: 200 });
+    noteInstructionReachedModel('other', { turnEpoch: 5 }, 210);
     expect(instructionProgressOf('other')).toBeUndefined();
   });
 
-  it('a newer instruction replaces the record; a stage for an older one is ignored', () => {
-    noteInstructionStage('k', REF, 'delivered', 100);
-    noteInstructionStage('k', REF2, 'received', 200);
-    expect(instructionProgressOf('k')).toEqual({ ref: REF2, stage: 'received', at: 200 });
-    noteInstructionStage('k', REF, 'starting', 210); // the old one's late write
-    expect(instructionProgressOf('k')).toMatchObject({ ref: REF2, stage: 'received' });
+  it('its run ended before the model had it: not delivered; another run’s end changes nothing', () => {
+    noteInstructionStage('k', REF, 'starting', 100, 9);
+    noteInstructionRunEnded('k', REF, 8, 150); // another run's end
+    expect(instructionProgressOf('k')).toMatchObject({ stage: 'starting' });
+    noteInstructionRunEnded('k', REF, 9, 200);
+    expect(instructionProgressOf('k')).toEqual({ ref: REF, stage: 'not-delivered', at: 200 });
+    noteInstructionStage('k', REF2, 'starting', 300, 10);
+    noteInstructionReachedModel('k', { turnEpoch: 10 }, 310);
+    noteInstructionRunEnded('k', REF2, 11, 400); // another run's end
+    expect(instructionProgressOf('k')).toMatchObject({ ref: REF2, stage: 'delivered' });
+  });
+
+  it('review on #1468 — sent into a running turn: the follow-up queue owns it from there', () => {
+    noteInstructionStage('k', REF, 'received', 100);
+    noteInstructionStage('k', REF, 'followup', 110);
+    expect(instructionProgressOf('k')).toMatchObject({ stage: 'followup' });
+    // Its later run (the queue's drain) is the queue's to report: no starting stage over it.
+    noteInstructionStage('k', REF, 'starting', 120, 3);
+    expect(instructionProgressOf('k')).toMatchObject({ stage: 'followup' });
+  });
+
+  it('review on #1468 — each instruction keeps its own stage; the card carries the session’s recent ones', () => {
+    noteInstructionStage('k', REF, 'approval', 100);
+    noteInstructionStage('k', REF2, 'approval', 200);
+    // Two held for the owner: both still say so (one per session used to wipe the first).
+    expect(instructionStagesOf('k')).toEqual([
+      { ref: REF2, stage: 'approval', at: 200 },
+      { ref: REF, stage: 'approval', at: 100 },
+    ]);
+    noteInstructionStage('k', REF, 'starting', 300, 4); // the first one approved and run
+    expect(instructionStagesOf('k').map((p) => `${p.ref}:${p.stage}`)).toEqual([
+      `${REF}:starting`,
+      `${REF2}:approval`,
+    ]);
+    expect(instructionProgressOf('k')).toMatchObject({ ref: REF, stage: 'starting' });
+    // At most the five latest of a session.
+    for (let i = 0; i < 7; i++) noteInstructionStage('k', `optimistic-${i}-x`, 'received', 400 + i);
+    expect(instructionStagesOf('k')).toHaveLength(5);
+    expect(instructionStagesOf('k')[0]).toMatchObject({ ref: 'optimistic-6-x' });
+    expect(instructionStagesOf('other')).toEqual([]);
+  });
+
+  it('review on #1468 — 그래도 시작 into the task queue: same-work → queued', () => {
+    noteInstructionStage('k', REF, 'same-work', 100);
+    noteInstructionStage('k', REF, 'queued', 200);
+    expect(instructionProgressOf('k')).toMatchObject({ stage: 'queued' });
+  });
+
+  it('review on #1468 — its run ended after the model had it (answered, stopped or failed): done, no stage left', () => {
+    noteInstructionStage('k', REF, 'starting', 100, 6);
+    noteInstructionReachedModel('k', { turnEpoch: 6 }, 150);
+    noteInstructionRunEnded('k', REF, 6, 200);
+    expect(instructionProgressOf('k')).toEqual({ ref: REF, stage: 'done', at: 200 });
   });
 
   it('only a real ref is recorded (a Slack message carries none)', () => {
@@ -79,9 +135,9 @@ describe('instruction-progress', () => {
     setInstructionProgressListener(heard);
     noteInstructionStage('k', REF, 'received', 100);
     noteInstructionStage('k', REF, 'received', 120); // same stage again: nothing new
-    noteInstructionStage('k', REF, 'starting', 130);
-    noteInstructionReachedModel('k', 140);
-    noteInstructionReachedModel('k', 150); // already delivered
+    noteInstructionStage('k', REF, 'starting', 130, 2);
+    noteInstructionReachedModel('k', { turnEpoch: 2 }, 140);
+    noteInstructionReachedModel('k', { turnEpoch: 2 }, 150); // already delivered
     expect(heard.mock.calls).toEqual([['k'], ['k'], ['k']]);
   });
 

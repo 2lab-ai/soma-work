@@ -199,7 +199,7 @@ async function main() {
       await page.screenshot({ path: path.join(OUT, shot) });
       return chat(page);
     };
-    const progress = (s: string) => ({ instructionProgress: { ref, stage: s, at: Date.now() } });
+    const progress = (s: string) => ({ instructionStages: [{ ref, stage: s, at: Date.now() }] });
 
     const s1 = await stage(progress('received'), '1-received.png');
     check(s1.chip.includes('접수됨') && !s1.writing, `S1 접수됨 ${JSON.stringify(s1)}`);

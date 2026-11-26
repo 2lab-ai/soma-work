@@ -2,23 +2,37 @@
  * Where an instruction sent from the dashboard really is (Z 2026-11-26, #1466).
  *
  * The chat used to show nothing under a sent instruction until the session turned working, then a guess. This keeps,
- * per session, the stage the server itself has passed for the latest instruction the dashboard sent it — by the ref
- * the panel gave that instruction (#785) — so the chat can say what happened to it:
+ * per instruction — by the ref the panel gave it (#785) — the stage the server itself has passed for it, so the chat
+ * can say what happened to it:
  *
- *   received   the dashboard route took it
- *   approval   someone else's task: it waits for the owner's approval (#767)
- *   queued     the person's task queue holds it (another task of theirs runs)
- *   same-work  not started: everything it names already runs or waits in another thread of theirs (.prd/36 D11)
- *   starting   its turn was dispatched: the session is being set up
- *   delivered  the turn's first SDK event — the prompt is in the model's hands
+ *   received       the dashboard route took it
+ *   approval       someone else's task: it waits for the owner's approval (#767)
+ *   same-work      not started: everything it names already runs or waits in another thread (.prd/36 D11)
+ *   queued         the person's task queue holds it (another task of theirs runs; also after 그래도 시작)
+ *   starting       its turn was dispatched: the session is being set up
+ *   delivered      that run's first SDK event — the prompt is in the model's hands
+ *   not-delivered  that run ended before the model had it (an error, a stop)
+ *   done           that run ended after the model had it (answered, stopped or failed): no stage left to show
+ *   followup       sent into a running turn: the follow-up queue owns it from here (its rows carry their own states —
+ *                  대기 중 · 처리 중 · 반영됨); the chat shows no stage of this record for it (review on #1468)
  *
- * A message sent into a running turn is the follow-up queue's (its rows carry their own states); a Slack message
- * has no ref and is not recorded. In memory only: a restart forgets it, and the chat then shows no stage.
+ * `starting` names its run (turn epoch); only that run's first event or its end moves it on — a late event of another
+ * run never does. A stage never goes back. The card carries the session's few latest records; a Slack message has no
+ * ref and is not recorded. In memory only: a restart forgets them, and the chat then shows no stage.
  */
 
 import { isClientRef } from './client-ref';
 
-export type InstructionStage = 'received' | 'approval' | 'queued' | 'same-work' | 'starting' | 'delivered';
+export type InstructionStage =
+  | 'received'
+  | 'approval'
+  | 'same-work'
+  | 'queued'
+  | 'starting'
+  | 'delivered'
+  | 'not-delivered'
+  | 'done'
+  | 'followup';
 
 export interface InstructionProgress {
   /** The panel's ref of the instruction (its optimistic turn id, recorded on the user turn it becomes). */
@@ -32,19 +46,33 @@ export interface InstructionProgress {
 const RANK: Record<InstructionStage, number> = {
   received: 0,
   approval: 1,
-  queued: 2,
   'same-work': 2,
-  starting: 3,
-  delivered: 4,
+  // 그래도 시작 sends a refused request through the gate again: the queue may hold it now.
+  queued: 3,
+  starting: 4,
+  delivered: 5,
+  'not-delivered': 6,
+  done: 6,
+  // The follow-up queue owns it: nothing of this record moves it on.
+  followup: 7,
 };
 
-const bySession = new Map<string, InstructionProgress>();
-/** Refs a newer instruction replaced, so an older one's late write cannot take over the newer record (bounded). */
-const superseded = new Set<string>();
-const SUPERSEDED_CAP = 2000;
+/** Records kept by this process in all (oldest dropped first), and per session on its card. */
+const MAX_RECORDS = 2000;
+const PER_SESSION = 5;
+
+interface Rec extends InstructionProgress {
+  sessionKey: string;
+  /** From `starting`: the run (turn epoch) it waits on. */
+  epoch?: number;
+}
+
+const byRef = new Map<string, Rec>();
+/** Each session's refs, newest first (at most PER_SESSION). */
+const bySession = new Map<string, string[]>();
 let listener: ((sessionKey: string) => void) | undefined;
 
-/** The session whose record changed (the dashboard pushes its card). One listener; a throw is swallowed. */
+/** The session whose records changed (the dashboard pushes its card). One listener; a throw is swallowed. */
 export function setInstructionProgressListener(fn: ((sessionKey: string) => void) | undefined): void {
   listener = fn;
 }
@@ -57,45 +85,97 @@ function changed(sessionKey: string): void {
   }
 }
 
-/** The instruction `ref` reached `stage` in session `sessionKey`. No ref (a Slack message), no record. */
+function put(rec: Rec): void {
+  byRef.delete(rec.ref); // re-insert: the newest write is last in line for eviction
+  byRef.set(rec.ref, rec);
+  const refs = (bySession.get(rec.sessionKey) ?? []).filter((r) => r !== rec.ref);
+  refs.unshift(rec.ref);
+  for (const gone of refs.splice(PER_SESSION)) byRef.delete(gone);
+  bySession.set(rec.sessionKey, refs);
+  while (byRef.size > MAX_RECORDS) {
+    const oldest = byRef.keys().next().value as string;
+    const rec0 = byRef.get(oldest);
+    byRef.delete(oldest);
+    if (rec0) {
+      const left = (bySession.get(rec0.sessionKey) ?? []).filter((r) => r !== oldest);
+      if (left.length) bySession.set(rec0.sessionKey, left);
+      else bySession.delete(rec0.sessionKey);
+    }
+  }
+  changed(rec.sessionKey);
+}
+
+/**
+ * The instruction `ref` reached `stage` in session `sessionKey` — `epoch`: the run `starting` dispatched. No ref (a
+ * Slack message), no record.
+ */
 export function noteInstructionStage(
   sessionKey: string | undefined,
   ref: unknown,
   stage: InstructionStage,
   now: number = Date.now(),
+  epoch?: number,
 ): void {
-  if (!sessionKey || !isClientRef(ref) || superseded.has(ref)) return;
-  const cur = bySession.get(sessionKey);
-  if (cur && cur.ref === ref) {
-    if (RANK[stage] <= RANK[cur.stage]) return;
-  } else if (cur) {
-    superseded.add(cur.ref);
-    if (superseded.size > SUPERSEDED_CAP) superseded.delete(superseded.values().next().value as string);
-  }
-  bySession.set(sessionKey, { ref, stage, at: now });
-  changed(sessionKey);
+  if (!sessionKey || !isClientRef(ref)) return;
+  const cur = byRef.get(ref);
+  if (cur && RANK[stage] <= RANK[cur.stage]) return;
+  put({ ref, sessionKey, stage, at: now, ...(stage === 'starting' && epoch !== undefined ? { epoch } : {}) });
 }
 
 /**
- * A turn of `sessionKey` reached the model (its first SDK event). It is the recorded instruction's own turn only
- * while that one is starting — a turn already running, or one the queue still holds, is another turn.
+ * A run of `sessionKey` reached the model (its first SDK event): `turnEpoch` names it, or — a post-compact replay
+ * inside a run's slot — `replayEpoch` names the run it runs in. It marks the instruction whose `starting` dispatched
+ * that run, if one did.
  */
-export function noteInstructionReachedModel(sessionKey: string | undefined, now: number = Date.now()): void {
+export function noteInstructionReachedModel(
+  sessionKey: string | undefined,
+  run: { turnEpoch?: number; replayEpoch?: number },
+  now: number = Date.now(),
+): void {
   if (!sessionKey) return;
-  const cur = bySession.get(sessionKey);
-  if (!cur || cur.stage !== 'starting') return;
-  bySession.set(sessionKey, { ref: cur.ref, stage: 'delivered', at: now });
-  changed(sessionKey);
+  for (const ref of bySession.get(sessionKey) ?? []) {
+    const cur = byRef.get(ref);
+    if (!cur || cur.stage !== 'starting' || cur.epoch === undefined) continue;
+    if (run.turnEpoch !== cur.epoch && run.replayEpoch !== cur.epoch) continue;
+    put({ ...cur, stage: 'delivered', at: now });
+    return;
+  }
 }
 
-/** The latest dashboard instruction's stage for the session, if this process recorded one. */
+/**
+ * The run `epoch` dispatched for `ref` settled: still starting — the model never had it (not delivered); the model had
+ * it — whatever came of it (an answer, a stop, an error), it is over (done).
+ */
+export function noteInstructionRunEnded(
+  sessionKey: string | undefined,
+  ref: unknown,
+  epoch: number,
+  now: number = Date.now(),
+): void {
+  if (!sessionKey || !isClientRef(ref)) return;
+  const cur = byRef.get(ref);
+  if (!cur || cur.sessionKey !== sessionKey || cur.epoch !== epoch) return;
+  if (cur.stage === 'starting') put({ ...cur, stage: 'not-delivered', at: now });
+  else if (cur.stage === 'delivered') put({ ...cur, stage: 'done', at: now });
+}
+
+/** The session's latest dashboard instructions with their stages, newest first (what its card carries). */
+export function instructionStagesOf(sessionKey: string): InstructionProgress[] {
+  const out: InstructionProgress[] = [];
+  for (const ref of bySession.get(sessionKey) ?? []) {
+    const cur = byRef.get(ref);
+    if (cur) out.push({ ref: cur.ref, stage: cur.stage, at: cur.at });
+  }
+  return out;
+}
+
+/** The session's most recently moved instruction, if this process recorded one. */
 export function instructionProgressOf(sessionKey: string): InstructionProgress | undefined {
-  const cur = bySession.get(sessionKey);
-  return cur ? { ...cur } : undefined;
+  return instructionStagesOf(sessionKey)[0];
 }
 
 export function resetInstructionProgressForTests(): void {
+  byRef.clear();
   bySession.clear();
-  superseded.clear();
   listener = undefined;
 }
