@@ -23,7 +23,7 @@ Status: in-progress · 실측 2026-11-26 · 기준 커밋 main `cda77e0a` · sso
 
 ## 1. 숨은 상태머신 다섯 개
 
-코드에는 상태머신이 다섯 개 있는데, 어느 것도 이름이 없다.
+코드에는 상태머신이 여섯 개 있는데, 어느 것도 이름이 없다(H6은 trinity R1이 찾았다).
 
 | # | 상태머신 | 지금 표현 | 어디에 |
 |---|---|---|---|
@@ -32,9 +32,9 @@ Status: in-progress · 실측 2026-11-26 · 기준 커밋 main `cda77e0a` · sso
 | H3 | 활성 goal의 루프 단계 | `status:'active'` 하나 안에: 첫 턴 대기(`openingPending`) · 판정 중(`pendingEval`) · 재시도 대기(`evalBackoffUntil`·`evalDispatchRetryCount`·`evalRetryReason`) · cap 질문(`capDmPendingAt`·`capDecisionId`·`capDmRef`) · stall 질문(`stall`) · 한도 소진(`continuationCount >= maxContinuations`로 추론) | goal 필드 약 20개 |
 | H4 | 루프 구동기의 런타임 | `queues` · `runsWaiting` · `continuedThisRun` · `injecting` · `armedEvalRetries` + 핸들 없는 타이머. 밖으로는 `isActing` 불리언 하나 | `GoalLoopController` 메모리 |
 | H5 | 재시작 복구 | `restartCutSessionKeys` · `restartResumedSessionKeys` · `restartGoalPassRan` · `followupResumeMark` + 저장된 `activityState`·`wasWorkingAtShutdown` | `SlackHandler` 메모리 + 세션 필드 |
+| H6 | 호스트 구동 보류 — 턴은 끝났는데 루프를 언제 깨울지 | `followupDeferredGoalSessions`(팔로업이 먼저) · `followupSlotHeldGoalSessions`(텍스트 없는 턴은 슬롯이 풀린 뒤) · `goalDriverKickOnRelease`(펜스에서 버려진 이어하기) · `goalErrorResumeSpent`(자동 재개 반복 실패) · 사람의 마지막 말(`GOAL_LAST_WORD_ABORT_REASONS`) | `SlackHandler` 메모리. 최근 수정 #891 · #893 · #948 · #950 · #1061이 여기 몰렸다 |
 
-이 밖에도 goal을 붙잡는 메모리 상태가 `SlackHandler`에 더 있다(`followupDeferredGoalSessions` · `followupSlotHeldGoalSessions` ·
-`goalDriverKickOnRelease` · `goalErrorResumeSpent` · `goalTurnOrder` · `skippedGoalOpenings` …), 모듈 전역 가변 값이 7개
+이 밖에도 goal을 붙잡는 메모리 상태가 `SlackHandler`에 더 있다(`goalTurnOrder` — 다리의 늦은 끝을 거르는 순번, `skippedGoalOpenings` · `goalIntakeSeen` — 재전송된 첫 턴을 거르는 인그레스 중복 제거 …), 모듈 전역 가변 값이 7개
 (`capDecisionRetirer` · `resumedFromStall` · cap DM 재작성 저널 · stall 은퇴 리스너 · 루프 재개 함수 · 호스트 goal 액션 함수 ·
 `surfaces`), 별도 파일 하나(`goal-cap-dm-sync.json`)가 있다. 타입도 둘이다: `src/types.ts`의 `SessionGoal`과 패키지의 손으로
 맞춘 사본 `SessionGoalState` — 이미 어긋났다.
@@ -52,7 +52,8 @@ Status: in-progress · 실측 2026-11-26 · 기준 커밋 main `cda77e0a` · sso
 | 후속 질문 · 사용자 작업 큐 · 대시보드 · 디스패치 펜스 … | 각자 다른 조합(슬롯 검사 사본 4개) |
 
 루프 게이트가 `activityState`를 읽기 때문에 호스트는 재시작 때 `activityState='idle'`을 직접 써서 게이트를 열어 왔다
-(훅을 건너뛰는 직접 쓰기 4곳). PR #1458의 버그가 바로 이 쓰기가 살아 있는 턴을 덮은 것이다.
+(재시작 패스 · 인계 두 곳). PR #1458의 버그가 바로 이 쓰기가 살아 있는 턴을 덮은 것이다. 훅을 건너뛰는 직접 쓰기는 두 곳이
+더 있지만 이유가 다르다: 사람이 멈춘 준비를 정리할 때(크론 · 루프 훅이 멈춘 일을 깨우지 않게)와 `/new` 리셋.
 
 ### 2.2 "cap 질문이 열렸나" — 7가지 판정
 
@@ -76,7 +77,8 @@ Status: in-progress · 실측 2026-11-26 · 기준 커밋 main `cda77e0a` · sso
 
 ## 3. 숨은 상태가 만든 버그 (실측, 이번 작업에서 같이 고친다)
 
-ID는 39의 인수 시나리오가 이어받는다. 증거 줄 번호는 §5 인벤토리.
+ID는 39의 인수 시나리오가 이어받는다. 증거 줄 번호는 §5 인벤토리. 각 항목은 코드 경로 분석이다 — 고치는 PR의 RED 테스트가
+재현하지 못하면 그 항목은 여기에 "재현 안 됨"으로 적고 뺀다.
 
 | ID | 버그 | 시나리오(짧게) | 원인이 된 숨은 상태 |
 |---|---|---|---|
