@@ -1,6 +1,6 @@
 # 40 — goal 상태 아키텍처: 상태마다 주인 모듈 하나, 작업 단위 일곱 개 · PR 열 개
 
-Status: in-progress · 작성 2026-11-26 · trinity R1 반영(2026-11-26) · 스펙 = [39-goal-state-spec.md](39-goal-state-spec.md) ·
+Status: shipped (R1, 2026-11-26 — [goal-state/loop.done.md](goal-state/loop.done.md); R2 open) · 작성 2026-11-26 · trinity R1 반영(2026-11-26) · 스펙 = [39-goal-state-spec.md](39-goal-state-spec.md) ·
 현재 상태 = [38-goal-state-as-is.md](38-goal-state-as-is.md) · 드라이버 = [goal-state/loop.md](goal-state/loop.md)
 
 > 요약: 39의 여섯 상태를 주인 모듈에 하나씩 둔다. goal 자체(위치 · 단계 · 전이 · 불변식 · 화면 투영)는 `@soma/slack/goal/`

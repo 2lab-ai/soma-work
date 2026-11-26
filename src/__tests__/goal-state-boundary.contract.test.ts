@@ -146,11 +146,7 @@ describe('goal state boundary (.prd/40 §6)', () => {
       false,
       true,
     ]);
-    const ALLOWED: Record<string, string> = {};
-    const found = [...sitesOf({ test: isWrite } as RegExp, files)].sort();
-    const unlisted = found.filter((key) => !(key in ALLOWED));
-    const gone = Object.keys(ALLOWED).filter((key) => !found.includes(key));
-    expect({ unlisted, gone }).toEqual({ unlisted: [], gone: [] });
+    expect([...sitesOf({ test: isWrite } as RegExp, files)]).toEqual([]);
     // …and that undo statement lives only in the cap answer (review #1503): a rollback of the epoch anywhere else would
     // make a stale verdict valid again.
     expect([...sitesOf(UNDO, files)]).toEqual(['src/slack/goal-cap-decision.ts#answerGoalCapDecision']);
@@ -168,13 +164,32 @@ describe('goal state boundary (.prd/40 §6)', () => {
     // The port is exempt only in a function that hands it to commitGoalChange (review #1503).
     const PORT = /^\s*(saveSessions|broadcastSessionUpdate)\s*:\s*\(\)\s*=>/;
     const SAVE_CALL = /\.saveSessions(OrThrow)?\(|\.broadcastSessionUpdate\?*\.?\(/;
+    // A port is exempt only inside the argument list of a commitGoalChange call (review #1503): from the call's line
+    // until its parentheses close. A port handed to any other helper — even in the same method — is a site.
+    // Parentheses are counted on code only (string literals and line comments removed), and the count restarts at
+    // every member boundary (review #1504).
+    const codeOf = (line: string): string =>
+      line
+        .replace(/'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`/g, "''")
+        .replace(/\/\*.*?\*\//g, '')
+        .replace(/\/\/.*$/, '');
     const saveSitesIn = (rows: Array<{ member: string; text: string }>): string[] => {
-      const commits = new Set(rows.filter((r) => /\bcommitGoalChange\(/.test(r.text)).map((r) => r.member));
       const out = new Set<string>();
+      let depth = 0;
+      let current = '';
       for (const { member, text } of rows) {
-        if (!SAVE_CALL.test(text)) continue;
-        if (PORT.test(text) && commits.has(member)) continue;
-        out.add(member);
+        if (member !== current) {
+          current = member;
+          depth = 0;
+        }
+        const code = codeOf(text);
+        const at = code.search(/\bcommitGoalChange\(/);
+        const inCommit = depth > 0 || at >= 0;
+        // The save itself is matched on the raw line: a call inside a template interpolation still saves.
+        if (SAVE_CALL.test(text) && !(PORT.test(text) && inCommit)) out.add(member);
+        const counted = depth > 0 ? code : at >= 0 ? code.slice(at) : '';
+        for (const ch of counted) depth += ch === '(' ? 1 : ch === ')' ? -1 : 0;
+        if (depth < 0) depth = 0;
       }
       return [...out];
     };
@@ -182,10 +197,29 @@ describe('goal state boundary (.prd/40 §6)', () => {
       saveSitesIn([
         { member: 'viaCommit', text: '    commitGoalChange(session, key, { drive }, {' },
         { member: 'viaCommit', text: '      saveSessions: () => this.deps.claudeHandler.saveSessions(),' },
+        { member: 'viaCommit', text: '    });' },
+        { member: 'commitThenHelper', text: '    commitGoalChange(session, key, { drive }, { kick });' },
+        { member: 'commitThenHelper', text: '    otherHelper({' },
+        { member: 'commitThenHelper', text: '      saveSessions: () => this.deps.claudeHandler.saveSessions(),' },
+        { member: 'commitThenHelper', text: '    });' },
+        // A parenthesis in a string or a comment is not syntax: the call still closes, the next member starts at zero.
+        { member: 'literalParen', text: "    commitGoalChange(session, 'goal(', { drive }, { kick });" },
+        { member: 'literalParen', text: '    otherHelper({' },
+        { member: 'literalParen', text: '      saveSessions: () => this.deps.claudeHandler.saveSessions(),' },
+        { member: 'literalParen', text: '    });' },
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: the scanned source line, not a template here
+        { member: 'templateSave', text: '    const label = `saved: ${this.deps.claudeHandler.saveSessions()}`;' },
+        { member: 'afterLiteral', text: '      saveSessions: () => this.deps.claudeHandler.saveSessions(),' },
+        { member: 'commentParen', text: '    commitGoalChange(session, key, { drive }, { // 1) persistence ports' },
+        { member: 'commentParen', text: '      saveSessions: () => this.deps.claudeHandler.saveSessions(),' },
+        { member: 'commentParen', text: '    });' },
+        { member: 'blockCommentParen', text: '    commitGoalChange(session, key, { drive }, { /* 1) ports */' },
+        { member: 'blockCommentParen', text: '      saveSessions: () => this.deps.claudeHandler.saveSessions(),' },
+        { member: 'blockCommentParen', text: '    });' },
         { member: 'portElsewhere', text: '      saveSessions: () => this.deps.claudeHandler.saveSessions(),' },
         { member: 'direct', text: '      this.deps.claudeHandler.saveSessions();' },
       ]),
-    ).toEqual(['portElsewhere', 'direct']);
+    ).toEqual(['commitThenHelper', 'literalParen', 'templateSave', 'afterLiteral', 'portElsewhere', 'direct']);
     const sitesIn = (fileList: string[]): Set<string> =>
       new Set(fileList.flatMap((file) => saveSitesIn(membersOf(file)).map((member) => `${file}#${member}`)));
     const ALLOWED: Record<string, string> = {
