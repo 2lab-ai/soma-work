@@ -276,6 +276,31 @@ describe('the finish’s values — themes, mono, an idle card', () => {
     expect(css.slice(0, css.indexOf('\nli.ib-card:is('))).not.toMatch(/var\(--finish-[a-z0-9-]+,/);
   });
 
+  it('a card past one core keeps the CPU badge’s tint and ring under a finish — through the finish’s own inputs', () => {
+    // @2lab.ai/ui 0.48.0 draws a card past one core with a red tint and ring (.ib-card[data-load-step], (0,2,0)); the
+    // finish (0,2,1) paints over both. So a hot card feeds the heat into the finish's inputs: its surface (the foil's
+    // base layer too) takes the tint, the bright edge the ring — and no selector rises above the finish rules, so the
+    // element's cues (NEEDS YOU, the epic family) still win over it.
+    const css = client.cardFinishSheet([
+      { key: 'o1', model: 'claude-opus-5-5[1m]' },
+      { key: 'f1', model: 'claude-fable-5-2[1m]' },
+    ]);
+    const rule = css.split('\n').find((r) => r.startsWith('li.ib-card[data-load-step] {')) ?? '';
+    expect(rule).toContain(
+      '--finish-base: color-mix(in srgb, var(--ib-heat) var(--ib-heat-tint, 5%), var(--ib-card));',
+    );
+    const ring = 'color-mix(in srgb, var(--ib-heat) var(--ib-heat-ring, 35%), var(--ib-card-border))';
+    expect(rule).toContain(`--finish-bright: ${ring};`);
+    expect(rule).toContain(`--finish-bright-hover: ${ring};`);
+    expect(rule).toContain(`--finish-bright-idle: ${ring};`);
+    // After the idle card's inputs (same (0,2,1)), so a hot idle card is tinted, not dimmed.
+    expect(css.indexOf('li.ib-card[data-load-step] {')).toBeGreaterThan(
+      css.indexOf('li.ib-card[data-status="idle"] {'),
+    );
+    // Inputs only: no finished-card selector carries the load step.
+    expect(css).not.toMatch(/:is\([^)]*\)\[data-load-step\]/);
+  });
+
   it('is plain text for the browser: no template syntax, no backtick', () => {
     expect(CARD_FINISH_CLIENT_JS).not.toContain('`');
     expect(CARD_FINISH_CLIENT_JS).not.toContain('${');
