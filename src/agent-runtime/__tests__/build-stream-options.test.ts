@@ -1013,6 +1013,15 @@ describe('sandbox: admin profile and write protection (env-access WU2, #1210)', 
       expect(fs.statSync(path.join(CLAUDE_TMP_SCRATCH, user)).mode & 0o777).toBe(0o700);
     });
 
+    it("a turn without a session folder reads an empty directory, never the daemon's", async () => {
+      const { options } = await withSettings(false, () =>
+        buildStreamOptions({ queryEnv: {}, slackContext: makeSlackContext({ user: SAFE_USER }) }, makeDeps()),
+      );
+      expect(options.cwd).toBeDefined();
+      expect(options.cwd).not.toBe(process.cwd());
+      expect(fs.readdirSync(options.cwd as string)).toEqual([]);
+    });
+
     it('an admin keeps the wide profile: no read block, no read lists', async () => {
       await asAdmin();
       const { options } = await withSettings(false, () => build(ADMIN));

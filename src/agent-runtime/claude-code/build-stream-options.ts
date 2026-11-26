@@ -1128,6 +1128,9 @@ export async function buildStreamOptions(
       logger,
     );
   }
+  if (contextUser && !isAdminUser(contextUser)) {
+    addUploadRoots(options, [workingDirectory, options.env?.CLAUDE_CODE_TMPDIR]);
+  }
 
   return attachStderrCapture(options, logger, processOwner);
 }
@@ -1158,6 +1161,12 @@ function applyTenantReadBoundary(
   // then treat as the working directory: the session does not start.
   if (input.workingDirectory && options.cwd !== input.workingDirectory) {
     throw new Error(`The session folder could not be made; not starting: ${input.workingDirectory}`);
+  }
+  // Without a session folder the CLI would run in the daemon's directory and the file tools would read it as their
+  // working directory: give them an empty one instead.
+  if (!options.cwd) {
+    options.cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'soma-no-cwd-'));
+    logger.warn('A non-admin turn without a session folder runs in an empty directory', { user: input.user });
   }
   // The user's root, also a working directory of the file tools, is kept only where it really is.
   if (options.additionalDirectories) {
@@ -1221,21 +1230,6 @@ function applyTenantReadBoundary(
   filesystem.denyRead = [...(filesystem.denyRead ?? []), ...boundary.denyRead];
   filesystem.allowRead = [...(filesystem.allowRead ?? []), ...boundary.allowRead];
 
-  // A shared thread's session folder lies in the owner's root: the speaker may still attach what it made there.
-  const slackMcp = options.mcpServers?.['slack-mcp'] as { env?: Record<string, string> } | undefined;
-  if (input.workingDirectory && slackMcp?.env?.SOMA_UPLOAD_ROOTS) {
-    try {
-      const roots = JSON.parse(slackMcp.env.SOMA_UPLOAD_ROOTS) as string[];
-      // And what its commands write to the CLI temp directory (TMPDIR).
-      for (const dir of [input.workingDirectory, ...(claudeTmpDir ? [claudeTmpDir] : [])]) {
-        if (!roots.includes(dir)) roots.push(dir);
-      }
-      slackMcp.env.SOMA_UPLOAD_ROOTS = JSON.stringify(roots);
-    } catch {
-      // Left as built: the server then closes uploads rather than opening them.
-    }
-  }
-
   const base = options.settings && typeof options.settings === 'object' ? options.settings : {};
   options.settings = {
     ...base,
@@ -1251,6 +1245,24 @@ function applyTenantReadBoundary(
     allowRead: boundary.allowRead.length,
     exempt: boundary.exemptPaths.length,
   });
+}
+
+/**
+ * A shared thread's session folder lies in the owner's root: a non-admin speaker may still attach what it made
+ * there, and what its commands wrote to the CLI temp directory. Sandbox on or off.
+ */
+function addUploadRoots(options: Options, dirs: readonly (string | undefined)[]): void {
+  const slackMcp = options.mcpServers?.['slack-mcp'] as { env?: Record<string, string> } | undefined;
+  if (!slackMcp?.env?.SOMA_UPLOAD_ROOTS) return;
+  try {
+    const roots = JSON.parse(slackMcp.env.SOMA_UPLOAD_ROOTS) as string[];
+    for (const dir of dirs) {
+      if (dir && !roots.includes(dir)) roots.push(dir);
+    }
+    slackMcp.env.SOMA_UPLOAD_ROOTS = JSON.stringify(roots);
+  } catch {
+    // Left as built: the server then closes uploads rather than opening them.
+  }
 }
 
 /**
