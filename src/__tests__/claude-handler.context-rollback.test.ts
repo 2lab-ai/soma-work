@@ -260,6 +260,23 @@ describe('ClaudeHandler — context rollback', () => {
     expect(session.pendingRewind).toBe(pending);
   });
 
+  // #1473 round 3 (astra): a Stop reaches a turn being prepared as the abort, not as the reader's return — the outer
+  // stream's `return()` waits behind its pending read. It takes nothing from the session either.
+  it('a Stop (abort) while the turn is prepared leaves a waiting rollback waiting and starts no query', async () => {
+    const session = rollingBack();
+    const pending = session.pendingRewind;
+    installTurn((opening) => opened(opening, 9));
+    const handler = new ClaudeHandler({ getPluginManager: () => null } as unknown as McpManager);
+    const abort = new AbortController();
+    const it = handler.streamQuery('hi', session, abort, undefined, SLACK, 'C1:1.1')[Symbol.asyncIterator]();
+    const first = it.next();
+    abort.abort(); // Stop, while the turn is still being prepared
+
+    expect((await first).done).toBe(true);
+    expect(queryMock).not.toHaveBeenCalled();
+    expect(session.pendingRewind).toBe(pending);
+  });
+
   it('a waiting rollback becomes resumeSessionAt once, and the anchor follows the new chain', async () => {
     const session: any = {
       sessionId: SID,

@@ -1239,8 +1239,10 @@ export class AgentStreamProcessor {
         if (abortSignal.aborted) {
           // The safeguard stop aborts between events, with the generator
           // suspended at a yield: close it so its cleanup (lease heartbeat,
-          // active-query entry) runs instead of leaking.
-          if (this.safeguardFlag) await this.tryReturnIterator(iterator, 'safeguard');
+          // active-query entry) runs instead of leaking. #1473 — any stop does: the turn's loop runs ahead of this
+          // reader, and closing the stream is how it hears the reader is gone (its held turn settles, the drawn
+          // frame's anchor goes) (round 3, astra).
+          await this.tryReturnIterator(iterator, this.safeguardFlag ? 'safeguard' : 'abort');
           const rescue = await this.flushTextOnExplicitInterrupt(textBuf, context, abortSignal);
           this.settleNarration(context);
           this.emitAgentEvent(context, { kind: 'turn_end', ts: Date.now() });

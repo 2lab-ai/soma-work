@@ -251,6 +251,36 @@ describe('StreamProcessor', () => {
       expect(mockSay).not.toHaveBeenCalled();
     });
 
+    // #1473 round 3 (astra): a Stop between events closes the stream, not only a safeguard stop — the turn's loop runs
+    // ahead of this reader and hears it is gone only when the stream is closed.
+    it('a Stop between events closes the stream so its cleanup runs', async () => {
+      let cleanedUp = false;
+      const mapped = [
+        ...createMockStream([
+          { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tu_1', name: 'Bash', input: {} }] } },
+          { type: 'assistant', message: { content: [{ type: 'text', text: 'after the stop' }] } },
+        ]),
+      ];
+      async function* stream(): AsyncGenerator<any> {
+        try {
+          for (const event of mapped) yield event;
+          await new Promise(() => {});
+        } finally {
+          cleanedUp = true;
+        }
+      }
+      const processor = new AgentStreamProcessor({
+        onToolUse: async () => {
+          abortController.abort(); // Stop, while the first event is handled
+        },
+      });
+
+      const result = await processor.process(stream() as any, mockContext, abortController.signal);
+
+      expect(result.aborted).toBe(true);
+      expect(cleanedUp).toBe(true);
+    });
+
     it('should extract user choice from text', async () => {
       const choice = {
         type: 'user_choice',

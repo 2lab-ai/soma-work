@@ -1536,6 +1536,8 @@ export class ClaudeHandler implements TurnSteeringPort {
     // attempt above keeps its own reading: its turn is read by a machine at the end, nothing is drawn as it goes.
     const run: RunHandle = { abandoned: false };
     const renderWait = new ResultTransit();
+    /** The drawn-frame anchor this run set last (cleared at the reader's end only if it is still this one). */
+    let lastDrawn: { value: string | undefined } | undefined;
     return runAhead(
       this.streamOrdinaryTurn(prompt, session, abortController, workingDirectory, slackContext, sessionKey, run),
       {
@@ -1544,7 +1546,10 @@ export class ClaudeHandler implements TurnSteeringPort {
         },
         onTake: (message) => {
           const anchored = session as ContextAnchorSession | undefined;
-          if (anchored && frameAnchors.has(message)) anchored.renderedAnchor = { value: frameAnchors.get(message) };
+          if (anchored && frameAnchors.has(message)) {
+            lastDrawn = { value: frameAnchors.get(message) };
+            anchored.renderedAnchor = lastDrawn;
+          }
           if (message.type !== 'result') return;
           // The turn is drawn to its end: from here the session's own anchor is the one.
           if (anchored) delete anchored.renderedAnchor;
@@ -1565,7 +1570,9 @@ export class ClaudeHandler implements TurnSteeringPort {
         // Whatever ended the reading (the result taken, a stop after the loop ended, a failure): no frame is being
         // drawn behind the loop any more, and the session's own anchor is the one (round 2, fable/astra).
         onClose: () => {
-          if (session) delete (session as ContextAnchorSession).renderedAnchor;
+          // Only the anchor this run drew (a later turn's reader may have set its own).
+          const anchored = session as ContextAnchorSession | undefined;
+          if (anchored?.renderedAnchor && anchored.renderedAnchor === lastDrawn) delete anchored.renderedAnchor;
         },
       },
     );
@@ -1702,8 +1709,9 @@ export class ClaudeHandler implements TurnSteeringPort {
       );
 
       // #1473 — the reader stopped while the turn was being prepared: no CLI is started for nobody, and nothing the
-      // turn would take from the session (a waiting rollback, its Redo) is taken (round 2, astra).
-      if (run?.abandoned) {
+      // turn would take from the session (a waiting rollback, its Redo) is taken (round 2, astra). A Stop reaches here
+      // as the abort (the outer stream's `return()` waits behind its pending read) (round 3, astra).
+      if (run?.abandoned || abortController?.signal.aborted) {
         this.logger.info('Turn abandoned before its query started — not started', { sessionKey });
         return;
       }
@@ -1767,11 +1775,10 @@ export class ClaudeHandler implements TurnSteeringPort {
       if (steerKey) {
         this.activeQueries.set(steerKey, { query: activeQuery, channel, withdrawnSteers });
       }
-      // #1473 — the renderer stopped (Stop, `Send now`, an idle timeout) while this loop runs ahead of it: end the
-      // query the loop is parked on. Its own `return()` closes the CLI and awaits its exit, which ends the read
-      // (`queryFrames`); the loop then stops where it is (`run.abandoned`) and its cleanup runs now.
-      // The frames stop at once (`pumpFrames` `until`): the loop leaves its read, and leaving it ends the frames —
-      // `queryFrames` → the query's own `return()`, which closes the CLI.
+      // #1473 — the renderer stopped (Stop, `Send now`, an idle timeout) while this loop runs ahead of it: the input
+      // closes and the frames stop at once (`pumpFrames` `until`), so the loop leaves its read now. The query stays
+      // open (`keepSource`) until the loop has ended what it holds — a held turn's settlement asks it — and the loop's
+      // cleanup closes it (`finally`, bounded).
       let releaseFrames: () => void = () => {};
       const framesReleased = new Promise<void>((resolve) => {
         releaseFrames = resolve;
@@ -2191,10 +2198,9 @@ export class ClaudeHandler implements TurnSteeringPort {
       let anchorEpoch = session?.compactionCount ?? 0;
       try {
         for await (const message of frames) {
-          // #1473 — the renderer stopped and the query is being closed (`run.abandon`): nothing after this point has
-          // a reader. Leaving the loop ends the frames (`queryFrames` → the query's own `return()`), as the
-          // renderer's own `return()` at a yield did before the loop ran ahead. A held turn still ends below: its
-          // settlement is the follow-up queue's, reader or not (what it yields is dropped).
+          // #1473 — the renderer stopped (`run.abandon`): nothing after this point has a reader. The loop leaves its
+          // read; a held turn still ends below — its settlement is the follow-up queue's, reader or not (what it
+          // yields is dropped) — and the query is closed in the cleanup, after it.
           if (run?.abandoned) break;
           const raw = message as unknown as Record<string, unknown>;
           frameSeq += 1;
@@ -2568,14 +2574,23 @@ export class ClaudeHandler implements TurnSteeringPort {
         // loop's end.
         if (run?.abandoned) {
           let bound: ReturnType<typeof setTimeout> | undefined;
-          await Promise.race([
-            Promise.resolve(activeQuery.return(undefined)).catch(() => undefined),
-            new Promise<void>((resolve) => {
-              bound = setTimeout(resolve, ABANDONED_QUERY_CLOSE_MS);
+          const closedInTime = await Promise.race([
+            Promise.resolve(activeQuery.return(undefined)).then(
+              () => true,
+              () => true,
+            ),
+            new Promise<boolean>((resolve) => {
+              bound = setTimeout(() => resolve(false), ABANDONED_QUERY_CLOSE_MS);
               (bound as { unref?: () => void }).unref?.();
             }),
           ]);
           if (bound) clearTimeout(bound);
+          if (!closedInTime) {
+            this.logger.warn('An abandoned turn’s query did not close in time — its CLI may still run', {
+              sessionKey: steerKey,
+              boundMs: ABANDONED_QUERY_CLOSE_MS,
+            });
+          }
         }
         if (steerKey && this.activeQueries.get(steerKey)?.query === activeQuery) {
           this.activeQueries.delete(steerKey);
