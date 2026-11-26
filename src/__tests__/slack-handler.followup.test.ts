@@ -3009,6 +3009,16 @@ describe('SlackHandler — follow-up queue host', () => {
       await settle();
     });
 
+    // #1474 round 5 (astra): an answer the dispatch dropped before any turn (an invalid working directory) was not kept.
+    it('refuses an answer the dispatch dropped before any turn ran (an invalid working directory)', async () => {
+      handlerAny.sessionInitializer.validateWorkingDirectory.mockResolvedValueOnce({ valid: false });
+
+      await expect(
+        handler.handleMessage(message({ ts: '333.903', text: '1', questionAnswer: true } as any), say()),
+      ).rejects.toThrow(AnswerNotKeptError);
+      expect(startWithContinuation).not.toHaveBeenCalled();
+    });
+
     // #1474 round 3 (astra): an answer the idle dispatch could not open did not run — its question goes back.
     it('refuses an answer whose turn could not be opened (the store failed), at once', async () => {
       saveError = new Error('disk full');
@@ -9225,6 +9235,8 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(registrySession.actionPanel.waitingForChoice).toBe(false);
       expect(registrySession.actionPanel.pendingQuestion).toBeUndefined();
       expect(items().find((item: any) => item.message.ts === '333.501')?.message.questionAnswer).toBe(true);
+      // The card leaves NEEDS YOU: the session works on, the answer waits behind the turn (round 5, grok/astra).
+      expect(claudeHandler.setActivityStateByKey).toHaveBeenCalledWith(SESSION_KEY, 'working');
 
       gate.resolve({ hasPendingChoice: true }); // the turn's own snapshot: it asked
       await first;

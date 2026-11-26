@@ -1707,8 +1707,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           logger: this.logger,
         });
       }
-      this.setActivity(session, sessionKey, channel, threadTs, 'working');
       carriedChoice = session.actionPanel?.waitingForChoice === true && session.actionPanel?.pendingChoice !== undefined;
+      // #1474 — a carried question keeps the session waiting on it while the turn works, as a question asked mid-turn
+      // does (the card reads 작업 중 · 응답 필요, and the dashboard can answer it) (round 5, astra).
+      this.setActivity(session, sessionKey, channel, threadTs, carriedChoice ? 'waiting' : 'working');
       // Epoch-scoped like every other status write on this turn (#688): a
       // superseded turn's late working-state write must not overwrite the
       // newer turn's status.

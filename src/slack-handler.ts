@@ -2275,7 +2275,25 @@ export class SlackHandler {
 
     const failure = this.takeInitialError(sessionKey);
     if (failure) throw failure;
+    // #1474 — an answer the dispatch dropped before any turn (an invalid working directory, a gate) was not kept: its
+    // question goes back (round 5, astra).
+    const outcome = report?.outcome as { result?: string; reason?: string } | undefined;
+    if (
+      event.questionAnswer === true &&
+      outcome?.result === 'blocked' &&
+      SlackHandler.ANSWER_DROPPED_REASONS.has(outcome.reason ?? '')
+    ) {
+      throw new AnswerNotKeptError(`dispatch dropped it: ${outcome.reason}`);
+    }
   }
+
+  /** #1474 — `blocked` reasons of a dispatch that dropped its message before any turn ran (never a kept one). */
+  private static readonly ANSWER_DROPPED_REASONS = new Set([
+    'working directory invalid',
+    'dm input not allowed for non-admin',
+    'incident-owned thread: ordinary message dropped',
+    'nothing to process',
+  ]);
 
   /** The `blocked` reason of a turn that ended on the person's question — the ASK pause (A8). */
   private static readonly AWAITING_USER_CHOICE = 'awaiting user choice';
@@ -5363,7 +5381,9 @@ export class SlackHandler {
    */
   private answersOpenQuestion(sessionKey: string, event: MessageEvent): boolean {
     if (event.questionAnswer === true || event.synthetic || event.routeContext?.hostTurn === true) return false;
-    if (shouldForwardAsLocalSlashCommand((event.text ?? '').trim(), false)) return false;
+    const text = (event.text ?? '').trim();
+    // Words answer a question; a file alone does not (round 5, astra).
+    if (!text || shouldForwardAsLocalSlashCommand(text, false)) return false;
     const panel = this.claudeHandler.getSessionByKey?.(sessionKey)?.actionPanel;
     return panel?.waitingForChoice === true || panel?.pendingQuestion !== undefined;
   }
@@ -5383,6 +5403,8 @@ export class SlackHandler {
     panel.choiceMessageTs = undefined;
     panel.choiceMessageLink = undefined;
     panel.choiceBlocks = undefined;
+    // As a dispatched reply's record does (`processMessage`): the session works on — the reply waits behind its turn.
+    this.claudeHandler.setActivityStateByKey?.(sessionKey, 'working');
     try {
       this.claudeHandler.getSessionRegistry?.()?.persistAndBroadcast?.(sessionKey);
     } catch (error) {

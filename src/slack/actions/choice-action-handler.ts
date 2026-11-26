@@ -845,10 +845,12 @@ export class ChoiceActionHandler {
       }
     }
 
-    // Build selections from per-question recommendations.
+    // Build selections from per-question recommendations — of the questions still open (#1474: a split form some
+    // chunks of which were answered asks only the rest, round 5, astra).
+    const openQuestions = this.openQuestionsOf(session, pendingQ.questions);
     const selections: Record<string, { choiceId: string; label: string }> = {};
     let validCount = 0;
-    for (const q of pendingQ.questions) {
+    for (const q of openQuestions) {
       const rid = ChoiceMessageBuilder.resolveRecommendedId(q.recommendedChoiceId, q.choices);
       if (!rid || rid === CUSTOM_INPUT_CHOICE_ID) continue;
       const choice = q.choices.find((c: { id: string; label: string }) => c.id === rid);
@@ -860,7 +862,7 @@ export class ChoiceActionHandler {
     if (validCount === 0) {
       throw new Error('No recommendation available');
     }
-    if (validCount !== pendingQ.questions.length) {
+    if (validCount !== openQuestions.length) {
       // Dashboard surface only supports full-fill (the blocked button is disabled client-side).
       throw new Error('Recommendations incomplete');
     }
@@ -868,7 +870,7 @@ export class ChoiceActionHandler {
     this.logger.info('hero_recommended_clicked', {
       surface: 'dashboard',
       n: validCount,
-      m: pendingQ.questions.length,
+      m: openQuestions.length,
       sessionKey,
     });
 

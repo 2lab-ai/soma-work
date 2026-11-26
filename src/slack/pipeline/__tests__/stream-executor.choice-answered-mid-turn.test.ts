@@ -319,6 +319,8 @@ describe('#1474 — a question still open when a turn starts, which the turn doe
     const result = await new StreamExecutor(deps).execute(params(session));
 
     expect(session.actionPanel.waitingForChoice).toBe(true);
+    // Waiting from the start, as a question asked mid-turn (작업 중 · 응답 필요) — never `working` over it (round 5).
+    expect(states(deps)).not.toContain('working');
     expect(states(deps).at(-1)).toBe('waiting');
     expect(result.turnCollector?.getResult().hasPendingChoice).toBe(true);
   });
