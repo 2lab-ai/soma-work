@@ -333,14 +333,32 @@ export class ActionPanelBuilder {
     //   - progress UNKNOWN: always — "is it even alive?" is then the only
     //     question left, and suppressing the one real timestamp we do have
     //     would leave the user with nothing (review round 1).
-    const livenessAdds =
-      params.lastSignalAt !== undefined &&
-      (params.lastProgressAt === undefined || params.lastSignalAt - params.lastProgressAt >= LIVENESS_DIVERGENCE_MS);
-    if (livenessAdds) {
+    if (ActionPanelBuilder.livenessShown(params.lastProgressAt, params.lastSignalAt)) {
       parts.push(`응답 신호 ${ActionPanelBuilder.ageToken(params.lastSignalAt as number, now)}`);
     }
 
     return parts.join(' · ');
+  }
+
+  /** Does the progress line show the liveness signal's age? See {@link buildProgressLine}. */
+  private static livenessShown(lastProgressAt: number | undefined, lastSignalAt: number | undefined): boolean {
+    return (
+      lastSignalAt !== undefined &&
+      (lastProgressAt === undefined || lastSignalAt - lastProgressAt >= LIVENESS_DIVERGENCE_MS)
+    );
+  }
+
+  /**
+   * The stamps the progress line draws as ages (`마지막 활동`, and `응답 신호` when
+   * it is shown) — the same rule {@link buildProgressLine} draws by. The thread
+   * surface holds an edit that only moves these (#1471); a stamp the line does
+   * not draw is not one of them, whatever date token shares its second.
+   */
+  static progressAgeStamps(lastProgressAt: number | undefined, lastSignalAt: number | undefined): number[] {
+    const stamps: number[] = [];
+    if (lastProgressAt !== undefined) stamps.push(lastProgressAt);
+    if (ActionPanelBuilder.livenessShown(lastProgressAt, lastSignalAt)) stamps.push(lastSignalAt as number);
+    return stamps;
   }
 
   /** Approval wait > running tool > declared phase. The thing the user must act on wins. */

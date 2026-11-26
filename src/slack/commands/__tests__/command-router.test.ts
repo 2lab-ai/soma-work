@@ -1489,6 +1489,22 @@ describe('CommandRouter — goal + `$skill` split at the host intake', () => {
     }
   });
 
+  it('splitGoalSkill splits a goal composer objective the same way (2026-11-26, #1465)', () => {
+    stubSkillFs({ localSkills: ['z'] });
+    const router = new CommandRouter(buildDeps());
+    expect(router.splitGoalSkill('ship it $z proceed', 'U1')).toEqual({ goalText: 'ship it', skillText: '$z proceed' });
+    expect(router.splitGoalSkill('$z proceed', 'U1')).toEqual({ goalText: '', skillText: '$z proceed' });
+    expect(router.splitGoalSkill('costs $20 and $nope', 'U1')).toBeNull();
+    expect(router.splitGoalSkill('ship it', 'U1')).toBeNull();
+    // An objective is prose: a `$a:b` token splits only when that skill exists (the pattern alone is not enough).
+    expect(router.splitGoalSkill('Redis 주소를 $REDIS_HOST:6379 로 바꾸기', 'U1')).toBeNull();
+    expect(router.splitGoalSkill('docs $local:nope please', 'U1')).toBeNull();
+    expect(router.splitGoalSkill('docs $local:z please', 'U1')).toEqual({
+      goalText: 'docs',
+      skillText: '$local:z please',
+    });
+  });
+
   it('hands the skill part to admitOpening as the opening prompt — the skill is not fired during routing', async () => {
     stubSkillFs({ localSkills: ['z'] });
     const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');

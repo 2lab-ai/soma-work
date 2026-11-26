@@ -1,26 +1,32 @@
 /**
- * An instruction sent from the detail card shows the writing row at once (Z 2026-11-26) — browser receipts.
+ * #1466 (Z 2026-11-26) — an instruction sent from the detail card says where it really is — browser receipts.
  *
- *   S1  an idle card: the instruction typed in the composer and sent shows the 응답 작성 중 row under it within
- *       300 ms, while the command request is still open (the real server answers it only after the whole turn) and
- *       the session still says idle.
- *   S2  the session turns working: the row stays (its own state rules now).
- *   S3  the answer lands and the session goes idle: the row goes.
+ *   "큐에 들어갔는지 대기중인지 모델이 받았는지 명확하게 구분해서 표시해줘"
+ *
+ *   S0  typed in the real composer and sent (the command request held open, as the real server holds it until the
+ *       turn ends): the instruction reads 보내는 중 at once, and no 응답 작성 중 is drawn.
+ *   S1  the server took it (instructionProgress received): 접수됨.
+ *   S2  the person's task queue holds it, 2nd in line: 작업 큐 대기 · 2번째.
+ *   S3  its turn is dispatched, the session works, the model does not have it yet: 처리 중 · 새 작업을 시작…, still
+ *       no 응답 작성 중.
+ *       The turn records the instruction as it starts: the recorded turn (its ref kept) keeps the chip.
+ *   S4  the turn's first SDK event: 모델이 받았어요, and the writing row under it.
+ *   S5  the answer lands: the chip and the writing row go.
  *
  * The real web server serves the real page; the browser's HTTP layer is mocked (board, turns, the held command) and
- * the WebSocket is a stub the script pushes session and turn updates through.
+ * the WebSocket is a stub the script pushes the session's stages and the answer through.
  *
  * Run from the repo root in a clean env (prefix `env -i PATH="$PATH"`):
- *   SOMA_CONFIG_DIR=$TMP/cfg SOMA_INSTANCE_DIR=$TMP/inst npx tsx scripts/screenshot-sent-writing-row.ts [outDir]
+ *   SOMA_CONFIG_DIR=$TMP/cfg SOMA_INSTANCE_DIR=$TMP/inst npx tsx scripts/screenshot-instruction-stages.ts [outDir]
  */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { chromium, type Page } from 'playwright';
 
-const OUT = process.argv[2] || path.join(__dirname, '..', 'screenshots', 'sent-writing-row');
+const OUT = process.argv[2] || path.join(__dirname, '..', 'screenshots', 'instruction-stages');
 fs.mkdirSync(OUT, { recursive: true });
-const PORT = process.env.SENT_ROW_PORT || '33957';
+const PORT = process.env.STAGES_PORT || '33958';
 process.env.CONVERSATION_VIEWER_PORT = PORT;
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 
@@ -86,8 +92,8 @@ const PAGE_HELPERS = [
   '(function tick() { requestAnimationFrame(tick); })();',
 ].join('\n');
 
-/** Each command the page sent, with the time it reached the route. */
-const commands: { message: string; at: number }[] = [];
+/** Each command the page sent: its words and the ref the panel gave it (its optimistic turn's id). */
+const commands: { message: string; ref: string }[] = [];
 
 async function installMocks(page: Page) {
   await page.addInitScript({ content: PAGE_HELPERS });
@@ -104,7 +110,8 @@ async function installMocks(page: Page) {
   );
   // The real route answers only after the whole turn: held open for the whole run.
   await page.route(/\/api\/dashboard\/session\/[^/?]+\/command$/, (r) => {
-    commands.push({ message: JSON.parse(r.request().postData() || '{}').message, at: Date.now() });
+    const sent = JSON.parse(r.request().postData() || '{}');
+    commands.push({ message: String(sent.message || ''), ref: String(sent.clientRef || '') });
     return new Promise(() => {});
   });
   await page.route(/\/api\/dashboard\/session\/[^/?]+\/artifacts/, (r) => r.fulfill({ json: { artifacts: [] } }));
@@ -129,23 +136,17 @@ function check(ok: boolean, what: string) {
 }
 const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
 
-/** What the chat shows now: its last turn's words, whether a writing row is drawn, and its words. */
+/** What the chat shows now: the chip on the latest instruction (its words), and whether 응답 작성 중 is drawn. */
 const chat = (page: Page) =>
   page.evaluate(() => {
     const conv = document.getElementById('panel-conv') as any;
-    const rows = [...(conv?.shadowRoot?.querySelectorAll('[aria-busy="true"]') ?? [])] as HTMLElement[];
-    const pendingRow = rows.find((r) => r.querySelector?.('ui-ai-answer')) ?? null;
-    const answer = pendingRow?.querySelector('ui-ai-answer') as any;
-    const words = answer?.shadowRoot?.querySelector('.ans-shimmer')?.textContent ?? '';
     const turns = conv?.data?.turns ?? [];
     const last = turns[turns.length - 1];
-    return {
-      pending: !!conv?.data?.pending,
-      drawn: !!pendingRow,
-      words,
-      lastRole: last?.role ?? '',
-      lastWords: String(last?.rawContent ?? last?.text ?? '').slice(0, 40),
-    };
+    const chips = [...document.querySelectorAll('#panel-conv .cv-steer')] as HTMLElement[];
+    const chip = chips.length ? (chips[chips.length - 1].textContent ?? '').trim() : '';
+    const rows = [...(conv?.shadowRoot?.querySelectorAll('[aria-busy="true"]') ?? [])] as HTMLElement[];
+    const writing = rows.some((r) => !!r.querySelector?.('ui-ai-answer'));
+    return { chip, writing, pending: !!conv?.data?.pending, lastRole: last?.role ?? '' };
   });
 
 const push = (page: Page, msg: unknown) =>
@@ -175,53 +176,82 @@ async function main() {
     );
     await sleep(1200);
     const before = await chat(page);
-    check(!before.pending && !before.drawn, `before: idle, no writing row ${JSON.stringify(before)}`);
+    check(!before.chip && !before.writing, `before: no chip, no writing row ${JSON.stringify(before)}`);
 
-    // S1 — typed in the real composer and sent.
+    // S0 — typed in the real composer and sent.
     const field = page.locator('#pc-composer textarea');
     await field.click();
     await field.fill(SENT);
-    // Measured in the page from the Enter keydown to the first frame the row is drawn in.
-    await page.evaluate(() => {
-      const w = window as any;
-      w.__drawnMs = -1;
-      const t0 = performance.now();
-      const look = () => {
-        const conv = document.getElementById('panel-conv') as any;
-        const row = [...(conv?.shadowRoot?.querySelectorAll('[aria-busy="true"]') ?? [])].find((r: any) =>
-          r.querySelector?.('ui-ai-answer'),
-        );
-        if (row) w.__drawnMs = Math.round(performance.now() - t0);
-        else if (performance.now() - t0 < 10_000) requestAnimationFrame(look);
-      };
-      requestAnimationFrame(look);
-    });
     await page.keyboard.press('Enter');
-    await sleep(300);
-    const drawnMs = await page.evaluate(() => (window as any).__drawnMs as number);
-    const s1 = await chat(page);
-    await page.screenshot({ path: path.join(OUT, '1-sent-idle.png') });
-    check(commands.length === 1 && commands[0].message === SENT, `S1 the command went out (${commands.length})`);
+    await sleep(400);
+    const ref = commands[0]?.ref ?? '';
+    const s0 = await chat(page);
+    await page.screenshot({ path: path.join(OUT, '0-sending.png') });
     check(
-      s1.lastRole === 'user' && s1.lastWords.startsWith(SENT.slice(0, 10)),
-      `S1 the instruction is the chat's last turn ${JSON.stringify(s1)}`,
+      commands.length === 1 && commands[0].message === SENT && !!ref,
+      `S0 the command went out with its ref (${ref})`,
+    );
+    check(s0.chip.includes('보내는 중') && !s0.writing, `S0 보내는 중, no 응답 작성 중 ${JSON.stringify(s0)}`);
+
+    // Pushed, then read once the chat shows what it should (a loaded host paints late) — at most 8 s, then as it is.
+    type View = Awaited<ReturnType<typeof chat>>;
+    const settle = async (done: (v: View) => boolean) => {
+      let v = await chat(page);
+      for (let i = 0; i < 40 && !done(v); i++) {
+        await sleep(200);
+        v = await chat(page);
+      }
+      return v;
+    };
+    const stage = async (over: Record<string, unknown>, shot: string, done: (v: View) => boolean) => {
+      await push(page, { type: 'sessionUpdated', session: session(over) });
+      const v = await settle(done);
+      await page.screenshot({ path: path.join(OUT, shot) });
+      return v;
+    };
+    const progress = (s: string) => ({ instructionStages: [{ ref, stage: s, at: Date.now() }] });
+
+    const s1 = await stage(progress('received'), '1-received.png', (v) => v.chip.includes('접수됨'));
+    check(s1.chip.includes('접수됨') && !s1.writing, `S1 접수됨 ${JSON.stringify(s1)}`);
+
+    const s2 = await stage(
+      { ...progress('queued'), userQueue: { entryId: 'e1', kind: 'request', position: 2, since: Date.now() } },
+      '2-queued.png',
+      (v) => v.chip.includes('2번째'),
+    );
+    check(s2.chip.includes('작업 큐 대기 · 2번째') && !s2.writing, `S2 작업 큐 대기 · 2번째 ${JSON.stringify(s2)}`);
+
+    const s3 = await stage({ ...progress('starting'), activityState: 'working' }, '3-starting.png', (v) =>
+      v.chip.includes('새 작업을 시작'),
     );
     check(
-      s1.pending && s1.drawn && s1.words.length > 0 && drawnMs >= 0 && drawnMs <= 300,
-      `S1 drawn ${drawnMs} ms after Enter, the session still idle (nothing pushed yet): the writing row ("${s1.words}")`,
+      s3.chip.includes('새 작업을 시작') && !s3.writing && !s3.pending,
+      `S3 working, not the model's yet: 시작 중, no 응답 작성 중 ${JSON.stringify(s3)}`,
     );
 
-    // S2 — the session turns working.
+    // The turn records the instruction as it starts: the recorded turn (its ref kept) takes this browser's copy's place.
     await push(page, {
-      type: 'sessionUpdated',
-      session: session({ activityState: 'working', finishedAt: NOW - 5 * M }),
+      type: 'conversation_update',
+      conversationId: CID,
+      turn: {
+        id: 'u-rec',
+        role: 'user',
+        timestamp: new Date().toISOString(),
+        userName: 'Zhuge',
+        rawContent: SENT,
+        clientRef: ref,
+      },
     });
-    await sleep(500);
-    const s2 = await chat(page);
-    await page.screenshot({ path: path.join(OUT, '2-working.png') });
-    check(s2.pending && s2.drawn, `S2 working: the row stays ${JSON.stringify(s2)}`);
+    const s3b = await settle((v) => v.lastRole === 'user' && v.chip.includes('새 작업을 시작'));
+    check(s3b.chip.includes('새 작업을 시작'), `S3 the recorded turn keeps the stage ${JSON.stringify(s3b)}`);
 
-    // S3 — the answer lands, the session goes idle.
+    const s4 = await stage(
+      { ...progress('delivered'), activityState: 'working' },
+      '4-delivered.png',
+      (v) => v.chip.includes('모델이 받았어요') && v.writing,
+    );
+    check(s4.chip.includes('모델이 받았어요') && s4.writing, `S4 모델이 받았어요 + 응답 작성 중 ${JSON.stringify(s4)}`);
+
     await push(page, {
       type: 'conversation_update',
       conversationId: CID,
@@ -234,11 +264,12 @@ async function main() {
         summarized: true,
       },
     });
-    await push(page, { type: 'sessionUpdated', session: session({ activityState: 'idle', finishedAt: Date.now() }) });
-    await sleep(800);
-    const s3 = await chat(page);
-    await page.screenshot({ path: path.join(OUT, '3-answered.png') });
-    check(!s3.pending && !s3.drawn, `S3 answered and idle: the row is gone ${JSON.stringify(s3)}`);
+    const s5 = await stage(
+      { ...progress('delivered'), activityState: 'idle', finishedAt: Date.now() },
+      '5-answered.png',
+      (v) => !v.chip && !v.writing && v.lastRole === 'assistant',
+    );
+    check(!s5.chip && !s5.writing && s5.lastRole === 'assistant', `S5 answered: no chip, no row ${JSON.stringify(s5)}`);
     await ctx.close();
   } finally {
     await browser.close();
