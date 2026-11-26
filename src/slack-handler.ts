@@ -2661,18 +2661,11 @@ export class SlackHandler {
     const deferSkillFire = !event.synthetic && (!preRouteSession || preRouteSession.sessionId === undefined);
 
     // Step 2: Route commands
-    // #1474 — an answer is never routed as a command, but an auto-compact the turn that asked armed still runs before
-    // it (the routing is where it intercepts) (round 6, astra).
-    const answerMeetsCompact =
-      event.questionAnswer === true &&
-      event.routeContext?.verbatimPrompt !== true &&
-      this.claudeHandler.getSession?.(channel, originalThreadTs)?.autoCompactPending === true;
-    let routed: Awaited<ReturnType<InputProcessor['routeCommand']>> =
-      verbatimPrompt && !answerMeetsCompact
-        ? // Already routed by the `/z` command that produced it — the same result
-          // the channel path gets straight from `GoalHandler`.
-          { handled: true, continueWithPrompt: event.text ?? '', verbatimPrompt: true }
-        : await this.inputProcessor.routeCommand(event, wrappedSay, { deferSkillFire });
+    let routed: Awaited<ReturnType<InputProcessor['routeCommand']>> = verbatimPrompt
+      ? // Already routed by the `/z` command that produced it — the same result
+        // the channel path gets straight from `GoalHandler`.
+        { handled: true, continueWithPrompt: event.text ?? '', verbatimPrompt: true }
+      : await this.inputProcessor.routeCommand(event, wrappedSay, { deferSkillFire });
     routed = await this.ensureGoalOpeningPrompt(event, routed, channel, originalThreadTs);
     const {
       handled,

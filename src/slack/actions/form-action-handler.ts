@@ -351,8 +351,8 @@ export class FormActionHandler {
         }
       }
 
-      // #1474 — answered while the edits above waited (the dashboard, another chunk): attaching the form would raise
-      // the answered question's open bit again (round 4, astra).
+      // #1474 — answered while the edits above waited (the dashboard, another chunk, a typed reply — `isAnswered`
+      // also reads "nothing open on the session"): attaching the form would raise the answered question's bit again.
       if (!this.formStore.get(formId) || this.choiceHandler.isAnswered(sessionKey, formId)) return;
       await this.ctx.threadPanel?.attachChoice(sessionKey, updatedPayload, pendingForm.messageTs);
     }

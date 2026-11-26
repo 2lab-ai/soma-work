@@ -9280,18 +9280,6 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(registrySession.actionPanel.pendingQuestion).toEqual(singleQuestion());
     });
 
-    // #1474 round 6 (astra): an auto-compact the asking turn armed still runs before the answer.
-    it('T2 an answer meets the auto-compact the turn that asked armed', async () => {
-      registrySession.activityState = 'waiting';
-      registrySession.actionPanel = { waitingForChoice: false };
-      registrySession.autoCompactPending = true;
-
-      await handler.handleMessage(message({ ts: '333.531', text: '1', questionAnswer: true } as any), say());
-
-      expect(routeCommand).toHaveBeenCalledTimes(1);
-      registrySession.autoCompactPending = undefined;
-    });
-
     // #1474 round 4 (astra): an answer is the person's words to the model — never a command, a directive or `!`.
     it.each([
       ['help'],
