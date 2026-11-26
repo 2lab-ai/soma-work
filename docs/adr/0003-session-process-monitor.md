@@ -112,8 +112,12 @@ same snapshot, and work will be placed by each node's free CPU and memory.
    CPU · 메모리 chip went (2026-11-25) — a layout saved with it drops it. Past one core the card itself wears the 프로세스 tab's CPU badge (2026-11-26, `@2lab.ai/ui` 0.47.0 `card.load` with
    the task's CPU; its look since 0.48.0): a red tint and a red ring, a thin hatched underline along its bottom edge,
    and the node pill as the badge's solid red segment — a step stronger past 2, 4 and 8 cores (deeper tint and ring, a
-   thicker underline, the hatch drifting from 4). The first look, thick hazard bands on both edges and a glow, read as
-   tape on the card and went the same day. A card's model finish (the bright
+   thicker underline). The first look, thick hazard bands on both edges and a glow, read as tape on the card and went
+   the same day. Since 0.51.0 the hatch runs to the right at every step, quicker each step (one stripe every 1.2 s,
+   0.8 s, 0.5 s, 0.3 s; a transform, so the card is not repainted; still under reduced motion), and the head shows
+   Slack's `:alert:` siren just before the node pill (`data.alertIcon`; the image ships in
+   `src/conversation/assets/card-alert.gif` and is served same-origin at `/dashboard/assets/card-alert.gif?v=<hash>`;
+   without it the card shows 🚨). A still hatch at steps 1–2 read as decoration, not as an alarm. A card's model finish (the bright
    or foil edge, `card-finish-client.ts`) keeps the heat: a hot card feeds the tint and the ring into the finish's own
    inputs, so the foil keeps its edge and the NEEDS YOU and epic cues still win. A card is pushed again only when a gauge crosses a step,
    the level changes or the stripes step; the node's own load is not on the card (the 프로세스 tab's node line has it).

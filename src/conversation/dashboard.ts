@@ -153,6 +153,7 @@ import { type CardLink, cardLinksOf, followupLinksOf, settledLinkUrlsOf } from '
 import { cardFields, cardPushMessage, type SentCards, WS_RESYNC } from './card-push';
 import { archivedCardClocks, cardWhereOf, liveCardClocks } from './card-where';
 import { isClientRef } from './client-ref';
+import { type InstructionProgress, instructionStagesOf, noteInstructionStage } from './instruction-progress';
 import { type ComposerMenuWhere, type ComposerTriggerRow, composerTriggers } from './composer-menus';
 import { buildCronEditPatch, cronJobDetail } from './cron-edit';
 import { buildCronJobsView, type CronRunSessionLookup } from './cron-view';
@@ -197,6 +198,7 @@ import {
   type TaskViewer,
   type VisibleCard,
 } from './task-visibility';
+import { CARD_ALERT_ICON_PATH, cardAlertIcon, cardAlertIconUrl } from './card-alert-icon';
 import { CODE_CHANGES_CSS, CODE_CHANGES_JS } from './code-changes-client';
 import { ensureTitleSub, regenerateTitleSub, type TitleSubResult } from './title-sub';
 import {
@@ -556,6 +558,11 @@ export interface KanbanSession {
    * another of theirs could go first — `resume`). The board puts it in 응답 필요, under 대기큐. Absent otherwise.
    */
   userQueue?: { entryId: string; kind: 'request' | 'resume'; position: number; since: number };
+  /**
+   * #1466 — where the session's latest dashboard instructions are (newest first, a few): the stage the server reached
+   * for each (instruction-progress.ts), by the panel's ref. The chat shows each on its instruction until its answer.
+   */
+  instructionStages?: InstructionProgress[];
   /**
    * Anthropic safeguards halted the session: nothing runs in it until an admin
    * lifts the lock from the Slack notice. The card says so instead of "대기".
@@ -3096,6 +3103,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
   // .prd/36 D8 — the session waits on the host: a work-queue entry, or an environment hand-off it asked for.
   const queueWait = hostWaitFor(s?.channelId, s?.threadTs);
   const userQueue = userQueueOfSession(key);
+  const instructionStages = instructionStagesOf(key);
   const taskView = _getTasksFn ? _getTasksFn(key) : undefined;
   const aggregate = computeThreadAggregate(s.channelId, s.threadTs, getAllSessions(), Date.now());
   const headline = displayTitle(s);
@@ -3227,6 +3235,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     ...(autoResume ? { autoResume } : {}),
     ...(queueWait ? { queueWait } : {}),
     ...(userQueue ? { userQueue } : {}),
+    ...(instructionStages.length ? { instructionStages } : {}),
     ...(s.safeguardHalt && Number.isFinite(Number(s.safeguardHalt.atMs))
       ? {
           safeguardHalt: {
@@ -5219,7 +5228,7 @@ export async function registerDashboardRoutes(
   });
 
   // A lane entry managed from the 작업 큐 section: 빼기 (a waiting entry — its holder, or an admin with admin mode),
-  // 먼저 진행 and 돌려놓기 (a running entry; its thread hears ⏹ and the next is woken) — an admin with admin mode only.
+  // 먼저 진행 and 차례 끝내기 (a running entry; its thread hears ⏹ and the next is woken) — an admin with admin mode only.
   server.post<{ Params: { entryId: string; action: string } }>(
     '/api/dashboard/work-queues/:entryId/:action',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
@@ -5529,6 +5538,8 @@ export async function registerDashboardRoutes(
             session: _getSessionsFn?.()?.get(originalKey),
             senderId: sender,
           });
+        // #1466 — the chat under this instruction says what the server did with it: taken, or held for the owner.
+        noteInstructionStage(originalKey, ref, waits ? 'approval' : 'received');
         if (_commandHandlerFn) {
           // #785: the panel's ref rides along only when there is one (the handler's other callers pass four).
           if (ref) await _commandHandlerFn(originalKey, message, files.value, sender, ref);
@@ -6799,6 +6810,20 @@ export async function registerDashboardRoutes(
     },
   );
 
+  // ── The hot card's alert (@2lab.ai/ui 0.51.0 data.alertIcon) ──
+  // Slack's :alert: siren, drawn in the head of a task card past one core. A public image, no session data — no
+  // auth, like the library's files. Asked for by its content hash (`?v=`, cardAlertIconUrl): kept a year.
+  server.get<{ Querystring: { v?: string } }>(CARD_ALERT_ICON_PATH, async (request, reply) => {
+    const found = cardAlertIcon();
+    if (!found) return reply.code(404).send();
+    const versioned = String(request.query?.v ?? '') === found.v;
+    return reply
+      .header('Cache-Control', versioned ? 'public, max-age=31536000, immutable' : 'public, max-age=3600')
+      .header('X-Content-Type-Options', 'nosniff')
+      .type('image/gif')
+      .send(found.body);
+  });
+
   // ── HTML Dashboard ──
 
   // The page is ~0.8 MB of inline HTML/CSS/JS: compressed when the browser
@@ -6914,6 +6939,8 @@ export function renderDashboardPage(userId?: string): string {
   const initSelfInstance = _selfInstanceEnv ? JSON.stringify(_selfInstanceEnv.instanceName) : 'null';
   // Build skew — the build this page's script comes from (onServerBuild compares every hello and poll with it).
   const initBuild = JSON.stringify(dashboardBuildId()).replace(/</g, '\\u003c');
+  // The hot card's alert image (card-alert-icon.ts): a same-origin path, or '' — the card then shows 🚨.
+  const initCardAlertIcon = JSON.stringify(cardAlertIconUrl()).replace(/</g, '\\u003c');
   // ui.dashboardheader — normalized card-header composition (config.json#ui
   // via @soma/slack/surface-config; docs/ui-surfaces.md). `<` is escaped so
   // an operator-supplied label cannot break out of the <script> block.
@@ -7331,6 +7358,10 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .panel-controls:empty { display: none; }
 #panel-controls { position: relative; flex-wrap: nowrap; justify-content: flex-end; min-width: 0; padding: 0; }
 #panel-controls ui-model-picker { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+/* The goal composer's copy (its slot="end", always compact): the same row rules. */
+.gc-controls { position: relative; flex-wrap: nowrap; justify-content: flex-end; min-width: 0; padding: 0; }
+.gc-controls ui-model-picker { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+.gc-controls ui-model-picker::part(trigger) { overflow: hidden; }
 /* A row narrower than even the compact trigger (320px with four tools) clips the trigger's own content (level, then
    the mark) inside its button — it never runs over Send. The button's outline and the menu (fixed) are not clipped. */
 #panel-controls ui-model-picker::part(trigger) { overflow: hidden; }
@@ -7744,6 +7775,7 @@ body[data-view-mode="minimal"] #lifecycle-btn { display: none !important; }
    — the status bar, the approvals, the question, the composer — is in no list: never hidden. ── */
 body:not([data-detail~="subtitle"]) #panel-title-sub,
 body:not([data-detail~="controls"]) #panel-controls { display: none !important; }
+body:not([data-detail~="controls"]) .gc-controls { display: none !important; }
 /* ── THE TAB BAR (SSOT 2026-11-03) — under 입력 필요: 목표 · 작업 · 에이전트 · 산출물 · 세부, each closed at first. A
    tab's content shows only while it is pressed (.slide-panel[data-midtab], selectPanelMid); the agent strip and the
    agent's head are the 에이전트 tab's — and stay while the card looks at a subagent (data-agent-scoped), so the reader
@@ -7762,11 +7794,13 @@ body:not([data-detail~="agenthead"]) #panel-agents { display: none !important; }
 .slide-panel:not([data-midtab="agents"]):not([data-agent-scoped]) .panel-tabs::part(list),
 body:not([data-detail~="agenttabs"]) .panel-tabs::part(list),
 body:not([data-detail~="sections"]):not([data-detail~="logtab"]) .panel-sections::part(list) { display: none; }
-.panel-midbar { display: flex; flex-wrap: wrap; align-items: stretch; gap: 0 2px; padding: 0 10px; min-height: 36px; }
+/* The bar speaks like the section tabs under it (<ui-tabs>, as on the settings page): 13px, weight 500, 12px each
+   side, the labels starting where theirs start; the open one is told by colour and underline, not weight. */
+.panel-midbar { display: flex; flex-wrap: wrap; align-items: stretch; gap: 0 2px; padding: 0 12px; min-height: 36px; }
 .panel-midbar[hidden] { display: none; }
-.pm-tab { display: inline-flex; align-items: center; gap: 5px; min-height: 36px; padding: 0 8px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--text-secondary); font: inherit; font-size: 12.5px; cursor: pointer; white-space: nowrap; }
+.pm-tab { display: inline-flex; align-items: center; gap: 5px; min-height: 36px; padding: 0 12px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--text-secondary); font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap; }
 .pm-tab:hover:not(:disabled) { color: var(--text); }
-.pm-tab[aria-expanded="true"] { color: var(--text); font-weight: 600; border-bottom-color: var(--text); }
+.pm-tab[aria-expanded="true"] { color: var(--text); border-bottom-color: var(--text); }
 .pm-tab:disabled { cursor: default; opacity: .45; }
 .pm-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 4px; }
 .pm-count { font-variant-numeric: tabular-nums; color: var(--text-tertiary); font-weight: 500; }
@@ -8467,11 +8501,15 @@ body.nt-open .new-task-fab { display: none !important; }
    thumbnail, name and meta, its own hover, press and 44px chip on touch. The audio play button (T8) sits on the
    thumbnail's lower right: 4px card inset + the 16:10 thumbnail of a (--fc-tile-w − 8px) wide box. */
 .art-tile > ui-file-card { display: block; }
-.art-tile:has(> ui-file-card[variant="chip"]) { max-width: 240px; }
 .panel-artifacts { padding: 10px 16px 4px; border-bottom: 1px solid var(--border); min-height: 44px; }
 .panel-arts-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; font-size: 12px; font-weight: 600; color: var(--text); }
 .panel-arts-hint { margin-left: auto; font-size: 11px; font-weight: 400; color: var(--text-tertiary); }
-.art-strip-panel .art-tile { --fc-tile-w: 152px; }
+/* The detail card's 산출물 tab (owner 2026-11-26): the open card's preview tiles, as a grid that shows every file at
+   once — columns of at least the open card's 128px, each tile the column's width. A short panel body (a phone held
+   sideways, a docked drawer under a tall top bar) keeps them in one row that scrolls sideways, as the open card's
+   strip does, so the conversation keeps its rows (@container pbody below). */
+.art-strip.art-strip-panel { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); overflow-x: visible; scroll-snap-type: none; }
+.art-strip-panel .art-tile { min-width: 0; --fc-tile-w: 100%; }
 .turn-arts-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 /* Phone calls (.prd/30 §3.2–3.3): a call card in the chat, and the call view. */
 .ph-cards { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
@@ -8554,9 +8592,8 @@ body.nt-open .new-task-fab { display: none !important; }
 .um-file.is-remote { opacity: 0.8; }
 .um-compact .um-file { width: auto; max-width: 200px; }
 .io-row .um-media { margin: 4px 0 6px; }
-/* A row of its own above the 산출물 (the section lays its head and chips out as one flex row in the minimal
-   view and on a short body: this one wraps onto a full line of its own there). */
-.panel-user-media { flex: 1 1 100%; margin-bottom: 6px; }
+/* The 지시 첨부 row sits above the 산출물 in the tab. */
+.panel-user-media { margin-bottom: 6px; }
 /* The 지시 첨부 row (D4 K-06): the summary slotted into <ui-disclosure> — glyph · 지시 첨부 · count · hint. */
 .panel-um-head { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--text); font-size: 12px; font-weight: 600; }
 .panel-um-body { padding: 4px 0 2px; }
@@ -8637,22 +8674,12 @@ body.nt-open .new-task-fab { display: none !important; }
    100vw, so a narrow window never pushes its left edge off screen. */
 .cron-drawer::part(panel) { padding-right: env(safe-area-inset-right, 0px); }
 .cron-drawer::part(header) { padding-top: max(14px, env(safe-area-inset-top, 0px)); }
-/* Task view (T1.6): minimal — the artifacts are one row of name chips, like a
-   short panel body below; 자세히 shows them as thumbnails. The chips are the file cards' chip variant
-   (artPanelVariant); this row only lays them out. */
-.slide-panel:not(.is-detail) .panel-artifacts { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-top: 6px; padding-bottom: 6px; }
-.slide-panel:not(.is-detail) .panel-arts-head { flex: none; margin-bottom: 0; }
-.slide-panel:not(.is-detail) .panel-arts-hint { display: none; }
-.slide-panel:not(.is-detail) .art-strip-panel { flex: 1 1 auto; min-width: 0; padding-top: 2px; padding-bottom: 2px; }
-/* A short panel body (landscape phones, the unfolded Duo, a docked drawer under a
-   tall top bar; below 560px R/2 cannot hold full thumbnails plus a couple of task
-   rows): artifacts become name chips with the play button inline, so the
-   pinned strip stays one short row; every tile is still reachable sideways. */
+/* A short panel body (landscape phones, the unfolded Duo, a docked drawer under a tall top bar; below 560px R/2
+   cannot hold a grid of thumbnails plus a couple of task rows): the 산출물 tab's tiles stay previews, in one row
+   that scrolls sideways at the open card's 128px, so every tile is still reachable. */
 @container pbody (max-height: 560px) {
-  .panel-artifacts { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-top: 6px; padding-bottom: 6px; }
-  .panel-arts-head { flex: none; margin-bottom: 0; }
-  .panel-arts-hint { display: none; }
-  .art-strip-panel { flex: 1 1 auto; min-width: 0; padding-top: 2px; padding-bottom: 2px; }
+  .art-strip.art-strip-panel { display: flex; overflow-x: auto; scroll-snap-type: x proximity; }
+  .art-strip-panel .art-tile { --fc-tile-w: 128px; }
 }
 /* Plan mode (SSOT 2026-11-02): the plan on the open task card, the detail card's plan and its bottom bar; a simple
    question's choices as buttons on the task card. */
@@ -8882,6 +8909,12 @@ ${WORK_QUEUE_CSS}
       <ui-dialog id="stop-goal-dialog" class="rollback-dialog stop-goal-dialog" heading="진행 중인 goal이 있어요" size="sm" lang="ko">
         <div id="stop-goal-body"></div>
         <div slot="footer" class="lc-actions"><button type="button" class="ui-btn" onclick="closeStopGoalDialog()">취소</button><button type="button" class="ui-btn is-danger" id="stop-goal-confirm" onclick="confirmStopGoal()">goal 일시정지하고 중지</button></div>
+      </ui-dialog>
+      <!-- 작업 큐 — 차례 끝내기 · 대기에서 빼기 ask first (2026-11-26, owner: "물어보지도 않고 작업이 사라졌음"): the work, its lane
+           and what follows (wqAsk → wqAskConfirm, work-queue-client.ts). 먼저 진행 removes nothing and does not ask. -->
+      <ui-dialog id="wq-dialog" class="rollback-dialog wq-dialog" heading="작업 큐" size="sm" lang="ko">
+        <div id="wq-dialog-body"></div>
+        <div slot="footer" class="lc-actions"><button type="button" class="ui-btn" onclick="wqAskClose()">취소</button><button type="button" class="ui-btn is-danger" id="wq-dialog-confirm" onclick="wqAskConfirm()">확인</button></div>
       </ui-dialog>
       <!-- CRON lane (SSOT 2026-10-23 T4/T5): @2lab.ai/ui <ui-agent-queue> with the lane only —
            one tile per cron job, four numbers, the next-fire queue and 24 hours of runs
@@ -9193,6 +9226,9 @@ const INIT_USER = ${initUser};
 // The build this script came from (dashboardBuildId): a socket hello or a board poll naming another build means
 // the server was redeployed under this tab — onServerBuild reloads it (build skew).
 const PAGE_BUILD = ${initBuild};
+// A task card past one core shows this image before its node pill (@2lab.ai/ui 0.51.0 data.alertIcon): Slack's
+// :alert: siren. '' leaves the library's 🚨.
+const CARD_ALERT_ICON = ${initCardAlertIcon};
 // The page chrome's words, in one place and one language (the library's STRINGS pattern, lang="ko"):
 // sentence case, "…" not "...", the library's short status vocabulary.
 var STRINGS = {
@@ -13540,6 +13576,8 @@ function inboxPaint(host) {
   host.data = {
     columns: columns, load: p.load, announce: p.announce, expanded: open, strings: BOARD_STRINGS, openLabel: false,
     controls: 'window', minimized: cardMinSeeds(p.cols), current: boardCurrentKey(),
+    // A card past one core shows Slack's :alert: siren before its node pill (@2lab.ai/ui 0.51.0); '' leaves 🚨.
+    alertIcon: typeof CARD_ALERT_ICON === 'string' ? CARD_ALERT_ICON : '',
   };
   boardFoldDeck(host);
   if (typeof syncCardFinish === 'function') syncCardFinish();
@@ -15686,7 +15724,6 @@ var _panelDetail = false;
 function applyPanelDetail() {
   var panel = document.getElementById('slide-panel');
   if (panel) panel.classList.toggle('is-detail', _panelDetail);
-  syncPanelArtVariant();
 }
 // The sections an opening starts with: every one open in 어드밴스드 — except the goal,
 // which always opens folded (SSOT 2026-10-29) — else the defaults.
@@ -16368,7 +16405,7 @@ function loadOlderWorkLog() {
     });
   }
   if (typeof ResizeObserver === 'function') {
-    var size = new ResizeObserver(function() { sizePanelSections(); syncPanelArtVariant(); });
+    var size = new ResizeObserver(function() { sizePanelSections(); });
     ['panel-scroll', 'panel-surface', 'panel-tabs', 'panel-agents', 'panel-tasks', 'panel-sections'].forEach(function(id) {
       var el = document.getElementById(id);
       if (el) size.observe(el);
@@ -16529,14 +16566,57 @@ var STEER_CHIP_STARTING = '처리 중 · 이 메시지로 새 작업을 시작�
 var STEER_CHIP_FAILED = '보내지 못했어요 · 입력창의 대기열에서 다시 보내거나 취소하세요';
 var STEER_CHIP_APPLIED = '반영됨 · 진행 중이던 작업이 이 메시지를 읽었어요';
 // kind → [tone, words]. Tones: wait (nothing runs it yet), work (on its way into a turn), fail, done.
-var STEER_CHIP = { sending: ['wait', STEER_CHIP_SENDING], queued: ['wait', STEER_CHIP_QUEUED], steered: ['work', STEER_CHIP_STEERED], starting: ['work', STEER_CHIP_STARTING], failed: ['fail', STEER_CHIP_FAILED], applied: ['done', STEER_CHIP_APPLIED] };
+// #1466 — the stages the server reports for an instruction sent to a card with no turn running (convProgressChips).
+var STEER_CHIP_RECEIVED = '접수됨 · 서버가 받았어요, 시작할 수 있는지 확인하고 있어요';
+var STEER_CHIP_APPROVAL = '승인 대기 · 작업 소유자가 승인하면 실행돼요';
+var STEER_CHIP_USERQUEUE = '작업 큐 대기 · 내 다른 작업이 끝나면 시작해요';
+var STEER_CHIP_USERQUEUE_AT = '작업 큐 대기 · {0}번째 — 내 다른 작업이 끝나면 시작해요';
+var STEER_CHIP_SAMEWORK = '시작 안 함 · 같은 작업이 다른 스레드에서 이미 진행 중이에요';
+var STEER_CHIP_DELIVERED = '모델이 받았어요 · 답을 쓰고 있어요';
+var STEER_CHIP_UNDELIVERED = '모델에 전달되지 않았어요 · 스레드의 메시지를 확인하세요';
+var STEER_CHIP = { sending: ['wait', STEER_CHIP_SENDING], queued: ['wait', STEER_CHIP_QUEUED], steered: ['work', STEER_CHIP_STEERED], starting: ['work', STEER_CHIP_STARTING], failed: ['fail', STEER_CHIP_FAILED], applied: ['done', STEER_CHIP_APPLIED], received: ['wait', STEER_CHIP_RECEIVED], approval: ['wait', STEER_CHIP_APPROVAL], userqueue: ['wait', STEER_CHIP_USERQUEUE], samework: ['fail', STEER_CHIP_SAMEWORK], delivered: ['work', STEER_CHIP_DELIVERED], undelivered: ['fail', STEER_CHIP_UNDELIVERED] };
 // The element's five states (STEER_STATE) as the chat's kinds.
 var STEER_CHIP_OF = { queued: 'queued', steered: 'steered', sending: 'starting', failed: 'failed' };
 // The state above a turn's words (the turn's media slot — the page's own light DOM).
+// A kind may carry a number after ':' — 'userqueue:2' is the 2nd in the person's task queue.
 function steerChipHtml(kind) {
-  var c = STEER_CHIP[kind];
+  var parts = String(kind || '').split(':');
+  var c = STEER_CHIP[parts[0]];
   if (!c) return '';
-  return '<div class="cv-steer cv-steer-' + c[0] + '" role="status"><span class="cv-steer-dot" aria-hidden="true"></span><span>' + esc(c[1]) + '</span></div>';
+  var n = Number(parts[1]) || 0;
+  var words = parts[0] === 'userqueue' && n > 0 ? adminFmt(STEER_CHIP_USERQUEUE_AT, n) : c[1];
+  return '<div class="cv-steer cv-steer-' + c[0] + '" role="status"><span class="cv-steer-dot" aria-hidden="true"></span><span>' + esc(words) + '</span></div>';
+}
+// #1466 (Z 2026-11-26) — where the instructions sent from here really are: the stage the server reported for each
+// (s.instructionStages — by its ref, the optimistic turn's id, which the recorded turn keeps as clientRef), on that
+// instruction until it is over. Nothing the server has not reported: no record, no chip. A message the follow-up queue
+// owns — the server says so (followup), or the running turn read it (origin.steered) — keeps the queue's chips (review
+// on #1468): no stage of this record on it, and convPaint puts a stage only in 보내는 중's place. An answer after it
+// hides only a stage the model reached (its answer); before that, a later answer is another message's.
+var PROGRESS_CHIP = { received: 'received', approval: 'approval', queued: 'userqueue', 'same-work': 'samework', starting: 'starting', delivered: 'delivered', 'not-delivered': 'undelivered' };
+// The stages before the model has it: the writing row waits (its chip says where the instruction is instead).
+var STAGE_BEFORE_MODEL = /^(received|approval|userqueue|samework|starting|undelivered)(:|$)/;
+function convProgressChips(list, s) {
+  var recs = (s && Array.isArray(s.instructionStages)) ? s.instructionStages : [];
+  var out = [];
+  for (var r = 0; r < recs.length; r++) {
+    var p = recs[r];
+    var kind = p && p.ref ? PROGRESS_CHIP[p.stage] : '';
+    if (!kind) continue;
+    var answered = false;
+    for (var i = list.length - 1; i >= 0; i--) {
+      var t = list[i];
+      if (!t) continue;
+      if (String(t.id) === String(p.ref) || (t.clientRef && String(t.clientRef) === String(p.ref))) {
+        if ((answered && kind === 'delivered') || (t.origin && t.origin.steered)) break;
+        var at = kind === 'userqueue' && s.userQueue ? Number(s.userQueue.position) || 0 : 0;
+        out.push({ id: String(t.id), kind: at > 0 ? kind + ':' + at : kind });
+        break;
+      }
+      if (t.role === 'assistant') answered = true;
+    }
+  }
+  return out;
 }
 // Pure: the session's queue (s.followups) over the turns the panel holds (list) —
 //   chips: turn id → kind. This browser's own turn the queue lists carries the row's state; one sent while a
@@ -16601,8 +16681,20 @@ function convQueueTurns(list, fu, ownerName) {
     });
     out.chips[id] = kind;
   }
+  // Sent from here and not heard of yet — a running turn's queue has not listed it, or (#1466) no stage came back for
+  // it — it reads 보내는 중 (convPaint puts the stage the server reported in its place). One with an answer after it
+  // (its recorded turn not in yet) is on its way no more.
+  var lastAnswer = -1;
+  for (var li = list.length - 1; li >= 0; li--) {
+    if (list[li] && list[li].role === 'assistant') {
+      lastAnswer = li;
+      break;
+    }
+  }
   for (var k in own) {
-    if (own[k]._running && !own[k]._rowSeen && !out.chips[k] && out.seen.indexOf(k) < 0) out.chips[k] = 'sending';
+    if (own[k]._rowSeen || out.chips[k] || out.seen.indexOf(k) >= 0) continue;
+    if (!own[k]._running && list.indexOf(own[k]) < lastAnswer) continue;
+    out.chips[k] = 'sending';
   }
   return out;
 }
@@ -19157,11 +19249,12 @@ function setBusy(key, op, on) {
 // library has loaded it reads the model's name. Others read the same element,
 // disabled (#813: the maker's mark, the model's name and the level; no menu) —
 // data-mp-ro carries why it cannot change (mpHydrate hands it over as data.disabled).
+// surface 'goal': the goal composer's row — the panel's picker, always compact (its row is shorter).
 function renderModelPicker(s, canSwitch, modelShort, surface, readOnlyWhy) {
-  var where = surface === 'panel' ? 'panel' : 'card';
+  var where = surface === 'panel' || surface === 'goal' ? 'panel' : 'card';
   var ro = canSwitch ? '' : ' data-mp-ro="' + escAttr(readOnlyWhy || '바꿀 수 없습니다') + '"';
   return '<span class="ui-tok mp-slot" data-mk="' + escAttr('mp|' + where + '|' + s.key) + '">'
-    + '<ui-model-picker lang="ko"' + (where === 'panel' && canSwitch ? ' side="top"' : '') + (where === 'panel' && _pcCompact ? ' compact' : '') + ' data-mp-key="' + escAttr(s.key) + '" data-mp-surface="' + where + '"' + ro + '>'
+    + '<ui-model-picker lang="ko"' + (where === 'panel' && canSwitch ? ' side="top"' : '') + (where === 'panel' && _pcCompact ? ' compact' : '') + (surface === 'goal' && !_pcCompact ? ' compact' : '') + ' data-mp-key="' + escAttr(s.key) + '" data-mp-surface="' + where + '"' + ro + '>'
     + '<span class="mp-fallback">' + (modelShort || '모델') + '</span></ui-model-picker></span>';
 }
 // The disabled picker's reason, and — when the model runs a lower level than the one set — both levels: its trigger
@@ -19517,9 +19610,23 @@ function renderPanelControls(s) {
   mpHydrate(el);
   syncPickerFit();
 }
-// After a switch on either surface: the panel's copy follows at once.
+// May this viewer switch this session's model · effort here — renderPanelControls' rule, for the goal composer's copy.
+function panelCanSwitch(s) {
+  return viewerCanManage(s) && !s.terminated && s.sessionState !== 'SLEEPING' && !isSiblingSession(s);
+}
+// The session's model · effort trigger as the goal composer's row draws it (renderPanelControls' picker, surface
+// 'goal'). #813 — a read-only viewer reads the same element, disabled (its trigger names the level too).
+function panelPickerHtml(s, surface) {
+  var canSwitch = panelCanSwitch(s);
+  var modelShort = esc(s.model || '').replace(/^claude-/, '').replace(/-\\d{8}$/, '');
+  return renderModelPicker(s, canSwitch, modelShort, surface || 'panel', canSwitch ? '' : mpReadOnlyWhy(s, viewerCanManage(s), s.terminated ? 'closed' : ''));
+}
+// After a switch on either surface: the panel's copy follows at once — the goal composer's picker too (one session
+// setting, two triggers; a live render repaints it with the goal tab).
 function repaintPanelControlsFor(key) {
-  if (panelOpen && panelSessionKey === key && _sessionCache[key]) renderPanelControls(_sessionCache[key]);
+  if (!(panelOpen && panelSessionKey === key && _sessionCache[key])) return;
+  renderPanelControls(_sessionCache[key]);
+  if (_gcComposer && _gcComposer.key === key) paintGoalComposerControls(_gcComposer, _sessionCache[key]);
 }
 // ── Goal (E-12): @2lab.ai/ui <ui-goal-card> — the goal's home (spec 13) ──
 // The board card's line (cardGoalLine) reads the status words; the editor is the element in #panel-goal
@@ -19539,6 +19646,8 @@ var GOAL_STATUS_TONE = { active: 'run', paused: 'wait', complete: 'done' };
 var GOAL_SVG = '<i data-ui-icon="target"></i>';
 var GOAL_VIA_LABELS = { user: '직접 완료', 'eval-model': '평가 모델 완료' };
 var GOAL_OBJECTIVE_MAX = 4000; // the route's cap on an objective
+// The goal composer's counter shows from here (80%): below it the row keeps its room for model · effort.
+var GOAL_COUNT_FROM = 3200;
 var GOAL_ACTIONS = ['delete', 'pause', 'resume', 'move', 'edit']; // what the goal route answers besides add
 var _goalErrors = Object.create(null); // session key → last refused goal action (shown until the next success)
 var _goalBusy = Object.create(null); // session key → { op: 'add' | 'delete' | 'pause' | 'resume' | 'move' | 'edit', id } while that write is out
@@ -19643,13 +19752,18 @@ async function addGoal(key, objective, card) {
 // ── The goal composer (2026-11-26): the add box is the instruction composer ──
 // "신규 goal 추가 … 포커스를 받으면 이 창이 지시창 처럼": the card's add slot holds a <ui-composer collapse> — one line
 // while idle, the whole composer on focus: a multiline objective, files, images and voice notes (the panel
-// composer's limits), 받아쓰기, the counter. Its send is a goal add: the objective and the files (base64, as the
-// command route takes them) go to POST /goal; the server puts the files into the thread and on the goal's opening
-// turn — now, or when it leaves the queue. The trigger menus (/ % $) and model · effort stay with the instruction
-// composer under the panel: a goal's words run as written, so a command typed into a goal would not run.
+// composer's limits), 받아쓰기, a counter once the words near the route's cap, and — as the instruction composer has
+// them (2026-11-26, "모든 기능") — the menus (/ commands, % session settings, $ skills) and the session's model ·
+// effort on its row (compact: mark and level). Its send:
+//  - a command (gcIsCommand: a / command the menu offers, %…, !) goes as the instruction composer's send
+//    (sendCommand — the chat, the queue, the toasts): it runs now, it is not a goal;
+//  - anything else is a goal add: the objective and the files (base64, as the command route takes them) go to
+//    POST /goal; the server puts the files into the thread and on the goal's opening turn — now, or when it leaves
+//    the queue — and a $skill in it runs as that skill on the goal's first turn (the words before it are the goal).
 // One element per session (its text, files and a recording carry across openings of that session; another
 // session gets a fresh one), slotted into whichever card the panel shows.
-var _gcComposer = null; // { key, el, sig } — the goal composer of the session the panel shows
+var _gcComposer = null; // { key, el, ctl, sig, trig, near } — the goal composer of the session the panel shows
+var _gcSending = ''; // the session whose goal composer is sending a command (its send button spins)
 function goalComposerData(s) {
   var g = s.goal || null;
   var cur = g && g.current;
@@ -19662,14 +19776,72 @@ function goalComposerData(s) {
     hint: true,
     minRows: 2,
     maxRows: 8,
-    maxLength: GOAL_OBJECTIVE_MAX,
     maxFiles: PC_LIMITS.maxFiles,
     maxFileSize: PC_LIMITS.maxFileBytes,
     maxTotalBytes: PC_LIMITS.maxTotalBytes,
-    busy: !!(busy && busy.op === 'add'),
+    busy: !!(busy && busy.op === 'add') || _gcSending === s.key,
   };
   if (ntDictationUsable(typeof window !== 'undefined' ? window : null)) d.tools = [ntDictationTool(ntDictating('gc'))];
+  // The counter at the route's cap, once the words come near it (gcCountFollow repaints on the crossing).
+  if (gcNearCap(s.key)) d.maxLength = GOAL_OBJECTIVE_MAX;
   return d;
+}
+function gcNearCap(key) {
+  var cur = _gcComposer;
+  return !!cur && cur.key === key && String(cur.el.value || '').length >= GOAL_COUNT_FROM;
+}
+// Typing across GOAL_COUNT_FROM (either way) repaints the goal composer, so its counter comes and goes.
+function gcCountFollow(c) {
+  var cur = _gcComposer;
+  if (!cur || cur.el !== c) return;
+  if (gcNearCap(cur.key) !== !!cur.near) repaintPanelGoalFor(cur.key);
+}
+// The words a goal composer sends as a command, not as a goal: % (the session settings), ! (stop, then the words
+// after it), and a / command the menu offers (its first word: "/model opus" is /model). A goal that starts with a
+// path ("/tmp 정리") stays a goal. Before the menus load, any /word counts as a command.
+function gcIsCommand(text) {
+  var t = String(text || '').trim();
+  var c = t.charAt(0);
+  if (c === '%' || c === '!') return true;
+  if (c !== '/') return false;
+  var head = t.split(/\\s/)[0];
+  var trig = cmTriggersFor('session');
+  if (!trig) return /^\\/[a-z][\\w-]*$/i.test(head);
+  for (var i = 0; i < trig.length; i++) {
+    if (!trig[i] || trig[i].char !== '/') continue;
+    var items = trig[i].items || [];
+    for (var j = 0; j < items.length; j++) if (String(items[j].value || '').split(' ')[0] === head) return true;
+  }
+  return false;
+}
+// Repaint the goal composer of the session the panel shows (the menus arrived).
+function gcRepaint() {
+  if (_gcComposer) repaintPanelGoalFor(_gcComposer.key);
+}
+// The menus as the instruction composer has them (the same object; a change of the loaded set writes it again).
+function gcTriggers() {
+  return cmTriggersFor('session');
+}
+// Model · effort on the goal composer's row (its slot "end"): the instruction composer's picker for the same
+// session setting — a pick in either is the session's (mpOnChange), each shows it (mpHydrate). An open menu holds it.
+function paintGoalComposerControls(cur, s) {
+  var ctl = cur.ctl;
+  if (!ctl) {
+    ctl = document.createElement('div');
+    ctl.className = 'panel-controls gc-controls';
+    ctl.slot = 'end';
+    ctl.setAttribute('aria-label', '이 세션의 모델과 추론 강도');
+    cur.ctl = ctl;
+  }
+  if (ctl.parentNode !== cur.el) cur.el.appendChild(ctl);
+  if (!isPickingModel(ctl)) {
+    var html = panelPickerHtml(s, 'goal');
+    if (ctl._html !== html) {
+      morphInnerHtml(ctl, html);
+      ctl._html = html;
+    }
+  }
+  mpHydrate(ctl);
 }
 // Recording discarded, a preview stopped, a dictation ended — the text and files stay.
 function goalComposerQuiet(c) {
@@ -19698,15 +19870,21 @@ function paintGoalComposer(card, s, canEdit) {
     c.setAttribute('collapse', '');
     c.setAttribute('lang', document.documentElement && document.documentElement.lang === 'en' ? 'en' : 'ko');
     c.setAttribute('data-goal-key', s.key);
-    cur = _gcComposer = { key: s.key, el: c, sig: '' };
+    cur = _gcComposer = { key: s.key, el: c, ctl: null, sig: '', trig: null, near: false };
   }
   if (cur.el.parentNode !== card) card.appendChild(cur.el);
   var d = goalComposerData(s);
+  cur.near = 'maxLength' in d; // what the element shows now (gcCountFollow compares the words against it)
   var sig = JSON.stringify(d);
-  if (cur.sig !== sig) {
+  // The menus are compared by identity (one loaded set, large): the rest by value.
+  var trig = gcTriggers();
+  if (cur.sig !== sig || cur.trig !== trig) {
     cur.sig = sig;
+    cur.trig = trig;
+    if (trig) d.triggers = trig;
     cur.el.data = d;
   }
+  paintGoalComposerControls(cur, s);
 }
 // The panel closed: the goal composer goes quiet with it (no microphone stays open in a hidden drawer).
 function goalComposerReset() {
@@ -19740,6 +19918,30 @@ async function addGoalFromComposer(key, text, files, c) {
   if (ok && c && c.isConnected && c.getAttribute('data-goal-key') === key && String(c.value || '').trim() === objective && typeof c.clear === 'function') c.clear();
   return ok;
 }
+// A command from the goal composer runs as the instruction composer's send would (the panel shows this session):
+// the chat shows it, a running turn queues it, an answer-only command says where its answer is. One send at a time
+// across both composers; a session the instruction composer cannot send to (read-only, closed, asleep) refuses it.
+// The composer keeps the words until it went, then clears (only if it still holds them).
+async function commandFromGoalComposer(key, text, files, c) {
+  var s = _sessionCache[key];
+  if (!s || panelSessionKey !== key || _gcSending || _pcSending) return false;
+  if (pcModeOf(s) !== 'open') {
+    dashToast({ title: '이 세션에는 지금 명령을 보낼 수 없어요', description: pcModeOf(s) === 'readonly' ? '이 세션에 지시할 수 없는 계정이에요' : '끝났거나 잠든 세션이에요', tone: 'error' });
+    return false;
+  }
+  var msg = String(text || '').trim();
+  _gcSending = key;
+  repaintPanelGoalFor(key);
+  var ok = false;
+  try {
+    ok = (await sendCommand(msg, '', files || [], 'gc')) === true;
+  } finally {
+    _gcSending = '';
+    repaintPanelGoalFor(key);
+  }
+  if (ok && c && c.isConnected && c.getAttribute('data-goal-key') === key && String(c.value || '').trim() === msg && typeof c.clear === 'function') c.clear();
+  return ok;
+}
 document.addEventListener('ui-submit', function(e) {
   var c = e.target;
   if (!isGoalComposer(c)) return;
@@ -19748,14 +19950,17 @@ document.addEventListener('ui-submit', function(e) {
   var key = c.getAttribute('data-goal-key');
   if (!key || !_sessionCache[key]) return;
   var d = e.detail || {};
-  addGoalFromComposer(key, d.text, d.files, c);
+  if (gcIsCommand(d.text)) commandFromGoalComposer(key, d.text, d.files, c);
+  else addGoalFromComposer(key, d.text, d.files, c);
 });
 // 받아쓰기 in the goal composer: its press starts and stops it; typing stops it.
 document.addEventListener('ui-tool', function(e) {
   if (isGoalComposer(e.target)) ntOnComposerTool(e, ntDictationHost('gc'));
 });
 document.addEventListener('ui-input', function(e) {
-  if (isGoalComposer(e.target)) ntDictateStopIn('gc');
+  if (!isGoalComposer(e.target)) return;
+  ntDictateStopIn('gc');
+  gcCountFollow(e.target);
 });
 // A goal's queue order changed in the page's copy at once (the card's next data keeps it), then on the server; a
 // refusal (the goal started meanwhile) reloads the sessions, which puts the order back.
@@ -23410,6 +23615,8 @@ function wlIsCard(el) {
 //   goal / agent / tasks (관리 →, a tree item, 전체 N개 → 상세, 전체 task →):
 //     that section at the top of the scroll area (under the sticky agent tabs),
 //     once per opening — the turns loading below it never drag it away;
+//   artifacts (the open card's 산출물 전체 N개 →): the same, on the tab bar — its open 산출물 tab and the
+//     preview grid under it in view (owner 2026-11-26), not the chat below them;
 //   answer, default: the permission or question the session waits on, which
 //     sits in the common surface at the top, so the answer form is in view at
 //     once. The question landing is made once per opening: turns load below the
@@ -23427,16 +23634,16 @@ function landPanel() {
   if (!scrollEl) return;
   // Task view: Tasks sit in the tab under the sticky agent tabs — a tasks
   // opening lands on the (unfolded) plan's head, just under the tab strip.
-  if (_panelLand === 'goal' || _panelLand === 'agent' || _panelLand === 'tasks') {
+  if (_panelLand === 'goal' || _panelLand === 'agent' || _panelLand === 'tasks' || _panelLand === 'artifacts') {
     if (_panelLanded) return;
-    var sec = document.getElementById(_panelLand === 'goal' ? 'panel-goal' : _panelLand === 'tasks' ? 'panel-tasks' : 'panel-agents');
+    var sec = document.getElementById(_panelLand === 'goal' ? 'panel-goal' : _panelLand === 'tasks' ? 'panel-tasks' : _panelLand === 'artifacts' ? 'panel-midbar' : 'panel-agents');
     if (sec && sec.style.display !== 'none') {
       // The reader scrolled since the last try: they stay where they are.
       if (_panelLandAt !== null && Math.abs(scrollEl.scrollTop - _panelLandAt) > 1) { _panelLanded = true; return; }
       // Phone chrome (#918): a landing while reading starts the card over first — head and composer in, the box as it
       // opens — as the question landing does; the target is measured after.
       if (panelReading()) rdReset();
-      var under = _panelLand === 'goal' ? 0 : panelTabsHeight();
+      var under = _panelLand === 'goal' || _panelLand === 'artifacts' ? 0 : panelTabsHeight();
       var target = scrollEl.scrollTop + sec.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top - under;
       // The landing is the reader's new place: an anchor the layout coordinator
       // captured before it (layoutBeforeChange) must not pull the panel back.
@@ -23512,11 +23719,11 @@ function holdPanelLanding() {
   // Past the settle window a move with no input (find in page, a scrollbar) is the reader's.
   if (Date.now() > _panelHoldUntil) { _panelHold = false; return; }
   var scrollEl = document.getElementById('panel-scroll');
-  var sec = document.getElementById(_panelLand === 'goal' ? 'panel-goal' : _panelLand === 'tasks' ? 'panel-tasks' : 'panel-agents');
+  var sec = document.getElementById(_panelLand === 'goal' ? 'panel-goal' : _panelLand === 'tasks' ? 'panel-tasks' : _panelLand === 'artifacts' ? 'panel-midbar' : 'panel-agents');
   if (!scrollEl || !sec || sec.style.display === 'none') return;
   // Phone chrome (#918): held while reading, the card starts over first (as landPanel does).
   if (panelReading()) rdReset();
-  var under = _panelLand === 'goal' ? 0 : panelTabsHeight();
+  var under = _panelLand === 'goal' || _panelLand === 'artifacts' ? 0 : panelTabsHeight();
   var drift = sec.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top - under;
   var top = Math.max(0, Math.min(scrollEl.scrollTop + drift, scrollEl.scrollHeight - scrollEl.clientHeight));
   if (Math.abs(top - scrollEl.scrollTop) <= 1) return;
@@ -23818,13 +24025,15 @@ function deckStop(panel) {
   }
 }
 // The landing target of this opening, for the keyboard: the answer form, the
-// goal section, the focused node's header, the Tasks head, the 작업 로그 tab —
-// else the heading.
+// goal section, the focused node's header, the Tasks head, the 산출물 tab, the
+// 작업 로그 tab — else the heading.
 function focusPanelLanding() {
   var t = null;
   if (_panelLand === 'goal') t = goalCardFocusTarget() || document.getElementById('panel-goal');
   else if (_panelLand === 'agent') t = document.querySelector('#panel-agents .pa-focus');
   else if (_panelLand === 'tasks') t = document.getElementById('panel-tasks');
+  // 산출물 (the open card's 전체 N개 →): the tab it landed on — focus where the eye is.
+  else if (_panelLand === 'artifacts') t = document.querySelector('#panel-midbar .pm-tab[data-mid="artifacts"]');
   // The 작업 로그 tab is <ui-tabs>' own (D4 E-24): its selected tab — the one this opening chose — takes focus.
   else if (_panelLand === 'worklog' && uiTabsFocus(document.getElementById('panel-sections'))) return;
   if (!t || t.style.display === 'none') {
@@ -24569,6 +24778,13 @@ function convPaint() {
     }
   }
   var shown = q.extra.length ? _panelTurnsList.concat(q.extra) : _panelTurnsList;
+  // #1466 — the stage the server reported for the latest instruction sent from here, on that instruction.
+  // Only in 보내는 중's place: a chip the follow-up queue gave it is the queue's to say (review on #1468).
+  var pcs = convProgressChips(shown, s);
+  for (var pci = 0; pci < pcs.length; pci++) {
+    if (q.chips[pcs[pci].id] && q.chips[pcs[pci].id] !== 'sending') continue;
+    q.chips[pcs[pci].id] = pcs[pci].kind;
+  }
   var built = convTurnsOf(shown, {
     cid: cid, bot: botNameOf(s), now: Date.now(), working: working,
     rewinds: rewindSpansOf(s, shown),
@@ -24590,10 +24806,10 @@ function convPaint() {
     loading: msg === 'loading' || !!_panelTurnsLoading,
     // D12 — the writing row: the session works and the latest turn is the instruction. Not while 입력 필요 is the
     // last turn: the agent waits on the reader, and the ask stays the chat's last message (SSOT 2026-11-13).
-    // The writing row's orb follows the agent's last tool (convPendingOf, 2026-11-21). An instruction sent from here
-    // shows the row at once, before the session turns working (sentAwaitsStart, Z 2026-11-26).
+    // The writing row's orb follows the agent's last tool (convPendingOf, 2026-11-21). #1466: not while the latest
+    // instruction's own stage says the model does not have it yet (its chip says where it is instead).
     pending:
-      !needs && ansPendingShow(s, panelConvId, last ? last.role : '', panelSessionKey)
+      !needs && ansPendingShow(s, panelConvId, last ? last.role : '') && !(last && q.chips[String(last.id)] && STAGE_BEFORE_MODEL.test(q.chips[String(last.id)]))
         ? typeof convPendingOf === 'function'
           ? convPendingOf(s && s.agentRoot && s.agentRoot.lastTool, s && s.agentRoot && s.agentRoot.lastToolAt, last && last.timestamp)
           : true
@@ -24820,42 +25036,8 @@ function convPendingOf(lastTool, lastToolAt, since) {
   var fresh = since === undefined || (at > 0 && at >= (Number(since) || 0));
   return { activity: orbActivityOf(fresh ? lastTool : '') };
 }
-// Sent, not started yet (Z 2026-11-26): an instruction this browser sent to a card no turn was running on shows the
-// writing row at once. The session turns working only after the server echoed the words to Slack, let them through
-// the task queue and set the turn up — until then the chat showed the instruction with nothing under it. Session
-// key → { at: when it was sent (this browser's clock), fin: the session's finishedAt then (the server's), ref: the send's
-// optimistic turn id }; marked by sendCommand, cleared when the server answered that send. Only the chat: the card's
-// 응답 line holds the previous pair until the new turn is recorded, which happens after the session turns working.
-var SENT_AWAIT_MS = 180000;
-var _sentAwait = Object.create(null);
-function sentAwaitMark(key, ref) {
-  if (!key) return;
-  var s = _sessionCache[key];
-  _sentAwait[key] = { at: Date.now(), fin: Number(s && s.finishedAt) || 0, ref: ref || '' };
-  // Overdue, the row leaves on its own: nothing else repaints an idle card.
-  setTimeout(convPaintSoon, SENT_AWAIT_MS + 50);
-}
-// The server answered the send with this ref: an idle send is answered only once its turn is over, or at once when no
-// turn starts from it (refused as the same work, held for the owner, answered in the thread, failed). Its mark goes;
-// a later send's mark stays.
-function sentAwaitClear(key, ref) {
-  var a = key ? _sentAwait[key] : null;
-  if (a && a.ref === ref) delete _sentAwait[key];
-}
-// The send still waits for its turn: not answered (the caller checks the latest turn), no turn ran and ended after it
-// (finishedAt — the switch to idle — moved since the send; compared with itself, never with this browser's clock), the
-// session does not ask its reader, the person's task queue does not hold it (its card waits in 개인별 큐), and it is
-// not overdue.
-function sentAwaitsStart(key, s, now) {
-  var a = key ? _sentAwait[key] : null;
-  if (!a || !s) return false;
-  var done = (Number(s.finishedAt) || 0) > (a.fin || 0) || s.activityState === 'waiting' || !!s.userQueue || now - a.at > SENT_AWAIT_MS;
-  if (done) delete _sentAwait[key];
-  return !done;
-}
-function ansPendingShow(s, convId, lastRole, key) {
-  if (!(s && convId && s.conversationId === convId && lastRole === 'user')) return false;
-  return s.activityState === 'working' || sentAwaitsStart(key, s, Date.now());
+function ansPendingShow(s, convId, lastRole) {
+  return !!(s && convId && s.conversationId === convId && s.activityState === 'working' && lastRole === 'user');
 }
 // One-time wiring: the element's requests (older page, try again) and, once its
 // module has loaded, a paint of what it was handed before it could render.
@@ -25271,7 +25453,7 @@ document.addEventListener('keydown', function(e) {
       if (_panelHold && panelOpen) holdPanelLanding();
       // A section landing the body was still too short for (the parts load
       // after the opening) lands as it grows; a reader who scrolled meanwhile stays.
-      else if (panelOpen && !_panelLanded && (_panelLand === 'goal' || _panelLand === 'agent' || _panelLand === 'tasks')) landPanel();
+      else if (panelOpen && !_panelLanded && (_panelLand === 'goal' || _panelLand === 'agent' || _panelLand === 'tasks' || _panelLand === 'artifacts')) landPanel();
     });
     land.observe(scrollEl);
     ['panel-surface', 'panel-sections-body'].forEach(function(id) {
@@ -25294,8 +25476,10 @@ document.addEventListener('keydown', function(e) {
 // text and files back; one the server refuses is marked failed on its row (Retry,
 // which re-emits the ref without files: they are kept by ref) and said in a toast.
 var _pcNoteFiles = Object.create(null); // a note's ref → its File list, until it went out
-async function sendCommand(text, ref, files) {
+// from 'gc': the goal composer's send — it keeps its own words, so nothing is given back to this composer.
+async function sendCommand(text, ref, files, from) {
   var el = document.getElementById('cmd-steer');
+  var giveBack = from === 'gc' ? function() {} : pcGiveBack;
   if (!panelSessionKey || !el) return;
   // Capture the session this send belongs to — before any wait: an instruction
   // is never sent to a card opened meanwhile.
@@ -25307,13 +25491,13 @@ async function sendCommand(text, ref, files) {
   var attachments;
   _pcSending = true;
   try {
-    if (!pcCanSend(msg, list)) { pcGiveBack(el, ref, msg, sendingSessionKey); return; }
+    if (!pcCanSend(msg, list)) { giveBack(el, ref, msg, sendingSessionKey); return; }
     // Every file read in full (base64, as the command route takes them).
     try {
       attachments = await Promise.all(list.map(ntReadFile));
     } catch (readErr) {
       dashToast({ title: '파일을 읽지 못했어요', description: String((readErr && readErr.message) || '').slice(5), tone: 'error' });
-      pcGiveBack(el, ref, msg, sendingSessionKey);
+      giveBack(el, ref, msg, sendingSessionKey);
       return;
     }
   } finally {
@@ -25329,8 +25513,6 @@ async function sendCommand(text, ref, files) {
   var optimisticId = 'optimistic-' + Date.now();
   optimisticId += '-' + Math.random().toString(36).slice(2, 8); // two tabs in the same ms never share a ref (#785)
   const shown = msg + (list.length ? (msg ? '\\n' : '') + '📎 ' + list.map(function(f) { return f.name; }).join(', ') : '');
-  // Idle: the writing row shows under it at once, until the turn this starts takes over (Z 2026-11-26, sentAwaitsStart).
-  if (!running) sentAwaitMark(sendingSessionKey, optimisticId);
   appendTurnToPanel({
     id: optimisticId,
     role: 'user',
@@ -25368,8 +25550,6 @@ async function sendCommand(text, ref, files) {
   } finally {
     _pcInFlight--;
   }
-  // Answered: the turn it started is over, or none starts from it — the writing row no longer waits on this send.
-  sentAwaitClear(sendingSessionKey, optimisticId);
   if (awaitsOwner) dashToast({ title: '작업 소유자의 승인을 기다려요', description: '소유자가 승인하면 실행됩니다 — 소유자에게 DM과 대시보드로 요청했어요', tone: 'wait' });
   if (answeredInThread) {
     // The turn shown at once (idle) or the note's row (running) would wait for a turn that never comes.
@@ -27110,10 +27290,10 @@ function artSortForDisplay(list) {
   return files.sort(function(x, y) { return toNum(y.createdAt) - toNum(x.createdAt); });
 }
 
-// A strip tile: the file card (thumbnail, name, meta; a play / pause toggle on audio — T8 — and video tiles, one
-// clip at a time across the page: playable); variant 'chip' in the panel's minimal row.
-function artTile(cid, a, variant) {
-  return '<div class="art-tile' + (a.stored ? '' : ' is-remote') + '">' + artCard(cid, a, variant || 'tile', true) + artVerBadge(a) + '</div>';
+// A tile — the open card's strip and the detail card's 산출물 tab: the file card (thumbnail, name, meta; a play /
+// pause toggle on audio — T8 — and video tiles, one clip at a time across the page: playable).
+function artTile(cid, a) {
+  return '<div class="art-tile' + (a.stored ? '' : ' is-remote') + '">' + artCard(cid, a, 'tile', true) + artVerBadge(a) + '</div>';
 }
 
 // The full list once fetched, else the card's summary (the newest few).
@@ -27140,13 +27320,16 @@ function renderCardArtifacts(s) {
     + '</div>';
 }
 
-// Panel (T6): pinned above the conversation, so it is in view wherever the reader is.
-function renderPanelArtifacts(list, cid, variant) {
+// The detail card's 산출물 tab (T6; owner 2026-11-26): every file as the open card draws it — the preview tile (a
+// picture, or the kind's glyph on its wash with the extension, then name and size · age), never a name chip. The
+// tab is the gallery the open card's 전체 N개 → lands on: a grid of every file (one row that scrolls sideways on a
+// short panel body — the CSS of .art-strip-panel).
+function renderPanelArtifacts(list, cid) {
   var sorted = artLatestOnly(artSortForDisplay(list));
   if (!sorted.length || !cid) return '';
   return '<div class="panel-arts-head"><span>산출물</span><span class="art-count">' + sorted.length + '</span>'
     + '<span class="panel-arts-hint">올리면 미리보기 · 누르면 크게</span></div>'
-    + '<div class="art-strip art-strip-panel">' + sorted.map(function(a) { return artTile(cid, a, variant); }).join('') + '</div>';
+    + '<div class="art-strip art-strip-panel">' + sorted.map(function(a) { return artTile(cid, a); }).join('') + '</div>';
 }
 
 // Did this artifact come from the turn that ran between startTs and endTs?
@@ -27633,27 +27816,13 @@ function renderPanelArtifactsSection() {
   var list = c && c.list ? c.list : ((s && s.artifacts && s.artifacts.recent) || []);
   // The user's files (지시 첨부) first, one collapsed line; then the model's 산출물.
   var umHtml = cid ? renderPanelUserMedia(_umList[cid] || [], cid, _umPanelOpen === true, _umPanelOpen === 'folding') : '';
-  var html = cid ? (umHtml ? '<div class="panel-user-media" id="panel-user-media">' + umHtml + '</div>' : '') + renderPanelArtifacts(list, cid, artPanelVariant()) : '';
+  var html = cid ? (umHtml ? '<div class="panel-user-media" id="panel-user-media">' + umHtml + '</div>' : '') + renderPanelArtifacts(list, cid) : '';
   // Morphed (D4 K-06): the 지시 첨부 disclosure keeps its node across a repaint, so its open grows in place.
   writePanelPart(el, html);
   el.style.display = html ? '' : 'none';
   // The files each answer produced go under it (convTurnsOf: an artifact goes to
   // the first answer whose turn window holds its turn start).
   convPaint();
-}
-
-// The panel's strip is a row of name chips in the minimal view (자세히 off) or on a short panel body (≤ 560px:
-// landscape phones, a docked drawer under a tall top bar), else thumbnails — the file card's variant.
-var ART_PANEL_SHORT_PX = 560;
-function artPanelVariant() {
-  var body = document.querySelector('#slide-panel .panel-body');
-  var h = body ? body.clientHeight : 0;
-  return !_panelDetail || (h > 0 && h <= ART_PANEL_SHORT_PX) ? 'chip' : 'tile';
-}
-function syncPanelArtVariant() {
-  var v = artPanelVariant();
-  var cards = document.querySelectorAll('#panel-artifacts .art-strip-panel ui-file-card');
-  for (var i = 0; i < cards.length; i++) if (cards[i].getAttribute('variant') !== v) cards[i].setAttribute('variant', v);
 }
 
 // ── The peek (I-05) is @2lab.ai/ui <ui-hovercard id="art-peek">: one card for every tile — the board's face chips
@@ -28714,6 +28883,8 @@ async function cmLoadMenus() {
   }
   paintNtComposer();
   pcPaintComposer();
+  // The goal composer takes the menus at its next paint (compared by identity).
+  if (typeof gcRepaint === 'function') gcRepaint();
 }
 // Closing the sheet discards a recording in progress, stops a voice note's preview and ends a dictation (the text
 // and files stay).
@@ -28802,13 +28973,16 @@ function ntDictateStopIn(id) {
 // has a status line and a saved draft; the session panel has neither — its why is a toast.
 function ntDictationHost(id) {
   if (id === 'gc') {
-    // The goal composer (the add slot of the panel's goal card): no status line — its why is a toast.
+    // The goal composer (the add slot of the panel's goal card): no status line — its why is a toast. Dictated words
+    // reach the counter too (a value write sends no ui-input).
     return {
       id: 'gc',
       el: function () {
         return _gcComposer ? _gcComposer.el : null;
       },
-      text: function () {},
+      text: function () {
+        if (_gcComposer) gcCountFollow(_gcComposer.el);
+      },
       status: function (msg, final) {
         if (final && msg) dashToast({ title: msg });
       },
