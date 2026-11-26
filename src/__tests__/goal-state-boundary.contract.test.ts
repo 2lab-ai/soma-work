@@ -9,29 +9,35 @@ import { describe, expect, it } from 'vitest';
 
 const ROOT = path.resolve(__dirname, '..', '..');
 
-/** Statement keywords that look like a member at two-space indent (inside a top-level function). */
-const KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'return', 'catch', 'await', 'throw', 'try', 'else', 'do']);
-
-/** Non-comment lines of a source file, each with the class member or top-level function it sits in. */
+/**
+ * Non-comment lines of a source file, each with the class member or top-level declaration it sits in. A member is a
+ * two-space-indented method head inside a class body; inside a top-level function the same indent is a statement.
+ */
 function membersOf(relPath: string): Array<{ member: string; text: string }> {
   const lines = fs.readFileSync(path.join(ROOT, relPath), 'utf8').split('\n');
   const member =
     /^ {2}(?:(?:private|public|protected|static|async|readonly|get|set)\s+)*([A-Za-z_$][\w$]*)\s*(?:<[^>]*>)?\(/;
   const topLevel =
-    /^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)|^(?:export\s+)?(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=|^(?:export\s+)?(?:abstract\s+)?(?:class|interface)\s+([A-Za-z_$][\w$]*)/;
+    /^(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)|^(?:export\s+)?(?:const|let)\s+([A-Za-z_$][\w$]*)\s*[:=]|^(?:export\s+)?(?:abstract\s+)?(?:class|interface)\s+([A-Za-z_$][\w$]*)/;
+  const classHead = /^(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s/;
   const out: Array<{ member: string; text: string }> = [];
   let current = '(module)';
-  lines.forEach((text) => {
-    const m = member.exec(text);
-    if (m && !KEYWORDS.has(m[1])) current = m[1];
-    else {
-      const t = topLevel.exec(text);
-      if (t) current = (t[1] ?? t[2] ?? t[3]) as string;
+  let inClass = false;
+  for (const text of lines) {
+    const top = topLevel.exec(text);
+    if (top) {
+      current = (top[1] ?? top[2] ?? top[3]) as string;
+      inClass = classHead.test(text);
+    } else if (text.startsWith('}')) {
+      if (inClass) inClass = false;
+    } else if (inClass) {
+      const m = member.exec(text);
+      if (m && !['if', 'for', 'while', 'switch', 'return', 'catch'].includes(m[1])) current = m[1];
     }
     const trimmed = text.trim();
-    if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) return;
+    if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) continue;
     out.push({ member: current, text });
-  });
+  }
   return out;
 }
 
@@ -92,7 +98,8 @@ describe('goal state boundary (.prd/40 §6)', () => {
       // Goal loop and restart recovery — removed by the PR named.
       'src/slack-handler.ts#drainIdleRestartRequeued': 'restart requeue drain — PR9 (restart recovery)',
       'src/slack-handler.ts#askGoalStallQuestion': 'stall question round — PR8 (loop driver)',
-      'src/slack/goal-loop-controller.ts#isRequestActive': 'the controller port declaration — PR8 (loop driver)',
+      'src/slack/goal-loop-controller.ts#GoalLoopRequestCoordinator':
+        'the controller port declaration — PR8 (loop driver)',
       'src/slack/goal-loop-controller.ts#handleVerdict': 'verdict re-check before inject — PR8 (loop driver, D15)',
       'src/slack/goal-loop-controller.ts#handleEvalDispatchFailure':
         'safeguard stop of a turn started during the eval — PR8',
@@ -114,6 +121,30 @@ describe('goal state boundary (.prd/40 §6)', () => {
     expect(body('isHostTurnFree')).toContain('this.occupancy.runPhase(');
     expect(body('isFollowupSlotHeld')).toContain('this.occupancy.slotHeld(');
     expect(body('isFollowupTurnBusy')).toContain('this.occupancy.slotHeld(');
+  });
+
+  /**
+   * Rule 3 (PR4, the epoch first) — the goal's intent epoch moves only in `@soma/slack/goal/machine` (`bumpEpoch`, and
+   * the create / promote transitions that start a new generation). Inline bumps left the judge retry window behind (X9).
+   */
+  it('rule 3: the goal epoch is written only in goal/machine and the listed undo', () => {
+    const files = [
+      ...goalScopeFiles(),
+      'src/slack/actions/goal-action-handler.ts',
+      'src/slack/commands/goal-handler.ts',
+      'src/session-registry.ts',
+      'src/conversation/dashboard.ts',
+      'packages/slack/src/session-goal.ts',
+      'packages/slack/src/pipeline/stream-executor.ts',
+    ];
+    const WRITE = /\bgoal\??\.epoch\s*=[^=]|\bcurrent\.epoch\s*=[^=]|\bepoch:\s*\(.*epoch \?\? 0\) \+ 1/;
+    const ALLOWED: Record<string, string> = {
+      'src/slack/goal-cap-decision.ts#answerGoalCapDecision': 'undo of a cap answer whose save failed — PR5 (one undo)',
+    };
+    const found = [...sitesOf(WRITE, files)].sort();
+    const unlisted = found.filter((key) => !(key in ALLOWED));
+    const gone = Object.keys(ALLOWED).filter((key) => !found.includes(key));
+    expect({ unlisted, gone }).toEqual({ unlisted: [], gone: [] });
   });
 
   /**
@@ -141,8 +172,8 @@ describe('goal state boundary (.prd/40 §6)', () => {
 
   /**
    * Rule 4 (PR3, cap question first) — control flow asks `goal/read` (`phaseOf` · `capAskOf`) whether the cap
-   * question is open; only the cap transitions (moved by PR4) and the dashboard's own projection (PR10) touch the
-   * field.
+   * question is open; `goal/machine` owns the session-goal transitions (PR4), the cap round's own transitions move
+   * with the commit path (PR5) and the dashboard's projection with the board (PR10).
    */
   it('rule 4: capDmPendingAt is read only by goal/read and the listed transitions', () => {
     const files = [
@@ -155,14 +186,12 @@ describe('goal state boundary (.prd/40 §6)', () => {
       'src/conversation/dashboard.ts',
     ];
     const ALLOWED: Record<string, string> = {
-      'src/slack/goal-cap-decision.ts#openGoalCapDecision': 'the open transition — PR4 (goal/machine)',
+      'src/slack/goal-cap-decision.ts#openGoalCapDecision': 'the open transition — PR5 (goal-commit)',
       'src/slack/goal-cap-decision.ts#answerGoalCapDecision':
-        "the answer's snapshot and its undo on a failed save — PR4",
-      'src/slack/goal-cap-decision.ts#endDecision': 'the retire transition — PR4',
-      'src/slack/goal-cap-decision.ts#retireGoalStall': 'the retirer the stall shares (declared after it) — PR4',
+        "the answer's snapshot and its undo on a failed save — PR5",
+      'src/slack/goal-cap-decision.ts#endDecision': 'the retire transition — PR5 (goal-commit takes the cap answer)',
+      'src/slack/goal-cap-decision.ts#retireGoalCapDecision': 'the retire transition — PR5',
       'src/slack/follow-up-question.ts#FollowUpQuestionSession': 'the structural session type the surface accepts',
-      'packages/slack/src/session-goal.ts#endGoalCapDecision': 'the default retirer clears the round — PR4',
-      'packages/slack/src/session-goal.ts#restoreGoalState': 'undoPause clears the round it took back — PR4',
       'src/conversation/dashboard.ts#goalDecisionToKanban':
         'the board card shows when it was asked — PR10 (goal/board)',
     };

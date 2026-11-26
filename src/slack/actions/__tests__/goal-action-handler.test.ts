@@ -408,3 +408,34 @@ describe('GoalActionHandler — the DM and the dashboard card are one request (T
     expect(respond).toHaveBeenCalledWith(expect.objectContaining({ text: '❌ goal 소유자만 응답할 수 있습니다.' }));
   });
 });
+
+/**
+ * .prd/39 I4 · X9 — every intent change moves the epoch through one `bumpEpoch`, which also ends the judge retry
+ * window. The objective edit bumped inline and left the window: the retry armed for the old epoch never fires, and
+ * the card kept advertising a re-check that never runs.
+ */
+describe('GoalActionHandler — the objective edit moves the epoch through bumpEpoch (X9)', () => {
+  it('ends a waiting judge retry window with the epoch it moves', async () => {
+    const session = makeSession({
+      goal: makeGoal({ continuationCount: 2, epoch: 3, evalBackoffUntil: Date.now() + 60_000, evalRetryReason: '429' }),
+    });
+    const { handler } = makeHandler(session);
+    const ack = vi.fn().mockResolvedValue(undefined);
+    const view = {
+      private_metadata: encodeGoalActionValue({
+        sessionKey: SESSION_KEY,
+        goalId: 'goal-1',
+        channel: 'C1',
+        threadTs: 'T1',
+      }),
+      state: { values: { goal_update_block: { goal_update_input: { value: '새 목표: 배포까지' } } } },
+    };
+
+    await handler.handleUpdateSubmit(ack, { user: { id: 'U-owner' }, view });
+
+    expect(session.goal?.objective).toBe('새 목표: 배포까지');
+    expect(session.goal?.epoch).toBe(4);
+    expect(session.goal?.evalBackoffUntil).toBeUndefined();
+    expect(session.goal?.evalRetryReason).toBeUndefined();
+  });
+});

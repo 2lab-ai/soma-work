@@ -23,23 +23,13 @@ export const GOAL_CONTINUATION_TEXT_PREFIX = '[goal-continuation]';
 export const GOAL_SUMMARY_PERSIST_MAX = 16_000;
 
 /**
- * Bump the goal's intent epoch. Called by every goal mutation (set / pause
- * / resume / done / clear) and by every real user message. The completion
- * eval captures the epoch at dispatch and discards a verdict whose epoch
- * moved while it was in flight (M1) — so a stale eval can never apply
- * against state the user already changed. Idempotent and cheap.
+ * Bump the goal's intent epoch — `bumpEpoch` of `@soma/slack/goal/machine`, the one way the epoch moves (.prd/39 I4).
+ * Called by every goal mutation and by every real user message; it also ends a judge retry window armed for the old
+ * epoch. The name stays for its callers.
  */
-export function bumpGoalEpoch(goal: SessionGoal): void {
-  goal.epoch = (goal.epoch ?? 0) + 1;
-  // A scheduled eval retry is armed for ONE epoch and no-ops at fire time once
-  // the epoch moved, so its backoff window no longer schedules anything. Drop
-  // the window with the bump: left in place it keeps the runOnce gate shut for
-  // a wait nobody will end, and the dashboard card keeps advertising a
-  // re-check that never runs. The user's newer intent outranks the retry
-  // machinery (same rule as a real user message).
-  goal.evalBackoffUntil = undefined;
-  goal.evalRetryReason = undefined;
-}
+export { bumpEpoch as bumpGoalEpoch } from '@soma/slack/goal/machine';
+
+import { bumpEpoch as bumpGoalEpoch } from '@soma/slack/goal/machine';
 
 /**
  * Reset loop state when a real user message arrives. Mirrors codex

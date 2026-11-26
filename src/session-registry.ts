@@ -14,6 +14,7 @@ import {
   sanitizePendingRewind,
   sanitizeRewindRedo,
 } from '@soma/slack/context-anchor';
+import { bumpEpoch } from '@soma/slack/goal/machine';
 import { LOG_VERBOSITY_MASK_VERSION, upgradeLegacyVerbosityMask } from '@soma/slack/output-flags';
 import { endGoalCapDecision } from '@soma/slack/session-goal';
 import { canonicalLinkUrl } from '@soma/slack/session-link-capture';
@@ -2093,7 +2094,7 @@ export class SessionRegistry {
     // it instead of acting on the old object. Its lease went with that object.
     const goal = migrateLegacyGoal(archived.goal);
     if (goal) {
-      goal.epoch = (goal.epoch ?? 0) + 1;
+      bumpEpoch(goal);
       goal.pendingEval = undefined;
     }
     const session: ConversationSession = {

@@ -275,3 +275,21 @@ export interface SessionGoal {
    */
   lastEvalSummaryHash?: string;
 }
+
+/**
+ * Structural session shape the queue helpers mutate. Mirrors the
+ * goal-bearing fields of `ConversationSession` (`src/types.ts`).
+ */
+export interface GoalQueueSession {
+  goal?: SessionGoal;
+  goalQueue?: SessionGoal[];
+  goalHistory?: SessionGoal[];
+  /**
+   * Goals the owner paused, oldest first. A paused goal has left the current
+   * slot: it never drives the loop, never blocks the queue, and starts again
+   * only when the owner resumes it ({@link resumePausedGoal}).
+   */
+  goalPaused?: SessionGoal[];
+  systemPrompt?: string;
+  goalLastTurnText?: string;
+}
