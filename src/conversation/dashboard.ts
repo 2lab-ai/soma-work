@@ -139,6 +139,9 @@ import { sessionCostUsd } from '../task-turn/epic-cost';
 import type { PlanDecision, TaskPlanGate, TaskPlanState } from '../task-turn/task-plan';
 import { buildThreadPermalink } from '../turn-notifier';
 import { getActiveUserTaskQueue } from '../user-task-queue/active';
+import { getActiveWorkQueueHost } from '../work-queue/host';
+import type { LineQueueView } from 'somalib/work-queue/line';
+import { buildWorkQueuesView } from './work-queue-view';
 import type { ConversationSession } from '../types';
 import { coerceEffort, EFFORT_LEVELS, type EffortLevel, userSettingsStore } from '../user-settings-store';
 import { BUILTIN_PRESETS } from '../view-layout';
@@ -209,6 +212,7 @@ import { getUserMediaStore } from './user-media';
 import { restoreUserActions, type UserActionRecord } from 'somalib/user-action/user-action';
 import { VIEW_LAYOUT_CLIENT_JS } from './view-layout-client';
 import { CARD_FINISH_CLIENT_JS, CARD_FINISH_CSS } from './card-finish-client';
+import { WORK_QUEUE_CLIENT_JS, WORK_QUEUE_CSS } from './work-queue-client';
 import { type HostWait, hostWaitFor } from '../work-queue/host-wait';
 import type { WorkLogEntry } from './work-log';
 import type { ProcessControlInput, ProcessInspectInput } from '../process-monitor/process-monitor';
@@ -3692,6 +3696,50 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
   return board;
 }
 
+/** A day: the people whose queue left a record in it are listed in the 개인별 큐 tab. */
+const WORK_QUEUE_PEOPLE_WINDOW_MS = 24 * 60 * 60_000;
+
+/** The 작업 큐 section's data for one reader (.prd/36 v2 §4.3). */
+function workQueuesFor(request: any) {
+  const sessions = getAllSessions();
+  const byThread = new Map<string, { key: string; title?: string; ownerId?: string }>();
+  for (const [key, s] of sessions) {
+    if (!s.channelId || !s.threadTs) continue;
+    byThread.set(`${s.channelId}\u0000${s.threadTs}`, {
+      key: composeSessionKey(key),
+      title: displayTitle(s) || undefined,
+      ownerId: s.ownerId,
+    });
+  }
+  const lanes = getActiveWorkQueueHost()?.views() ?? [];
+  const people: LineQueueView[] = [];
+  const active = getActiveUserTaskQueue();
+  if (active) {
+    const ids = new Set<string>();
+    const snap = active.queue.snapshot();
+    for (const e of snap.entries) ids.add(e.userId);
+    const since = Date.now() - WORK_QUEUE_PEOPLE_WINDOW_MS;
+    for (const r of snap.records ?? []) if (r.endedAt >= since) ids.add(r.holder.user);
+    for (const [, s] of sessions) if (s.ownerId && !s.terminated && s.activityState === 'working') ids.add(s.ownerId);
+    for (const id of ids) {
+      const view = active.queue.lineView(id);
+      if (view.running.length || view.waiting.length || view.recent.length) people.push(view);
+    }
+    people.sort((a, b) => b.waiting.length - a.waiting.length || b.running.length - a.running.length);
+  }
+  return buildWorkQueuesView(
+    { lanes, people },
+    {
+      sessionAt: (channel, threadTs) => byThread.get(`${channel}\u0000${threadTs}`),
+      nameOf: (userId) => ownerNameOf(userId, sessions),
+      permalink: (channel, threadTs) => buildThreadPermalink(channel, threadTs) ?? undefined,
+      isPrivate: (channel) => isPrivateTask(channel),
+      viewer: signedInUserId(request),
+      admin: !!request?.authContext?.isAdmin,
+    },
+  );
+}
+
 /** The per-user task queue entry a session's thread has in line (waiting first, else on its way). */
 function userQueueOfSession(key: string): KanbanSession['userQueue'] {
   const active = getActiveUserTaskQueue();
@@ -5158,6 +5206,48 @@ export async function registerDashboardRoutes(
       logger.info('Dashboard: user queue action', { entryId, action, by });
       broadcastSessionUpdate();
       reply.send({ ok: true, deferred: result.deferred ? { sessionKey: composeSessionKey(result.deferred.sessionKey) } : undefined });
+    },
+  );
+
+  // 작업 큐 (.prd/36 v2 §4.3): every lane and every person's queue the board's 작업 큐 section draws — what runs, what
+  // waits in order, what recently left — each entry named for the reader (a private task only to its owner and admins).
+  server.get('/api/dashboard/work-queues', { preHandler: [authMiddleware] }, async (request, reply) => {
+    reply.send(workQueuesFor(request));
+  });
+
+  // A lane entry managed from the 작업 큐 section: 빼기 (a waiting entry — its holder, or an admin with admin mode),
+  // 먼저 진행 and 돌려놓기 (a running entry; its thread hears ⏹ and the next is woken) — an admin with admin mode only.
+  server.post<{ Params: { entryId: string; action: string } }>(
+    '/api/dashboard/work-queues/:entryId/:action',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const { entryId, action } = request.params;
+      if (action !== 'cancel' && action !== 'first' && action !== 'release') {
+        reply.status(404).send({ error: 'Unknown work queue action' });
+        return;
+      }
+      const host = getActiveWorkQueueHost();
+      const entry = host
+        ?.views()
+        .flatMap((q) => [...q.running, ...q.waiting])
+        .find((e) => e.id === entryId);
+      if (!host || !entry) {
+        reply.status(404).send({ error: '이 항목은 이미 없습니다 — 끝났거나 빠졌습니다' });
+        return;
+      }
+      if (!_hasWriteAccess(request, action === 'cancel' ? entry.holder.user : undefined)) {
+        reply.status(403).send({ error: '관리자 모드를 켠 관리자만 할 수 있습니다 (빼기는 그 항목의 주인도)' });
+        return;
+      }
+      const by = signedInUserId(request) ?? 'viewer';
+      const result = host.manage(entryId, action, by);
+      if (!result.ok) {
+        reply.status(result.code === 'UNKNOWN_ENTRY' ? 404 : 409).send({ error: result.code });
+        return;
+      }
+      logger.info('Dashboard: work queue action', { entryId, action, by });
+      broadcastSessionUpdate();
+      reply.send({ ok: true });
     },
   );
 
@@ -8543,6 +8633,10 @@ ${pageTokenAliases()}
 <style id="card-finish-css">
 ${CARD_FINISH_CSS}
 </style>
+<!-- 작업 큐 section (.prd/36 v2, work-queue-client.ts). -->
+<style id="work-queue-css">
+${WORK_QUEUE_CSS}
+</style>
 </head>
 <body data-view-mode="minimal" data-view-plan="1" data-detail="" data-tasks="list">
 <!-- boot-screen -->
@@ -8707,6 +8801,21 @@ ${CARD_FINISH_CSS}
            (syncCronLane gives it its data); each job's latest run is its board card — a one-column
            <ui-agent-inbox> (paintCronLaneCards) in the job's slot box (slot="job:<group key>"). -->
       <div class="cron-lane ui-tok" id="cron-lane" hidden><ui-agent-queue id="cron-aq" lang="ko"></ui-agent-queue></div>
+      <!-- 작업 큐 (.prd/36 v2, work-queue-client.ts): every queue a task waits in — 작업 큐 (lanes) | 개인별 큐 (people) —
+           with the waiting cards moved here from the board's columns and each queue's history (paintWorkQueues). -->
+      <div class="wq-section ui-tok" id="wq-section" role="region" hidden aria-label="작업 큐">
+        <div class="wq-head">
+          <span class="wq-title">작업 큐</span>
+          <span class="wq-sum" id="wq-sum"></span>
+          <button type="button" class="ui-btn is-sm wq-fold" id="wq-fold" onclick="wqToggleFold()" aria-expanded="true">접기</button>
+        </div>
+        <div class="wq-body">
+          <ui-tabs class="wq-tabs" id="wq-tabs" lang="ko" panel-focus="none">
+            <div class="wq-panel" id="wq-lanes" slot="lanes"></div>
+            <div class="wq-panel" id="wq-people" slot="people"></div>
+          </ui-tabs>
+        </div>
+      </div>
       <!-- Until the first board answer the columns show skeleton cards, not
            "0 · Nothing here" (a false empty board). A first load that fails says so
            here and offers a retry; the 30 s poll keeps retrying on its own. -->
@@ -12960,10 +13069,9 @@ function patchLastBoard(s) {
 }
 
 // The per-user task queue (대기큐) — the line of requests that wait for their owner's free slot (a person runs as many
-// tasks at once as their limit), led in 응답 필요 above the cards that need an answer. Each entry is one card of its
-// own ('uq:<entry>'): what it waits for, its place, and 먼저 진행 / 대기 취소. A thread in line is not drawn twice.
-var UQ_GROUP_LINE = 'uq-line';
-var UQ_GROUP_NEEDS = 'uq-needs';
+// tasks at once as their limit), drawn in the 작업 큐 section's 개인별 큐 tab (.prd/36 v2, work-queue-client.ts). Each
+// entry is one card of its own ('uq:<entry>'): what it waits for, its place, and 먼저 진행 / 대기 취소. A thread in
+// line is not drawn twice.
 var _uqItems = [];
 var _uqByCard = Object.create(null);
 
@@ -13174,7 +13282,11 @@ function renderBoard(board, partial) {
   _cronPlan = cronPlan;
   syncCronLane(cronPlan);
   var rest = cronPlan.board;
-  // The per-user task queue (대기큐) leads 응답 필요; the threads in line are drawn as their entry's card only.
+  // 작업 큐 (.prd/36 v2): a card whose lane entry waits leaves the columns for its lane in the 작업 큐 section.
+  var wqSplit = typeof wqSplitBoard === 'function' ? wqSplitBoard(rest) : { board: rest, byLane: {} };
+  rest = wqSplit.board;
+  // The per-user task queue (대기큐): its line is drawn in the 작업 큐 section's 개인별 큐 tab, as each entry's card;
+  // the threads in line are not drawn in 응답 필요.
   var uq =
     typeof uqSplitWaiting === 'function'
       ? uqSplitWaiting(board.userQueue || [], rest.waiting || [], _bf && _bf.users)
@@ -13217,20 +13329,8 @@ function renderBoard(board, partial) {
   var filteredEmpty = function(col) { return _bfHiddenCols[col] > 0 ? '필터에 맞는 카드가 없습니다' : ''; };
   if (kb) {
     var needsKeys = pending.waiting.concat(keys(uq.needs, 'waiting', kb));
-    var uqKeys = uq.line.length ? uqPlace(uq.line, kb) : [];
-    var waitingCol = uqKeys.length
-      ? {
-          id: 'waiting',
-          label: BOARD_LABELS.waiting,
-          emptyText: filteredEmpty('waiting'),
-          keys: [],
-          // 대기큐 first, then 응답 필요 — both open until the reader closes one.
-          groups: [
-            { id: UQ_GROUP_LINE, label: '\u23f3 대기큐 · ' + uqKeys.length, open: _doneGroupOpen[UQ_GROUP_LINE] !== false, keys: uqKeys },
-            { id: UQ_GROUP_NEEDS, label: '응답 필요 · ' + needsKeys.length, open: _doneGroupOpen[UQ_GROUP_NEEDS] !== false, keys: needsKeys },
-          ],
-        }
-      : { id: 'waiting', label: BOARD_LABELS.waiting, emptyText: filteredEmpty('waiting'), keys: needsKeys };
+    // The 대기큐 line is drawn in the 작업 큐 section's 개인별 큐 tab (paintWorkQueues below), not in 응답 필요.
+    var waitingCol = { id: 'waiting', label: BOARD_LABELS.waiting, emptyText: filteredEmpty('waiting'), keys: needsKeys };
     kb._ibPlan = {
       cols: [
         waitingCol,
@@ -13268,6 +13368,11 @@ function renderBoard(board, partial) {
   }
   // The CRON lane (Option A): each job's lead run in its own one-column element.
   paintCronLaneCards(cronLaneSlots(cronPlan));
+  // 작업 큐: each lane's waiting cards and each person's 대기큐 cards, in their queue's box.
+  if (typeof paintWorkQueues === 'function') {
+    paintWorkQueues(wqSplit.byLane, uq.line);
+    wqAfterBoard();
+  }
   if (typeof cardFinishHold === 'function') cardFinishHold(false);
   // Cards that left every element: closed for good (a card that comes back
   // comes back closed), their bodies and retry timers released.
@@ -13725,6 +13830,12 @@ function wireInbox(host) {
   // A 대기큐 entry's buttons: 먼저 진행 · 대기 취소.
   host.addEventListener('ui-action', function(e) {
     if (e.target !== host || !e.detail) return;
+    // A lane card in the 작업 큐 section: 먼저 진행 · 대기에서 빼기 (an admin's, work-queue-client.ts).
+    var wqAction = String(e.detail.actionId || '');
+    if (wqAction.indexOf('wq-') === 0) {
+      if (typeof wqCardAction === 'function') wqCardAction(String(e.detail.cardId), wqAction);
+      return;
+    }
     var item = typeof uqItemOf === 'function' ? uqItemOf(String(e.detail.cardId)) : null;
     if (!item) return;
     var act = String(e.detail.actionId || '');
@@ -15393,6 +15504,7 @@ function rerenderForViewMode() {
 var VIEW_BUILTINS = ${JSON.stringify(BUILTIN_PRESETS)};
 ${VIEW_LAYOUT_CLIENT_JS}
 ${CARD_FINISH_CLIENT_JS}
+${WORK_QUEUE_CLIENT_JS}
 ${DICTATION_PREF_JS}
 ${DICTATION_SERVER_JS}
 ${CODE_CHANGES_JS}

@@ -47,3 +47,17 @@ Loop: ./loop.md · Each round close appends one block at the bottom; nothing abo
 - 20:39:32 A가 턴을 끝내고(20:34:30) 5분 → 호스트 로그 `Work queue entry released by the host {entry: wq-1, reason: holder-idle}`, A 스레드에 `⏹ 작업 큐 qa:dev 차례를 돌려놓았습니다 (wq-1 · 세션이 일을 하지 않음)`(A6).
 - 20:39:32 같은 틱에 `Work queue turn came — waking the holder {entry: wq-3}` → 20:39:35 C 스레드에 호스트 턴 `[work-queue] Your turn in qa:dev: entry wq-3 (ABC-902) runs now …` → C가 `queue_done {"entry":"wq-3"}`(원장 20:39:43 `done`)을 부르고 "QA 완료 (ABC-902)"를 답한다. 사람 입력 0(A5).
 - 끝난 뒤 원장: 진행 · 대기 0, ended = wq-2 cancelled · wq-1 released(holder-idle) · wq-3 done. 두 카드는 `완료` 열에 `queueWait` 없음. 테스트 카드 A · C는 대시보드에서 닫았다(20:42).
+
+## R3 — closed 2026-11-26
+
+- measured 1✅ · result: the customer dev host runs the v1 lanes since its 2026-11-20 scheduled deploy — its ledger holds 22 deploy · QA entries (2026-11-23..26: 19 ended done/cancelled/released, one running), so `queue_list` shows `deploy:dev2` · `qa:dev2` in use · closed rows: W9b · commit/PR: this round's v2 branch (docs only for R3)
+
+### Closed rows
+
+| ID | 작업 단위 | Status | 증거 |
+|---|---|---|---|
+| W9b | 고객 dev 호스트: 설정(dev2 · stage0) + 코드 배포 | ✅ | 2026-11-26 그 호스트의 `data/work-queues.sqlite3`를 읽기만으로 확인(rev 45): `wq-1`…`wq-22`, `deploy:dev2` · `qa:dev2` 항목이 2026-11-23부터 줄을 서고 끝났다(`done` 15 · `cancelled` 2 · `released` 4 · 진행 1). 고객 환경 배포 · QA는 일으키지 않았다 |
+
+### Round section (as it was in loop.md)
+
+라운드 3 — 고객 dev 호스트에서 켜기. 소유자 dev 호스트는 라운드 2에서 실측을 통과했다(loop.done.md R2). 남은 것은 고객 dev 호스트 하나였다. 설정은 2026-11-19에 넣었고(백업 · 권한 600 유지), 코드는 2026-11-20 19:00 KST 정기 배포로 들어갔다. 2026-11-26 원장을 읽어 확인했다(위 행). 같은 날 대화 기록에서 v1이 풀지 못한 일을 찾았다: 그 호스트의 실제 QA 레인은 환경 유저의 개인 스킬이 직접 잡는 파일 잠금이라 바쁘면 한 줄로 끝나고 아무도 다시 부르지 않는다(2026-11-24 00:53Z · 2026-11-25 13:14Z) — v2(SSOT_4–5, 라운드 4)의 출발점.

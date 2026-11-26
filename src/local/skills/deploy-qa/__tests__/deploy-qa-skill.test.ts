@@ -805,9 +805,9 @@ describe('deploy-qa checks an MCP-tool adapter by the profile liveness call', ()
 });
 
 /**
- * .prd/36 G9 — a QA run lines up in the host's work queue (`qa:<target>`) by its issue keys before it takes the lock:
- * keys another run already QAs are not QA'd twice, a run that has to wait ends its turn (no lock held, no polling, no
- * question, no cron) and the host wakes its thread when its turn comes.
+ * .prd/36 G9 (v2) — a QA run lines up in the lane `qa-<target>` by its issue keys before it takes the lock: keys another
+ * run already QAs are not QA'd twice, a run that has to wait ends its turn (no lock held, no polling, no question, no
+ * cron) and the host wakes its thread when its turn comes. A lane needs no configuration.
  */
 describe('deploy-qa lines up in the work queue', () => {
   const md = read('deploy-qa');
@@ -818,9 +818,10 @@ describe('deploy-qa lines up in the work queue', () => {
     expect(md.indexOf('## Work queue')).toBeLessThan(md.indexOf('## Lock'));
   });
 
-  it('enters qa:<target> with the admitted target keys, after steps 1–5 read-only', () => {
+  it('enters qa-<target> with the admitted target keys, after steps 1–5 read-only', () => {
     expect(queue).toContain('queue_enter');
-    expect(queue).toContain('qa:<target>');
+    expect(queue).toContain('qa-<target>');
+    expect(queue).not.toContain('qa:<target>');
     expect(queue).toContain('steps 1–5 read-only');
     expect(queue).toMatch(/admitted target keys/);
   });
@@ -832,7 +833,7 @@ describe('deploy-qa lines up in the work queue', () => {
   });
 
   it('queued: ends the turn holding no lock, with no wait, no question and no cron; the host wakes it', () => {
-    expect(queue).toContain('`deployed, QA queued: qa:<target> #<n>`');
+    expect(queue).toContain('`deployed, QA queued: qa-<target> #<n>`');
     expect(queue).toMatch(/no lock/);
     expect(queue).toMatch(/no question/);
     expect(queue).toMatch(/cron/);
@@ -844,8 +845,13 @@ describe('deploy-qa lines up in the work queue', () => {
     expect(queue).toMatch(/every exit path/);
   });
 
-  it('a host with no queue for the target runs as before', () => {
-    expect(queue).toContain('NO_QUEUES');
-    expect(queue).toContain('UNKNOWN_QUEUE');
+  it('v2 — every host has the lane; only a runtime without the queue runs as before', () => {
+    expect(queue).not.toContain('NO_QUEUES');
+    expect(queue).not.toContain('UNKNOWN_QUEUE');
+    expect(queue).toContain('QUEUE_UNAVAILABLE');
+  });
+
+  it('the lane is the QA exclusivity: a wrapper that tells it to take its own lock and stop when busy lines up instead', () => {
+    expect(queue).toMatch(/own lock[^\n]*queue_enter/);
   });
 });

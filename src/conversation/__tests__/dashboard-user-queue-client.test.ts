@@ -265,11 +265,12 @@ describe('uqAct', () => {
 
 describe('renderBoard wiring (source)', () => {
   const render = clientFn('renderBoard');
-  it('the 응답 필요 column leads with the 대기큐 group, then 응답 필요', () => {
+  it('.prd/36 v2 — the 대기큐 line moved to the 작업 큐 section (개인별 큐); 응답 필요 holds what needs an answer', () => {
     expect(render).toContain('uqSplitWaiting(board.userQueue');
-    expect(render.indexOf('UQ_GROUP_LINE')).toBeLessThan(render.indexOf('UQ_GROUP_NEEDS'));
-    expect(render).toContain('대기큐 · ');
-    // A thread that waits in line is not counted as needing an answer.
+    expect(render).not.toContain('UQ_GROUP_LINE');
+    expect(render).toContain('paintWorkQueues(wqSplit.byLane, uq.line)');
+    // The threads in line are drawn as their entry's card there only, and not counted as needing an answer.
+    expect(render).toContain("keys(uq.needs, 'waiting', kb)");
     expect(render).toContain('return !s.userQueue;');
   });
 });
