@@ -179,6 +179,42 @@ describe('resumeActiveGoals (T1)', () => {
     expect(settled).toHaveBeenCalledWith('C1-T1', { cause: 'kick' });
   });
 
+  /**
+   * .prd/39 D13 · X18 — a person stopped this session after its last turn began (the stop is saved with the session):
+   * the restart does not roll the goal again. It is recorded stopped(person-stopped); no kick, no refund.
+   */
+  it('X18: leaves a goal a person stopped as stopped(person-stopped) — not kicked, not refunded', () => {
+    const stoppedByPerson = activeGoalSession({ activityState: 'idle', personStoppedWorkAt: 123 } as any);
+    const goal = stoppedByPerson.goal as NonNullable<ConversationSession['goal']>;
+    goal.continuationCount = 4;
+    const sessions = new Map<string, ConversationSession>([['C1-T1', stoppedByPerson]]);
+    const { handler } = createHandler(sessions);
+    const settled = vi.fn();
+    handler.setGoalTurnSettledHandler(settled);
+    (handler as any).restartCutSessionKeys = new Set(['C1-T1']);
+
+    expect(handler.resumeActiveGoals()).toBe(0);
+
+    expect(settled).not.toHaveBeenCalled();
+    expect(goal.continuationCount).toBe(4);
+    expect((goal as any).phase).toMatchObject({ kind: 'stopped', why: 'person-stopped' });
+  });
+
+  /** .prd/39 D13 · X19 — a goal whose opening has not reached the model is the first turn's to start, not the loop's. */
+  it('X19: leaves a goal whose first turn has not started to that turn — no kick, no resume mark', () => {
+    const opening = activeGoalSession({ activityState: 'idle' });
+    (opening.goal as any).openingPending = true;
+    const sessions = new Map<string, ConversationSession>([['C1-T1', opening]]);
+    const { handler } = createHandler(sessions);
+    const settled = vi.fn();
+    handler.setGoalTurnSettledHandler(settled);
+
+    expect(handler.resumeActiveGoals()).toBe(0);
+
+    expect(settled).not.toHaveBeenCalled();
+    expect((handler as any).followupResumeMark.has('C1-T1')).toBe(false);
+  });
+
   it('takes the old process’s pending error retry from a session whose turn already runs', () => {
     const running = activeGoalSession({
       activityState: 'working',

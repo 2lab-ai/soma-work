@@ -24,7 +24,7 @@ import {
 import { FOLLOWUP_RESTART_FREEZE_REASON, type FollowupQueueView } from '@soma/slack/followup-queue-blocks';
 import { FollowupQueueStore } from '@soma/slack/followup-queue-store';
 import { stopGoal } from '@soma/slack/goal/machine';
-import { slotGoalInFlight, slotHoldOf } from '@soma/slack/goal/read';
+import { phaseOf, slotGoalInFlight, slotHoldOf } from '@soma/slack/goal/read';
 import { OutputFlag } from '@soma/slack/output-flags';
 import { isLocalSlashCommand, shouldForwardAsLocalSlashCommand } from '@soma/slack/pipeline/local-slash-command';
 import { runWithTimeout } from '@soma/slack/pipeline/stream-executor-cleanup-helpers';
@@ -8815,6 +8815,7 @@ export class SlackHandler {
     let refunded = 0;
     let leftToRestartResume = 0;
     let leftToLiveTurn = 0;
+    let stoppedByPerson = 0;
     for (const [sessionKey, session] of this.claudeHandler.getAllSessions()) {
       // Repair a stranded queue (defense for the eval-complete crash window):
       // if the current goal is genuinely closed (completed) or absent but goals
@@ -8838,6 +8839,21 @@ export class SlackHandler {
       // lock — the goal stays active and resumes on the admin's retry.
       if (session.safeguardHalt) {
         this.logger.info('Goal resume skipped — session halted by a safeguards flag', { sessionKey });
+        continue;
+      }
+      // .prd/39 D13 (X18) — a person stopped this session after its last turn began: the stop is the last word across
+      // the restart. Recorded stopped(person-stopped) (an idle card with a stop chip); no kick, no refund.
+      if (typeof session.personStoppedWorkAt === 'number') {
+        if (phaseOf(session.goal)?.kind !== 'stopped') stopGoal(session.goal, 'person-stopped');
+        stoppedByPerson++;
+        this.logger.info('Goal left stopped after restart — a person stopped it', { sessionKey });
+        continue;
+      }
+      // A goal already stopped (judge-failed, start-failed, resume-failed, person-stopped) waits for a person.
+      if (phaseOf(session.goal)?.kind === 'stopped') continue;
+      // .prd/39 D13 (X19) — the opening has not reached the model: the first turn starts the goal, not the loop.
+      if (phaseOf(session.goal)?.kind === 'opening') {
+        this.logger.info('Goal resume left to its opening turn', { sessionKey });
         continue;
       }
       // A stall judged on no turn text is not a real stall: a turn the restart
@@ -8951,7 +8967,7 @@ export class SlackHandler {
     this.restartCutSessionKeys.clear();
     this.restartResumedSessionKeys.clear();
     this.restartGoalPassRan = true;
-    if (forcedIdle > 0 || repaired > 0 || retriesClaimed > 0 || stallsEnded > 0 || refunded > 0) {
+    if (forcedIdle > 0 || repaired > 0 || retriesClaimed > 0 || stallsEnded > 0 || refunded > 0 || stoppedByPerson > 0) {
       this.claudeHandler.saveSessions();
     }
     if (resumed > 0 || repaired > 0 || leftToRestartResume > 0 || leftToLiveTurn > 0) {
