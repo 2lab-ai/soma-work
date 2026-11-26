@@ -406,6 +406,7 @@ describe('end of turn after ASK_USER_QUESTION', () => {
         s.actionPanel.waitingForChoice = true;
         // The typed answer lands while the last chunk goes up: it takes the forms and closes the question.
         answerPath(s)();
+        // The panel writes no choice meta for it (thread-panel.test.ts): the open bit stays down.
         return { ok: true, primaryTs: 'form_ts', allTs: ['form_ts'], formIds };
       });
     deps.actionHandlers.formsAnswered = vi.fn().mockReturnValue(true); // the answer took its forms
@@ -416,6 +417,30 @@ describe('end of turn after ASK_USER_QUESTION', () => {
     expect(session.actionPanel?.waitingForChoice).toBe(false);
     expect(states(deps)).not.toContain('waiting');
     expect(result.turnCollector?.getResult().hasPendingChoice).toBe(false);
+  });
+
+  // #1474 round 15 (astra): the later chunk failed to post after a typed reply answered the chunks already up — no
+  // fallback question for an answered one.
+  it('T2 — a chunk that fails after the question was answered sends no fallback question', async () => {
+    const session = createSession();
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const deps = createDeps(session, askingStream());
+    deps.threadPanel.askUserForm = vi
+      .fn()
+      .mockImplementation(async (turnId: string, _chunks: any[], formIds: string[], question: any, _a: any, s: any) => {
+        s.actionPanel = s.actionPanel ?? {};
+        s.actionPanel.pendingChoice = { turnId, kind: 'multi', choiceTs: 'form_ts', formIds: [...formIds], question };
+        s.actionPanel.waitingForChoice = true;
+        answerPath(s)();
+        return { ok: false, reason: 'post-failed', postedTs: ['form_ts'], failedIndex: 1, error: new Error('slack') };
+      });
+    deps.actionHandlers.formsAnswered = vi.fn().mockReturnValue(true);
+
+    await new StreamExecutor(deps).execute(params(session, say));
+
+    expect(say).not.toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining('선택') }));
+    expect(session.actionPanel?.pendingQuestion).toBeUndefined();
+    expect(states(deps)).not.toContain('waiting');
   });
 
   it('T2 — an answer landing during the end-of-turn status write is not re-opened', async () => {

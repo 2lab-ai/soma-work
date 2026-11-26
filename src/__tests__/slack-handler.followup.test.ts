@@ -9310,6 +9310,19 @@ describe('SlackHandler — follow-up queue host', () => {
       await answering;
     });
 
+    // #1474 round 15 (review-of-legends): the question closed before its redraw — a redraw that fails does not stop the
+    // answer from running.
+    it('T2 a dispatched typed answer runs even when its panel redraw fails', async () => {
+      registrySession.activityState = 'waiting';
+      registrySession.actionPanel = { waitingForChoice: true, pendingQuestion: singleQuestion() };
+      handlerAny.threadPanel.clearChoice = vi.fn().mockRejectedValue(new Error('slack down'));
+
+      await handler.handleMessage(message({ ts: '333.541', text: '왼쪽으로' }), say());
+
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      expect(startWithContinuation.mock.calls[0][0]).toContain('왼쪽으로');
+    });
+
     // #1474 round 6 (grok): a file alone does not answer the question — the person's words do.
     it('T2 a message with only a file leaves the open question open', async () => {
       registrySession.activityState = 'waiting';

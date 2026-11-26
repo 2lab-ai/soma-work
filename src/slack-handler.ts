@@ -3209,7 +3209,16 @@ export class SlackHandler {
         const clearing = this.threadPanel?.clearChoice(sessionResult.sessionKey);
         // Treat direct user message as completing manual input from choice UI.
         this.claudeHandler.setActivityStateByKey(sessionResult.sessionKey, 'working');
-        await clearing;
+        // The question is already closed: a redraw that fails must not stop its answer from running (round 15,
+        // review-of-legends).
+        try {
+          await clearing;
+        } catch (error) {
+          this.logger.warn('The answered question’s panel redraw failed — the answer runs', {
+            sessionKey: sessionResult.sessionKey,
+            error: (error as Error)?.message ?? String(error),
+          });
+        }
       }
       // #911 — and the drain the question paused reopens with it.
       if (userWord) {

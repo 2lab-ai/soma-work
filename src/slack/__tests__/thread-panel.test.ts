@@ -564,6 +564,48 @@ describe('ThreadPanel — P3 (PHASE>=3) B3 choice facade', () => {
     expect(sessionRegistry.persistAndBroadcast).toHaveBeenCalledTimes(1);
   });
 
+  // #1474 round 15 (astra/fable): a typed reply answers the chunks already up while the last one is posted — the
+  // panel does not raise the open bit again for the answered question when the posting ends.
+  it('askUserForm: answered while the later chunk is posted → no choice meta, the open bit stays down', async () => {
+    const session = makeSession();
+    let releaseChunk1: (v: { ts: string }) => void = () => {};
+    const postMessage = vi
+      .fn()
+      .mockResolvedValueOnce({ ts: 'chunk-0' })
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            releaseChunk1 = resolve;
+          }),
+      );
+    const { panel } = makePanelWithMocks(session, { postMessage });
+    const setChoiceMeta = vi.spyOn((panel as any).surface, 'setChoiceMeta');
+    const chunks = [
+      { builtPayload: { blocks: [{ type: 'section' }] }, text: 'chunk-0 text' },
+      { builtPayload: { blocks: [{ type: 'section' }] }, text: 'chunk-1 text' },
+    ];
+
+    const asking = panel.askUserForm(
+      'turn-multi',
+      chunks,
+      ['form-0', 'form-1'],
+      sampleMultiQuestion,
+      address,
+      session,
+      'C1:t1',
+    );
+    await vi.waitFor(() => expect(session.actionPanel?.waitingForChoice).toBe(true)); // chunk 0 up, choice open
+    // The typed answer closes it (SlackHandler.recordTypedAnswer).
+    session.actionPanel!.waitingForChoice = false;
+    session.actionPanel!.pendingChoice = undefined;
+    releaseChunk1({ ts: 'chunk-1' });
+    const result = await asking;
+
+    expect(result.ok).toBe(true);
+    expect(setChoiceMeta).not.toHaveBeenCalled();
+    expect(session.actionPanel?.waitingForChoice).toBe(false);
+  });
+
   it('askUserForm partial failure: rolls back posted chunks and defensively clears pendingChoice', async () => {
     const session = makeSession();
     const postMessage = vi.fn().mockResolvedValueOnce({ ts: 'chunk-0' }).mockRejectedValueOnce(new Error('slack down'));

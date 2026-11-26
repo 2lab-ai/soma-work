@@ -7295,13 +7295,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     if (commitGuard && !commitGuard()) return false;
     // #1474 — answered while it was being posted (a typed reply answered the first chunk while the rest went up): the
     // answer took its forms and closed it; it is not opened again as waiting — the turn would end on an answered
-    // question and the answer would wait behind it (round 14, astra). One chunk answered by a click leaves the choice
-    // open (its record only shrank): that question is still opened.
-    if (answeredWhilePosting && session.actionPanel?.waitingForChoice !== true) {
+    // question and the answer would wait behind it (round 14, astra). Judged by its record, not the open bit (the
+    // panel's choice meta may raise it): one chunk answered by a click leaves the record (it only shrank) and the
+    // question is still opened (round 15, astra/fable).
+    if (answeredWhilePosting && session.actionPanel?.pendingChoice?.turnId !== turnId) {
       this.logger.info('A question was answered while its forms were posted — not opened again', {
         sessionKey: context.sessionKey,
       });
-      return false;
+      // Registered, and already answered: not a question that failed to register (round 15, review-of-legends).
+      return true;
     }
 
     // Store raw question data on session for dashboard access (before setActivityState triggers broadcast)
@@ -7546,9 +7548,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         return this.deps.actionHandlers.formsAnswered?.(context.sessionKey, formIds) === true ? 'answered' : undefined;
       }
       if (result.reason === 'post-failed') {
+        // #1474 — answered before the failed chunk (a typed reply to the chunks already up): no fallback question for
+        // an answered one (round 15, astra).
+        const answered = this.deps.actionHandlers.formsAnswered?.(context.sessionKey, formIds) === true;
         for (const fId of formIds) {
           this.deps.actionHandlers.deletePendingForm(fId);
         }
+        if (answered) return 'answered';
         await this.sendCommandChoiceFallback(question, context);
         return;
       }
