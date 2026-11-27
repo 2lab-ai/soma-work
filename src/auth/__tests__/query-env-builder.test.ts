@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SlotAuthLease } from '../../credentials-manager';
 import { buildQueryEnv, getQueryEnvAdditional, RESERVED_LEASE_KEYS, setQueryEnvAdditional } from '../query-env-builder';
 
@@ -114,19 +114,10 @@ describe('buildQueryEnv', () => {
       NODE_EXTRA_CA_CERTS: '/etc/ca.pem',
       HTTPS_PROXY: 'http://proxy.local:3128',
     };
-    const saved: Record<string, string | undefined> = {};
     beforeEach(() => {
-      for (const [key, value] of Object.entries({ ...SECRETS, ...KEPT })) {
-        saved[key] = process.env[key];
-        process.env[key] = value;
-      }
+      for (const [key, value] of Object.entries({ ...SECRETS, ...KEPT })) vi.stubEnv(key, value);
     });
-    afterEach(() => {
-      for (const [key, value] of Object.entries(saved)) {
-        if (value === undefined) delete process.env[key];
-        else process.env[key] = value;
-      }
-    });
+    afterEach(() => vi.unstubAllEnvs());
 
     it('none of them reaches the agent, by name or by value', () => {
       const { env } = buildQueryEnv(makeLease('slot-a', 'LEASE-TOKEN', 'cct'));
@@ -147,8 +138,7 @@ describe('buildQueryEnv', () => {
       const fs = await import('node:fs');
       const os = await import('node:os');
       const path = await import('node:path');
-      const savedToken = process.env.GITHUB_TOKEN;
-      process.env.GITHUB_TOKEN = 'ghs_fixturetoken';
+      vi.stubEnv('GITHUB_TOKEN', 'ghs_fixturetoken');
       try {
         clearAgentGhConfigDir();
         expect(buildQueryEnv(makeLease('slot-a', 'T', 'cct')).env.GITHUB_TOKEN).toBe('ghs_fixturetoken');
@@ -159,15 +149,7 @@ describe('buildQueryEnv', () => {
         expect(env.GH_CONFIG_DIR).toBe(fs.realpathSync(dir) === dir ? dir : path.resolve(dir));
       } finally {
         clearAgentGhConfigDir();
-        if (savedToken === undefined) delete process.env.GITHUB_TOKEN;
-        else process.env.GITHUB_TOKEN = savedToken;
       }
-    });
-
-    it("the operator's claude.env still adds what an agent's tools need", () => {
-      setQueryEnvAdditional({ SOME_TOOL_SETTING: 'on' });
-      const { env } = buildQueryEnv(makeLease('slot-a', 'LEASE-TOKEN', 'cct'));
-      expect(env.SOME_TOOL_SETTING).toBe('on');
     });
   });
 

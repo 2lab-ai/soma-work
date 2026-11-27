@@ -135,6 +135,11 @@ describe('McpConfigBuilder slack-mcp server', () => {
         path.join(DATA_DIR, 'UADMIN0001', 'uploads'),
       ]);
       expect(env.SOMA_UPLOAD_EXTRA_ROOTS).toBeUndefined();
+      // Off requested on a host that does not allow it: still sandboxed, still its own roots.
+      off.mockReturnValue(true);
+      env = (await build()).mcpServers?.['slack-mcp']?.env ?? {};
+      expect(JSON.parse(env.SOMA_UPLOAD_ROOTS ?? '[]')).toContain(path.join('/tmp', 'UADMIN0001'));
+      expect(env.SOMA_UPLOAD_EXTRA_ROOTS).toBeUndefined();
       // Sandbox off on a host that allows it: the /tmp rule, plus its uploads directory.
       off.mockReturnValue(true);
       process.env.SOMA_SANDBOX_OFF_ALLOWED = 'true';

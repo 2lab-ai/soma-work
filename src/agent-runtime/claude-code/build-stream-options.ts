@@ -941,9 +941,13 @@ export async function buildStreamOptions(
         }),
       ),
     ];
-    // Every domain: an admin's sandbox, or one whose user turned the allowlist off.
-    const allDomains = adminProfile || (!sandboxDisabled && networkDisabled);
-    const allow = [...(base.permissions?.allow ?? []), ...(allDomains ? [ADMIN_ALL_DOMAINS_RULE] : [])];
+    // The admin profile's rules (every domain); for anyone else, the every-domain rule once the allowlist is off.
+    const networkRules = adminProfile
+      ? adminProfile.allowRules
+      : !sandboxDisabled && networkDisabled
+        ? [ADMIN_ALL_DOMAINS_RULE]
+        : [];
+    const allow = [...(base.permissions?.allow ?? []), ...networkRules];
     options.settings = {
       ...base,
       // Plan mode writes its plan file with the native Write tool, by default under the CLI's config

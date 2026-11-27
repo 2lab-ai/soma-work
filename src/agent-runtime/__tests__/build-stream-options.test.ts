@@ -1182,6 +1182,8 @@ describe('sandbox: admin profile and write protection (env-access WU2, #1210)', 
       const network = (options.sandbox as NetSandbox).network;
       expect(network?.strictAllowlist).toBe(true);
       expect(network?.allowedDomains).toEqual([...DEV_DOMAIN_ALLOWLIST]);
+      // The every-domain rule would put every domain back on the list.
+      expect(allowRules(options)).not.toContain('WebFetch(domain:*)');
     });
 
     it('the allowlist turned off opens every domain, not strictly', async () => {
