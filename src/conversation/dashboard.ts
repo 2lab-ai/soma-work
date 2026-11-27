@@ -16803,6 +16803,9 @@ function panelHeadData(s, col) {
   var bar = PS_BAR_STATUS[st] || 'idle';
   var words = {};
   words[bar] = AGENT_STATUS_LABEL[st] || '';
+  // #1474 — the model asked and a turn still holds the session (turnHolds): the head says what the card says
+  // (cardOf), 작업 중 · 응답 필요 — not 입력 대기, as if the session had stopped for its owner. The wait tone stays.
+  if (st === 'waiting' && (s.activityState === 'working' || s.turnBusy === true) && s.pendingQuestion) words.waiting = STRINGS.statusWorkingNeedsAnswer;
   var d = { status: bar, words: words };
   var leg = st === 'running' || st === 'waiting' ? (Number(s.activeLegStartedAtMs) || 0) : 0;
   var acc = toNum(s.activeAccumulatedMs);
