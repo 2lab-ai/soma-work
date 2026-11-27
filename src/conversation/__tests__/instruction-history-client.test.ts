@@ -27,8 +27,10 @@ registerPageCatalog(
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
-const WRAP_START = DASHBOARD_TS.indexOf('<div class="ui-tok pc-steer-wrap">');
-const MARKUP = `${DASHBOARD_TS.slice(WRAP_START, DASHBOARD_TS.indexOf('<ui-agent-steering', WRAP_START))}</div>`;
+// The button and its list: the command area's first children, before the plan bar (SSOT_2 2026-11-27: 입력창 왼쪽 위).
+const CMD_START = DASHBOARD_TS.indexOf('<div class="panel-command" id="panel-command">');
+const IH_START = DASHBOARD_TS.indexOf('<!-- 보낸 지시 (SSOT 2026-11-27', CMD_START);
+const MARKUP = DASHBOARD_TS.slice(IH_START, DASHBOARD_TS.indexOf('<!-- Plan mode:', IH_START));
 
 function cutFn(src: string, name: string): string {
   const start = src.indexOf(`\nfunction ${name}(`);
@@ -193,7 +195,7 @@ afterEach(() => {
 });
 
 describe('the round button — how many instructions, beside the queue’s button', () => {
-  it('shows the count of the open card’s conversation; the queue’s button moves left of it', async () => {
+  it('shows the count of the open card’s conversation, at the composer’s top left (the queue keeps its top right)', async () => {
     const { api, calls } = boot({ fetch: { 'instructions?offset=0&limit=0': { total: 42, items: [] } } });
     expect($('ih-dock').hidden).toBe(true);
     api.ihSync('c1');
@@ -202,10 +204,12 @@ describe('the round button — how many instructions, beside the queue’s butto
     expect($('ih-dock').hidden).toBe(false);
     expect($('ih-dock-n').textContent).toBe('42');
     expect($('ih-dock').getAttribute('aria-label')).toBe('보낸 지시 42개 — 눌러서 목록 보기');
-    expect($('ih-dock').parentElement?.hasAttribute('data-ih')).toBe(true);
-    expect(INSTRUCTION_HISTORY_CSS).toContain(
-      '.pc-steer-wrap[data-ih] > ui-agent-steering { --ui-steering-dock-right: calc(var(--ih-dock-w, 32px) + 8px); }',
+    // Left top of the command area, on the composer's left edge; nothing moves the queue's round button any more.
+    expect(INSTRUCTION_HISTORY_CSS).toMatch(
+      /\.ih-dock \{ position: absolute; z-index: 3; left: 16px; bottom: calc\(100% - 2px\);/,
     );
+    expect(INSTRUCTION_HISTORY_CSS).not.toContain('--ui-steering-dock-right');
+    expect(INSTRUCTION_HISTORY_CSS).not.toMatch(/\.ih-dock \{[^}]*\bright: 0/);
   });
 
   it('no instruction (or a count that could not be had): no button', async () => {
@@ -213,7 +217,6 @@ describe('the round button — how many instructions, beside the queue’s butto
     api.ihSync('c1');
     await flush();
     expect($('ih-dock').hidden).toBe(true);
-    expect($('ih-dock').parentElement?.hasAttribute('data-ih')).toBe(false);
     const b = boot({ fetch: { 'limit=0': new Error('404') } });
     b.api.ihSync('c1');
     await flush();
@@ -1348,7 +1351,11 @@ describe('a row — 대화 moves to that instruction', () => {
 });
 
 describe('the page carries it', () => {
-  it('the markup sits in the composer’s wrapper, before <ui-agent-steering>, closed and empty', () => {
+  it('the markup is the command area’s first part — before the plan bar, outside the composer’s wrapper — closed and empty', () => {
+    expect(IH_START).toBeGreaterThan(CMD_START);
+    expect(DASHBOARD_TS.slice(CMD_START, IH_START)).toBe('<div class="panel-command" id="panel-command">\n      ');
+    const wrap = DASHBOARD_TS.indexOf('<div class="ui-tok pc-steer-wrap">', CMD_START);
+    expect(DASHBOARD_TS.slice(wrap, DASHBOARD_TS.indexOf('</div>', wrap))).not.toContain('ih-dock');
     expect(MARKUP).toContain('id="ih-dock"');
     expect(MARKUP).toContain('onclick="ihToggle()"');
     expect(MARKUP).toContain('id="ih-list"');

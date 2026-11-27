@@ -9287,6 +9287,19 @@ ${INSTRUCTION_HISTORY_CSS}
     </div>
     <!-- Command row is always visible: read-only for a viewer who is not the owner, off once the session ended. -->
     <div class="panel-command" id="panel-command">
+      <!-- 보낸 지시 (SSOT 2026-11-27, instruction-history-client.ts): how many instructions people sent this session,
+           as a round button at the composer's top left (the follow-up queue's round button keeps the top right); a
+           press lists them, numbered from the first, a page at a time, and a row moves 대화 to that instruction. -->
+      <button type="button" class="ih-dock" id="ih-dock" hidden aria-haspopup="dialog" aria-expanded="false" aria-controls="ih-pop" aria-label="보낸 지시" title="보낸 지시" onclick="ihToggle()"><span class="ih-dock-n" id="ih-dock-n">0</span></button>
+      <div class="ih-pop" id="ih-pop" role="dialog" aria-label="보낸 지시" tabindex="-1">
+        <div class="ih-head">
+          <span class="ih-title">보낸 지시</span><span class="ih-count" id="ih-count">0</span>
+          <span class="ih-order" role="group" aria-label="순서"><button type="button" class="ih-ord" data-order="asc" aria-pressed="true" onclick="ihSetOrder('asc')">처음부터</button><button type="button" class="ih-ord" data-order="desc" aria-pressed="false" onclick="ihSetOrder('desc')">최근부터</button></span>
+          <button type="button" class="ui-icon-btn ih-close" aria-label="닫기" title="닫기" onclick="ihClose(true)"><i data-ui-icon="close"></i></button>
+        </div>
+        <ol class="ih-list" id="ih-list" aria-label="보낸 지시 목록"></ol>
+        <div class="ih-foot" id="ih-foot" aria-live="polite"></div>
+      </div>
       <!-- Plan mode: 시작 · 취소 · 직접 입력 at the bottom while a plan waits (the composer right under it is the direct input). -->
       <div class="panel-plan-bar" id="panel-plan-bar" role="group" aria-label="작업 계획 결정" hidden></div>
       <!-- Next actions (SSOT 2026-11-11): the latest answer's next steps as buttons, right above the composer — one press
@@ -9301,19 +9314,6 @@ ${INSTRUCTION_HISTORY_CSS}
            child (#918, @2lab.ai/ui ≥ 0.36.0) — their own container, so the input is never morphed; pcFreshSteer
            carries it into a new card's composer. -->
       <div class="ui-tok pc-steer-wrap">
-        <!-- 보낸 지시 (SSOT 2026-11-27, instruction-history-client.ts): how many instructions people sent this session,
-             as a round button at the composer's top right (the queue's round button sits left of it); a press lists
-             them, numbered from the first, a page at a time, and a row moves 대화 to that instruction. -->
-        <button type="button" class="ih-dock" id="ih-dock" hidden aria-haspopup="dialog" aria-expanded="false" aria-controls="ih-pop" aria-label="보낸 지시" title="보낸 지시" onclick="ihToggle()"><span class="ih-dock-n" id="ih-dock-n">0</span></button>
-        <div class="ih-pop" id="ih-pop" role="dialog" aria-label="보낸 지시" tabindex="-1">
-          <div class="ih-head">
-            <span class="ih-title">보낸 지시</span><span class="ih-count" id="ih-count">0</span>
-            <span class="ih-order" role="group" aria-label="순서"><button type="button" class="ih-ord" data-order="asc" aria-pressed="true" onclick="ihSetOrder('asc')">처음부터</button><button type="button" class="ih-ord" data-order="desc" aria-pressed="false" onclick="ihSetOrder('desc')">최근부터</button></span>
-            <button type="button" class="ui-icon-btn ih-close" aria-label="닫기" title="닫기" onclick="ihClose(true)"><i data-ui-icon="close"></i></button>
-          </div>
-          <ol class="ih-list" id="ih-list" aria-label="보낸 지시 목록"></ol>
-          <div class="ih-foot" id="ih-foot" aria-live="polite"></div>
-        </div>
         <ui-agent-steering id="cmd-steer" lang="ko"><ui-composer id="pc-composer" slot="composer" lang="ko"><div class="panel-controls" id="panel-controls" slot="end" aria-label="이 세션의 모델과 추론 강도"></div></ui-composer></ui-agent-steering>
       </div>
     </div>

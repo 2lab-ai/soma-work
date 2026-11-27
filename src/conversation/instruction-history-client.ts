@@ -1,7 +1,7 @@
 /**
  * 보낸 지시 (SSOT 2026-11-27) — the detail card's way back to any instruction: finding one meant scrolling 대화 a long
- * way past the answers. A round button at the composer's top right (the follow-up queue's round button moves left of
- * it) shows how many instructions people sent this session from its first message on. A press opens their list —
+ * way past the answers. A round button at the composer's top left (the follow-up queue's round button keeps the top
+ * right, SSOT_2) shows how many instructions people sent this session from its first message on. A press opens their list —
  * numbered from the first, a page at a time as it scrolls (처음부터 · 최근부터) — and a row moves 대화 to that
  * instruction: the chat tab and the main agent are shown, the turns back to it are loaded in one answer (the session
  * route's `through`), and the turn is scrolled to the top of the chat and lit for a moment.
@@ -258,27 +258,15 @@ function ihGrow(by, prev, prevLastId) {
   });
 }
 
-// The button: shown while the open card has an instruction; the queue's round button moves left of it.
+// The button: shown while the open card has an instruction (the composer's top left; the queue keeps the top right).
 function ihPaint() {
   var dock = document.getElementById('ih-dock');
   if (!dock) return;
   var show = !!_ih.cid && _ih.total > 0;
   if (dock.hidden === show) dock.hidden = !show;
-  var wrap = dock.parentNode;
-  if (wrap && typeof wrap.toggleAttribute === 'function') wrap.toggleAttribute('data-ih', show);
   var num = document.getElementById('ih-dock-n');
   var txt = ihCountText(_ih.total);
   if (num && num.textContent !== txt) num.textContent = txt;
-  // The queue's button keeps 8px left of this one, however wide its number makes it (32px to a "999+" pill).
-  if (show && wrap && wrap.style) {
-    var w = dock.offsetWidth || 0;
-    var v = w ? w + 'px' : '';
-    if (wrap._ihW !== v) {
-      wrap._ihW = v;
-      if (v) wrap.style.setProperty('--ih-dock-w', v);
-      else wrap.style.removeProperty('--ih-dock-w');
-    }
-  }
   var label = adminFmt(IH_TEXT_LABEL, _ih.total);
   if (dock.getAttribute('aria-label') !== label) {
     dock.setAttribute('aria-label', label);
@@ -615,13 +603,14 @@ function ihFlash(node) {
 })();
 `;
 
-/** The button, the list and their place beside the follow-up queue's round button. */
+/** The button, the list and their place: the composer's top left (the follow-up queue's round button is at its right). */
 export const INSTRUCTION_HISTORY_CSS = String.raw`
-/* ── 보낸 지시 (SSOT 2026-11-27, instruction-history-client.ts) — the queue's round button's look and place: 8px
-   above the composer at its right. With it there, the queue's button sits left of it (the element's own offset). ── */
-.pc-steer-wrap { position: relative; }
-.pc-steer-wrap[data-ih] > ui-agent-steering { --ui-steering-dock-right: calc(var(--ih-dock-w, 32px) + 8px); }
-.ih-dock { position: absolute; z-index: 3; right: 0; bottom: calc(100% + 8px); display: grid; place-items: center;
+/* ── 보낸 지시 (SSOT 2026-11-27, instruction-history-client.ts) — the queue's round button's look, at the composer's
+   top left (SSOT_2: 지시 큐는 입력창 오른쪽 위, 내 지시 리스트는 입력창 왼쪽 위). Placed in the command area (its
+   padding is 10px 16px): on the composer's left edge (16px) and, with nothing above the composer, at the queue's
+   height — its bottom 8px above the composer's top, the command area's top + 2px. A plan or next-steps bar above the
+   composer stays clear: the button sits above the whole area, never over the bar's buttons. ── */
+.ih-dock { position: absolute; z-index: 3; left: 16px; bottom: calc(100% - 2px); display: grid; place-items: center;
   box-sizing: border-box; min-width: 32px; height: 32px; padding: 0 8px; border: 0; border-radius: 999px;
   background: var(--surface); color: var(--text);
   box-shadow: 0 0 0 1px var(--border), var(--ib-shadow, 0 2px 8px color-mix(in srgb, var(--text) 10%, transparent));
@@ -636,20 +625,19 @@ export const INSTRUCTION_HISTORY_CSS = String.raw`
   .ih-dock[aria-expanded="false"]:hover { background: color-mix(in srgb, var(--text) 6%, var(--surface)); }
 }
 @media (pointer: coarse) {
-  .pc-steer-wrap[data-ih] > ui-agent-steering { --ui-steering-dock-right: calc(var(--ih-dock-w, 44px) + 8px); }
   .ih-dock { min-width: 44px; height: 44px; font-size: 15px; }
 }
-/* The list: a raised card above the button, its right edge on the button's. */
-.ih-pop { position: absolute; z-index: 20; right: 0; bottom: calc(100% + 48px); box-sizing: border-box;
-  display: flex; flex-direction: column; width: min(400px, calc(100vw - 24px)); max-height: min(520px, 62vh);
+/* The list: a raised card above the button, its left edge on the button's. */
+.ih-pop { position: absolute; z-index: 20; left: 16px; bottom: calc(100% + 38px); box-sizing: border-box;
+  display: flex; flex-direction: column; width: min(400px, calc(100% - 32px)); max-height: min(520px, 62vh);
   border-radius: 12px; background: var(--surface); color: var(--text); outline: none;
   box-shadow: 0 0 0 1px var(--border), var(--ib-shadow-raised, 0 14px 30px color-mix(in srgb, var(--text) 14%, transparent));
-  transform-origin: bottom right; opacity: 0; visibility: hidden; pointer-events: none; transform: translateY(4px) scale(0.97);
+  transform-origin: bottom left; opacity: 0; visibility: hidden; pointer-events: none; transform: translateY(4px) scale(0.97);
   transition: opacity 140ms ease, transform 180ms cubic-bezier(0.32, 0.72, 0.24, 1), visibility 0s linear 180ms; }
 .ih-pop[data-open] { opacity: 1; visibility: visible; pointer-events: auto; transform: none;
   transition: opacity 160ms ease, transform 240ms cubic-bezier(0.32, 0.72, 0.24, 1), visibility 0s; }
-@media (pointer: coarse) { .ih-pop { bottom: calc(100% + 60px); } }
-@media (max-width: 639px) { .ih-pop { left: 0; width: auto; max-height: min(520px, 58vh); } }
+@media (pointer: coarse) { .ih-pop { bottom: calc(100% + 50px); } }
+@media (max-width: 639px) { .ih-pop { right: 16px; width: auto; max-height: min(520px, 58vh); } }
 @media (prefers-reduced-motion: reduce) { .ih-pop, .ih-pop[data-open] { transition: opacity 120ms ease, visibility 0s; transform: none; } }
 .ih-head { display: flex; flex: none; align-items: center; gap: 8px; padding: 8px 6px 6px 14px; border-bottom: 1px solid var(--border); }
 .ih-title { font-size: 12px; font-weight: 650; color: var(--text); white-space: nowrap; }

@@ -8,13 +8,14 @@
  * judged (rects, counts, ids), never a bare boolean.
  *
  *   I1  the card opens: the button shows the count (40 instructions; the host turns are not counted) at the composer's
- *       top right, the queue's round button left of it on the same line; a three-digit count (a pill) keeps the gap
+ *       top left, the queue's round button at its top right, on the same line; a three-digit count (a pill) grows to
+ *       the right from the left edge
  *   I2  a press opens the list: #1 first, a page of 30; scrolled to its end, the next page comes (40 rows)
  *   I3  a row (#3, older than the turns the chat holds) closes the list; 대화 loads back to it and its turn sits at
  *       the top of the chat's box
  *   I4  최근부터: #40 first
  *   I5  from another tab (작업 로그): a row brings 대화 back and goes to the turn
- *   I6  a phone (390): the button at the composer's top right, the list across the sheet
+ *   I6  a phone (390): the button at the composer's top left (the queue's at its right), the list across the sheet
  *
  * Run from the repo root (keeps state out of the checkout):
  *   SOMA_CONFIG_DIR=$TMP/cfg SOMA_INSTANCE_DIR=$TMP/inst CONVERSATION_VIEWER_TOKEN=t npx tsx scripts/screenshot-instruction-history.ts [outDir]
@@ -277,21 +278,22 @@ async function desktopRun(browser: import('playwright').Browser) {
 
   // I1
   const d = await docks(page);
+  // SSOT_2: 지시 큐는 입력창 오른쪽 위, 내 지시 리스트는 입력창 왼쪽 위.
   check(
     d.ihText === '40' &&
       !!d.ih &&
       !!d.queue &&
-      d.queue.x + d.queue.w <= d.ih.x &&
-      Math.abs(d.queue.y + d.queue.h / 2 - (d.ih.y + d.ih.h / 2)) <= 2 &&
       !!d.composer &&
-      d.ih.x + d.ih.w <= d.composer.x + d.composer.w + 1 &&
+      Math.abs(d.ih.x - d.composer.x) <= 2 &&
+      Math.abs(d.queue.x + d.queue.w - (d.composer.x + d.composer.w)) <= 2 &&
+      Math.abs(d.queue.y + d.queue.h / 2 - (d.ih.y + d.ih.h / 2)) <= 2 &&
       d.ih.y + d.ih.h <= d.composer.y,
-    'I1 the count (40, host turns left out) at the composer’s top right; the queue’s button left of it, same line',
+    'I1 the count (40, host turns left out) on the composer’s top-left edge; the queue’s button on its top-right edge, same line',
     d,
   );
   await shot(page, '01-button.png');
 
-  // I1b: a three-digit count makes the button a pill; the queue's button still keeps 8px left of it.
+  // I1b: a three-digit count makes the button a pill, growing right from the composer's left edge.
   await page.evaluate(() => {
     const w = window as any;
     w._ih.total = 128;
@@ -303,9 +305,11 @@ async function desktopRun(browser: import('playwright').Browser) {
     wide.ihText === '128' &&
       !!wide.ih &&
       !!wide.queue &&
+      !!wide.composer &&
       wide.ih.w > 32 &&
-      wide.queue.x + wide.queue.w <= wide.ih.x - 6,
-    'I1b a 128 pill: the queue’s button stays left of it with its gap',
+      Math.abs(wide.ih.x - wide.composer.x) <= 2 &&
+      wide.ih.x + wide.ih.w < wide.queue.x,
+    'I1b a 128 pill keeps the left edge and stays clear of the queue’s button',
     wide,
   );
   await shot(page, '01b-button-wide.png');
@@ -320,7 +324,12 @@ async function desktopRun(browser: import('playwright').Browser) {
   await page.click('#ih-dock');
   await sleep(700);
   const l1 = await listState(page);
-  check(l1.open && l1.first === '#1' && l1.rows >= 30, 'I2 a press opens the list: #1 first, the first page', l1);
+  const ihx = (await docks(page)).ih?.x ?? -1;
+  check(
+    l1.open && l1.first === '#1' && l1.rows >= 30 && Math.abs(l1.rect.x - ihx) <= 2,
+    'I2 a press opens the list above the button, left edges aligned: #1 first, the first page',
+    { ...l1, buttonX: ihx },
+  );
   await shot(page, '02-list.png');
   await page.evaluate(() => {
     const list = document.getElementById('ih-list') as HTMLElement;
@@ -394,8 +403,14 @@ async function phoneRun(browser: import('playwright').Browser) {
   log('\n── 390 phone dark ──');
   const d = await docks(page);
   check(
-    !!d.ih && d.ih.w >= 44 && d.ih.h >= 44 && d.ih.x + d.ih.w <= 390 && !!d.queue && d.queue.x + d.queue.w <= d.ih.x,
-    'I6 the button (44px) at the composer’s top right on a phone, the queue’s left of it',
+    !!d.ih &&
+      d.ih.w >= 44 &&
+      d.ih.h >= 44 &&
+      !!d.composer &&
+      Math.abs(d.ih.x - d.composer.x) <= 2 &&
+      !!d.queue &&
+      Math.abs(d.queue.x + d.queue.w - (d.composer.x + d.composer.w)) <= 2,
+    'I6 the button (44px) at the composer’s top left on a phone, the queue’s at its top right',
     d,
   );
   await shot(page, '07-phone-button.png');
