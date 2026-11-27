@@ -181,48 +181,54 @@ function carriesCredentials(proxy: string): boolean {
 }
 
 /**
- * Bedrock and Vertex: the CLI's own credentials when the host selects one of them (ccp mode only — llmux owns
- * routing). Passed on only with the selector, as the lease's OAuth token is: the CLI cannot run without them.
+ * Bedrock and Vertex: the CLI's own credentials when one of them is selected (ccp mode only — llmux owns routing).
+ * Passed on only with the selector, as the lease's OAuth token is: the CLI cannot run without them. Bedrock takes every
+ * `AWS_*` variable — the AWS credential chain reads static keys, profiles and their files, web identity (IRSA) and the
+ * container credential endpoint (ECS) from them. Vertex takes Google's credential locators by name, never the
+ * `GOOGLE_*` family as a whole: that holds the bot's own OAuth client secret.
  */
 const PROVIDER_ENV: ReadonlyArray<{ selector: string; names: readonly string[]; prefixes: readonly string[] }> = [
   {
     selector: 'CLAUDE_CODE_USE_BEDROCK',
-    names: [
-      'AWS_REGION',
-      'AWS_DEFAULT_REGION',
-      'AWS_PROFILE',
-      'AWS_ACCESS_KEY_ID',
-      'AWS_SECRET_ACCESS_KEY',
-      'AWS_SESSION_TOKEN',
-      'AWS_BEARER_TOKEN_BEDROCK',
-      'ANTHROPIC_BEDROCK_BASE_URL',
-      'CLAUDE_CODE_SKIP_BEDROCK_AUTH',
-    ],
-    prefixes: [],
+    names: ['ANTHROPIC_BEDROCK_BASE_URL', 'CLAUDE_CODE_SKIP_BEDROCK_AUTH'],
+    prefixes: ['AWS_'],
   },
   {
     selector: 'CLAUDE_CODE_USE_VERTEX',
     names: [
-      'ANTHROPIC_VERTEX_PROJECT_ID',
       'CLOUD_ML_REGION',
       'GOOGLE_APPLICATION_CREDENTIALS',
-      'ANTHROPIC_VERTEX_BASE_URL',
+      'GOOGLE_CLOUD_PROJECT',
+      'GCLOUD_PROJECT',
+      'CLOUDSDK_CONFIG',
       'CLAUDE_CODE_SKIP_VERTEX_AUTH',
     ],
-    prefixes: ['VERTEX_REGION_'],
+    prefixes: ['ANTHROPIC_VERTEX_', 'VERTEX_REGION_'],
   },
 ];
 
-/** The selected provider's variables from `source`; none when no provider is selected. */
-export function providerEnv(source: NodeJS.ProcessEnv): Record<string, string> {
+function selects(value: string | undefined): boolean {
+  return value !== undefined && value !== '' && value !== '0' && value.toLowerCase() !== 'false';
+}
+
+/**
+ * The selected provider's variables from `source`; none when no provider is selected. The selector counts where the
+ * CLI will see it — the host environment or the operator's `claude.env` (`overlay`) — and the operator's value wins.
+ */
+export function providerEnv(source: NodeJS.ProcessEnv, overlay: Record<string, string> = {}): Record<string, string> {
   const env: Record<string, string> = {};
   for (const provider of PROVIDER_ENV) {
-    const selected = source[provider.selector];
-    if (!selected || selected === '0' || selected.toLowerCase() === 'false') continue;
-    env[provider.selector] = selected;
+    const selector = overlay[provider.selector] ?? source[provider.selector];
+    if (!selects(selector)) continue;
     for (const [key, value] of Object.entries(source)) {
       if (typeof value !== 'string') continue;
-      if (provider.names.includes(key) || provider.prefixes.some((prefix) => key.startsWith(prefix))) env[key] = value;
+      if (
+        key === provider.selector ||
+        provider.names.includes(key) ||
+        provider.prefixes.some((prefix) => key.startsWith(prefix))
+      ) {
+        env[key] = value;
+      }
     }
   }
   return env;
@@ -349,7 +355,7 @@ export function buildQueryEnv(lease: SlotAuthLease, opts?: QueryEnvOptions): Que
 
   // Layer 1c — a host that selected Bedrock or Vertex hands the CLI that provider's own settings (ccp mode: llmux owns
   // routing and removes the selectors below).
-  if (getAuthMode() !== 'llmux') Object.assign(env, providerEnv(process.env));
+  if (getAuthMode() !== 'llmux') Object.assign(env, providerEnv(process.env, _additionalEnv));
 
   // Layer 2 — operator-controlled additional env. Already validated +
   // denylist-filtered by `parseClaudeEnv` at load time; values are guaranteed

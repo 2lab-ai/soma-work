@@ -151,6 +151,52 @@ describe('buildQueryEnv', () => {
       expect(env.AWS_SECRET_ACCESS_KEY).toBe('aws-fixture-without-a-selector');
     });
 
+    it('Bedrock keeps every AWS credential source: web identity, the container endpoint, profile files', () => {
+      vi.stubEnv('CLAUDE_CODE_USE_BEDROCK', 'true');
+      const sources = {
+        AWS_ROLE_ARN: 'arn:aws:iam::1:role/r',
+        AWS_WEB_IDENTITY_TOKEN_FILE: '/var/run/secrets/token',
+        AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: '/v2/credentials/x',
+        AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE: '/var/run/ecs/token',
+        AWS_CONFIG_FILE: '/etc/aws/config',
+        AWS_SHARED_CREDENTIALS_FILE: '/etc/aws/credentials',
+      };
+      for (const [key, value] of Object.entries(sources)) vi.stubEnv(key, value);
+      const { env } = buildQueryEnv(makeLease('slot-a', 'LEASE-TOKEN', 'cct'));
+      for (const [key, value] of Object.entries(sources)) expect(env[key], key).toBe(value);
+    });
+
+    it("a provider selected in the operator's claude.env takes the host's credentials for it", () => {
+      setQueryEnvAdditional({ CLAUDE_CODE_USE_BEDROCK: '1' });
+      const { env } = buildQueryEnv(makeLease('slot-a', 'LEASE-TOKEN', 'cct'));
+      expect(env.CLAUDE_CODE_USE_BEDROCK).toBe('1');
+      expect(env.AWS_SECRET_ACCESS_KEY).toBe('aws-fixture-without-a-selector');
+    });
+
+    it.each([
+      ['0', 'CLAUDE_CODE_USE_BEDROCK'],
+      ['false', 'CLAUDE_CODE_USE_BEDROCK'],
+      ['', 'CLAUDE_CODE_USE_BEDROCK'],
+      ['0', 'CLAUDE_CODE_USE_VERTEX'],
+      ['FALSE', 'CLAUDE_CODE_USE_VERTEX'],
+    ])('a selector set to %j (%s) selects nothing: no provider credential is passed', (value, selector) => {
+      vi.stubEnv(selector, value);
+      vi.stubEnv('GOOGLE_APPLICATION_CREDENTIALS', '/etc/gcp.json');
+      const { env } = buildQueryEnv(makeLease('slot-a', 'LEASE-TOKEN', 'cct'));
+      expect(Object.keys(env)).not.toContain('AWS_SECRET_ACCESS_KEY');
+      expect(Object.keys(env)).not.toContain('GOOGLE_APPLICATION_CREDENTIALS');
+    });
+
+    it("Vertex passes Google's credential locators by name, never the bot's own Google client secret", () => {
+      vi.stubEnv('CLAUDE_CODE_USE_VERTEX', '1');
+      vi.stubEnv('GOOGLE_APPLICATION_CREDENTIALS', '/etc/gcp.json');
+      vi.stubEnv('ANTHROPIC_VERTEX_PROJECT_ID', 'proj');
+      const { env } = buildQueryEnv(makeLease('slot-a', 'LEASE-TOKEN', 'cct'));
+      expect(env.GOOGLE_APPLICATION_CREDENTIALS).toBe('/etc/gcp.json');
+      expect(env.ANTHROPIC_VERTEX_PROJECT_ID).toBe('proj');
+      expect(Object.keys(env)).not.toContain('GOOGLE_CLIENT_SECRET');
+    });
+
     it("the bot's own GitHub token reaches gh only while no bot-owned gh login serves it", async () => {
       const { clearAgentGhConfigDir, writeAgentGhHosts } = await import('../../github/agent-gh-config');
       const fs = await import('node:fs');

@@ -114,44 +114,38 @@ describe('McpConfigBuilder slack-mcp server', () => {
     const { resetAdminUsersCache } = await import('../admin-utils');
     const { userSettingsStore } = await import('../user-settings-store');
     const { DATA_DIR } = await import('../env-paths');
-    const savedAdmins = process.env.ADMIN_USERS;
-    const savedOff = process.env.SOMA_SANDBOX_OFF_ALLOWED;
-    process.env.ADMIN_USERS = 'UADMIN0001';
+    vi.stubEnv('ADMIN_USERS', 'UADMIN0001');
+    vi.stubEnv('SOMA_SANDBOX_OFF_ALLOWED', '');
     resetAdminUsersCache();
     const off = vi.spyOn(userSettingsStore, 'getUserSandboxDisabled');
-    const build = () =>
-      new McpConfigBuilder(createMockMcpManager()).buildConfig({
-        channel: 'C123',
-        threadTs: '1700000000.000000',
-        user: 'UADMIN0001',
-      });
+    const build = async () =>
+      (
+        await new McpConfigBuilder(createMockMcpManager()).buildConfig({
+          channel: 'C123',
+          threadTs: '1700000000.000000',
+          user: 'UADMIN0001',
+        })
+      ).mcpServers?.['slack-mcp']?.env ?? {};
+    const ownRoots = [path.join('/tmp', 'UADMIN0001'), path.join(DATA_DIR, 'UADMIN0001', 'uploads')];
     try {
       // Sandboxed: its reads stop at its own area, so do its uploads.
       off.mockReturnValue(false);
-      delete process.env.SOMA_SANDBOX_OFF_ALLOWED;
-      let env = (await build()).mcpServers?.['slack-mcp']?.env ?? {};
-      expect(JSON.parse(env.SOMA_UPLOAD_ROOTS ?? '[]')).toEqual([
-        path.join('/tmp', 'UADMIN0001'),
-        path.join(DATA_DIR, 'UADMIN0001', 'uploads'),
-      ]);
+      let env = await build();
+      expect(JSON.parse(env.SOMA_UPLOAD_ROOTS ?? '[]')).toEqual(ownRoots);
       expect(env.SOMA_UPLOAD_EXTRA_ROOTS).toBeUndefined();
-      // Off requested on a host that does not allow it: still sandboxed, still its own roots.
+      // Off requested on a host that does not allow it: still sandboxed, still only its own roots.
       off.mockReturnValue(true);
-      env = (await build()).mcpServers?.['slack-mcp']?.env ?? {};
-      expect(JSON.parse(env.SOMA_UPLOAD_ROOTS ?? '[]')).toContain(path.join('/tmp', 'UADMIN0001'));
+      env = await build();
+      expect(JSON.parse(env.SOMA_UPLOAD_ROOTS ?? '[]')).toEqual(ownRoots);
       expect(env.SOMA_UPLOAD_EXTRA_ROOTS).toBeUndefined();
       // Sandbox off on a host that allows it: the /tmp rule, plus its uploads directory.
-      off.mockReturnValue(true);
-      process.env.SOMA_SANDBOX_OFF_ALLOWED = 'true';
-      env = (await build()).mcpServers?.['slack-mcp']?.env ?? {};
+      vi.stubEnv('SOMA_SANDBOX_OFF_ALLOWED', 'true');
+      env = await build();
       expect(env.SOMA_UPLOAD_ROOTS).toBeUndefined();
       expect(JSON.parse(env.SOMA_UPLOAD_EXTRA_ROOTS ?? '[]')).toEqual([path.join(DATA_DIR, 'UADMIN0001', 'uploads')]);
     } finally {
       off.mockRestore();
-      if (savedAdmins === undefined) delete process.env.ADMIN_USERS;
-      else process.env.ADMIN_USERS = savedAdmins;
-      if (savedOff === undefined) delete process.env.SOMA_SANDBOX_OFF_ALLOWED;
-      else process.env.SOMA_SANDBOX_OFF_ALLOWED = savedOff;
+      vi.unstubAllEnvs();
       resetAdminUsersCache();
     }
   });

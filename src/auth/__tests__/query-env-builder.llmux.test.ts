@@ -94,6 +94,18 @@ describe('buildQueryEnv — llmux mode (#llmux)', () => {
     }
   });
 
+  it("passes no provider credential: llmux owns routing, so a host's Bedrock or Vertex settings stay in the bot", () => {
+    vi.stubEnv('CLAUDE_CODE_USE_BEDROCK', '1');
+    vi.stubEnv('CLAUDE_CODE_USE_VERTEX', '1');
+    vi.stubEnv('AWS_SECRET_ACCESS_KEY', 'aws-fixture');
+    vi.stubEnv('AWS_ROLE_ARN', 'arn:aws:iam::1:role/r');
+    vi.stubEnv('GOOGLE_APPLICATION_CREDENTIALS', '/etc/gcp.json');
+    const { env } = buildQueryEnv(makeLease('llmux', 'unused'));
+    for (const key of ['AWS_SECRET_ACCESS_KEY', 'AWS_ROLE_ARN', 'GOOGLE_APPLICATION_CREDENTIALS']) {
+      expect(Object.keys(env), key).not.toContain(key);
+    }
+  });
+
   it('filters only auth headers, case insensitively, preserving custom routing metadata', () => {
     setQueryEnvAdditional({
       ANTHROPIC_CUSTOM_HEADERS:

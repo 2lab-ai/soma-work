@@ -1182,8 +1182,13 @@ describe('sandbox: admin profile and write protection (env-access WU2, #1210)', 
       const network = (options.sandbox as NetSandbox).network;
       expect(network?.strictAllowlist).toBe(true);
       expect(network?.allowedDomains).toEqual([...DEV_DOMAIN_ALLOWLIST]);
-      // The every-domain rule would put every domain back on the list.
+      // The every-domain rule would put every domain back on the list — also after the allowlist was off and is on
+      // again.
       expect(allowRules(options)).not.toContain('WebFetch(domain:*)');
+      await withSettings(false, () => build(SAFE_USER), true);
+      const { options: again } = await withSettings(false, () => build(SAFE_USER), false);
+      expect((again.sandbox as NetSandbox).network?.strictAllowlist).toBe(true);
+      expect(allowRules(again)).not.toContain('WebFetch(domain:*)');
     });
 
     it("the allowlist turned off opens every domain to sandboxed commands, and leaves WebFetch's approvals alone", async () => {
@@ -1215,6 +1220,30 @@ describe('sandbox: admin profile and write protection (env-access WU2, #1210)', 
       tool_input: { file_path: path.join(tmp, 'notes.txt'), content: 'x' },
     } as never);
     expect(decision.hookSpecificOutput?.permissionDecision).not.toBe('deny');
+  });
+
+  it("a sandboxed admin's turn without a session folder writes natively in the empty cwd made for it, not beside it", async () => {
+    await asAdmin();
+    const { options } = await withSettings(false, () =>
+      buildStreamOptions({ queryEnv: {}, slackContext: makeSlackContext({ user: ADMIN }) }, makeDeps()),
+    );
+    const cwd = options.cwd as string;
+    expect(fs.readdirSync(cwd)).toEqual([]);
+    const entry = (options.hooks?.PreToolUse ?? []).find((e) =>
+      ((e as { matcher?: string }).matcher ?? '').split('|').includes('Write'),
+    ) as { hooks: Array<(input: unknown) => Promise<{ hookSpecificOutput?: { permissionDecision?: string } }>> };
+    const write = (file_path: string) =>
+      entry.hooks[0]({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Write',
+        tool_input: { file_path, content: 'x' },
+      } as never);
+    expect((await write(path.join(cwd, '.claude', 'plans', 'p.md'))).hookSpecificOutput?.permissionDecision).not.toBe(
+      'deny',
+    );
+    expect((await write(path.join(path.dirname(cwd), 'beside.txt'))).hookSpecificOutput?.permissionDecision).toBe(
+      'deny',
+    );
   });
 
   it('a non-admin keeps the narrow profile', async () => {
