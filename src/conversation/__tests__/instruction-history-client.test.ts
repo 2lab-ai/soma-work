@@ -84,7 +84,12 @@ function boot(
     const r = table[key];
     return typeof r === 'function' ? r(url) : r;
   };
+  let override: ((url: string) => Promise<unknown>) | null = null;
   const fetchMock = vi.fn((url: string) => {
+    if (override) {
+      calls.push(url);
+      return override(url);
+    }
     calls.push(url);
     const r = reply(url);
     if (r instanceof Error) return Promise.resolve({ ok: false, status: 500, json: async () => ({}) });
@@ -130,16 +135,22 @@ function boot(
     ...opts.fns,
   };
   const adminFmt = new Function(`${pageFn('adminFmt')}\nreturn adminFmt;`)();
-  const names = [...PAGE_STATE, ...PAGE_FNS, 'adminFmt'];
+  const names = [...PAGE_STATE, ...PAGE_FNS, 'adminFmt', '__setFetch'];
   const body = `${INSTRUCTION_HISTORY_CLIENT_JS}
 return {
   ihSync: ihSync, ihToggle: ihToggle, ihClose: ihClose, ihSetOrder: ihSetOrder, ihJump: ihJump, ihLoadMore: ihLoadMore,
+  setFetch: function(f) { __setFetch(f); },
   set: function(k, v) { eval(k + ' = v'); },
   msg: function() { return { msg: _panelTurnsMsg, why: _panelTurnsWhy }; },
   state: function() { return { ih: _ih, list: _panelTurnsList, oldest: _panelTurnsOldestId, hasMore: _panelTurnsHasMore,
     loading: _panelTurnsLoading, psec: _psec }; },
 };`;
-  const values = names.map((n) => (n in state ? state[n] : n === 'adminFmt' ? adminFmt : fns[n]));
+  const setFetch = (f: (url: string) => Promise<unknown>) => {
+    override = f;
+  };
+  const values = names.map((n) =>
+    n in state ? state[n] : n === 'adminFmt' ? adminFmt : n === '__setFetch' ? setFetch : fns[n],
+  );
   const api = new Function(...names, body)(...values) as any;
   return { api, calls, fns: fns as any, vp, turnNode, conv };
 }
@@ -235,11 +246,23 @@ describe('the round button — how many instructions, beside the queue’s butto
       api.ihSync('');
       await vi.advanceTimersByTimeAsync(10);
       expect($('ih-dock').hidden).toBe(true);
-      // A switch while a count is on its way: the old card's answer does not paint the new card's button.
+      // A switch while a count is on its way: the old card's answer, landing late, does not paint the new card's button.
+      let releaseC2: (v: unknown) => void = () => {};
+      (api as any).setFetch((url: string) =>
+        url.includes('/c2/')
+          ? new Promise((r) => {
+              releaseC2 = r;
+            })
+          : Promise.resolve({ ok: true, json: async () => ({ total: 5 }) }),
+      );
       api.ihSync('c2');
+      await vi.advanceTimersByTimeAsync(10); // c2's count is on its way, held
       api.ihSync('c3');
       await vi.advanceTimersByTimeAsync(10);
-      expect($('ih-dock-n').textContent).not.toBe('99');
+      expect($('ih-dock-n').textContent).toBe('5');
+      releaseC2({ ok: true, json: async () => ({ total: 99 }) });
+      await vi.advanceTimersByTimeAsync(10);
+      expect($('ih-dock-n').textContent).toBe('5');
     } finally {
       vi.useRealTimers();
     }
@@ -474,6 +497,154 @@ describe('the open list and new instructions (review on #1512)', () => {
     expect(document.querySelector('#ih-list .ih-n')?.textContent).toBe('#41');
   });
 
+  it('처음부터: a last page answered against an older total does not close the list on the newer count (#41 comes)', async () => {
+    let total = 40;
+    let releasePage: (v: unknown) => void = () => {};
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes('limit=0')) return Promise.resolve({ ok: true, json: async () => ({ total }) });
+      const off = Number(/offset=(\d+)/.exec(url)?.[1]);
+      if (off === 30)
+        return new Promise((r) => {
+          releasePage = r;
+        });
+      return Promise.resolve({ ok: true, json: async () => page(off, Math.max(0, Math.min(30, total - off)), total) });
+    });
+    const { api } = boot({ fns: { fetch: fetchMock } });
+    api.ihSync('c1');
+    await flush();
+    api.ihToggle();
+    await flush(); // page 2 (offset 30) is on its way, held
+    total = 41;
+    api.ihSync('c1', true);
+    await wait(700);
+    await flush();
+    releasePage({ ok: true, json: async () => page(30, 10, 40) }); // answered before #41: nextOffset null
+    await flush();
+    const rows: any[] = Array.from(document.querySelectorAll('#ih-list .ih-row'));
+    expect(rows).toHaveLength(41);
+    expect(rows[40].querySelector('.ih-n')?.textContent).toBe('#41');
+  });
+
+  it('최근부터: a count that lands before the first page is caught up once that page lands', async () => {
+    let total = 12;
+    let releaseFirst: (v: unknown) => void = () => {};
+    let firstHeld = true;
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes('limit=0')) return Promise.resolve({ ok: true, json: async () => ({ total }) });
+      const off = Number(/offset=(\d+)/.exec(url)?.[1]);
+      const lim = Number(/limit=(\d+)/.exec(url)?.[1]);
+      if (off === 0 && lim === 30 && firstHeld) {
+        firstHeld = false;
+        return new Promise((r) => {
+          releaseFirst = r;
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => page(off, Math.max(0, Math.min(lim, total - off)), total, 'desc'),
+      });
+    });
+    const { api } = boot({ fns: { fetch: fetchMock } });
+    api.ihSetOrder('desc');
+    api.ihSync('c1');
+    await flush();
+    api.ihToggle();
+    await flush(); // the first page is held
+    total = 13;
+    api.ihSync('c1', true);
+    await wait(700);
+    await flush();
+    releaseFirst({ ok: true, json: async () => page(0, 12, 12, 'desc') }); // answered against 12, nextOffset null
+    await flush();
+    const rows: any[] = Array.from(document.querySelectorAll('#ih-list .ih-row'));
+    expect(rows[0].querySelector('.ih-n')?.textContent).toBe('#13');
+    expect(rows).toHaveLength(13);
+  });
+
+  it('최근부터: more new instructions than one page holds read the list afresh; a count that drops does too', async () => {
+    const st = { total: 40 };
+    const { api, calls } = boot({ fetch: server(st) });
+    api.ihSetOrder('desc');
+    api.ihSync('c1');
+    await flush();
+    const list = $('ih-list');
+    Object.defineProperty(list, 'scrollHeight', { configurable: true, get: () => 2000 });
+    Object.defineProperty(list, 'clientHeight', { configurable: true, get: () => 400 });
+    api.ihToggle();
+    await flush();
+    const firsts = () => calls.filter((u) => u.includes('offset=0&limit=30&order=desc')).length;
+    expect(firsts()).toBe(1);
+    st.total = 200;
+    api.ihSync('c1', true);
+    await wait(700);
+    await flush();
+    expect(firsts()).toBe(2);
+    expect(document.querySelector('#ih-list .ih-n')?.textContent).toBe('#200');
+    st.total = 199; // a rollback took one back
+    api.ihSync('c1', true);
+    await wait(700);
+    await flush();
+    expect(firsts()).toBe(3);
+    expect(document.querySelector('#ih-list .ih-n')?.textContent).toBe('#199');
+  });
+
+  it('a count asked before a page that raised the total cannot lower it (no spurious re-read of the list)', async () => {
+    let releaseCount: (v: unknown) => void = () => {};
+    let holdCount = false;
+    const st = { total: 40 };
+    const base = server(st);
+    const asked: string[] = [];
+    const fetchMock = vi.fn((url: string) => {
+      asked.push(url);
+      if (url.includes('limit=0') && holdCount)
+        return new Promise((r) => {
+          releaseCount = r;
+        });
+      const r = base(url);
+      return Promise.resolve({ ok: true, json: async () => r });
+    });
+    const { api } = boot({ fns: { fetch: fetchMock } });
+    api.ihSetOrder('desc');
+    api.ihSync('c1');
+    await flush();
+    const list = $('ih-list');
+    Object.defineProperty(list, 'scrollHeight', { configurable: true, get: () => 2000 });
+    Object.defineProperty(list, 'clientHeight', { configurable: true, get: () => 400 });
+    api.ihToggle();
+    await flush();
+    holdCount = true;
+    api.ihSync('c1', true);
+    await wait(700); // the count is asked (against 40) and held
+    st.total = 41;
+    api.ihLoadMore(); // a page answered against 41 raises the total and brings #41 on top
+    await flush();
+    const firsts = () => asked.filter((u) => u.includes('offset=0&limit=30&order=desc')).length;
+    expect(firsts()).toBe(1);
+    releaseCount({ ok: true, json: async () => ({ total: 40 }) }); // the older count lands late
+    await flush();
+    expect($('ih-dock-n').textContent).toBe('41');
+    expect(firsts()).toBe(1); // no re-read
+    expect(document.querySelector('#ih-list .ih-n')?.textContent).toBe('#41');
+  });
+
+  it('a count ahead of a rollback does not make 처음부터 ask for pages forever', async () => {
+    const serverTotal = 40;
+    const { api, calls } = boot({
+      fetch: (url) => {
+        if (url.includes('limit=0')) return { total: 41 }; // the count is ahead of the record
+        const off = Number(/offset=(\d+)/.exec(url)?.[1]);
+        return page(off, Math.max(0, Math.min(30, serverTotal - off)), serverTotal);
+      },
+    });
+    api.ihSync('c1');
+    await flush();
+    api.ihToggle();
+    await flush();
+    await flush();
+    const pages = calls.filter((u) => !u.includes('limit=0'));
+    expect(pages.length).toBeLessThanOrEqual(3); // offset 0, 30 and one more ask for the 41st — then it stops
+  });
+
   it('a slow page answered against an older total does not take the button’s newer count back', async () => {
     let releasePage: (v: unknown) => void = () => {};
     let total = 40;
@@ -556,19 +727,39 @@ describe('a row — 대화 moves to that instruction', () => {
       fetch: (url) => {
         if (!url.includes('through=')) return { total: 1 };
         asks.push(url);
-        return asks.length === 1
-          ? { id: 'c1', turns: loaded(['u50', 'a50']), hasMore: true, through: 'capped' }
+        const chunks = [
+          ['u70', 'a70'],
+          ['u50', 'a50'],
+          ['u30', 'a30'],
+        ];
+        return asks.length <= 3
+          ? { id: 'c1', turns: loaded(chunks[asks.length - 1]), hasMore: true, through: 'capped' }
           : { id: 'c1', turns: loaded(['u1', 'a1']), hasMore: false, through: 'reached' };
       },
     });
     api.ihJump('u1');
     await flush();
     await flush();
+    await flush();
+    // Four asks — past the three the first version stopped at.
     expect(asks).toEqual([
       '/api/dashboard/session/c1?limit=20&before=u90&through=u1',
+      '/api/dashboard/session/c1?limit=20&before=u70&through=u1',
       '/api/dashboard/session/c1?limit=20&before=u50&through=u1',
+      '/api/dashboard/session/c1?limit=20&before=u30&through=u1',
     ]);
-    expect(api.state().list.map((t: Json) => t.id)).toEqual(['u1', 'a1', 'u50', 'a50', 'u90', 'a90']);
+    expect(api.state().list.map((t: Json) => t.id)).toEqual([
+      'u1',
+      'a1',
+      'u30',
+      'a30',
+      'u50',
+      'a50',
+      'u70',
+      'a70',
+      'u90',
+      'a90',
+    ]);
     expect(fns.dashToast).not.toHaveBeenCalled();
   });
 
@@ -648,6 +839,63 @@ describe('a row — 대화 moves to that instruction', () => {
     const st = api.state();
     expect(st.list.map((t: Json) => t.id)).toEqual(['u5', 'a5', 'u6', 'a6', 'u7', 'opt-1']);
     expect(st.oldest).toBe('u5');
+    expect(fns.dashToast).not.toHaveBeenCalled();
+  });
+
+  it('a fresh window keeps the turns pushed while it was on its way', async () => {
+    let releaseFresh: (v: unknown) => void = () => {};
+    const { api } = boot({
+      state: { _panelTurnsList: loaded(['u5', 'a5']), _panelTurnsOldestId: 'u5', _panelTurnsHasMore: true },
+      fns: {
+        fetch: vi.fn((url: string) => {
+          if (!url.includes('through=')) return Promise.resolve({ ok: true, json: async () => ({ total: 1 }) });
+          if (url.includes('before='))
+            return Promise.resolve({
+              ok: true,
+              json: async () => ({ id: 'c1', turns: [], hasMore: false, through: 'none' }),
+            });
+          return new Promise((r) => {
+            releaseFresh = r;
+          });
+        }),
+      },
+    });
+    api.ihJump('u7');
+    await flush(); // the fresh ask is on its way
+    api.state().list.push({ id: 'u8', role: 'user', timestamp: 100, rawContent: '방금 온 지시' }); // a push lands
+    releaseFresh({
+      ok: true,
+      json: async () => ({
+        id: 'c1',
+        turns: loaded(['u5', 'a5', 'u6', 'a6', 'u7']),
+        hasMore: true,
+        through: 'reached',
+      }),
+    });
+    await flush();
+    expect(api.state().list.map((t: Json) => t.id)).toEqual(['u5', 'a5', 'u6', 'a6', 'u7', 'u8']);
+  });
+
+  it('an older jump that fails after a newer one started says nothing', async () => {
+    let releaseA: (v: unknown) => void = () => {};
+    const { api, fns } = boot({
+      state: { _panelTurnsList: loaded(['u9', 'a9']), _panelTurnsOldestId: 'u9', _panelTurnsHasMore: true },
+      fns: {
+        fetch: vi.fn((url: string) =>
+          url.includes('through=u1')
+            ? new Promise((r) => {
+                releaseA = r;
+              })
+            : Promise.resolve({ ok: true, json: async () => ({ total: 1 }) }),
+        ),
+      },
+    });
+    api.ihJump('u1'); // A: loading older turns, held
+    await flush();
+    api.ihJump('u9'); // B: already in the chat — waits for A's load to settle, then goes
+    releaseA({ ok: false, status: 500, json: async () => ({}) });
+    await new Promise((r) => setTimeout(r, 250));
+    await flush();
     expect(fns.dashToast).not.toHaveBeenCalled();
   });
 

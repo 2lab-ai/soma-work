@@ -17,6 +17,7 @@ export const INSTRUCTION_HISTORY_CLIENT_JS = String.raw`
 var IH_PAGE = 30; // rows per page of the list
 var IH_COUNT_DEBOUNCE_MS = 600; // a burst of turns asks for the count once
 var IH_COUNT_RETRY_MS = [2000, 5000, 15000]; // a count that failed is asked again (a blip must not lose the button)
+var IH_GROW_MAX = 100; // 최근부터: more new rows than one page holds read the list afresh
 var IH_TEXT_LABEL = '보낸 지시 {0}개 — 눌러서 목록 보기';
 var IH_TEXT_NOT_FOUND = '그 지시를 대화에서 찾지 못했어요';
 var IH_TEXT_LOAD_FAILED = '대화를 불러오지 못했어요';
@@ -27,12 +28,15 @@ var IH_TEXT_RETRY = '다시 시도';
 var IH_TEXT_EMPTY = '보낸 지시가 없습니다';
 var IH_TEXT_FILES = '파일 {0}개';
 var IH_TEXT_SKILLS_ONLY = '(스킬만 호출)';
-// cid: the open card's conversation · total: its instructions (the button) · rows: the list's rows as loaded ·
-// listTotal: the total the open list has taken in (newer instructions than that are fetched onto it) · next: the next
-// page's offset (null: all loaded) · gen: bumped on a new conversation, an order change and each reopening (an older
-// answer is dropped) · countSeq: the latest count asked for (an older count's answer is dropped) · jump: the
-// instruction 대화 is moving to.
-var _ih = { cid: '', total: 0, rows: [], listTotal: 0, next: 0, order: 'asc', loading: false, why: '', open: false, gen: 0, countSeq: 0, countTries: 0, timer: 0, jump: null };
+// cid: the open card's conversation · total: its instructions, the newest the page knows (the button) · raisedAt: when
+// a list answer last raised it (a count asked before that is older news and cannot lower it) · rows: the
+// list's rows as loaded · based: the open list's first page has landed · listTotal: the total the open list has taken
+// in (최근부터: newer instructions than that are fetched onto its top) · growing: that fetch is on its way · next: the
+// next page's offset (null: all loaded) · gen: bumped on a new conversation, an order change and each reopening (an
+// older answer is dropped) · reopenedFor: the total 처음부터 last asked one more page for (once per total: a count
+// that is ahead of a rollback must not ask forever) · countSeq: the latest count asked for (an older count's answer is
+// dropped) · jump: the instruction 대화 is moving to.
+var _ih = { cid: '', jumps: 0, total: 0, raisedAt: 0, rows: [], based: false, listTotal: 0, growing: false, reopenedFor: -1, next: 0, order: 'asc', loading: false, why: '', open: false, gen: 0, countSeq: 0, countTries: 0, timer: 0, jump: null };
 
 // Pure: the number on the button — 999+ past three digits.
 function ihCountText(n) {
@@ -98,6 +102,7 @@ function ihSync(cid, refresh) {
   if (cid !== _ih.cid) {
     _ih.cid = cid;
     _ih.total = 0;
+    _ih.raisedAt = 0;
     _ih.rows = [];
     _ih.next = 0;
     _ih.why = '';
@@ -116,61 +121,86 @@ function ihCountSoon(ms) {
   if (_ih.timer) clearTimeout(_ih.timer);
   _ih.timer = setTimeout(ihCount, ms);
 }
-// The count — the only answer that sets the button's number (a list page only ever raises it: one answered against an
-// older total must not take a newer count back).
+// The count — the only answer that may lower the button's number (a list page only ever raises it: one answered against
+// an older total must not take a newer count back).
 function ihCount() {
   _ih.timer = 0;
   var cid = _ih.cid;
   if (!cid) return;
   var seq = ++_ih.countSeq;
+  var askedAt = Date.now();
   ihGetJson(ihUrl(cid, 0, 0, 'asc')).then(function(d) {
     if (cid !== _ih.cid || seq !== _ih.countSeq) return;
     _ih.countTries = 0;
-    _ih.total = Math.max(0, Number(d && d.total) || 0);
+    var n = Math.max(0, Number(d && d.total) || 0);
+    _ih.total = n < _ih.total && askedAt <= _ih.raisedAt ? _ih.total : n;
     ihPaint();
-    ihSeen(_ih.total);
+    ihReconcile();
   }).catch(function() {
     // A count that could not be had keeps the last one (none: no button) and is asked again a few times.
     if (cid !== _ih.cid || seq !== _ih.countSeq || _ih.countTries >= IH_COUNT_RETRY_MS.length) return;
     ihCountSoon(IH_COUNT_RETRY_MS[_ih.countTries++]);
   });
 }
-// A total the server reported (the count, or a list page): the open list takes in the instructions newer than the ones
-// it has — whichever answer brings the news first, once.
+// A total a list answer reported: it only ever raises the button's number.
 function ihSeen(total) {
   if (total > _ih.total) {
     _ih.total = total;
+    _ih.raisedAt = Date.now();
     ihPaint();
   }
-  if (!_ih.open || !_ih.listTotal || total <= _ih.listTotal) return;
-  var prev = _ih.listTotal;
-  _ih.listTotal = total;
-  ihGrow(total - prev, prev);
+  ihReconcile();
 }
-// New instructions for the open list: 처음부터 — the rows past the last one loaded are a page away again; 최근부터 —
-// the newest rows (a few more than came, so one that lands meanwhile is not skipped) go on top, each once. Later
-// 최근부터 pages start where they would have: a row the shift brings up again is listed once. A fetch that fails gives
-// the news back (listTotal: prev) and asks for the count again, so the rows come with the next answer.
-function ihGrow(by, prev) {
-  if (_ih.order === 'asc') {
-    if (_ih.next === null) _ih.next = _ih.rows.length;
-    ihPaintList();
-    ihMaybeMore();
+// After every answer that tells a total (the count, a page, the new top rows), the open list catches up with the
+// newest total the page knows — whichever answer brought it, and whatever order they came in:
+//   fewer than the list was built on (a rollback took one back) → the list is read afresh;
+//   처음부터 → a page is due again while fewer rows are listed than there are (a late last page cannot close it);
+//   최근부터 → the rows newer than the list's base come on top, once (one fetch at a time; a failure gives them back).
+function ihReconcile() {
+  if (!_ih.open || !_ih.based) return;
+  if (_ih.total < _ih.listTotal) {
+    ihReload();
     return;
   }
+  if (_ih.order === 'asc') {
+    _ih.listTotal = _ih.total;
+    if (_ih.next === null && _ih.rows.length < _ih.total && _ih.reopenedFor !== _ih.total) {
+      _ih.reopenedFor = _ih.total;
+      _ih.next = _ih.rows.length;
+      ihPaintList();
+      ihMaybeMore();
+    }
+    return;
+  }
+  if (_ih.growing || _ih.total <= _ih.listTotal) return;
+  var prev = _ih.listTotal;
+  if (_ih.total - prev + 5 > IH_GROW_MAX) {
+    ihReload();
+    return;
+  }
+  _ih.listTotal = _ih.total;
+  ihGrow(_ih.total - prev, prev);
+}
+// 최근부터: the newest rows (a few more than came, so one that lands meanwhile is not skipped) go on top, each once.
+// Later pages start where they would have: a row the shift brings up again is listed once. A fetch that fails gives
+// the news back (listTotal: prev) and asks for the count again, so the rows come with the next answer.
+function ihGrow(by, prev) {
   var cid = _ih.cid;
   var gen = _ih.gen;
-  ihGetJson(ihUrl(cid, 0, Math.min(by + 5, 100), 'desc')).then(function(d) {
+  _ih.growing = true;
+  ihGetJson(ihUrl(cid, 0, by + 5, 'desc')).then(function(d) {
     if (gen !== _ih.gen) return;
+    _ih.growing = false;
     var list = document.getElementById('ih-list');
     var h = list ? list.scrollHeight : 0;
     _ih.rows = ihMerge(_ih.rows, (d && d.items) || [], true);
     ihPaintList();
     // The reader keeps the rows they were on (none moves under them unless they were at the very top).
     if (list && list.scrollTop > 0) list.scrollTop += list.scrollHeight - h;
-    if (d && typeof d.total === 'number') ihSeen(d.total);
+    ihSeen(d && typeof d.total === 'number' ? d.total : 0);
   }).catch(function() {
     if (gen !== _ih.gen) return;
+    _ih.growing = false;
     if (_ih.listTotal > prev) _ih.listTotal = prev;
     ihCountSoon(IH_COUNT_RETRY_MS[0]);
   });
@@ -253,7 +283,10 @@ function ihSetOrder(order) {
 function ihReload() {
   _ih.gen++;
   _ih.rows = [];
+  _ih.based = false;
   _ih.listTotal = 0;
+  _ih.growing = false;
+  _ih.reopenedFor = -1;
   _ih.next = 0;
   _ih.why = '';
   _ih.loading = false;
@@ -276,16 +309,13 @@ function ihLoadMore() {
     _ih.rows = ihMerge(_ih.rows, (d && d.items) || [], false);
     _ih.next = d && typeof d.nextOffset === 'number' ? d.nextOffset : null;
     var total = d && typeof d.total === 'number' ? d.total : 0;
-    // The first page is what the list starts from; a later one answered against a newer total brings the news.
+    // The first page is what the list starts from (a newer count that came while it loaded is caught up below).
     if (offset === 0) {
+      _ih.based = true;
       _ih.listTotal = total;
-      if (total > _ih.total) {
-        _ih.total = total;
-        ihPaint();
-      }
     }
     ihPaintList();
-    if (offset !== 0) ihSeen(total);
+    ihSeen(total);
     ihMaybeMore();
   }).catch(function(err) {
     if (gen !== _ih.gen) return;
@@ -305,14 +335,19 @@ function ihMaybeMore() {
 function ihJump(id) {
   ihClose(false);
   if (!id || !panelSessionKey) return;
-  _ih.jump = { id: String(id), gen: _panelGen, waits: 0, asks: 0, done: false, failed: false, fresh: false, freshNext: false };
+  _ih.jump = { id: String(id), seq: ++_ih.jumps, gen: _panelGen, waits: 0, asks: 0, done: false, failed: false, fresh: false, freshNext: false };
   if (_panelAgent) selectPanelAgent('');
   if (_psec !== 'conv') selectPanelSection('conv');
   ihReveal();
 }
 function ihHasTurn(id) {
-  for (var i = 0; i < _panelTurnsList.length; i++) if (_panelTurnsList[i] && String(_panelTurnsList[i].id) === id) return true;
-  return false;
+  return _panelTurnsList.some(function(t) { return t && String(t.id) === id; });
+}
+// A turn's time (epoch ms; the record keeps a number, a pushed turn may carry an ISO string).
+function ihTurnAt(t) {
+  var v = t && t.timestamp;
+  var n = typeof v === 'number' ? v : Date.parse(String(v || ''));
+  return isFinite(n) ? n : 0;
 }
 // The turn is in the chat's data: there it goes. Else the turns back to it come first (one answer, the route's
 // through; a very long way back takes a few — the route says 'capped' while the target is still further) — after a
@@ -325,16 +360,16 @@ function ihReveal() {
   if (ihHasTurn(j.id)) {
     _ih.jump = null;
     convPaint();
-    ihScrollTo(j.id, 0);
+    ihScrollTo(j.id, 0, j);
     return;
   }
   if (_panelTurnsLoading) {
-    if (++j.waits > 150) return ihMiss(IH_TEXT_LOAD_FAILED);
+    if (++j.waits > 150) return ihMiss(IH_TEXT_LOAD_FAILED, j);
     setTimeout(ihReveal, 100);
     return;
   }
   var cid = panelConvId;
-  if (!cid || j.done || j.asks >= 50) return ihMiss(IH_TEXT_NOT_FOUND);
+  if (!cid || j.done || j.asks >= 50) return ihMiss(IH_TEXT_NOT_FOUND, j);
   j.asks++;
   var fresh = !!j.freshNext;
   j.freshNext = false;
@@ -359,8 +394,10 @@ function ihReveal() {
       }
     } else {
       // No page yet (the first one failed or was empty), or the chat's copy is behind: this answer is the chat's first
-      // page, reaching back to it — only this browser's own pending instructions stay on from the old copy.
-      _panelTurnsList = ptMergeFetched(turns, fresh ? _panelTurnsList.filter(function(t) { return t && t._optimistic; }) : _panelTurnsList);
+      // page, reaching back to it. From the old copy stay this browser's pending instructions and every turn newer
+      // than the answer's last one (pushed while it was on its way); the older ones come back on scroll-up.
+      var lastAt = turns.length ? ihTurnAt(turns[turns.length - 1]) : 0;
+      _panelTurnsList = ptMergeFetched(turns, fresh ? _panelTurnsList.filter(function(t) { return t && (t._optimistic || ihTurnAt(t) > lastAt); }) : _panelTurnsList);
       _panelTurnsCid = (data && data.id) || cid;
       _panelTurnsOldestId = turns.length ? turns[0].id : null;
       _panelTurnsMsg = _panelTurnsList.length ? '' : 'none';
@@ -385,25 +422,27 @@ function ihReveal() {
     if (j.gen !== _panelGen) return;
     _panelTurnsLoading = false;
     convPaint(); // the loading line goes, whatever comes next
-    if (j.failed) return ihMiss(IH_TEXT_LOAD_FAILED);
+    if (j.failed) return ihMiss(IH_TEXT_LOAD_FAILED, j);
     ihReveal();
   });
 }
-function ihMiss(text) {
+// A jump that ends without its turn says so — unless a newer jump has started since (its own outcome speaks).
+function ihMiss(text, j) {
+  if (j && j.seq !== _ih.jumps) return;
   _ih.jump = null;
   if (typeof dashToast === 'function') dashToast({ title: text, tone: 'warning' });
 }
 // The element draws the turn on its next frames: its row goes to the top of the chat's box and is lit for a moment.
 // Answers that load above it later keep it in place (the scroller holds the reader's row); one late look puts it
 // back if the box moved anyway.
-function ihScrollTo(id, tries) {
+function ihScrollTo(id, tries, j) {
   requestAnimationFrame(function() {
     requestAnimationFrame(function() {
       var el = convEl();
       var node = el && typeof el.turnElement === 'function' ? el.turnElement(id) : null;
       if (!node) {
-        if (tries < 30) ihScrollTo(id, tries + 1);
-        else ihMiss(IH_TEXT_NOT_FOUND);
+        if (tries < 30) ihScrollTo(id, tries + 1, j);
+        else ihMiss(IH_TEXT_NOT_FOUND, j);
         return;
       }
       ihAlign(el, node);
