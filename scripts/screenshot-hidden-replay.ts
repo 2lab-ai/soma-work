@@ -15,6 +15,7 @@
  *       not one animation runs while it catches up
  *   H3  once the socket has been quiet after the return, the next live push glides again
  *   H4  a reconnect's first board (onopen → hello → whole board) lands still too
+ *   H5  back from away, the overdue board poll answers late (after the socket went quiet): its board lands still
  *
  * Run from the repo root (keeps state out of the checkout):
  *   SOMA_CONFIG_DIR=$TMP/cfg SOMA_INSTANCE_DIR=$TMP/inst CONVERSATION_VIEWER_TOKEN=t npx tsx scripts/screenshot-hidden-replay.ts [outDir]
@@ -72,6 +73,9 @@ function board(cols: string, tokens = 300_000) {
   return b;
 }
 const FIRST = board('wwii');
+// What the board poll answers, and how long it takes (H5: a slow answer after the return).
+let POLL = FIRST;
+let POLL_DELAY_MS = 0;
 
 const PAGE_HELPERS = [
   // The tab's visibility, flipped by the script (a headless browser never hides a tab).
@@ -103,7 +107,11 @@ async function installMocks(page: Page) {
   await page.route('**/api/dashboard/users', (r) => r.fulfill({ json: { users: [{ id: 'U001', name: 'Zhuge' }] } }));
   await page.route('**/api/dashboard/stats**', (r) => r.fulfill({ json: { stats: [], byDay: [] } }));
   await page.route('**/api/dashboard/usage**', (r) => r.fulfill({ json: { totals: {}, byUser: {}, byDay: [] } }));
-  await page.route('**/api/dashboard/sessions**', (r) => r.fulfill({ json: { board: FIRST } }));
+  await page.route('**/api/dashboard/sessions**', async (r) => {
+    const answer = POLL;
+    if (POLL_DELAY_MS) await sleep(POLL_DELAY_MS);
+    await r.fulfill({ json: { board: answer } });
+  });
 }
 
 const failures: string[] = [];
@@ -200,6 +208,25 @@ async function run() {
     await sleep(120);
     const h4 = await anims(page);
     check(h4 === 0, 'H4 a reconnect lands its first board still', { animations: h4, cols: where(await cols(page)) });
+
+    // H5 — away, then back: the 30 s poll a frozen tab owes fires at once and answers 1.5 s later, long after the
+    // socket went quiet. Its board moved cards while nobody watched.
+    await sleep(1_200);
+    await page.evaluate(() => (window as any).__setHidden(true));
+    await sleep(300);
+    POLL = board('wnwi', 420_000);
+    POLL_DELAY_MS = 1_500;
+    await resetAnims(page);
+    await page.evaluate(() => {
+      (window as any).__setHidden(false);
+      (window as any).loadSessions();
+    });
+    await sleep(2_300);
+    const h5 = await anims(page);
+    const h5cols = where(await cols(page));
+    POLL_DELAY_MS = 0;
+    check(h5cols === 'working waiting working done', 'H5 the late poll answer painted the board', { cols: h5cols });
+    check(h5 === 0, 'H5 the late poll answer lands still', { animations: h5 });
   } finally {
     await browser.close();
   }

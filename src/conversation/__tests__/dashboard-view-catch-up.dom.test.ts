@@ -12,10 +12,13 @@
  *   C3  … or VIEW_SETTLE_MAX_MS after the return on a socket that never goes quiet
  *   C4  a return while still hidden, or a new leave, keeps it open (no settle runs out of view)
  *   C5  a socket that opens catches up like a return (its first board is the whole board)
- *   C6  the page's own motion (canAnimate) waits for the catch-up
+ *   C6  a board load asked while catching up (the poll a frozen tab fires on its return) holds the window until it
+ *       has answered — within VIEW_SETTLE_MAX_MS; one asked during an earlier time away no longer holds it
  *   C7  the real <ui-agent-inbox>, painted through the page's inboxPaint while catching up: the cards land, nothing
- *       animates; once settled, the next paint animates again; document.hidden is the browser's again after
- *   C8  the wiring: visibility / freeze / page show events, the socket's open and every message
+ *       animates; once settled, the next paint animates again; document.hidden is the browser's again after; the
+ *       return itself lands every planned board element still (a card held in its lane when the page left)
+ *   C8  the wiring: visibility / freeze / page show events, the socket's open and the end of every message, the board
+ *       poll's hold, the layout check's quiet view switch; the reader's own motion (canAnimate) is left alone
  *
  * Executes the shipped client code cut out of renderDashboardPage()'s template literal; C7 runs it against the
  * installed @2lab.ai/ui.
@@ -44,6 +47,12 @@ function clientFn(name: string): string {
   const end = oneLine ? line : TEMPLATE.indexOf('\n}\n', start) + 2;
   return cook(TEMPLATE.slice(start + 1, end));
 }
+// An async client function, whole (clientFn finds plain `function` declarations).
+function clientAsyncFn(name: string): string {
+  const start = TEMPLATE.indexOf(`\nasync function ${name}(`);
+  if (start < 0) throw new Error(`client async function ${name} not found`);
+  return cook(TEMPLATE.slice(start + 1, TEMPLATE.indexOf('\n}\n', start) + 2));
+}
 function clientVar(name: string): string {
   const m = TEMPLATE.match(new RegExp(`^(var ${name} = .*?;)(?:\\s*//.*)?$`, 'm'));
   if (!m) throw new Error(`client var ${name} not found`);
@@ -64,20 +73,32 @@ const VIEW_FNS = [
   'viewHeard',
   'viewSettleSoon',
   'viewSettle',
+  'viewHold',
+  'viewQuiet',
   'viewStill',
+  'viewLand',
 ];
-const VIEW_VARS = ['VIEW_SETTLE_QUIET_MS', 'VIEW_SETTLE_MAX_MS', '_viewAway', '_viewBackAt', '_viewSettleTimer'];
+const VIEW_VARS = [
+  'VIEW_SETTLE_QUIET_MS',
+  'VIEW_SETTLE_MAX_MS',
+  '_viewAway',
+  '_viewBackAt',
+  '_viewSettleTimer',
+  '_viewHolds',
+  '_viewGen',
+];
 type View = {
   viewCatchingUp(): boolean;
   viewLeave(): void;
   viewReturn(): void;
   viewSync(): void;
   viewHeard(): void;
+  viewHold(): () => void;
   viewStill(host: unknown): void;
 };
-// A page whose visibility the test flips (document.hidden), with the timers faked.
+// A page whose visibility the test flips (document.hidden), with the timers faked; no board elements on it.
 function page(hidden = false) {
-  const doc = { hidden };
+  const doc = { hidden, querySelectorAll: () => [] };
   const v = load<View>(VIEW_FNS, VIEW_VARS, { document: doc });
   return { v, doc };
 }
@@ -180,17 +201,60 @@ describe('the catch-up window (C1–C5)', () => {
   });
 });
 
-describe('the page’s own motion waits for the catch-up (C6)', () => {
-  it('canAnimate is false while the page catches up, true once settled', () => {
-    const run = (catching: boolean) =>
-      load<{ canAnimate(): boolean }>(['canAnimate'], [], {
-        _boardRenders: 3,
-        document: { hidden: false },
-        Element: { prototype: { animate() {} } },
-        viewCatchingUp: () => catching,
-      }).canAnimate();
-    expect(run(false)).toBe(true);
-    expect(run(true)).toBe(false);
+describe('a board load asked while catching up holds the window (C6)', () => {
+  it('the poll a frozen tab fires on its return: the window stays open until it has answered', () => {
+    vi.useFakeTimers();
+    const { v, doc } = page();
+    doc.hidden = true;
+    v.viewLeave();
+    doc.hidden = false;
+    v.viewReturn();
+    const release = v.viewHold(); // the overdue 30 s poll, asked at once
+    vi.advanceTimersByTime(3_000); // the socket went quiet long ago; the answer is slow (sibling fan-out)
+    expect(v.viewCatchingUp()).toBe(true);
+    release(); // answered — painted while still catching up
+    release(); // a second call is nothing
+    vi.advanceTimersByTime(399);
+    expect(v.viewCatchingUp()).toBe(true);
+    vi.advanceTimersByTime(1);
+    expect(v.viewCatchingUp()).toBe(false);
+  });
+
+  it('a load that never answers holds it 8 s after the return at most; a load asked in view holds nothing', () => {
+    vi.useFakeTimers();
+    const { v, doc } = page();
+    expect(v.viewHold()).toBeTypeOf('function'); // in view and settled: a no-op release
+    doc.hidden = true;
+    v.viewLeave();
+    doc.hidden = false;
+    v.viewReturn();
+    v.viewHold();
+    vi.advanceTimersByTime(7_999);
+    expect(v.viewCatchingUp()).toBe(true);
+    vi.advanceTimersByTime(1);
+    expect(v.viewCatchingUp()).toBe(false);
+  });
+
+  it('a load asked during an earlier time away no longer holds the window', () => {
+    vi.useFakeTimers();
+    const { v, doc } = page();
+    doc.hidden = true;
+    v.viewLeave();
+    const stale = v.viewHold(); // asked while hidden, never answers in time
+    v.viewLeave(); // frozen: a new time away
+    doc.hidden = false;
+    v.viewReturn();
+    vi.advanceTimersByTime(400);
+    expect(v.viewCatchingUp()).toBe(false);
+    // Its late answer does not reopen anything, nor count against the next time away.
+    stale();
+    expect(v.viewCatchingUp()).toBe(false);
+    doc.hidden = true;
+    v.viewLeave();
+    doc.hidden = false;
+    v.viewReturn();
+    vi.advanceTimersByTime(400);
+    expect(v.viewCatchingUp()).toBe(false);
   });
 });
 
@@ -294,6 +358,28 @@ describe('the board element paints the past still (C7)', () => {
     }
   });
 
+  it('the return itself lands every board element the page painted, still; one it did not plan is left alone', () => {
+    const renders: string[] = [];
+    const host = (name: string, planned: boolean) => ({
+      ...(planned ? { _ibPlan: {} } : {}),
+      renderNow() {
+        renders.push(`${name}:${String(doc.hidden)}`);
+      },
+    });
+    const els = [host('board', true), host('cron', true), host('docs', false)];
+    const doc: { hidden: boolean; querySelectorAll(sel: string): unknown[] } = {
+      hidden: true,
+      querySelectorAll: (sel: string) => (sel === 'ui-agent-inbox' ? els : []),
+    };
+    const v = load<View>(VIEW_FNS, VIEW_VARS, { document: doc });
+    v.viewLeave();
+    doc.hidden = false;
+    v.viewReturn();
+    // Drawn with document.hidden reading true (the stand-in document is plain: its own value is put back after).
+    expect(renders).toEqual(['board:true', 'cron:true']);
+    expect(doc.hidden).toBe(false);
+  });
+
   it('an element not upgraded yet (no renderNow) is left to its own render', () => {
     const { v } = page();
     v.viewLeave();
@@ -333,15 +419,36 @@ describe('the wiring (C8)', () => {
     expect(TEMPLATE).toContain("window.addEventListener('pageshow', viewReturn);");
   });
 
-  it('the socket: its open catches up like a return, and every message keeps the catch-up open', () => {
+  it('the socket: its open catches up like a return; the quiet counts from the end of every message', () => {
     const connect = clientFn('connectWs');
     const open = connect.slice(connect.indexOf('ws.onopen = function() {'), connect.indexOf('ws.onclose'));
     expect(open).toContain("if (typeof viewSync === 'function') viewSync();");
     const onMessage = connect.slice(connect.indexOf('ws.onmessage = function(ev) {'));
-    expect(onMessage.indexOf("if (typeof viewHeard === 'function') viewHeard();")).toBeGreaterThan(-1);
-    expect(onMessage.indexOf("if (typeof viewHeard === 'function') viewHeard();")).toBeLessThan(
-      onMessage.indexOf('JSON.parse(ev.data)'),
+    // In the finally: after the message's work, even one that returned early or threw.
+    expect(onMessage).toMatch(
+      /\} finally \{\n\s*\/\/[^\n]*\n\s*if \(typeof viewHeard === 'function'\) viewHeard\(\);\n\s*\}\n\s*\};\n\}$/,
     );
+    expect(onMessage.match(/viewHeard\(\)/g)).toHaveLength(1);
+  });
+
+  it('the board poll holds the window while it is out, and lets go in its finally', () => {
+    const body = clientAsyncFn('loadSessions');
+    expect(body).toContain("var viewRelease = typeof viewHold === 'function' ? viewHold() : null;");
+    const fin = body.slice(body.lastIndexOf('} finally {'));
+    expect(fin).toContain('if (viewRelease) viewRelease();');
+    // Asked after the join: a poll that joins one already out adds no hold of its own.
+    expect(body.indexOf('viewHold()')).toBeGreaterThan(body.indexOf('return _sessionsInflight.done;'));
+  });
+
+  it('a layout that changed while away lands without its glide; the reader’s own motion is left alone', () => {
+    const check = clientFn('runLayoutCheck');
+    expect(check).toContain(
+      "var quiet = typeof viewCatchingUp === 'function' && viewCatchingUp() && !document.hidden;",
+    );
+    expect(check).toContain('if (quiet) viewQuiet(function() { setBoardView(autoView); });');
+    expect(check).toContain('var animate = canAnimate() && !keyed && !quiet;');
+    // canAnimate (a card's close, the panel's drag settle) does not look at the catch-up.
+    expect(clientFn('canAnimate')).not.toContain('viewCatchingUp');
   });
 
   it('every board element paint goes through viewStill, after the page has set its data', () => {
