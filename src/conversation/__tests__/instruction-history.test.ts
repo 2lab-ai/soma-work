@@ -94,6 +94,14 @@ const FIXTURES: Array<[string, ConversationTurn]> = [
   ['restart resume without origin', user(RESTART_PROMPT)],
   ['restart resume (Korean head)', user('서비스가 재시작되어 이전 작업이 중단되었다.\n이어서', SYSTEM)],
   ['restart resume (bracket head)', user('[재시작 후 자동 재개] 하던 일', SYSTEM)],
+  // Before origins were kept: the wording alone says it (no system-origin fallback to lean on).
+  ['restart resume (Korean head), no origin', user('서비스가 재시작되어 이전 작업이 중단되었다.\n이어서')],
+  ['restart resume (bracket head), no origin', user('[재시작 후 자동 재개] 하던 일')],
+  [
+    'background-work resume, no origin',
+    user(buildBackgroundWaitPrompt({ count: 1, labels: ['local_bash'] } as never, 2, 6)),
+  ],
+  ['renew save, no origin', user('Follow this exact sequence:\n1. Use skill="local:save" …')],
   ['goal continuation', user(goalPrompt(2, 5), SYSTEM)],
   ['goal continuation without origin', user(goalPrompt(3, 5))],
   [
@@ -143,6 +151,20 @@ describe('instructionPreview — the words 대화 shows, on one line', () => {
     const empty = 'see <invoked_skills>no tags here</invoked_skills> please';
     expect(instructionPreview(empty)).toEqual({ text: empty, skills: [] });
     expect(client.splitInvokedSkills(empty).text).toBe(empty);
+  });
+
+  it('a run of stray closing tags is read in bounded time — no backward search to the start per tag', () => {
+    const stray = `${'</invoked_skills>'.repeat(60_000)} 끝`;
+    const t0 = Date.now();
+    const p = instructionPreview(stray);
+    expect(Date.now() - t0).toBeLessThan(500);
+    expect(p.skills).toEqual([]);
+    expect(p.text.startsWith('</invoked_skills>')).toBe(true); // stray tags are words, as the chat shows them
+    // An opening tag far behind many stray closers still opens the block it belongs to.
+    const mixed = `${'</invoked_skills>'.repeat(3)} 앞 <invoked_skills><local:es>x</local:es></invoked_skills> 뒤`;
+    expect(instructionPreview(mixed).skills).toEqual(['local:es']);
+    expect(client.splitInvokedSkills(mixed).skills.map((k) => k.name)).toEqual(['local:es']);
+    expect(instructionPreview(mixed).text).toBe(client.splitInvokedSkills(mixed).text.replace(/\s+/g, ' ').trim());
   });
 
   it('a block of thousands of unclosed tags is read in bounded time (the route runs on the shared event loop)', () => {

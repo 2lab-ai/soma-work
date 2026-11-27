@@ -655,26 +655,119 @@ describe('the open list and new instructions (review on #1512)', () => {
   });
 
   it('a rollback that puts a new instruction in place of the newest (same total) re-reads the list', async () => {
-    let lastId = 'u12';
+    let replaced = false;
     const st = { total: 12 };
     const base = server(st);
-    const { api, calls } = boot({
-      fetch: (url) => {
-        const r = base(url) as Json;
-        return { ...r, lastId };
-      },
-    });
+    // The record after the rollback: #12 is another instruction (u12b), the total unchanged.
+    const swap = (r: Json): Json => {
+      if (!replaced) return { ...r, lastId: 'u12' };
+      const items = ((r.items as Json[]) || []).map((it) =>
+        it.n === 12 ? { ...it, id: 'u12b', text: '새 지시' } : it,
+      );
+      return { ...r, items, lastId: 'u12b' };
+    };
+    const { api, calls } = boot({ fetch: (url) => swap(base(url) as Json) });
     api.ihSync('c1');
     await flush();
     api.ihToggle();
     await flush();
     const firsts = () => calls.filter((u) => u.includes('offset=0&limit=30')).length;
     expect(firsts()).toBe(1);
-    lastId = 'u12b'; // u12 rolled back, a new one sent: still 12
+    expect(document.querySelector('#ih-list .ih-row[data-id="u12"]')).not.toBeNull();
+    replaced = true;
     api.ihSync('c1', true);
     await wait(700);
     await flush();
     expect(firsts()).toBe(2);
+    expect(document.querySelector('#ih-list .ih-row[data-id="u12"]')).toBeNull();
+    expect(document.querySelector('#ih-list .ih-row[data-id="u12b"] .ih-text')?.textContent).toBe('새 지시');
+  });
+
+  it('처음부터: a rollback of one and two new ones (the total grows) — the overlapping page sees #40 changed and re-reads', async () => {
+    let replaced = false;
+    const st = { total: 40 };
+    const base = server(st);
+    const swap = (r: Json): Json => {
+      if (!replaced) return r;
+      const items = ((r.items as Json[]) || []).map((it) => (it.n === 40 ? { ...it, id: 'u40b' } : it));
+      return { ...r, items };
+    };
+    const { api, calls } = boot({ fetch: (url) => swap(base(url) as Json) });
+    api.ihSync('c1');
+    await flush();
+    api.ihToggle();
+    await flush(); // all 40 listed (happy-dom lays nothing out)
+    replaced = true;
+    st.total = 41;
+    api.ihSync('c1', true);
+    await wait(700);
+    await flush();
+    expect(calls.filter((u) => u.includes('offset=0&limit=30&order=asc')).length).toBe(2); // read afresh
+    expect(document.querySelector('#ih-list .ih-row[data-id="u40"]')).toBeNull();
+    expect(document.querySelector('#ih-list .ih-row[data-id="u40b"]')).not.toBeNull();
+    expect(document.querySelectorAll('#ih-list .ih-row')).toHaveLength(41);
+  });
+
+  it('최근부터: the new top rows show a row changed under the list — read afresh', async () => {
+    let replaced = false;
+    const st = { total: 40 };
+    const base = server(st);
+    const swap = (r: Json): Json => {
+      if (!replaced) return r;
+      const items = ((r.items as Json[]) || []).map((it) => (it.n === 39 ? { ...it, id: 'u39b' } : it));
+      return { ...r, items };
+    };
+    const { api, calls } = boot({ fetch: (url) => swap(base(url) as Json) });
+    api.ihSetOrder('desc');
+    api.ihSync('c1');
+    await flush();
+    const list = $('ih-list');
+    Object.defineProperty(list, 'scrollHeight', { configurable: true, get: () => 2000 });
+    Object.defineProperty(list, 'clientHeight', { configurable: true, get: () => 400 });
+    api.ihToggle();
+    await flush();
+    replaced = true;
+    st.total = 41;
+    api.ihSync('c1', true);
+    await wait(700);
+    await flush();
+    expect(calls.filter((u) => u.includes('offset=0&limit=30&order=desc')).length).toBe(2);
+    expect(document.querySelector('#ih-list .ih-row[data-id="u39"]')).toBeNull();
+    expect(document.querySelector('#ih-list .ih-n')?.textContent).toBe('#41');
+  });
+
+  it('최근부터: a fetch for the new rows that never answers is given up (deadline) and the count is asked again', async () => {
+    const st = { total: 40 };
+    const base = server(st);
+    let hang = true;
+    const asked: string[] = [];
+    const fetchMock = vi.fn((url: string, init?: { signal?: AbortSignal }) => {
+      asked.push(url);
+      if (hang && url.includes('offset=0&limit=6&order=desc'))
+        return new Promise((_r, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+        });
+      const r = base(url);
+      return Promise.resolve({ ok: true, json: async () => r });
+    });
+    const { api } = boot({ fns: { fetch: fetchMock } });
+    api.ihSetOrder('desc');
+    api.ihSync('c1');
+    await flush();
+    const list = $('ih-list');
+    Object.defineProperty(list, 'scrollHeight', { configurable: true, get: () => 2000 });
+    Object.defineProperty(list, 'clientHeight', { configurable: true, get: () => 400 });
+    api.ihToggle();
+    await flush();
+    st.total = 41;
+    api.ihSync('c1', true);
+    await wait(700);
+    await flush(); // the top fetch hangs
+    hang = false;
+    await wait(20_100); // its deadline
+    await wait(2_100); // the count asked again
+    await flush();
+    expect(document.querySelector('#ih-list .ih-n')?.textContent).toBe('#41');
   });
 
   it('최근부터: more than the margin landing while the new rows load re-reads the list (no gap, the order kept)', async () => {
@@ -1052,6 +1145,35 @@ describe('a row — 대화 moves to that instruction', () => {
     await new Promise((r) => setTimeout(r, 250));
     await flush();
     expect(api.state().list.map((t: Json) => t.id)).toEqual(['u5', 'a5']);
+  });
+
+  it('an older jump’s wait timers do not spend a newer jump’s budget (a long load still ends in the newer jump)', async () => {
+    vi.useFakeTimers();
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    const { api, fns } = boot({
+      state: {
+        _panelTurnsList: loaded(['u9', 'a9']),
+        _panelTurnsOldestId: 'u9',
+        _panelTurnsHasMore: true,
+        _panelTurnsLoading: true, // an older page is loading
+      },
+      fetch: (url) =>
+        url.includes('through=')
+          ? { id: 'c1', turns: loaded(['u2', 'a2']), hasMore: true, through: 'reached' }
+          : { total: 1 },
+    });
+    api.ihJump('u1'); // waits for the load
+    await vi.advanceTimersByTimeAsync(5_000);
+    api.ihJump('u2'); // a newer jump to a turn not loaded yet: it waits too
+    await vi.advanceTimersByTimeAsync(9_000); // 14 s in all: the newer jump has waited 9 s of its 15
+    expect(fns.dashToast).not.toHaveBeenCalled();
+    expect(api.state().ih.jump?.id).toBe('u2');
+    api.set('_panelTurnsLoading', false);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(fns.dashToast).not.toHaveBeenCalled();
+    expect(api.state().list.map((t: Json) => t.id)).toEqual(['u2', 'a2', 'u9', 'a9']);
   });
 
   it('a load on its way (the first page) settles first, then the jump goes on', async () => {

@@ -18,7 +18,7 @@ var IH_PAGE = 30; // rows per page of the list
 var IH_COUNT_DEBOUNCE_MS = 600; // a burst of turns asks for the count once
 var IH_COUNT_RETRY_MS = [2000, 5000, 15000]; // a count that failed is asked again (a blip must not lose the button)
 var IH_GROW_MAX = 100; // 최근부터: more new rows than one page holds read the list afresh
-var IH_JUMP_DEADLINE_MS = 20000; // a jump's load that has not answered by then is given up (the chat is not left loading)
+var IH_DEADLINE_MS = 20000; // a load that has not answered by then is given up (nothing is left loading)
 var IH_TEXT_LABEL = '보낸 지시 {0}개 — 눌러서 목록 보기';
 var IH_TEXT_NOT_FOUND = '그 지시를 대화에서 찾지 못했어요';
 var IH_TEXT_LOAD_FAILED = '대화를 불러오지 못했어요';
@@ -29,9 +29,10 @@ var IH_TEXT_RETRY = '다시 시도';
 var IH_TEXT_EMPTY = '보낸 지시가 없습니다';
 var IH_TEXT_FILES = '파일 {0}개';
 var IH_TEXT_SKILLS_ONLY = '(스킬만 호출)';
-// cid: the open card's conversation · total: its instructions, the newest the page knows (the button) · raisedAt: when
-// a list answer last raised it (a count asked before that is older news and cannot lower it) · countAskedAt: when the
-// count that set it was asked (a list answer asked before that is older news and cannot raise it) · lastId: the newest
+// cid: the open card's conversation · reqSeq: every count and list request's number, in the order they were asked ·
+// total: its instructions, the newest the page knows (the button) · raisedSeq: the request whose answer last raised it
+// (a count asked before that is older news and cannot lower it) · countAppliedSeq: the count request that set it (a
+// list answer asked before that is older news and cannot raise it) · lastId: the newest
 // instruction's id, as the freshest answer said · listLastId: the newest the open list has taken in · rows: the
 // list's rows as loaded · based: the open list's first page has landed · listTotal: the total the open list has taken
 // in (최근부터: newer instructions than that are fetched onto its top) · growing: that fetch is on its way · next: the
@@ -39,7 +40,7 @@ var IH_TEXT_SKILLS_ONLY = '(스킬만 호출)';
 // older answer is dropped) · reopenedFor: the total 처음부터 last asked one more page for (once per total: a count
 // that is ahead of a rollback must not ask forever) · countSeq: the latest count asked for (an older count's answer is
 // dropped) · jump: the instruction 대화 is moving to.
-var _ih = { cid: '', jumps: 0, total: 0, raisedAt: 0, countAskedAt: 0, lastId: '', listLastId: '', rows: [], based: false, listTotal: 0, growing: false, reopenedFor: -1, next: 0, order: 'asc', loading: false, why: '', open: false, gen: 0, countSeq: 0, countTries: 0, timer: 0, jump: null };
+var _ih = { cid: '', jumps: 0, reqSeq: 0, total: 0, raisedSeq: 0, countAppliedSeq: 0, lastId: '', listLastId: '', rows: [], based: false, listTotal: 0, growing: false, reopenedFor: -1, next: 0, order: 'asc', loading: false, why: '', open: false, gen: 0, countSeq: 0, countTries: 0, timer: 0, jump: null };
 
 // Pure: the number on the button — 999+ past three digits.
 function ihCountText(n) {
@@ -102,13 +103,20 @@ function ihGetJson(url, deadlineMs) {
   return fetch(url, ctl ? { signal: ctl.signal } : undefined).then(function(r) {
     if (!r || r.ok === false) throw new Error('HTTP ' + (r ? r.status : '?'));
     return r.json();
-  }).then(function(d) {
+  }).finally(function() {
     if (timer) clearTimeout(timer);
-    return d;
-  }, function(err) {
-    if (timer) clearTimeout(timer);
-    throw err;
   });
+}
+// Pure: a page row whose number the list already shows under another id — the record changed under the list (a
+// rollback, and a new instruction in its place): the list must be read afresh.
+function ihConflict(rows, items) {
+  var byN = Object.create(null);
+  for (var i = 0; i < rows.length; i++) byN[rows[i].n] = rows[i].id;
+  for (var k = 0; k < (items || []).length; k++) {
+    var it = items[k];
+    if (it && byN[it.n] !== undefined && byN[it.n] !== it.id) return true;
+  }
+  return false;
 }
 
 // The open card changed (cid: its conversation, '' when none) — or, refresh, a person's turn landed in it.
@@ -117,8 +125,8 @@ function ihSync(cid, refresh) {
   if (cid !== _ih.cid) {
     _ih.cid = cid;
     _ih.total = 0;
-    _ih.raisedAt = 0;
-    _ih.countAskedAt = 0;
+    _ih.raisedSeq = 0;
+    _ih.countAppliedSeq = 0;
     _ih.lastId = '';
     _ih.rows = [];
     _ih.next = 0;
@@ -145,14 +153,14 @@ function ihCount() {
   var cid = _ih.cid;
   if (!cid) return;
   var seq = ++_ih.countSeq;
-  var askedAt = Date.now();
-  ihGetJson(ihUrl(cid, 0, 0, 'asc')).then(function(d) {
+  var rs = ++_ih.reqSeq;
+  ihGetJson(ihUrl(cid, 0, 0, 'asc'), IH_DEADLINE_MS).then(function(d) {
     if (cid !== _ih.cid || seq !== _ih.countSeq) return;
     _ih.countTries = 0;
     var n = Math.max(0, Number(d && d.total) || 0);
-    if (!(n < _ih.total && askedAt <= _ih.raisedAt)) {
+    if (!(n < _ih.total && rs < _ih.raisedSeq)) {
       _ih.total = n;
-      _ih.countAskedAt = askedAt;
+      _ih.countAppliedSeq = rs;
       _ih.lastId = d && d.lastId ? String(d.lastId) : '';
     }
     ihPaint();
@@ -163,14 +171,14 @@ function ihCount() {
     ihCountSoon(IH_COUNT_RETRY_MS[_ih.countTries++]);
   });
 }
-// What a list answer reported (d: its total and newest id; askedAt: when it was asked): it only ever raises the
-// button's number, and only when it is newer news than the count that set it.
-function ihSeen(d, askedAt) {
+// What a list answer reported (d: its total and newest id; rs: its request's number): it only ever raises the
+// button's number, and only when it was asked after the count that set it.
+function ihSeen(d, rs) {
   var total = d && typeof d.total === 'number' ? d.total : 0;
-  if (askedAt >= _ih.countAskedAt) {
+  if (rs > _ih.countAppliedSeq) {
     if (total > _ih.total) {
       _ih.total = total;
-      _ih.raisedAt = Date.now();
+      _ih.raisedSeq = rs;
       ihPaint();
     }
     if (total >= _ih.total && d && d.lastId) _ih.lastId = String(d.lastId);
@@ -196,7 +204,8 @@ function ihReconcile() {
     _ih.listTotal = _ih.total;
     if (_ih.next === null && _ih.rows.length < _ih.total && _ih.reopenedFor !== _ih.total) {
       _ih.reopenedFor = _ih.total;
-      _ih.next = _ih.rows.length;
+      // A few rows back: the page overlaps what is listed, so a row replaced under the list is seen (ihConflict).
+      _ih.next = Math.max(0, _ih.rows.length - 5);
       ihPaintList();
       ihMaybeMore();
     }
@@ -221,12 +230,13 @@ function ihGrow(by, prev, prevLastId) {
   var cid = _ih.cid;
   var gen = _ih.gen;
   var target = _ih.listTotal;
-  var askedAt = Date.now();
+  var rs = ++_ih.reqSeq;
   _ih.growing = true;
-  ihGetJson(ihUrl(cid, 0, by + 5, 'desc')).then(function(d) {
+  ihGetJson(ihUrl(cid, 0, by + 5, 'desc'), IH_DEADLINE_MS).then(function(d) {
     if (gen !== _ih.gen) return;
     _ih.growing = false;
-    if (d && typeof d.total === 'number' && d.total > target + 5) {
+    // More landed than the margin (a gap could open under the fetched rows), or a row changed under the list.
+    if ((d && typeof d.total === 'number' && d.total > target + 5) || ihConflict(_ih.rows, d && d.items)) {
       ihReload();
       return;
     }
@@ -236,7 +246,7 @@ function ihGrow(by, prev, prevLastId) {
     ihPaintList();
     // The reader keeps the rows they were on (none moves under them unless they were at the very top).
     if (list && list.scrollTop > 0) list.scrollTop += list.scrollHeight - h;
-    ihSeen(d, askedAt);
+    ihSeen(d, rs);
   }).catch(function() {
     if (gen !== _ih.gen) return;
     _ih.growing = false;
@@ -343,13 +353,17 @@ function ihLoadMore() {
   var cid = _ih.cid;
   var gen = _ih.gen;
   var offset = _ih.next;
-  var askedAt = Date.now();
+  var rs = ++_ih.reqSeq;
   _ih.loading = true;
   _ih.why = '';
   ihPaintList();
-  ihGetJson(ihUrl(cid, offset, IH_PAGE, _ih.order)).then(function(d) {
+  ihGetJson(ihUrl(cid, offset, IH_PAGE, _ih.order), IH_DEADLINE_MS).then(function(d) {
     if (gen !== _ih.gen) return;
     _ih.loading = false;
+    if (ihConflict(_ih.rows, d && d.items)) {
+      ihReload();
+      return;
+    }
     _ih.rows = ihMerge(_ih.rows, (d && d.items) || [], _ih.order);
     _ih.next = d && typeof d.nextOffset === 'number' ? d.nextOffset : null;
     var total = d && typeof d.total === 'number' ? d.total : 0;
@@ -360,7 +374,7 @@ function ihLoadMore() {
       _ih.listLastId = d && d.lastId ? String(d.lastId) : '';
     }
     ihPaintList();
-    ihSeen(d, askedAt);
+    ihSeen(d, rs);
     ihMaybeMore();
   }).catch(function(err) {
     if (gen !== _ih.gen) return;
@@ -410,7 +424,10 @@ function ihReveal() {
   }
   if (_panelTurnsLoading) {
     if (++j.waits > 150) return ihMiss(IH_TEXT_LOAD_FAILED, j);
-    setTimeout(ihReveal, 100);
+    // This jump's own wait: a newer jump keeps its own budget (an older timer does not spend it).
+    setTimeout(function() {
+      if (_ih.jump === j) ihReveal();
+    }, 100);
     return;
   }
   var cid = panelConvId;
@@ -429,7 +446,7 @@ function ihReveal() {
     _panelTurnsWhy = '';
   }
   convPaint(); // 이전 대화 불러오는 중…
-  ihGetJson(url, IH_JUMP_DEADLINE_MS).then(function(data) {
+  ihGetJson(url, IH_DEADLINE_MS).then(function(data) {
     if (j.gen !== _panelGen) return;
     var turns = (data && data.turns) || [];
     if (j.seq !== _ih.jumps) {

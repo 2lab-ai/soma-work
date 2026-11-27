@@ -90,17 +90,31 @@ export function instructionPreview(
   let text = '';
   const skills: string[] = [];
   let from = 0;
+  // Forward only: the next opening tag at or after `from` is kept and looked up again only once `from` passes it, so
+  // a run of stray closing tags never rescans what is behind it (no backward search to the start per tag).
+  let nextOpen = s.indexOf(OPEN);
   for (;;) {
     const end = s.indexOf(CLOSE, from);
     if (end < 0) {
       text += s.slice(from);
       break;
     }
-    const at = s.lastIndexOf(OPEN, end);
-    if (at < from) {
+    if (nextOpen >= 0 && nextOpen < from) nextOpen = s.indexOf(OPEN, from);
+    if (nextOpen < 0 || nextOpen > end) {
+      // A stray closing tag in the words: words, and look on past it.
       text += s.slice(from, end + CLOSE.length);
       from = end + CLOSE.length;
       continue;
+    }
+    // The block starts at the last opening tag before its closing one (a literal mention before it stays words).
+    let at = nextOpen;
+    for (;;) {
+      const q = s.indexOf(OPEN, at + 1);
+      if (q < 0 || q > end) {
+        nextOpen = q;
+        break;
+      }
+      at = q;
     }
     text += s.slice(from, at);
     const inner = s.slice(at + OPEN.length, end);
