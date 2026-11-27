@@ -25918,7 +25918,8 @@ function pad2(n) {
 }
 // Every run state has its own glyph — colour is never the only signal (T5): the icon set's check / cross / dot /
 // alert / dashed circle (the row's leading glyph), in the kit row's tone (done / fail / run / wait, none for an
-// entry that is not a run of its own). The slots are literals so the page fills them with the library's glyphs.
+// entry whose result is not known: a queue entry, a card with no record). The slots are literals so the page fills
+// them with the library's glyphs.
 var CRON_RUN_GLYPHS = { check: '<i data-ui-icon="check"></i>', cross: '<i data-ui-icon="cross"></i>', dot: '<i data-ui-icon="dot"></i>', alert: '<i data-ui-icon="alert"></i>', 'circle-dashed': '<i data-ui-icon="circle-dashed"></i>' };
 function cronRunGlyph(run) {
   // A queue entry is an event, not a state: the drain that follows is not
@@ -25930,8 +25931,10 @@ function cronRunGlyph(run) {
   if (s && s.live && s.activityState === 'waiting') return { tone: 'wait', glyph: 'alert', label: '응답 필요' };
   if (s && s.live && s.activityState === 'working') return { tone: 'run', glyph: 'dot', label: '실행 중' };
   if (run && run.status === 'unrecorded') return { tone: '', glyph: 'circle-dashed', label: '실행 기록 없음 (보드 카드만 있음)' };
-  if (run && run.executionPath === 'dm') return { tone: '', glyph: 'circle-dashed', label: 'DM 전송 (세션 없음)' };
-  if (run && run.executionPath === 'thread_reply') return { tone: '', glyph: 'circle-dashed', label: '스레드 답글 (세션 없음)' };
+  // A DM or a thread reply is recorded once the post went out (cron-scheduler.ts): its result is known — sent. It
+  // reads as a success like the lane's 24-hour counts (cronDayRuns) do, the words saying no session ran.
+  if (run && run.executionPath === 'dm') return { tone: 'done', glyph: 'check', label: 'DM 전송 (세션 없음)' };
+  if (run && run.executionPath === 'thread_reply') return { tone: 'done', glyph: 'check', label: '스레드 답글 (세션 없음)' };
   return { tone: 'done', glyph: 'check', label: '성공' };
 }
 // Schedule in words for the common shapes; anything else stays the raw (UTC)
@@ -25997,8 +26000,8 @@ function cronGroupRuns(g) {
 }
 // ── The lane as the element's data (re-agent-queue; @2lab.ai/ui <ui-agent-queue>) ──
 // A run as the element reads it, by the strip's rule (cronRunGlyph, its tone): done → ok · run → running ·
-// wait → waiting · fail → failed · no tone → unknown (a queue entry, a card with no record, a DM or a thread
-// reply), the glyph's words as its label. A card with no record yet is not one of the
+// wait → waiting · fail → failed · no tone → unknown (a queue entry, a card with no record — a sent DM or thread
+// reply is ok), the glyph's words as its label. A card with no record yet is not one of the
 // job's kept records (recorded: false), so it never counts toward historyCap.
 var CRON_AQ_STATUS = { done: 'ok', run: 'running', wait: 'waiting', fail: 'failed' };
 function cronRunAsAq(r) {
