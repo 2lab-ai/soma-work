@@ -1740,6 +1740,27 @@ describe('FollowupQueue editQueued (06 §3.4 Edit)', () => {
     expect(queue.get(SESSION, first.item.id)?.message.text).toBe('배포 상태 말고 로그 보여줘');
   });
 
+  // Z 2026-11-27 (review R1) — new words carry 관리자 모드 only when the edit itself was made in it.
+  it('drops the 관리자 모드 flag the old words had unless the edit was made in the mode; keeps the rest of the route', () => {
+    const queue = new FollowupQueue();
+    const first = queue.enqueue(
+      SESSION,
+      event({ ts: '1.1', text: '원문', routeContext: { adminModeInstruction: true, verbatimPrompt: true } } as any),
+    );
+    if (first.status !== 'queued') throw new Error('setup failed');
+    const plain = queue.editQueued(SESSION, first.item.id, first.item.epoch, '모드 없이 고침');
+    expect(plain.ok && plain.item.message.routeContext).toEqual({ verbatimPrompt: true });
+    if (!plain.ok) return;
+    const inMode = queue.editQueued(SESSION, first.item.id, plain.item.epoch, '모드로 고침', {
+      adminModeInstruction: true,
+    });
+    expect(inMode.ok && inMode.item.message.routeContext).toEqual({ verbatimPrompt: true, adminModeInstruction: true });
+    const second = queue.enqueue(SESSION, event({ ts: '2.2', text: '평범' }));
+    if (second.status !== 'queued') throw new Error('setup failed');
+    const untouched = queue.editQueued(SESSION, second.item.id, second.item.epoch, '평범하게 고침');
+    expect(untouched.ok && untouched.item.message.routeContext).toBeUndefined();
+  });
+
   it('keeps everything except the text — author, files and seq are the original event (A30)', () => {
     const queue = new FollowupQueue();
     const first = queue.enqueue(SESSION, event({ ts: '1.1', user: 'U_AUTHOR', text: '원문' }));

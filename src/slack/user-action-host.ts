@@ -112,11 +112,17 @@ const answersInFlight = new Set<string>();
  * changes nothing.
  */
 export function notifierFromInjection(
-  inject: (sessionKey: string, text: string, actor: string, onAccepted: () => void) => Promise<unknown>,
+  inject: (
+    sessionKey: string,
+    text: string,
+    actor: string,
+    onAccepted: () => void,
+    opts?: { adminMode?: true },
+  ) => Promise<unknown>,
 ): UserActionNotifier {
-  return (sessionKey, text, actor) =>
+  return (sessionKey, text, actor, opts) =>
     new Promise<boolean>((resolve) => {
-      inject(sessionKey, text, actor, () => resolve(true)).then(
+      inject(sessionKey, text, actor, () => resolve(true), opts).then(
         () => resolve(false),
         () => resolve(false),
       );
@@ -124,7 +130,13 @@ export function notifierFromInjection(
 }
 
 /** Hands an answer to the agent as `actor`'s message in the session's thread; true once it is taken. */
-export type UserActionNotifier = (sessionKey: string, text: string, actor: string) => Promise<boolean>;
+export type UserActionNotifier = (
+  sessionKey: string,
+  text: string,
+  actor: string,
+  /** Z 2026-11-27 — the answer of an admin in 관리자 모드 on the dashboard: it runs without the owner's approval. */
+  opts?: { adminMode?: true },
+) => Promise<boolean>;
 let userActionNotifier: UserActionNotifier | undefined;
 /**
  * The host's notifier (src/index.ts): the thread's normal message path with a real acceptance signal (its turn reached
@@ -151,18 +163,30 @@ export async function answerUserAction(args: {
   /** Slack user id of whoever answered. */
   actor: string;
   at: number;
+  /** Z 2026-11-27 — a signed-in admin with 관리자 모드 on answered from the dashboard (the route checked it). */
+  adminMode?: true;
   deps: UserActionHostDeps & {
     getSession(sessionKey: string): ConversationSession | undefined;
-    /** The instruction gate: owner, approved for the session, or trusted. */
-    mayAnswer(sessionKey: string, session: ConversationSession, actor: string): boolean;
+    /** The instruction gate: owner, approved for the session, trusted, or an admin in 관리자 모드. */
+    mayAnswer(sessionKey: string, session: ConversationSession, actor: string, opts?: { adminMode?: true }): boolean;
     /** Send `text` to the agent as `actor`'s message; true once it is taken (runs, or queued behind a turn). */
-    notify(sessionKey: string, session: ConversationSession, text: string, actor: string): Promise<boolean>;
+    notify(
+      sessionKey: string,
+      session: ConversationSession,
+      text: string,
+      actor: string,
+      opts?: { adminMode?: true },
+    ): Promise<boolean>;
   };
 }): Promise<{ ok: true; action: UserActionRecord } | { ok: false; code: AnswerUserActionCode }> {
   const { sessionKey, deps } = args;
   const session = deps.getSession(sessionKey);
   if (!session) return { ok: false, code: 'gone' };
-  if (!deps.mayAnswer(sessionKey, session, args.actor)) return { ok: false, code: 'forbidden' };
+  const admin = args.adminMode ? { adminMode: args.adminMode } : undefined;
+  if (
+    !(admin ? deps.mayAnswer(sessionKey, session, args.actor, admin) : deps.mayAnswer(sessionKey, session, args.actor))
+  )
+    return { ok: false, code: 'forbidden' };
   const lock = `${sessionKey}\u0000${args.id}`;
   if (answersInFlight.has(lock)) return { ok: false, code: 'in-flight' };
   // Checked on a copy: the stored record is not touched until the agent took the answer.
@@ -171,7 +195,10 @@ export async function answerUserAction(args: {
   answersInFlight.add(lock);
   let delivered = false;
   try {
-    delivered = await deps.notify(sessionKey, session, userActionResolvedPrompt(preview.action), args.actor);
+    const prompt = userActionResolvedPrompt(preview.action);
+    delivered = admin
+      ? await deps.notify(sessionKey, session, prompt, args.actor, admin)
+      : await deps.notify(sessionKey, session, prompt, args.actor);
   } catch (error) {
     logger.warn('user action answer could not reach the agent', {
       sessionKey,

@@ -53,7 +53,7 @@ import { captureUserMedia, getConversation, recordUserTurn } from './conversatio
 import { readWorkLog } from './conversation/work-log';
 import { FileHandler, type ProcessedFile } from './file-handler';
 import { buildIncidentAttemptOutput } from './incident/attempt-output';
-import type { InstructionApprovals } from './instruction-approval';
+import { ADMIN_MODE_ROUTE, type InstructionApprovals, isAdminModeRoute } from './instruction-approval';
 import { getLastCommandChannelStore } from './last-command-channel-store';
 import { Logger } from './logger';
 import { mcpCallTracker } from './mcp-call-tracker';
@@ -3997,7 +3997,16 @@ export class SlackHandler {
     const sessionKey = this.claudeHandler.getSessionKey(event.channel, event.thread_ts);
     const approvalId = (event.routeContext as { instructionApprovalId?: string } | undefined)?.instructionApprovalId;
     if (
-      approvals.allows({ sessionKey, session, senderId: event.user, approvalId, ts: event.ts, text: event.text ?? '' })
+      approvals.allows({
+        sessionKey,
+        session,
+        senderId: event.user,
+        approvalId,
+        ts: event.ts,
+        text: event.text ?? '',
+        // Z 2026-11-27 — an admin's dashboard instruction in 관리자 모드 (host-set; allows re-checks ADMIN_USERS).
+        adminMode: isAdminModeRoute(event),
+      })
     ) {
       return undefined;
     }
@@ -4548,6 +4557,8 @@ export class SlackHandler {
               ...(opening.cause === 'set' && isClientRef(event.dashboardClientRef)
                 ? { dashboardClientRef: event.dashboardClientRef }
                 : {}),
+              // Z 2026-11-27 — only the goal this 관리자 모드 message set carries the mode, never one it promoted.
+              ...(opening.cause === 'set' && isAdminModeRoute(event) ? { adminMode: true } : {}),
             },
             opening,
           );
@@ -4623,6 +4634,8 @@ export class SlackHandler {
       files?: MessageEvent['files'];
       /** #785 — the dashboard send that set this goal: its opening turn records the ref. */
       dashboardClientRef?: string;
+      /** Z 2026-11-27 — an admin in 관리자 모드 set this goal: its opening turn passes the #767 gate as theirs. */
+      adminMode?: boolean;
     },
     opening: { goalId: string; objective: string; prompt?: string },
   ): GoalOpeningAdmission {
@@ -4649,6 +4662,8 @@ export class SlackHandler {
       files?: MessageEvent['files'];
       /** #785 — the dashboard send that set this goal: its opening turn records the ref. */
       dashboardClientRef?: string;
+      /** Z 2026-11-27 — an admin in 관리자 모드 set this goal: its opening turn passes the #767 gate as theirs. */
+      adminMode?: boolean;
     },
     opening: { goalId: string; objective: string; prompt?: string },
   ): GoalOpeningAdmission {
@@ -4699,10 +4714,11 @@ export class SlackHandler {
       ...(anchor.team ? { team: anchor.team } : {}),
       ...(files?.length ? { files } : {}),
       ...(anchor.dashboardClientRef ? { dashboardClientRef: anchor.dashboardClientRef } : {}),
-      routeContext:
-        prompt === undefined
-          ? { verbatimPrompt: true, goalOpeningId: opening.goalId }
-          : { goalOpeningId: opening.goalId },
+      routeContext: {
+        ...(prompt === undefined ? { verbatimPrompt: true } : {}),
+        goalOpeningId: opening.goalId,
+        ...(anchor.adminMode ? ADMIN_MODE_ROUTE : {}),
+      },
     } as MessageEvent;
 
     // Marked BEFORE the turn is handed over (the callers' snapshots predate
@@ -6704,6 +6720,8 @@ export class SlackHandler {
     text?: string;
     actorUserId?: string;
     manages?: boolean;
+    /** Z 2026-11-27 — an admin in 관리자 모드 pressed it (the route checked it): an Edit's words keep the mode. */
+    adminMode?: true;
   }): Promise<{ ok: true; message?: string; unfulfilled?: true } | { ok: false; status: number; message: string }> {
     const deps = this.followupActionDeps;
     const queue = this.followupQueue;
@@ -6782,7 +6800,7 @@ export class SlackHandler {
    * would be the clicker rewriting the item (A30).
    */
   private async editFollowupFromDashboard(
-    request: { sessionKey: string; itemId: string; epoch: number; text?: string },
+    request: { sessionKey: string; itemId: string; epoch: number; text?: string; adminMode?: true },
     presser: string,
   ): Promise<{ ok: true } | { ok: false; status: number; message: string }> {
     const queue = this.followupQueue;
@@ -6804,7 +6822,10 @@ export class SlackHandler {
           '이 goal 명령은 이미 실행되어 수정할 수 없습니다 — goal을 바꾸려면 goal 목록에서 삭제하고 새로 추가해 주세요.',
       };
     }
-    const result = queue.editQueued(request.sessionKey, request.itemId, request.epoch, text);
+    // Z 2026-11-27 — the new words carry 관리자 모드 only when this edit was made in it.
+    const result = queue.editQueued(request.sessionKey, request.itemId, request.epoch, text, {
+      adminModeInstruction: request.adminMode === true,
+    });
     if (!result.ok) return { ok: false, status: 409, message: SlackHandler.dashboardEditRefusal(result.reason, item) };
     // #1472 — an edit can turn the head of the line into a command: the held turn asks its gate again.
     this.claudeHandler.requestHoldRelease?.(this.canonicalFollowupKey(request.sessionKey));
@@ -10117,18 +10138,21 @@ export class SlackHandler {
     label: string,
     question: string,
     actorUserId?: string,
+    /** Z 2026-11-27 — a signed-in admin in 관리자 모드 answered (the dashboard route checked it). */
+    opts?: { adminMode?: boolean },
   ): Promise<void> {
     const session = this.claudeHandler.getSessionByKey(sessionKey);
     if (!session) {
       throw new Error('Session not found');
     }
-    await this.actionHandlers.handleDashboardChoiceAnswer(
-      sessionKey,
-      choiceId,
-      label,
-      question,
-      actorUserId || session.ownerId,
-    );
+    const actor = actorUserId || session.ownerId;
+    if (opts?.adminMode) {
+      await this.actionHandlers.handleDashboardChoiceAnswer(sessionKey, choiceId, label, question, actor, {
+        adminMode: true,
+      });
+    } else {
+      await this.actionHandlers.handleDashboardChoiceAnswer(sessionKey, choiceId, label, question, actor);
+    }
   }
 
   /** Handle multi-choice form submission from dashboard */
@@ -10136,21 +10160,36 @@ export class SlackHandler {
     sessionKey: string,
     selections: Record<string, { choiceId: string; label: string }>,
     actorUserId?: string,
+    opts?: { adminMode?: boolean },
   ): Promise<void> {
     const session = this.claudeHandler.getSessionByKey(sessionKey);
     if (!session) {
       throw new Error('Session not found');
     }
-    await this.actionHandlers.handleDashboardMultiChoiceAnswer(sessionKey, selections, actorUserId || session.ownerId);
+    const actor = actorUserId || session.ownerId;
+    if (opts?.adminMode) {
+      await this.actionHandlers.handleDashboardMultiChoiceAnswer(sessionKey, selections, actor, { adminMode: true });
+    } else {
+      await this.actionHandlers.handleDashboardMultiChoiceAnswer(sessionKey, selections, actor);
+    }
   }
 
   /** Handle hero "Submit All Recommended" from dashboard (group-only one-click) */
-  async handleDashboardSubmitRecommended(sessionKey: string, actorUserId?: string): Promise<void> {
+  async handleDashboardSubmitRecommended(
+    sessionKey: string,
+    actorUserId?: string,
+    opts?: { adminMode?: boolean },
+  ): Promise<void> {
     const session = this.claudeHandler.getSessionByKey(sessionKey);
     if (!session) {
       throw new Error('Session not found');
     }
-    await this.actionHandlers.handleDashboardSubmitRecommended(sessionKey, actorUserId || session.ownerId);
+    const actor = actorUserId || session.ownerId;
+    if (opts?.adminMode) {
+      await this.actionHandlers.handleDashboardSubmitRecommended(sessionKey, actor, { adminMode: true });
+    } else {
+      await this.actionHandlers.handleDashboardSubmitRecommended(sessionKey, actor);
+    }
   }
 
   /**
@@ -10273,7 +10312,15 @@ export class SlackHandler {
       this.persistHostGoalMutation(live);
       const admission = this.admitGoalOpeningTurn(
         sessionKey,
-        { channel, threadTs, ts: anchorTs, user: actor, say: this.threadSay(channel, threadTs) },
+        {
+          channel,
+          threadTs,
+          ts: anchorTs,
+          user: actor,
+          say: this.threadSay(channel, threadTs),
+          // Z 2026-11-27 — the goal this admin (관리자 모드) added: its opening runs without the owner's approval.
+          ...(options.adminMode ? { adminMode: true } : {}),
+        },
         { goalId: result.goal.goalId, objective },
       );
       if (typeof admission === 'object') {

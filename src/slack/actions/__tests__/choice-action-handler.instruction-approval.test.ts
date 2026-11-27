@@ -172,6 +172,65 @@ describe('ChoiceActionHandler — someone else’s answer waits for the owner (#
   });
 });
 
+// Z 2026-11-27 — "관리자 모드 키면 입력 대기중인 다른 사람의 작업에 선택할 수 있게 해줘".
+describe('ChoiceActionHandler — an admin in 관리자 모드 answers anyone’s question from the dashboard', () => {
+  afterEach(() => setInstructionApprovals(undefined));
+
+  /** The gate as it decides: only the 관리자 모드 flag lets this non-owner through. */
+  function setupGate() {
+    const result = setup(false);
+    result.allows.mockImplementation((input: { adminMode?: boolean }) => input.adminMode === true);
+    return result;
+  }
+
+  it('the single choice is answered at once, as the admin, and its turn carries the mode past the gate', async () => {
+    const { handler, messageHandler, slackApi, allows } = setupGate();
+    await handler.handleChoiceFromDashboard(SESSION_KEY, '1', 'A', 'Q?', 'U_ADMIN', { adminMode: true });
+    expect(allows).toHaveBeenCalledWith(expect.objectContaining({ senderId: 'U_ADMIN', adminMode: true }));
+    // #1474 — drawn by the answer itself: the card reads answered (not the "waits for the owner" hold).
+    expect(slackApi.updateMessage.mock.calls.some((c: unknown[]) => String(c[2]).includes('선택: *1. A*'))).toBe(true);
+    expect(messageHandler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        user: 'U_ADMIN',
+        text: '1',
+        questionAnswer: true,
+        routeContext: { adminModeInstruction: true },
+      }),
+      expect.any(Function),
+    );
+  });
+
+  it('without the mode the same admin is held for the owner, as before', async () => {
+    const { handler, messageHandler, slackApi, allows } = setupGate();
+    await handler.handleChoiceFromDashboard(SESSION_KEY, '1', 'A', 'Q?', 'U_ADMIN');
+    expect(allows).toHaveBeenCalledWith(expect.not.objectContaining({ adminMode: true }));
+    expect(slackApi.updateMessage).not.toHaveBeenCalled();
+    expect(messageHandler).toHaveBeenCalledWith(
+      expect.not.objectContaining({ routeContext: expect.anything() }),
+      expect.any(Function),
+    );
+  });
+
+  it('the multi-question form and 추천 일괄 제출 are not refused in 관리자 모드', async () => {
+    const { handler, allows, session } = setupGate();
+    (session as any).actionPanel.pendingQuestion = {
+      type: 'user_choices',
+      question: 'Qs',
+      questions: [{ id: 'q1', question: 'Q1?', choices: [{ id: '1', label: 'A' }], recommendedChoiceId: '1' }],
+    };
+    // Past the owner gate: the form's own checks answer now (no form record → a choice id is validated, etc.).
+    await expect(
+      handler.handleMultiChoiceFromDashboard(SESSION_KEY, { q1: { choiceId: '1', label: 'A' } }, 'U_ADMIN', {
+        adminMode: true,
+      }),
+    ).resolves.toBeUndefined();
+    expect(allows).toHaveBeenCalledWith(expect.objectContaining({ senderId: 'U_ADMIN', adminMode: true }));
+    await expect(handler.handleSubmitRecommendedFromDashboard(SESSION_KEY, 'U_ADMIN')).rejects.toThrow(
+      FORM_OWNER_ONLY_ERROR,
+    );
+  });
+});
+
 describe('ChoiceActionHandler — an admin answering a question asked for admins (#1070)', () => {
   afterEach(() => setInstructionApprovals(undefined));
 

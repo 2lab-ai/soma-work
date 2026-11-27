@@ -1,7 +1,7 @@
 /**
  * The page's viewer predicates (SSOT 2026-11-02) for the client harnesses that
  * cut functions out of renderDashboardPage()'s template: `viewerOwns`,
- * `viewerCanManage`, `viewerCanInstruct` and `viewerCanStop` read the signed-in viewer
+ * `viewerCanManage`, `viewerCanInstruct`, `viewerCanStop` and `viewerAdminMode` read the signed-in viewer
  * (`_viewerUserId`), `_viewerIsAdmin` and 관리자 모드 (`_isAdminModeOn`).
  *
  * A harness that loads a function using them gets them too. Unless a test names
@@ -11,7 +11,14 @@
  * read-only words the test injected. The predicates themselves are pinned by
  * dashboard-task-permissions-client.test.ts.
  */
-export const VIEWER_FNS = ['viewerOwns', 'viewerCanManage', 'viewerCanInstruct', 'viewerCanStop'] as const;
+export const VIEWER_FNS = [
+  'viewerOwns',
+  'viewerCanManage',
+  'viewerCanInstruct',
+  'viewerCanStop',
+  // Z 2026-11-27 — a signed-in admin with 관리자 모드 on answers anyone's waiting card.
+  'viewerAdminMode',
+] as const;
 /**
  * #1021 — what `cardOf` itself reads for an epic's family (@2lab.ai/ui 0.37.0): an epic's children on its face
  * (`epicFamilyOf` — the cached epic's whole bundle, `_sessionCache`, empty unless a test names one — →

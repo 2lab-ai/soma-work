@@ -34,7 +34,10 @@ const mockConfig = {
 
 vi.mock('../../config', () => ({ config: mockConfig }));
 vi.mock('../../env-paths', () => ({ IS_DEV: true, DATA_DIR: '/tmp/test-data' }));
-vi.mock('../../admin-utils', () => ({ isAdminUser: (id: string) => id === 'U_ADMIN' }));
+vi.mock('../../admin-utils', () => ({
+  isAdminUser: (id: string) => id === 'U_ADMIN',
+  getAdminUsers: () => new Set(['U_ADMIN']),
+}));
 vi.mock('../recorder', () => ({
   listConversations: vi.fn().mockResolvedValue([]),
   getConversation: vi.fn().mockResolvedValue(null),
@@ -150,8 +153,9 @@ describe('Dashboard — permission prompts (SSOT 2026-10-24)', () => {
           ],
         ]),
     );
-    // First import of the web server: slow on a loaded runner.
-  }, 30_000);
+    // First import of the web server: slow on a loaded runner (2026-11-27: 29.4 s at load 65 on the shared host — 30 s
+    // was the edge).
+  }, 90_000);
 
   afterEach(async () => {
     for (const id of ids.splice(0)) await sharedStore?.cleanup(id);
@@ -258,11 +262,20 @@ describe('Dashboard — permission prompts (SSOT 2026-10-24)', () => {
       expect(body.input).toContain(SECRET);
     });
 
-    it('refuses everyone else — another user, the bearer token, an admin in admin mode', async () => {
+    it('refuses everyone else — another user, the bearer token, an admin without 관리자 모드, a non-admin with it', async () => {
       const id = await seed();
       expect((await detail(id, await signIn('U2'))).statusCode).toBe(403);
       expect((await detail(id, AUTH_HEADER)).statusCode).toBe(403);
-      expect((await detail(id, { ...(await signIn('U_ADMIN')), 'x-admin-mode': 'on' })).statusCode).toBe(403);
+      expect((await detail(id, await signIn('U_ADMIN'))).statusCode).toBe(403);
+      expect((await detail(id, { ...(await signIn('U2')), 'x-admin-mode': 'on' })).statusCode).toBe(403);
+    });
+
+    // Z 2026-11-27 — "관리자 모드 키면 입력 대기중인 다른 사람의 작업에 선택할 수 있게 해줘".
+    it('an admin signed in with Slack, 관리자 모드 on, reads anyone’s prompt parameters', async () => {
+      const id = await seed();
+      const res = await detail(id, { ...(await signIn('U_ADMIN')), 'x-admin-mode': 'on' });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body).input).toContain(SECRET);
     });
 
     it('400 for an id with path characters', async () => {
@@ -339,14 +352,30 @@ describe('Dashboard — permission prompts (SSOT 2026-10-24)', () => {
       expect(await sharedStore.waitForPermissionResponse(id, 1500)).toMatchObject({ behavior: 'allow' });
     });
 
-    it('only the requester may answer: another user, the bearer token and admin mode get 403', async () => {
+    it('only the requester may answer: another user, the bearer token and an admin without 관리자 모드 get 403', async () => {
       dashboard.setDashboardPermissionAnswerHandler((a: any) => answerPermissionPrompt(a));
       const id = await seed();
       expect((await answer({ approvalId: id, decision: 'approve' }, await signIn('U2'))).statusCode).toBe(403);
       expect((await answer({ approvalId: id, decision: 'approve' }, AUTH_HEADER)).statusCode).toBe(403);
-      const admin = { ...(await signIn('U_ADMIN')), 'x-admin-mode': 'on' };
-      expect((await answer({ approvalId: id, decision: 'approve' }, admin)).statusCode).toBe(403);
+      expect((await answer({ approvalId: id, decision: 'approve' }, await signIn('U_ADMIN'))).statusCode).toBe(403);
+      const notAdmin = { ...(await signIn('U2')), 'x-admin-mode': 'on' };
+      expect((await answer({ approvalId: id, decision: 'approve' }, notAdmin)).statusCode).toBe(403);
       expect(await sharedStore.claimPermissionResponse(id)).toBe(true); // nobody answered it
+    });
+
+    // Z 2026-11-27 — an admin in 관리자 모드 answers someone else's prompt; the handler is told the mode.
+    it('an admin signed in with Slack, 관리자 모드 on, answers anyone’s prompt — the MCP server gets it', async () => {
+      const seen: any[] = [];
+      dashboard.setDashboardPermissionAnswerHandler((a: any) => {
+        seen.push(a);
+        return answerPermissionPrompt(a);
+      });
+      const id = await seed();
+      const admin = { ...(await signIn('U_ADMIN')), 'x-admin-mode': 'on' };
+      const res = await answer({ approvalId: id, decision: 'approve' }, admin);
+      expect(res.statusCode).toBe(200);
+      expect(seen[0]).toMatchObject({ approvalId: id, actor: 'U_ADMIN', adminMode: true });
+      expect(await sharedStore.waitForPermissionResponse(id, 1500)).toMatchObject({ behavior: 'allow' });
     });
 
     it('404 for a grant request or a prompt of another thread', async () => {

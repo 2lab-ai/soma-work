@@ -18,11 +18,14 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { resetAdminUsersCache } from '../admin-utils';
 import {
+  ADMIN_MODE_ROUTE,
   type HeldInstruction,
   type InstructionApprovalDeps,
   type InstructionApprovalRequest,
   InstructionApprovals,
+  isAdminModeRoute,
 } from '../instruction-approval';
 
 const OWNER = 'U_OWNER';
@@ -496,6 +499,88 @@ describe('InstructionApprovals (#767)', () => {
         reason: 'session_gone',
       });
       expect(released).toEqual([]);
+    });
+  });
+
+  // Z 2026-11-27 — "관리자 모드 키면 입력 대기중인 다른 사람의 작업에 선택할 수 있게 해줘. 그리고 권한 물어볼필요 없이
+  // 다른 사람의 세션에 직접 지시를 내릴 수 있어야함."
+  describe('관리자 모드 — an admin instructs and decides without the owner', () => {
+    const ADMIN = 'U_ADMIN';
+    let prevAdmins: string | undefined;
+    beforeEach(() => {
+      prevAdmins = process.env.ADMIN_USERS;
+      process.env.ADMIN_USERS = ADMIN;
+      resetAdminUsersCache();
+    });
+    afterEach(() => {
+      if (prevAdmins === undefined) delete process.env.ADMIN_USERS;
+      else process.env.ADMIN_USERS = prevAdmins;
+      resetAdminUsersCache();
+    });
+
+    it('an admin in 관리자 모드 runs without asking; without the mode, or a non-admin with it, is held', () => {
+      const approvals = new InstructionApprovals(deps());
+      const s = sessions.get(KEY);
+      expect(approvals.allows({ sessionKey: KEY, session: s, senderId: ADMIN, adminMode: true })).toBe(true);
+      expect(approvals.allows({ sessionKey: KEY, session: s, senderId: ADMIN })).toBe(false);
+      expect(approvals.allows({ sessionKey: KEY, session: s, senderId: OTHER, adminMode: true })).toBe(false);
+    });
+
+    it('the mode rides a message as its route context, and only that exact flag counts', () => {
+      expect(isAdminModeRoute({ routeContext: { ...ADMIN_MODE_ROUTE } })).toBe(true);
+      expect(isAdminModeRoute({ routeContext: { adminModeInstruction: 'true' } })).toBe(false);
+      expect(isAdminModeRoute({ routeContext: { verbatimPrompt: true } })).toBe(false);
+      expect(isAdminModeRoute({})).toBe(false);
+      expect(isAdminModeRoute(undefined)).toBe(false);
+    });
+
+    it("an admin in 관리자 모드 cannot answer 항상 승인 — that rewrites the owner's own trust list (review R1)", async () => {
+      const approvals = new InstructionApprovals(deps());
+      const { requestId } = await holdOne(approvals);
+      expect(
+        approvals.answer({
+          requestId,
+          decision: 'approve_always',
+          actor: ADMIN,
+          surface: 'dashboard',
+          adminMode: true,
+        }),
+      ).toMatchObject({ ok: false, reason: 'not_owner' });
+      expect(trusted.get(OWNER)?.has(OTHER)).not.toBe(true);
+      expect(approvals.get(requestId)?.status).toBe('pending');
+      const session = approvals.answer({
+        requestId,
+        decision: 'approve_session',
+        actor: ADMIN,
+        surface: 'dashboard',
+        adminMode: true,
+      });
+      expect(session.ok).toBe(true);
+    });
+
+    it("an admin in 관리자 모드 answers someone's held instruction for the owner; the thread names the admin", async () => {
+      const approvals = new InstructionApprovals(deps());
+      const { requestId } = await holdOne(approvals);
+      expect(approvals.answer({ requestId, decision: 'approve', actor: ADMIN, surface: 'dashboard' })).toMatchObject({
+        ok: false,
+        reason: 'not_owner',
+      });
+      expect(
+        approvals.answer({ requestId, decision: 'approve', actor: OTHER, surface: 'dashboard', adminMode: true }),
+      ).toMatchObject({ ok: false, reason: 'not_owner' });
+      const answered = approvals.answer({
+        requestId,
+        decision: 'approve',
+        actor: ADMIN,
+        surface: 'dashboard',
+        adminMode: true,
+      });
+      expect(answered.ok).toBe(true);
+      if (!answered.ok) return;
+      await answered.done;
+      expect(approvals.get(requestId)).toMatchObject({ status: 'approved', decidedBy: ADMIN, ownerId: OWNER });
+      expect(released.map((r) => r.requestId)).toEqual([requestId]);
+      expect(notices[notices.length - 1]?.text).toContain(`<@${ADMIN}>`);
     });
   });
 });

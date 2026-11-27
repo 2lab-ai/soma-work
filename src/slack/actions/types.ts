@@ -17,6 +17,8 @@ export interface MessageEvent {
   text?: string;
   /** #1474 — the owner's answer to a question the model asked (`pipeline/types.ts` MessageEvent.questionAnswer). */
   questionAnswer?: true;
+  /** Z 2026-11-27 — host-set only: an admin's dashboard answer in 관리자 모드 (`pipeline/types.ts` routeContext). */
+  routeContext?: { adminModeInstruction?: true; [field: string]: unknown };
 }
 
 export type MessageHandler = (event: MessageEvent, say: SayFn) => Promise<void>;

@@ -11,7 +11,9 @@
  * - only records the permission MCP server wrote (`kind`) — the pending
  *   directory also holds admin-approved MCP tool grant requests, which their
  *   requester must never answer;
- * - only the user the prompt was raised for (`PendingApproval.user`);
+ * - only the user the prompt was raised for (`PendingApproval.user`) — or an
+ *   admin in 관리자 모드 on the dashboard (Z 2026-11-27, `adminMode`, re-checked
+ *   against ADMIN_USERS here); the answer is recorded as the admin's;
  * - when the caller names a session thread, only a prompt of that thread;
  * - at most once, across surfaces and processes: the store claim is taken
  *   before any side effect, and outlives the MCP server's cleanup;
@@ -34,6 +36,7 @@ import {
   type PermissionResponse,
   sharedStore,
 } from 'somalib/permission/shared-store';
+import { getAdminUsers } from './admin-utils';
 
 /** The answers a permission prompt takes — one list, shared with the work log entry that records them. */
 export type PermissionPromptDecision = (typeof WORK_LOG_PERMISSION_DECISIONS)[number];
@@ -64,6 +67,11 @@ export interface AnswerPermissionPromptArgs {
   sessions?: DangerousRuleSessions;
   /** When set, the prompt must belong to this session thread. */
   thread?: PermissionPromptTarget;
+  /**
+   * Z 2026-11-27 — the dashboard route saw a signed-in admin with 관리자 모드 on: they answer a prompt raised for
+   * someone else. Re-checked: `actor` must be in ADMIN_USERS.
+   */
+  adminMode?: boolean;
 }
 
 export type PermissionPromptAnswer =
@@ -80,6 +88,18 @@ export type PermissionPromptAnswer =
  * and the dashboard both answer in this process; a restart drops the record and the requester is asked again.
  */
 const firstAsks = new Map<string, { actor: string; at: number }>();
+/**
+ * One first ask per (prompt, actor): since 관리자 모드 (Z 2026-11-27) the requester and an admin may both answer one
+ * prompt, and one's first ask must not erase the other's (review R1).
+ */
+function firstAskKey(approvalId: string, actor: string): string {
+  return `${approvalId}\u0000${actor}`;
+}
+/** A prompt was claimed: every first ask of it is spent. */
+function forgetFirstAsks(approvalId: string): void {
+  const prefix = `${approvalId}\u0000`;
+  for (const key of firstAsks.keys()) if (key.startsWith(prefix)) firstAsks.delete(key);
+}
 /** A first ask older than the prompt's own lifetime has no prompt left to confirm. */
 const FIRST_ASK_TTL_MS = 10 * 60 * 1000;
 
@@ -100,7 +120,7 @@ function needsSecondConfirmation(
   if (pending.advice?.recommendation !== 'deny') return false;
   if (decision === 'approve' || decision === 'approve_disable_rule') return true;
   if (decision !== 'approve_confirmed') return false;
-  const ask = firstAsks.get(approvalId);
+  const ask = firstAsks.get(firstAskKey(approvalId, actor));
   return !ask || ask.actor !== actor || Date.now() - ask.at > FIRST_ASK_TTL_MS;
 }
 
@@ -132,20 +152,22 @@ export async function answerPermissionPrompt(args: AnswerPermissionPromptArgs): 
   const pending = await loadPermissionPrompt(approvalId);
   if (!pending) return { ok: false, reason: 'not_found' };
   if (thread && !promptBelongsToThread(pending, thread)) return { ok: false, reason: 'not_found' };
-  if (!actor || !pending.user || actor !== pending.user) {
+  const requester = !!actor && !!pending.user && actor === pending.user;
+  const adminForRequester = args.adminMode === true && !!actor && getAdminUsers().has(actor);
+  if (!actor || (!requester && !adminForRequester)) {
     return { ok: false, reason: 'not_requester', requester: pending.user };
   }
   // Before the claim: the prompt stays open for the confirmed answer.
   if (pending.advice && needsSecondConfirmation(pending, decision, approvalId, actor)) {
     const now = Date.now();
     pruneFirstAsks(now);
-    firstAsks.set(approvalId, { actor, at: now });
+    firstAsks.set(firstAskKey(approvalId, actor), { actor, at: now });
     return { ok: false, reason: 'confirm_required', advice: pending.advice };
   }
 
   if (!(await sharedStore.claimPermissionResponse(approvalId))) return { ok: false, reason: 'already_answered' };
   // Claimed: this prompt gets no further answer, so its first ask is spent.
-  firstAsks.delete(approvalId);
+  forgetFirstAsks(approvalId);
   // The MCP server may have timed out between the load and the claim. The
   // claim stays, so nobody else answers it either.
   if (!(await sharedStore.getPendingApproval(approvalId))) return { ok: false, reason: 'not_found' };

@@ -8,6 +8,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { resetAdminUsersCache } from '../../admin-utils';
 import { DATA_DIR } from '../../env-paths';
 import type { ConversationSession, SessionGoal } from '../../types';
 
@@ -317,6 +318,37 @@ describe('answerGoalCapDecision — one answer path for both surfaces', () => {
         save: vi.fn(),
       }),
     ).toEqual({ ok: false, reason: 'invalid' });
+  });
+
+  // Z 2026-11-27 — "관리자 모드 키면 입력 대기중인 다른 사람의 작업에 선택할 수 있게".
+  it('an admin in 관리자 모드 answers for the goal owner; the mode alone, or a non-admin in it, does not', () => {
+    const prev = process.env.ADMIN_USERS;
+    process.env.ADMIN_USERS = 'U-admin';
+    resetAdminUsersCache();
+    try {
+      const args = (g: SessionGoal, actor: string, adminMode?: boolean) => ({
+        session: session(g),
+        sessionKey: KEY,
+        goalId: 'goal-1',
+        decisionId: g.capDecisionId,
+        actor,
+        decision: 'continue' as const,
+        surface: 'dashboard' as const,
+        save: vi.fn(),
+        ...(adminMode ? { adminMode } : {}),
+      });
+      const g = pendingGoal();
+      expect(answerGoalCapDecision(args(g, 'U-admin'))).toEqual({ ok: false, reason: 'not_owner' });
+      expect(answerGoalCapDecision(args(g, 'U-someone', true))).toEqual({ ok: false, reason: 'not_owner' });
+      const ok = answerGoalCapDecision(args(g, 'U-admin', true));
+      expect(ok).toMatchObject({ ok: true, decision: 'continue' });
+      expect(g.status).toBe('active');
+      expect(g.continuationCount).toBe(0);
+    } finally {
+      if (prev === undefined) delete process.env.ADMIN_USERS;
+      else process.env.ADMIN_USERS = prev;
+      resetAdminUsersCache();
+    }
   });
 
   it('a button from before round ids existed answers only a round that has no id', () => {

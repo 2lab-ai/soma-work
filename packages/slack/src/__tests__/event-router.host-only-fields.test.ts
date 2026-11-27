@@ -27,6 +27,24 @@ describe('withoutHostOnlyFields', () => {
     expect(event.botThreadRoot).toBe(true); // the caller's object is not mutated
   });
 
+  // Z 2026-11-27 (review R1) — the 관리자 모드 flag lets an admin's message skip the owner's approval: host-only.
+  it('drops the 관리자 모드 route flag a Slack event claims, keeping the rest of its route context', () => {
+    const event = {
+      user: 'U_ADMIN',
+      channel: 'C1',
+      ts: '1.1',
+      text: 'hi',
+      routeContext: { adminModeInstruction: true, verbatimPrompt: true },
+    };
+    const clean = withoutHostOnlyFields(event) as Record<string, any>;
+    expect(clean.routeContext).toEqual({ verbatimPrompt: true });
+    expect(event.routeContext.adminModeInstruction).toBe(true); // the caller's object is not mutated
+    const onlyFlag = withoutHostOnlyFields({ ...event, routeContext: { adminModeInstruction: true } }) as any;
+    expect(onlyFlag.routeContext).toEqual({});
+    const untouched = { user: 'U1', channel: 'C1', ts: '1.1', routeContext: { verbatimPrompt: true } };
+    expect(withoutHostOnlyFields(untouched)).toBe(untouched);
+  });
+
   it('an event with none of them is returned as is', () => {
     const event = { user: 'U1', channel: 'C1', ts: '1.1', text: 'hi' };
     expect(withoutHostOnlyFields(event)).toBe(event);

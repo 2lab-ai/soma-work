@@ -10,6 +10,7 @@
 
 import { type PendingApproval, sharedStore } from 'somalib/permission/shared-store';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { resetAdminUsersCache } from '../admin-utils';
 import { answerPermissionPrompt, PERMISSION_EXPLAIN_MESSAGE } from '../permission-prompt-response';
 
 const ids: string[] = [];
@@ -51,6 +52,41 @@ afterEach(async () => {
 });
 
 describe('answerPermissionPrompt', () => {
+  // Z 2026-11-27 — "관리자 모드 키면 입력 대기중인 다른 사람의 작업에 선택할 수 있게 해줘".
+  it('an admin in 관리자 모드 answers a prompt raised for someone else; the mode alone or a non-admin is refused', async () => {
+    const prev = process.env.ADMIN_USERS;
+    process.env.ADMIN_USERS = 'U_ADMIN';
+    resetAdminUsersCache();
+    try {
+      const id = await seed();
+      expect(await answerPermissionPrompt({ approvalId: id, actor: 'U_ADMIN', decision: 'approve' })).toMatchObject({
+        ok: false,
+        reason: 'not_requester',
+      });
+      expect(
+        await answerPermissionPrompt({ approvalId: id, actor: 'U_OTHER', decision: 'approve', adminMode: true }),
+      ).toMatchObject({ ok: false, reason: 'not_requester' });
+      expect(
+        await answerPermissionPrompt({ approvalId: id, actor: undefined, decision: 'approve', adminMode: true }),
+      ).toMatchObject({ ok: false, reason: 'not_requester' });
+      const ok = await answerPermissionPrompt({
+        approvalId: id,
+        actor: 'U_ADMIN',
+        decision: 'approve',
+        adminMode: true,
+      });
+      expect(ok.ok).toBe(true);
+      expect(await sharedStore.waitForPermissionResponse(id, 1500)).toEqual({
+        behavior: 'allow',
+        message: 'Approved by user',
+      });
+    } finally {
+      if (prev === undefined) delete process.env.ADMIN_USERS;
+      else process.env.ADMIN_USERS = prev;
+      resetAdminUsersCache();
+    }
+  });
+
   it.each([
     ['approve', { behavior: 'allow', message: 'Approved by user' }],
     ['deny', { behavior: 'deny', message: 'Denied by user' }],

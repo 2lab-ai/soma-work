@@ -33,6 +33,8 @@ const mockConfig = {
 
 vi.mock('../../config', () => ({ config: mockConfig }));
 vi.mock('../../env-paths', () => ({ IS_DEV: true, DATA_DIR: '/tmp/test-data' }));
+// Z 2026-11-27 — U9 is the admin (관리자 모드 tests); nobody else in this file is.
+process.env.ADMIN_USERS = 'U9';
 vi.mock('../recorder', () => ({
   listConversations: vi.fn().mockResolvedValue([]),
   getConversation: vi.fn().mockResolvedValue(null),
@@ -71,6 +73,7 @@ const FNS = [
   'escAttr',
   'toNum',
   'acSlotHtml',
+  'viewerAdminMode',
   'acInstructionApprovalLock',
   'acInstructionApprovalData',
   'acInstructionApprovalsHtml',
@@ -87,6 +90,8 @@ interface InstrClient {
 }
 
 function load(inject: Record<string, unknown>): InstrClient {
+  // Z 2026-11-27 — 관리자 모드 off unless a test turns it on.
+  inject = { _viewerIsAdmin: false, _isAdminModeOn: () => false, ...inject };
   const names = Object.keys(inject);
   const body = `${clientVar('AC_SIBLING')}
 ${clientVar('INSTRUCTION_APPROVAL_CHOICES')}
@@ -241,6 +246,16 @@ describe('dashboard instruction approvals — board, route, shipped client (#767
     );
     const other = load({ _viewerUserId: 'U2', isSiblingSession: () => false }).acInstructionApprovalData(c, a);
     expect(other.canAnswer).toContain('소유자만');
+    // Z 2026-11-27 (review R1) — an admin in 관리자 모드 answers it for the owner, but not with "항상 승인" (the owner's
+    // own trust list): the card offers the other three.
+    const admin = load({
+      _viewerUserId: 'U9',
+      _viewerIsAdmin: true,
+      _isAdminModeOn: () => true,
+      isSiblingSession: () => false,
+    }).acInstructionApprovalData(c, a);
+    expect(admin.canAnswer).toBeUndefined();
+    expect(admin.choices.map((x: any) => x.id)).toEqual(['approve', 'approve_session', 'deny']);
   });
 
   it('T3 — answered on the dashboard: released, the DM rewritten, the card leaves; a second answer is 409', async () => {
@@ -337,6 +352,60 @@ describe('dashboard instruction approvals — board, route, shipped client (#767
       payload: JSON.stringify({ message: '내 지시' }),
     });
     expect(JSON.parse(mine.body)).toEqual({ ok: true });
+  });
+
+  // Z 2026-11-27 — "권한 물어볼필요 없이 다른 사람의 세션에 직접 지시를 내릴 수 있어야함" (관리자 모드).
+  it('an admin in 관리자 모드 instructs someone else’s task at once — no pendingApproval, the mode rides to the thread', async () => {
+    const commands: Array<{ actor?: string; opts?: unknown; args: number }> = [];
+    dashboard.setDashboardCommandHandler(async (...args: any[]) => {
+      commands.push({ actor: args[3], opts: args[5], args: args.length });
+    });
+    const admin = await signIn('U9');
+    const send = (who: { cookie: string; csrf: string }, mode: string, message: string) =>
+      injectWebServer({
+        method: 'POST',
+        url: `/api/dashboard/session/${encodeURIComponent(key)}/command`,
+        headers: {
+          cookie: who.cookie,
+          'x-csrf-token': who.csrf,
+          'content-type': 'application/json',
+          'x-admin-mode': mode,
+        },
+        payload: JSON.stringify({ message }),
+      });
+    const on = await send(admin, 'on', '바로 배포해');
+    expect(on.statusCode).toBe(200);
+    expect(JSON.parse(on.body)).toEqual({ ok: true });
+    expect(commands[0]).toMatchObject({ actor: 'U9', opts: { adminMode: true } });
+    // 관리자 모드 off: the admin is anyone else — the words wait for the owner, and nothing extra rides along.
+    const off = await send(admin, 'off', '바로 배포해');
+    expect(JSON.parse(off.body)).toEqual({ ok: true, pendingApproval: true });
+    expect(commands[1]).toMatchObject({ actor: 'U9', args: 4 });
+    // A non-admin sending the header gets nothing from it.
+    const helper = await signIn('U2');
+    const notAdmin = await send(helper, 'on', '나도');
+    expect(JSON.parse(notAdmin.body)).toEqual({ ok: true, pendingApproval: true });
+    expect(commands[2]).toMatchObject({ actor: 'U2', args: 4 });
+  });
+
+  it('an admin in 관리자 모드 answers someone’s held instruction for the owner; without the mode it is 403', async () => {
+    const [{ requestId }] = (await card()).pendingInstructionApprovals;
+    const admin = await signIn('U9');
+    expect((await post({ requestId, decision: 'approve' }, admin)).statusCode).toBe(403);
+    const res = await injectWebServer({
+      method: 'POST',
+      url: `/api/dashboard/session/${encodeURIComponent(key)}/instruction-approval`,
+      headers: {
+        cookie: admin.cookie,
+        'x-csrf-token': admin.csrf,
+        'content-type': 'application/json',
+        'x-admin-mode': 'on',
+      },
+      payload: JSON.stringify({ requestId, decision: 'approve' }),
+    });
+    expect(res.statusCode).toBe(200);
+    await vi.waitFor(() => expect(released).toEqual(['배포해줘']));
+    expect(approvals.get(requestId)).toMatchObject({ status: 'approved', decidedBy: 'U9' });
   });
 
   it('the page script still parses with the instruction approval card wired in', async () => {

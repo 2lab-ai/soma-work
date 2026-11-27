@@ -59,6 +59,19 @@ export const MAX_HELD_INSTRUCTIONS = 20;
 const PREVIEW_CHARS = 300;
 
 /**
+ * Z 2026-11-27 — the route context the host puts on a message a signed-in admin sent from the dashboard with
+ * 관리자 모드 on: {@link InstructionApprovals.allows} lets it run without the owner's approval (sender still checked
+ * against ADMIN_USERS). Only host code builds it; a Slack event never carries a route context.
+ */
+export const ADMIN_MODE_ROUTE = { adminModeInstruction: true } as const;
+
+/** Does this message carry {@link ADMIN_MODE_ROUTE}? */
+export function isAdminModeRoute(event: { routeContext?: unknown } | undefined): boolean {
+  const route = event?.routeContext as { adminModeInstruction?: unknown } | undefined;
+  return route?.adminModeInstruction === true;
+}
+
+/**
  * One held instruction, as it will run once approved: a Slack-thread message (a reply, a
  * dashboard instruction echoed to the thread). `event` is the original MessageEvent. (The
  * dashboard task's own kinds were removed in #855; a stored request holding one is dropped on load.)
@@ -298,7 +311,8 @@ export class InstructionApprovals {
   /**
    * Does `senderId`'s instruction run in this session without asking? Yes for
    * the owner, a person approved for this session, a person on the owner's
-   * trusted list, and a message a one-time approval released.
+   * trusted list, an admin acting in 관리자 모드, and a message a one-time
+   * approval released.
    */
   allows(input: {
     sessionKey: string;
@@ -308,6 +322,12 @@ export class InstructionApprovals {
     ts?: string;
     /** The message's words now: a one-time approval covers only the words the owner was shown. */
     text?: string;
+    /**
+     * Z 2026-11-27 — sent from the dashboard by a signed-in admin with 관리자 모드 on (the route checked the verified
+     * JWT and the header; {@link isAdminModeRoute} carries it on a message). Re-checked here: only a person in
+     * ADMIN_USERS passes on it.
+     */
+    adminMode?: boolean;
   }): boolean {
     const { session, senderId } = input;
     const ownerId = session?.ownerId;
@@ -316,6 +336,9 @@ export class InstructionApprovals {
     if (senderId === ownerId) return true;
     // An environment user's session belongs to its admins: they speak in it without asking.
     if (isEnvironmentUser(ownerId) && getAdminUsers().has(senderId)) return true;
+    // Z 2026-11-27 ("관리자 모드 키면 … 권한 물어볼필요 없이 다른 사람의 세션에 직접 지시"): an admin in 관리자 모드
+    // instructs and answers anyone's session without the owner's approval. The turn still runs as the admin.
+    if (input.adminMode === true && getAdminUsers().has(senderId)) return true;
     if (session.approvedInstructors?.includes(senderId)) return true;
     if (this.deps.isTrusted(ownerId, senderId)) return true;
     if (input.approvalId) {
@@ -357,6 +380,7 @@ export class InstructionApprovals {
       ...links,
       ...(r.decision ? { decision: r.decision } : {}),
       ...(r.decidedVia ? { decidedVia: r.decidedVia } : {}),
+      ...(r.decidedBy ? { decidedBy: r.decidedBy } : {}),
     };
   }
 
@@ -516,13 +540,20 @@ export class InstructionApprovals {
      * card showed. One answer never covers words the owner was not shown (astra R3).
      */
     revision?: number;
+    /** Z 2026-11-27 — the dashboard answer of a signed-in admin with 관리자 모드 on: they decide for the owner. */
+    adminMode?: boolean;
   }): InstructionApprovalAnswer {
     const { requestId, decision, actor, surface } = input;
     if (!actor || !isInstructionApprovalDecision(decision)) return { ok: false, reason: 'invalid' };
     const request = this.requests.get(requestId);
     if (!request) return { ok: false, reason: 'not_found' };
     const decidesForEnvironment = isEnvironmentUser(request.ownerId) && getAdminUsers().has(actor);
-    if (request.ownerId !== actor && !decidesForEnvironment) return { ok: false, reason: 'not_owner', request };
+    // Z 2026-11-27 — an admin in 관리자 모드 (the dashboard route checked it) decides this request for any owner — but
+    // "항상 승인" rewrites the owner's own trust list for every later session: that stays the owner's (review R1).
+    const decidesAsAdmin = input.adminMode === true && getAdminUsers().has(actor) && decision !== 'approve_always';
+    if (request.ownerId !== actor && !decidesForEnvironment && !decidesAsAdmin) {
+      return { ok: false, reason: 'not_owner', request };
+    }
     if (request.status !== 'pending') {
       return { ok: false, reason: request.status === 'expired' ? 'expired' : 'already_answered', request };
     }

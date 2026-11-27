@@ -1632,6 +1632,27 @@ function signedInUserId(request: any): string | undefined {
 }
 
 /**
+ * Z 2026-11-27 ("관리자 모드 키면 입력 대기중인 다른 사람의 작업에 선택할 수 있게 … 권한 물어볼필요 없이 다른 사람의
+ * 세션에 직접 지시") — a person signed in with Slack who is in ADMIN_USERS (`authContext.isAdmin`, rebuilt per request
+ * from the verified JWT) and sent `X-Admin-Mode: on`. Such an admin answers anyone's waiting card — a permission
+ * prompt, a question, a plan, a user action, the goal's cap decision, someone's held instruction — and instructs
+ * anyone's session without the owner's approval (#767). It runs as the admin, never as the owner. A viewer token
+ * names nobody and never qualifies.
+ */
+function adminModeActor(request: any): string | undefined {
+  const authContext = request.authContext;
+  if (authContext?.isAdmin !== true) return undefined;
+  const header = request.headers?.['x-admin-mode'];
+  const on = Array.isArray(header) ? header[0] === 'on' : header === 'on';
+  return on ? signedInUserId(request) : undefined;
+}
+
+/** The handlers' trailing option: `{ adminMode: true }` for an admin in 관리자 모드, else nothing (calls stay as before). */
+function adminModeOpts(request: any): { adminMode: true } | undefined {
+  return adminModeActor(request) ? { adminMode: true } : undefined;
+}
+
+/**
  * Who may instruct a session or answer its question (SSOT 2026-11-02) — the
  * Slack rule: anyone may write in anyone's thread, and the turn runs as the
  * user who wrote. So every signed-in user passes, and the handler runs the
@@ -1885,6 +1906,8 @@ type CommandHandler = (
   actorUserId?: string,
   /** #785 — the ref the panel gave its pending copy; the recorded turn carries it back. */
   clientRef?: string,
+  /** Z 2026-11-27 — an admin in 관리자 모드 sent it: it runs without the owner's approval. */
+  opts?: { adminMode?: true },
 ) => Promise<void>;
 let _stopHandlerFn: StopHandler | null = null;
 let _closeHandlerFn: CloseHandler | null = null;
@@ -2004,6 +2027,8 @@ export interface DashboardFollowupRequest {
   actorUserId?: string;
   /** The presser may manage the session (#716: the owner, a token, an admin in admin mode): they act as its owner. */
   manages?: boolean;
+  /** Z 2026-11-27 — a signed-in admin in 관리자 모드 pressed it: an Edit's new words keep the mode (else they lose it). */
+  adminMode?: true;
 }
 /**
  * A refusal carries the queue's own words (the item stays) and the status the route answers with. `unfulfilled`: the
@@ -2137,6 +2162,8 @@ type GoalActionHandler = (
   sessionKey: string,
   action: HostGoalAction,
   actorUserId?: string,
+  /** Z 2026-11-27 — an admin in 관리자 모드 added it: the goal's opening turn runs without the owner's approval. */
+  opts?: { adminMode?: true },
 ) => Promise<HostGoalActionResult>;
 let _goalActionHandlerFn: GoalActionHandler | null = null;
 
@@ -2156,6 +2183,8 @@ type GoalDecisionHandler = (
   sessionKey: string,
   answer: { goalId: string; decisionId: string; decision: 'continue' | 'cancel' },
   actorUserId: string | undefined,
+  /** Z 2026-11-27 — an admin in 관리자 모드 answers for the goal's owner. */
+  opts?: { adminMode?: true },
 ) => GoalDecisionAnswerResult;
 let _goalDecisionHandlerFn: GoalDecisionHandler | null = null;
 
@@ -2280,6 +2309,8 @@ type ChoiceAnswerHandler = (
   label: string,
   question: string,
   actorUserId?: string,
+  /** Z 2026-11-27 — an admin in 관리자 모드 answers: no owner approval. */
+  opts?: { adminMode?: true },
 ) => Promise<void>;
 let _choiceAnswerHandlerFn: ChoiceAnswerHandler | null = null;
 /**
@@ -2292,6 +2323,8 @@ type TaskPlanHandler = (request: {
   revision: number;
   /** The signed-in user deciding — the work runs as them. */
   actorUserId: string;
+  /** Z 2026-11-27 — an admin in 관리자 모드 decides: no owner approval. */
+  adminMode?: true;
 }) => Promise<{ status: number; body: Record<string, unknown> }>;
 let _taskPlanHandlerFn: TaskPlanHandler | null = null;
 export function setDashboardTaskPlanHandler(fn: TaskPlanHandler | null): void {
@@ -2307,6 +2340,8 @@ type UserActionAnswerHandler = (request: {
   id: string;
   status: 'done' | 'failed';
   actorUserId: string;
+  /** Z 2026-11-27 — an admin in 관리자 모드 answers: no owner approval. */
+  adminMode?: true;
 }) => Promise<{ status: number; body: Record<string, unknown> }>;
 let _userActionAnswerFn: UserActionAnswerHandler | null = null;
 export function setDashboardUserActionHandler(fn: UserActionAnswerHandler | null): void {
@@ -2321,6 +2356,8 @@ type MultiChoiceAnswerHandler = (
   sessionKey: string,
   selections: Record<string, { choiceId: string; label: string }>,
   actorUserId?: string,
+  /** Z 2026-11-27 — an admin in 관리자 모드 answers: no owner approval. */
+  opts?: { adminMode?: true },
 ) => Promise<void>;
 let _multiChoiceAnswerHandlerFn: MultiChoiceAnswerHandler | null = null;
 
@@ -2335,7 +2372,7 @@ export function setDashboardMultiChoiceAnswerHandler(fn: MultiChoiceAnswerHandle
  * `actor` and the session's thread, and maps a refusal to its status.
  */
 type PermissionAnswerHandler = (
-  args: Pick<AnswerPermissionPromptArgs, 'approvalId' | 'actor' | 'decision' | 'thread'>,
+  args: Pick<AnswerPermissionPromptArgs, 'approvalId' | 'actor' | 'decision' | 'thread' | 'adminMode'>,
 ) => Promise<PermissionPromptAnswer>;
 let _permissionAnswerHandlerFn: PermissionAnswerHandler | null = null;
 
@@ -2459,7 +2496,12 @@ export function stopDashboardAdminApprovalWatch(): void {
 // pass selections — the implementation derives them from session.pendingQuestion
 // recommendations. Returns rejected promise on validation failure for
 // status-code mapping in the route handler.
-type SubmitRecommendedHandler = (sessionKey: string, actorUserId?: string) => Promise<void>;
+type SubmitRecommendedHandler = (
+  sessionKey: string,
+  actorUserId?: string,
+  /** Z 2026-11-27 — an admin in 관리자 모드 answers: no owner approval. */
+  opts?: { adminMode?: true },
+) => Promise<void>;
 let _submitRecommendedHandlerFn: SubmitRecommendedHandler | null = null;
 
 export function setDashboardSubmitRecommendedHandler(fn: SubmitRecommendedHandler): void {
@@ -5615,7 +5657,9 @@ export async function registerDashboardRoutes(
       }
       try {
         // #767 — someone else's instruction goes into the thread, where the gate holds it for the owner.
+        // Z 2026-11-27 — an admin in 관리자 모드: it runs at once (the message carries the mode to the gate).
         const sender = signedInUserId(request);
+        const admin = adminModeOpts(request);
         const waits =
           !!sender &&
           !!_instructionApprovals &&
@@ -5623,12 +5667,14 @@ export async function registerDashboardRoutes(
             sessionKey: originalKey,
             session: _getSessionsFn?.()?.get(originalKey),
             senderId: sender,
+            ...(admin ? { adminMode: true } : {}),
           });
         // #1466 — the chat under this instruction says what the server did with it: taken, or held for the owner.
         noteInstructionStage(originalKey, ref, waits ? 'approval' : 'received');
         if (_commandHandlerFn) {
           // #785: the panel's ref rides along only when there is one (the handler's other callers pass four).
-          if (ref) await _commandHandlerFn(originalKey, message, files.value, sender, ref);
+          if (admin) await _commandHandlerFn(originalKey, message, files.value, sender, ref, admin);
+          else if (ref) await _commandHandlerFn(originalKey, message, files.value, sender, ref);
           else await _commandHandlerFn(originalKey, message, files.value, sender);
         }
         // A command that only answers (`/help`, `/model opus`): its answer is a Slack thread message — say so.
@@ -5706,6 +5752,7 @@ export async function registerDashboardRoutes(
           ...(text !== undefined ? { text } : {}),
           ...(actorUserId ? { actorUserId } : {}),
           manages,
+          ...adminModeOpts(request),
         });
         // Whatever the queue answered, the panel gets the queue as it is now.
         scheduleLiveSessionUpdate(originalKey);
@@ -5822,7 +5869,10 @@ export async function registerDashboardRoutes(
         // The acting dashboard user (owner, or an admin in admin mode); a bearer
         // client has none and the handler falls back to the session owner.
         const actorUserId = (request as { authContext?: { userId?: string } }).authContext?.userId;
-        const result = await _goalActionHandlerFn(originalKey, action, actorUserId);
+        const admin = adminModeOpts(request);
+        const result = admin
+          ? await _goalActionHandlerFn(originalKey, action, actorUserId, admin)
+          : await _goalActionHandlerFn(originalKey, action, actorUserId);
         broadcastSessionUpdate();
         reply.send({ ok: true, result });
       } catch (error) {
@@ -6066,6 +6116,7 @@ export async function registerDashboardRoutes(
           decision,
           revision: revision as number,
           actorUserId: signedInUserId(request) ?? '',
+          ...adminModeOpts(request),
         });
         reply.status(outcome.status).send(outcome.body);
         if (outcome.status < 400) broadcastSessionUpdate();
@@ -6098,6 +6149,7 @@ export async function registerDashboardRoutes(
           id,
           status,
           actorUserId: signedInUserId(request) ?? '',
+          ...adminModeOpts(request),
         });
         reply.status(outcome.status).send(outcome.body);
       } catch (error) {
@@ -6306,10 +6358,13 @@ export async function registerDashboardRoutes(
         return;
       }
       try {
-        // Only the goal's owner answers: a bearer client or an admin carries no
-        // owner identity here and is refused by the handler.
+        // Only the goal's owner answers: a bearer client carries no owner identity here and is refused by the
+        // handler. Z 2026-11-27 — an admin in 관리자 모드 answers for the owner.
         const actor = (request as { authContext?: { userId?: string } }).authContext?.userId;
-        const result = _goalDecisionHandlerFn(resolved.originalKey, { goalId, decisionId, decision }, actor);
+        const admin = adminModeOpts(request);
+        const result = admin
+          ? _goalDecisionHandlerFn(resolved.originalKey, { goalId, decisionId, decision }, actor, admin)
+          : _goalDecisionHandlerFn(resolved.originalKey, { goalId, decisionId, decision }, actor);
         if (result.ok) {
           logger.info('Goal cap decision answered from the dashboard', {
             sessionKey: resolved.originalKey,
@@ -6352,7 +6407,8 @@ export async function registerDashboardRoutes(
         });
         return;
       }
-      // Only the session's owner answers — the decision's own check; the instance is resolved here.
+      // Only the session's owner (or an admin in 관리자 모드) answers — the decision's own check; the instance is
+      // resolved here.
       const originalKey = resolveSelfActionKey(String(request.params?.key ?? ''), reply);
       if (originalKey === null) return;
       if (!_instructionApprovals) {
@@ -6373,6 +6429,8 @@ export async function registerDashboardRoutes(
           actor,
           surface: 'dashboard',
           ...(typeof revision === 'number' ? { revision } : {}),
+          // Z 2026-11-27 — an admin in 관리자 모드 decides for the owner.
+          ...adminModeOpts(request),
         });
         if (result.ok) {
           logger.info('Instruction approval answered from the dashboard', { sessionKey: originalKey, decision });
@@ -6602,7 +6660,9 @@ export async function registerDashboardRoutes(
       const { originalKey } = resolved;
       try {
         if (_choiceAnswerHandlerFn) {
-          await _choiceAnswerHandlerFn(originalKey, choiceId, label, question, signedInUserId(request));
+          const admin = adminModeOpts(request);
+          if (admin) await _choiceAnswerHandlerFn(originalKey, choiceId, label, question, signedInUserId(request), admin);
+          else await _choiceAnswerHandlerFn(originalKey, choiceId, label, question, signedInUserId(request));
         } else {
           reply.status(501).send({ error: 'Choice answer handler not configured' });
           return;
@@ -6672,7 +6732,9 @@ export async function registerDashboardRoutes(
       const { originalKey } = resolved;
       try {
         if (_multiChoiceAnswerHandlerFn) {
-          await _multiChoiceAnswerHandlerFn(originalKey, selections, signedInUserId(request));
+          const admin = adminModeOpts(request);
+          if (admin) await _multiChoiceAnswerHandlerFn(originalKey, selections, signedInUserId(request), admin);
+          else await _multiChoiceAnswerHandlerFn(originalKey, selections, signedInUserId(request));
         } else {
           reply.status(501).send({ error: 'Multi-choice answer handler not configured' });
           return;
@@ -6707,7 +6769,9 @@ export async function registerDashboardRoutes(
   // it — the Slack card's rule. That is the turn's initiator, who is not
   // always the session owner (a mention in someone else's thread), so the
   // owner gate does not apply here: the requester check replaces it. The
-  // bearer token and admin mode carry no requester identity and are refused.
+  // bearer token carries no requester identity and is refused. Z 2026-11-27 —
+  // an admin signed in with Slack, in 관리자 모드, reads and answers anyone's
+  // prompt (adminModeActor); the answer is recorded as theirs.
   // A prompt of another thread is 404 under this session's key.
 
   /** The live session behind the route key and its prompt, or null after replying. */
@@ -6737,7 +6801,8 @@ export async function registerDashboardRoutes(
       return null;
     }
     const actor = request.authContext?.userId;
-    if (!actor || !pending.user || actor !== pending.user) {
+    const requester = !!actor && !!pending.user && actor === pending.user;
+    if (!requester && !adminModeActor(request)) {
       reply.status(403).send({ error: 'Only the user this permission request is for can see or answer it' });
       return null;
     }
@@ -6792,6 +6857,7 @@ export async function registerDashboardRoutes(
           actor: (request as { authContext?: { userId?: string } }).authContext?.userId,
           decision,
           thread: target.thread,
+          ...adminModeOpts(request),
         });
         if (result.ok) {
           logger.info('Permission prompt answered from the dashboard', {
@@ -6841,7 +6907,9 @@ export async function registerDashboardRoutes(
           reply.status(501).send({ error: 'Submit-recommended handler not configured' });
           return;
         }
-        await _submitRecommendedHandlerFn(originalKey, signedInUserId(request));
+        const admin = adminModeOpts(request);
+        if (admin) await _submitRecommendedHandlerFn(originalKey, signedInUserId(request), admin);
+        else await _submitRecommendedHandlerFn(originalKey, signedInUserId(request));
         reply.send({ ok: true });
       } catch (error) {
         const errMsg = (error as Error).message || '';
@@ -9458,6 +9526,12 @@ function viewerCanManage(s) {
 function viewerCanStop(s) {
   return viewerCanManage(s) || !!_viewerIsAdmin;
 }
+// Z 2026-11-27 ("관리자 모드 키면 입력 대기중인 다른 사람의 작업에 선택할 수 있게"): a signed-in admin with 관리자 모드 on
+// answers anyone's waiting card — a permission prompt, the goal's cap decision, someone's held instruction — and their
+// instructions and answers run without the owner's approval. A viewer token names nobody: never. The server re-checks.
+function viewerAdminMode() {
+  return !!(_viewerIsAdmin && _viewerUserId && _isAdminModeOn());
+}
 function viewerCanInstruct(s) {
   if (!s) return false;
   if (s.kind === 'epic' || s.parentTaskId) return !!_viewerUserId && viewerCanManage(s);
@@ -10312,12 +10386,13 @@ function permissionSummary(s) {
 }
 
 // Who may answer here, as the element's canAnswer: '' (yes) or why not. A
-// prompt: its requester, on this instance. The question: whoever may instruct
-// the session (viewerCanInstruct — a Slack button answers as its clicker), on
-// this instance. The server re-checks both.
+// prompt: its requester, or an admin in 관리자 모드 (viewerAdminMode, Z 2026-11-27), on this instance. The question:
+// whoever may instruct the session (viewerCanInstruct — a Slack button answers as its clicker), on this instance. The
+// server re-checks both.
 function acPermissionLock(s, p) {
   if (isSiblingSession(s)) return AC_SIBLING;
-  return isPermissionRequester(p) ? '' : '이 요청의 요청자만 응답할 수 있습니다';
+  if (isPermissionRequester(p) || viewerAdminMode()) return '';
+  return _viewerIsAdmin ? '이 요청의 요청자만 응답할 수 있습니다 — 관리자 모드를 켜면 응답할 수 있어요' : '이 요청의 요청자만 응답할 수 있습니다';
 }
 function acQuestionLock(s) {
   if (isSiblingSession(s)) return AC_SIBLING;
@@ -10476,7 +10551,7 @@ var GOAL_DECISION_CHOICES = [{ id: 'continue', label: '✅ 계속' }, { id: 'can
 var GOAL_DECISION_SENT = { continue: '계속 진행을 보냈어요', cancel: '취소를 보냈어요' };
 function acGoalDecisionLock(s, d) {
   if (isSiblingSession(s)) return AC_SIBLING;
-  return d.ownerId && d.ownerId === _viewerUserId ? '' : '목표 소유자만 응답할 수 있습니다';
+  return (d.ownerId && d.ownerId === _viewerUserId) || viewerAdminMode() ? '' : '목표 소유자만 응답할 수 있습니다';
 }
 function acGoalDecisionData(s, d) {
   var n = toNum(d.maxContinuations);
@@ -10512,7 +10587,7 @@ var INSTRUCTION_APPROVAL_CHOICES = [{ id: 'approve', label: '✅ 승인' }, { id
 var INSTRUCTION_APPROVAL_SENT = { approve: '승인을 보냈어요', approve_session: '이 세션에서 항상 승인했어요', approve_always: '이 사람의 지시를 항상 승인해요', deny: '거절을 보냈어요' };
 function acInstructionApprovalLock(s, a) {
   if (isSiblingSession(s)) return AC_SIBLING;
-  return a.ownerId && a.ownerId === _viewerUserId ? '' : '작업 소유자만 응답할 수 있습니다 — 소유자의 승인을 기다리는 중입니다';
+  return (a.ownerId && a.ownerId === _viewerUserId) || viewerAdminMode() ? '' : '작업 소유자만 응답할 수 있습니다 — 소유자의 승인을 기다리는 중입니다';
 }
 function acInstructionApprovalData(s, a) {
   var who = String(a.requesterName || a.requesterId || '누군가');
@@ -10523,7 +10598,9 @@ function acInstructionApprovalData(s, a) {
     label: '지시 승인 요청',
     question: who + '님이 이 작업에 지시를 보냈습니다' + (n > 1 ? ' (' + n + '건)' : '') + '.\\n실행할까요? 승인하면 ' + who + '님의 권한으로 실행됩니다.',
     description: String(a.preview || ''),
-    choices: INSTRUCTION_APPROVAL_CHOICES.map(function(c) { return { id: c.id, label: c.label }; }),
+    // An admin answering for the owner (관리자 모드) decides this request only: "이 사람의 지시 항상 승인" would rewrite the
+    // owner's own trust list, so it is the owner's alone (the server refuses it too).
+    choices: INSTRUCTION_APPROVAL_CHOICES.filter(function(c) { return c.id !== 'approve_always' || !a.ownerId || a.ownerId === _viewerUserId; }).map(function(c) { return { id: c.id, label: c.label }; }),
     allowOther: false,
   };
   var asked = toNum(a.createdAt);
@@ -10868,7 +10945,8 @@ function loadPermissionDetail(key, approvalId) {
     _permDetails[approvalId] = { error: text, retry: retry, tries: tries, at: Date.now() };
   }
   var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/permission/' + encodeURIComponent(approvalId);
-  fetch(url)
+  // The page's fetch wrapper adds X-Admin-Mode to writes only; this read is gated like one for an admin (Z 2026-11-27).
+  (viewerAdminMode() ? fetch(url, { headers: { 'X-Admin-Mode': 'on' } }) : fetch(url))
     .then(function(res) {
       return res.json().catch(function() { return {}; }).then(function(body) {
         if (res.ok && typeof body.input === 'string') {

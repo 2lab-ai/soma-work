@@ -1201,6 +1201,7 @@ describe('a collapsed card builds no body — the agent tree is painted only whi
     const details: Record<string, Record<string, unknown>> = {};
     let reply: () => Promise<unknown> = () => Promise.reject(new Error('offline'));
     const m = load<{ loadPermissionDetail(k: string, id: string): void }>(['toNum', 'loadPermissionDetail'], [], {
+      viewerAdminMode: () => false,
       _permDetails: details,
       _permLoading: {},
       acRepaint: () => {},

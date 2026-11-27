@@ -1,7 +1,7 @@
 import { escapeSlackMrkdwn } from '@soma/slack/mrkdwn-escape';
 import { isAdminUser } from '../../admin-utils';
 import type { ClaudeHandler } from '../../claude-handler';
-import { getInstructionApprovals } from '../../instruction-approval';
+import { ADMIN_MODE_ROUTE, getInstructionApprovals } from '../../instruction-approval';
 import { Logger } from '../../logger';
 import type { ConversationSession, UserChoice, UserChoices } from '../../types';
 import { userSettingsStore } from '../../user-settings-store';
@@ -155,10 +155,16 @@ export class ChoiceActionHandler {
    * owner's approval. Checked BEFORE the question is consumed, so a held
    * answer leaves the question open for the owner.
    */
-  private needsOwnerApproval(session: ConversationSession | undefined, sessionKey: string, userId?: string): boolean {
+  private needsOwnerApproval(
+    session: ConversationSession | undefined,
+    sessionKey: string,
+    userId?: string,
+    /** Z 2026-11-27 — a dashboard answer of a signed-in admin in 관리자 모드 (allows re-checks ADMIN_USERS). */
+    adminMode = false,
+  ): boolean {
     const approvals = getInstructionApprovals();
     if (!approvals || !session || !userId) return false;
-    return !approvals.allows({ sessionKey, session, senderId: userId });
+    return !approvals.allows({ sessionKey, session, senderId: userId, ...(adminMode ? { adminMode: true } : {}) });
   }
 
   /** A single choice from someone else: handed to the message gate (it holds it), the question untouched. */
@@ -823,12 +829,17 @@ export class ChoiceActionHandler {
    * disables the button when N < M). Cross-surface lock: refuses if any Slack form
    * for this session is mid-submit.
    */
-  async handleSubmitRecommendedFromDashboard(sessionKey: string, userId: string): Promise<void> {
+  async handleSubmitRecommendedFromDashboard(
+    sessionKey: string,
+    userId: string,
+    opts: { adminMode?: boolean } = {},
+  ): Promise<void> {
     const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
     if (!session) {
       throw new Error('Session not found');
     }
-    if (this.needsOwnerApproval(session, sessionKey, userId)) throw new Error(FORM_OWNER_ONLY_ERROR);
+    const adminMode = opts.adminMode === true;
+    if (this.needsOwnerApproval(session, sessionKey, userId, adminMode)) throw new Error(FORM_OWNER_ONLY_ERROR);
     if (!isAnswerableFromDashboard(session, 'user_choices')) {
       throw new Error('Session is not waiting for a choice');
     }
@@ -876,7 +887,7 @@ export class ChoiceActionHandler {
     });
 
     // Reuse the existing dashboard multi-choice flow (validation, UI cleanup, Claude dispatch).
-    await this.handleMultiChoiceFromDashboard(sessionKey, selections, userId);
+    await this.handleMultiChoiceFromDashboard(sessionKey, selections, userId, adminMode ? { adminMode } : {});
   }
 
   /**
@@ -892,8 +903,10 @@ export class ChoiceActionHandler {
     /**
      * #1070 — from the 관리자 승인 card: an admin answering a question asked for admins. `onClaimed` runs once
      * the question is taken for this answer, before the turn it starts (which can run for minutes).
+     * `adminMode` (Z 2026-11-27): a signed-in admin in 관리자 모드 answers anyone's question — no owner approval; the
+     * answer runs as them.
      */
-    opts: { adminAnswer?: boolean; onClaimed?: () => void } = {},
+    opts: { adminAnswer?: boolean; onClaimed?: () => void; adminMode?: boolean } = {},
   ): Promise<void> {
     const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
     if (!session) {
@@ -904,11 +917,12 @@ export class ChoiceActionHandler {
     if (opts.adminAnswer && !adminAnswer) throw new Error('Not an admin question');
 
     // Guard: only process while the session's question can take an answer
+    const adminMode = opts.adminMode === true;
     if (
       !adminAnswer &&
       isAnswerableFromDashboard(session, 'user_choice') &&
       session.channelId &&
-      this.needsOwnerApproval(session, sessionKey, userId)
+      this.needsOwnerApproval(session, sessionKey, userId, adminMode)
     ) {
       // #767 — held for the owner like the Slack button; the question stays open.
       await this.holdChoiceForOwner({
@@ -946,7 +960,7 @@ export class ChoiceActionHandler {
     const claim = this.claimDashboardAnswer(session, sessionKey);
     opts.onClaimed?.();
     try {
-      await this.sendDashboardChoice(session, sessionKey, choiceId, label, question, userId, adminAnswer);
+      await this.sendDashboardChoice(session, sessionKey, choiceId, label, question, userId, adminAnswer, adminMode);
     } finally {
       this.endAnswerHold(sessionKey, claim.hold);
     }
@@ -961,6 +975,7 @@ export class ChoiceActionHandler {
     question: string,
     userId: string,
     adminAnswer = false,
+    adminMode = false,
   ): Promise<void> {
     // #1070 — an admin's answer runs as the session's owner (their session, their permissions); the thread names
     // the admin who answered. It is the owner's turn, so the owner gate has nothing to hold.
@@ -1002,6 +1017,8 @@ export class ChoiceActionHandler {
           ts: String(Date.now() / 1000),
           text: turnText,
           questionAnswer: true,
+          // Z 2026-11-27 — the answer's turn passes the #767 gate as the admin's (관리자 모드).
+          ...(adminMode && !adminAnswer ? { routeContext: { ...ADMIN_MODE_ROUTE } } : {}),
         },
         card: { targets, text: completedText, blocks: completedBlocks },
       });
@@ -1019,12 +1036,15 @@ export class ChoiceActionHandler {
     sessionKey: string,
     selections: Record<string, { choiceId: string; label: string }>,
     userId: string,
+    /** Z 2026-11-27 — a signed-in admin in 관리자 모드 answers anyone's form: no owner approval. */
+    opts: { adminMode?: boolean } = {},
   ): Promise<void> {
     const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
     if (!session) {
       throw new Error('Session not found');
     }
-    if (this.needsOwnerApproval(session, sessionKey, userId)) throw new Error(FORM_OWNER_ONLY_ERROR);
+    const adminMode = opts.adminMode === true;
+    if (this.needsOwnerApproval(session, sessionKey, userId, adminMode)) throw new Error(FORM_OWNER_ONLY_ERROR);
 
     if (!isAnswerableFromDashboard(session, 'user_choices')) {
       this.logger.warn('Dashboard multi-choice ignored — session not in waiting state', {
@@ -1126,6 +1146,8 @@ export class ChoiceActionHandler {
             ts: String(Date.now() / 1000),
             text: combinedMessage,
             questionAnswer: true,
+            // Z 2026-11-27 — the answer's turn passes the #767 gate as the admin's (관리자 모드).
+            ...(adminMode ? { routeContext: { ...ADMIN_MODE_ROUTE } } : {}),
           },
           card: { targets, text: dashboardCompletedText, blocks: dashboardCompletedBlocks },
           forms,

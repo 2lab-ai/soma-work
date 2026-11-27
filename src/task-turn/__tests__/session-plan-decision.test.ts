@@ -43,6 +43,38 @@ function harness(
 }
 
 describe('createSlackPlanDecider (#853)', () => {
+  // Z 2026-11-27 — "관리자 모드 키면 입력 대기중인 다른 사람의 작업에 선택할 수 있게 해줘".
+  it('an admin in 관리자 모드: the owner gate is asked with the mode, and the plan is sent with it', async () => {
+    const mayDecide = vi.fn(
+      (_k: string, _s: unknown, _a: string, opts?: { adminMode?: true }) => opts?.adminMode === true,
+    );
+    const h = harness({ mayDecide });
+    const r = await h.decide({
+      sessionKey: KEY,
+      decision: 'start',
+      revision: 2,
+      actorUserId: 'UADMIN',
+      adminMode: true,
+    });
+    expect(r.status).toBe(200);
+    expect(mayDecide).toHaveBeenCalledWith(KEY, h.session, 'UADMIN', { adminMode: true });
+    expect(h.sendPlan).toHaveBeenCalledWith(KEY, expect.stringContaining('# 작업 계획 v2'), 'UADMIN', {
+      adminMode: true,
+    });
+    expect(h.session.taskPlan).toMatchObject({ state: 'approved', decidedBy: 'UADMIN' });
+  });
+
+  it('without the mode the same admin is refused by the owner gate, and nothing is sent', async () => {
+    const mayDecide = vi.fn(
+      (_k: string, _s: unknown, _a: string, opts?: { adminMode?: true }) => opts?.adminMode === true,
+    );
+    const h = harness({ mayDecide });
+    const r = await h.decide({ sessionKey: KEY, decision: 'start', revision: 2, actorUserId: 'UADMIN' });
+    expect(r.status).toBe(403);
+    expect(mayDecide).toHaveBeenCalledWith(KEY, h.session, 'UADMIN');
+    expect(h.sendPlan).not.toHaveBeenCalled();
+  });
+
   it('S1 — 시작 saves the gate approved, then sends the plan into the thread as the decider', async () => {
     const h = harness();
     const r = await h.decide({ sessionKey: KEY, decision: 'start', revision: 2, actorUserId: 'UOWNER' });

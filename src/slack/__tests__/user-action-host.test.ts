@@ -207,6 +207,27 @@ describe('answerUserAction — one path for the Slack button and the dashboard',
     expect((notify.mock.calls[0] as any[])[2]).toContain('사용자 작업 완료');
   });
 
+  // Z 2026-11-27 — an admin in 관리자 모드 answers someone else's user action: the gate and the agent hear the mode.
+  it('an admin in 관리자 모드: the gate is asked with the mode, and the answer reaches the agent with it', async () => {
+    const { session, notify, args } = setup();
+    const mayAnswer = vi.fn(
+      (_k: string, _s: unknown, _a: string, opts?: { adminMode?: true }) => opts?.adminMode === true,
+    );
+    const r = await answerUserAction({
+      ...args,
+      actor: 'U_ADMIN',
+      adminMode: true,
+      deps: { ...args.deps, mayAnswer },
+    });
+    expect(r.ok).toBe(true);
+    expect(mayAnswer).toHaveBeenCalledWith('k', session, 'U_ADMIN', { adminMode: true });
+    expect(notify).toHaveBeenCalledWith('k', session, expect.stringContaining('사용자 작업 완료'), 'U_ADMIN', {
+      adminMode: true,
+    });
+    const refused = await answerUserAction({ ...args, actor: 'U_ADMIN', deps: { ...args.deps, mayAnswer } });
+    expect(refused).toEqual({ ok: false, code: 'forbidden' }); // without the mode the gate refuses first
+  });
+
   it('refuses someone who may not answer, changing nothing', async () => {
     const { session, notify, args } = setup({ may: false });
     expect(await answerUserAction(args)).toEqual({ ok: false, code: 'forbidden' });
@@ -306,6 +327,18 @@ describe('notifierFromInjection — acceptance, not settlement, decides', () => 
     await p;
     expect(resolved).toBe(true); // before the injection settled
     settle();
+  });
+
+  it('passes the 관리자 모드 option on to the injection (Z 2026-11-27)', async () => {
+    const seen: unknown[] = [];
+    const notify = notifierFromInjection((_k, _t, _a, onAccepted, opts) => {
+      seen.push(opts);
+      onAccepted();
+      return Promise.resolve();
+    });
+    expect(await notify('k', 't', 'U_ADMIN', { adminMode: true })).toBe(true);
+    expect(await notify('k', 't', 'U1')).toBe(true);
+    expect(seen).toEqual([{ adminMode: true }, undefined]);
   });
 
   it('false when the injection settles without acceptance, or fails', async () => {

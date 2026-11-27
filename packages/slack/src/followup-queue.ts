@@ -385,6 +385,16 @@ function storableFiles(files: readonly FollowupFile[]): FollowupFile[] {
 }
 
 /** `message` with its files made storable ({@link storableFiles}); a message without files is untouched. */
+/** The edited message's 관리자 모드 flag follows the edit, never the words it replaced ({@link FollowupQueue.editQueued}). */
+function withEditAdminMode(message: MessageEvent, adminMode: boolean): MessageEvent {
+  const had = message.routeContext?.adminModeInstruction === true;
+  if (had === adminMode) return message;
+  const { adminModeInstruction: _old, ...route } = message.routeContext ?? {};
+  const next = adminMode ? { ...route, adminModeInstruction: true } : route;
+  const { routeContext: _route, ...rest } = message;
+  return Object.keys(next).length > 0 ? { ...rest, routeContext: next } : rest;
+}
+
 function storableMessage(message: MessageEvent): MessageEvent {
   const copy = cloneJson(message);
   if (copy.files !== undefined) copy.files = storableFiles(copy.files);
@@ -878,10 +888,20 @@ export class FollowupQueue {
    * The epoch still bumps even though the STATE is unchanged: a control
    * rendered against the previous text must not act on the new one (A12/A28).
    */
-  editQueued(sessionKey: string, itemId: string, expectedEpoch: number, text: string): FollowupOpResult {
+  editQueued(
+    sessionKey: string,
+    itemId: string,
+    expectedEpoch: number,
+    text: string,
+    /**
+     * Z 2026-11-27 — the edit was made by an admin in 관리자 모드 (the dashboard route checked it). New words carry the
+     * mode only then: an edit made without it — or any Slack edit — drops the flag the old words had.
+     */
+    opts: { adminModeInstruction?: boolean } = {},
+  ): FollowupOpResult {
     return this.mutate(sessionKey, itemId, expectedEpoch, (item) => {
       if (item.state !== 'queued') return 'invalid-state';
-      item.message = { ...item.message, text };
+      item.message = withEditAdminMode({ ...item.message, text }, opts.adminModeInstruction === true);
       this.enter(item, 'queued', '편집됨');
       return undefined;
     });

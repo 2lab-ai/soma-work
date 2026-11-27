@@ -89,19 +89,26 @@ export interface ActionHandlerDelegates {
     handleFormSubmit(body: any): Promise<void>;
     handleFormReset(body: any): Promise<void>;
     handleSubmitAllRecommended(body: any): Promise<void>;
+    /** `opts.adminMode` (Z 2026-11-27): a signed-in admin in 관리자 모드 answered — no owner approval. */
     handleChoiceFromDashboard(
       sessionKey: string,
       choiceId: string,
       label: string,
       question: string,
       userId: string,
+      opts?: { adminMode?: boolean },
     ): Promise<void>;
     handleMultiChoiceFromDashboard(
       sessionKey: string,
       selections: Record<string, { choiceId: string; label: string }>,
       userId: string,
+      opts?: { adminMode?: boolean },
     ): Promise<void>;
-    handleSubmitRecommendedFromDashboard(sessionKey: string, userId: string): Promise<void>;
+    handleSubmitRecommendedFromDashboard(
+      sessionKey: string,
+      userId: string,
+      opts?: { adminMode?: boolean },
+    ): Promise<void>;
     /** #1474 — a typed reply answered the session's question: its forms leave the store, remembered answered. */
     takeAnsweredForms?(sessionKey: string, questionFormIds?: readonly string[]): number;
     /** #1474 — was any of these forms of the session answered (taken by an answer)? */
@@ -623,26 +630,42 @@ export class ActionHandlers {
     this.delegates.registerAuthActions?.(app);
   }
 
+  /** `opts.adminMode` (Z 2026-11-27): a signed-in admin in 관리자 모드 answered — passed on only when set. */
   async handleDashboardChoiceAnswer(
     sessionKey: string,
     choiceId: string,
     label: string,
     question: string,
     userId: string,
+    opts?: { adminMode?: boolean },
   ): Promise<void> {
-    return this.delegates.choiceHandler.handleChoiceFromDashboard(sessionKey, choiceId, label, question, userId);
+    const handler = this.delegates.choiceHandler;
+    return opts?.adminMode
+      ? handler.handleChoiceFromDashboard(sessionKey, choiceId, label, question, userId, { adminMode: true })
+      : handler.handleChoiceFromDashboard(sessionKey, choiceId, label, question, userId);
   }
 
   async handleDashboardMultiChoiceAnswer(
     sessionKey: string,
     selections: Record<string, { choiceId: string; label: string }>,
     userId: string,
+    opts?: { adminMode?: boolean },
   ): Promise<void> {
-    return this.delegates.choiceHandler.handleMultiChoiceFromDashboard(sessionKey, selections, userId);
+    const handler = this.delegates.choiceHandler;
+    return opts?.adminMode
+      ? handler.handleMultiChoiceFromDashboard(sessionKey, selections, userId, { adminMode: true })
+      : handler.handleMultiChoiceFromDashboard(sessionKey, selections, userId);
   }
 
-  async handleDashboardSubmitRecommended(sessionKey: string, userId: string): Promise<void> {
-    return this.delegates.choiceHandler.handleSubmitRecommendedFromDashboard(sessionKey, userId);
+  async handleDashboardSubmitRecommended(
+    sessionKey: string,
+    userId: string,
+    opts?: { adminMode?: boolean },
+  ): Promise<void> {
+    const handler = this.delegates.choiceHandler;
+    return opts?.adminMode
+      ? handler.handleSubmitRecommendedFromDashboard(sessionKey, userId, { adminMode: true })
+      : handler.handleSubmitRecommendedFromDashboard(sessionKey, userId);
   }
 
   /** #1474 — a typed reply answered the session's question: its forms are answered too (see `takeAnsweredForms`). */
