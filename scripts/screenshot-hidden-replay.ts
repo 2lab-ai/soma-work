@@ -19,6 +19,8 @@
  *   H6  the detail panel open on a card — its chat, then its work log: the updates held while away land without their
  *       entrance (frame by frame, no finite animation runs anywhere on the page); a live update after settling still
  *       enters
+ *   H7  a held turn the chat draws in a frame callback that runs after the page's own landing loop in the first frame
+ *       back: sampled after it, in that same frame and every frame after, nothing enters
  *
  * Run from the repo root (keeps state out of the checkout):
  *   SOMA_CONFIG_DIR=$TMP/cfg SOMA_INSTANCE_DIR=$TMP/inst CONVERSATION_VIEWER_TOKEN=t npx tsx scripts/screenshot-hidden-replay.ts [outDir]
@@ -127,8 +129,6 @@ const PAGE_HELPERS = [
   // Where each card is drawn now: its column (the <section> it sits in).
   'window.__cols = function () { var h = document.getElementById("kanban"); var r = h && h.shadowRoot; var out = {}; if (!r) return out; r.querySelectorAll("li.ib-card[data-card]").forEach(function (li) { var sec = li.closest("section"); out[li.getAttribute("data-card")] = sec ? sec.getAttribute("data-col") || sec.id || "?" : "?"; }); return out; };',
   'window.__name = function (f) { return f; };',
-  // Finite animations running or about to run in a subtree, shadow roots included (entrance fades, rises, glides).
-  'window.__finite = function (host) { var roots = [], out = 0; if (!host) return -1; if (host.shadowRoot) roots.push(host.shadowRoot); for (var i = 0; i < roots.length; i++) { var all = roots[i].querySelectorAll("*"); for (var j = 0; j < all.length; j++) if (all[j].shadowRoot) roots.push(all[j].shadowRoot); } roots.forEach(function (r) { r.getAnimations().forEach(function (a) { var t = a.effect && a.effect.getComputedTiming(); if (t && isFinite(t.endTime) && (a.playState === "running" || a.pending)) out++; }); }); return out; };',
   'window.__conv = function () { return document.querySelector("ui-conversation"); };',
   'window.__turns = function () { var c = window.__conv(); var r = c && c.shadowRoot; return r ? r.querySelectorAll("[data-item]").length : -1; };',
   // The panel's rows: the chat's turns, or the work log's entries.
@@ -338,6 +338,38 @@ async function run() {
       );
       check(live.max > 0, `H6 settled: a live update in the ${what} still enters`, live);
     }
+
+    // H7 — back on the chat; away, then back: the held turn is drawn from a frame callback registered after the page's
+    // landing loop (the first frame back), and the sampler's first look is after that callback, in the same frame.
+    await page.evaluate((k) => (window as any).openPanel(k, false), KEYS[0]);
+    await sleep(2_000);
+    const rows7 = await page.evaluate(() => (window as any).__rows(false) as number);
+    await page.evaluate(() => (window as any).__setHidden(true));
+    await sleep(300);
+    const late = await page.evaluate((cid) => {
+      (window as any).__setHidden(false); // the page's loop asks for this frame first
+      requestAnimationFrame(() =>
+        (window as any).__push({
+          type: 'conversation_update',
+          conversationId: cid,
+          turn: {
+            id: 'a77',
+            role: 'assistant',
+            timestamp: new Date().toISOString(),
+            summaryTitle: '늦은 프레임',
+            summaryBody: '늦은 프레임',
+            summarized: true,
+          },
+        }),
+      );
+      return (window as any).__sample(700); // its first look comes after the push's callback, in the same frame
+    }, cid);
+    const rows7b = await page.evaluate(() => (window as any).__rows(false) as number);
+    check(rows7b >= rows7 + 1, 'H7 the turn drawn in a late frame callback is in the chat', {
+      before: rows7,
+      after: rows7b,
+    });
+    check(late.max === 0, 'H7 the turn drawn in a late frame callback lands without an entrance', late);
   } finally {
     await browser.close();
   }

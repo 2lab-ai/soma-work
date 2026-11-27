@@ -13389,6 +13389,13 @@ function viewFinishMotion() {
   }
   return n;
 }
+// A panel element (the chat, the work log) given data while the page catches up: its new rows land without their
+// entrance as soon as it has drawn them — its render is a microtask queued when the data was set, this one runs after —
+// even when it draws them in a frame callback that runs after viewFinishLoop's.
+function viewLandSoon() {
+  if (!_viewAway || !_viewBackAt || document.hidden) return;
+  queueMicrotask(viewFinishMotion);
+}
 // While the page catches up, once per frame before it is painted (rAF runs before the frame's style and paint).
 function viewFinishLoop() {
   _viewFinishRaf = 0;
@@ -23630,6 +23637,8 @@ function wlPaint() {
   if (el._wlSig !== sig) {
     el._wlSig = sig;
     el.data = d;
+    // Rows that came in while the page was away land without their entrance (viewLandSoon).
+    if (typeof viewLandSoon === 'function') viewLandSoon();
   }
   wlRbSync();
   if (!st) return;
@@ -25122,6 +25131,8 @@ function convSetData(el, d) {
   el._convSig = sig;
   el.data = d;
   queueMicrotask(function() { convWatchAnswers(el); });
+  // Turns that came in while the page was away land without their entrance (viewLandSoon).
+  if (typeof viewLandSoon === 'function') viewLandSoon();
 }
 // The section's data now: the main agent's turns, or a subagent's 지시와 답변.
 function convPaint() {

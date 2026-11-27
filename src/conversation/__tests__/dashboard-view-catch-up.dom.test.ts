@@ -23,6 +23,8 @@
  *       end (a chat turn's or a work-log row's entrance); endless ones run on; one that cannot finish is left
  *   C10 the return lands them at once and then once per frame while the page catches up; settled or gone again, the
  *       frame loop stops
+ *   C11 the chat and the work log, given data while catching up, land their new rows right after they draw them
+ *       (a microtask after the element's render) — also when they draw in a frame callback after the loop's
  *
  * Executes the shipped client code cut out of renderDashboardPage()'s template literal; C7 runs it against the
  * installed @2lab.ai/ui.
@@ -83,6 +85,7 @@ const VIEW_FNS = [
   'viewLand',
   'viewFinishMotion',
   'viewFinishLoop',
+  'viewLandSoon',
 ];
 const VIEW_VARS = [
   'VIEW_SETTLE_QUIET_MS',
@@ -459,10 +462,11 @@ describe('every finite animation lands while catching up (C9)', () => {
     const stuck = anim('zero-rate', 300, 'running', true);
     const pageFade = anim('panel-fade', 180);
     // document → <ui-conversation> (shadow) → <ui-ai-answer> (shadow); document → <ui-work-log> (shadow)
-    const answerRoot = scope([], [stuck]);
-    const convRoot = scope([{ shadowRoot: answerRoot }, {}], [turnIn, beam]);
-    const wlRoot = scope([], [rowIn, spin, done]);
-    const doc = scope([{ shadowRoot: convRoot }, { shadowRoot: null }, { shadowRoot: wlRoot }], [pageFade]);
+    // The one that cannot finish comes first, in the first shadow tree visited: the rest still land.
+    const answerRoot = scope([], [turnIn, beam]);
+    const convRoot = scope([{ shadowRoot: answerRoot }, {}], [stuck, rowIn]);
+    const wlRoot = scope([], [spin, done, pageFade]);
+    const doc = scope([{ shadowRoot: convRoot }, { shadowRoot: null }, { shadowRoot: wlRoot }], []);
     const v = load<{ viewFinishMotion(): number }>(['viewFinishMotion'], [], { document: doc });
     expect(v.viewFinishMotion()).toBe(3);
     expect([turnIn, rowIn, pageFade].map((a) => a.finished)).toEqual([1, 1, 1]);
@@ -484,13 +488,6 @@ describe('the return lands them at once, then once per frame while catching up (
     const row = anim('wl-rise@wl-entry', 320);
     const anims: Anim[] = [row];
     const doc = { hidden: true, ...scope([], anims) };
-    doc.getAnimations = () =>
-      anims.map((a) => ({
-        ...a,
-        effect: { getComputedTiming: () => ({ endTime: a.endTime }) },
-        finish: () => a.finish(),
-        playState: a.playState,
-      }));
     const v = load<View>(VIEW_FNS, VIEW_VARS, {
       document: doc,
       requestAnimationFrame: (f: () => void) => frames.push(f),
@@ -524,6 +521,51 @@ describe('the return lands them at once, then once per frame while catching up (
     doc.hidden = true;
     v.viewLeave();
     expect(cancelled).toBeGreaterThan(0);
+  });
+});
+
+describe('the chat and the work log land their rows right after drawing them (C11)', () => {
+  it('queues one landing after the element’s render while back and catching up; not in view or settled, nothing', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const row = anim('ls-in@cv-turn', 360);
+    const anims: Anim[] = [];
+    const doc = { hidden: true, ...scope([], anims) };
+    const v = load<View & { viewLandSoon(): void }>(VIEW_FNS, VIEW_VARS, {
+      document: doc,
+      requestAnimationFrame: () => 0,
+      cancelAnimationFrame: () => {},
+    });
+    v.viewLeave();
+    v.viewLandSoon(); // hidden: the return lands everything at once instead
+    doc.hidden = false;
+    v.viewReturn();
+    // The element's render was queued when the data was set (first), the landing after it: the row it draws lands.
+    queueMicrotask(() => anims.push(row));
+    v.viewLandSoon();
+    expect(row.finished).toBe(0);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(row.finished).toBe(1);
+    // Settled: a live row keeps its entrance.
+    vi.advanceTimersByTime(400);
+    const live = anim('ls-in@cv-turn', 360);
+    queueMicrotask(() => anims.push(live));
+    v.viewLandSoon();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(live.finished).toBe(0);
+  });
+
+  it('the chat and the work log ask for it right after setting their element’s data', () => {
+    const conv = clientFn('convSetData');
+    expect(conv.indexOf("if (typeof viewLandSoon === 'function') viewLandSoon();")).toBeGreaterThan(
+      conv.indexOf('el.data = d;'),
+    );
+    const wl = clientFn('wlPaint');
+    const set = wl.indexOf('el.data = d;');
+    const land = wl.indexOf("if (typeof viewLandSoon === 'function') viewLandSoon();");
+    expect(land).toBeGreaterThan(set);
+    expect(land).toBeLessThan(wl.indexOf('wlRbSync();')); // inside the branch that set new data
   });
 });
 
