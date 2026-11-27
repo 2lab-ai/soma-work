@@ -8,7 +8,7 @@
  * judged (rects, counts, ids), never a bare boolean.
  *
  *   I1  the card opens: the button shows the count (40 instructions; the host turns are not counted) at the composer's
- *       top right, the queue's round button left of it on the same line
+ *       top right, the queue's round button left of it on the same line; a three-digit count (a pill) keeps the gap
  *   I2  a press opens the list: #1 first, a page of 30; scrolled to its end, the next page comes (40 rows)
  *   I3  a row (#3, older than the turns the chat holds) closes the list; 대화 loads back to it and its turn sits at
  *       the top of the chat's box
@@ -290,6 +290,31 @@ async function desktopRun(browser: import('playwright').Browser) {
     d,
   );
   await shot(page, '01-button.png');
+
+  // I1b: a three-digit count makes the button a pill; the queue's button still keeps 8px left of it.
+  await page.evaluate(() => {
+    const w = window as any;
+    w._ih.total = 128;
+    w.ihPaint();
+  });
+  await sleep(300);
+  const wide = await docks(page);
+  check(
+    wide.ihText === '128' &&
+      !!wide.ih &&
+      !!wide.queue &&
+      wide.ih.w > 32 &&
+      wide.queue.x + wide.queue.w <= wide.ih.x - 6,
+    'I1b a 128 pill: the queue’s button stays left of it with its gap',
+    wide,
+  );
+  await shot(page, '01b-button-wide.png');
+  await page.evaluate(() => {
+    const w = window as any;
+    w._ih.total = 40;
+    w.ihPaint();
+  });
+  await sleep(200);
 
   // I2
   await page.click('#ih-dock');

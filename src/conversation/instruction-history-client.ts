@@ -269,6 +269,16 @@ function ihPaint() {
   var num = document.getElementById('ih-dock-n');
   var txt = ihCountText(_ih.total);
   if (num && num.textContent !== txt) num.textContent = txt;
+  // The queue's button keeps 8px left of this one, however wide its number makes it (32px to a "999+" pill).
+  if (show && wrap && wrap.style) {
+    var w = dock.offsetWidth || 0;
+    var v = w ? w + 'px' : '';
+    if (wrap._ihW !== v) {
+      wrap._ihW = v;
+      if (v) wrap.style.setProperty('--ih-dock-w', v);
+      else wrap.style.removeProperty('--ih-dock-w');
+    }
+  }
   var label = adminFmt(IH_TEXT_LABEL, _ih.total);
   if (dock.getAttribute('aria-label') !== label) {
     dock.setAttribute('aria-label', label);
@@ -286,8 +296,20 @@ function ihPaintList() {
   if (!list || !foot) return;
   var html = ihRowsHtml(_ih.rows, Date.now());
   if (list._ihHtml !== html) {
+    // A row with keyboard focus keeps it across the repaint (a page appended while the reader steps through rows).
+    var active = document.activeElement;
+    var focusId = active && active.classList && active.classList.contains('ih-row') && list.contains(active) ? active.getAttribute('data-id') : null;
     list.innerHTML = html;
     list._ihHtml = html;
+    if (focusId) {
+      var rows = list.querySelectorAll('.ih-row');
+      for (var i = 0; i < rows.length; i++) {
+        if (rows[i].getAttribute('data-id') === focusId) {
+          rows[i].focus({ preventScroll: true });
+          break;
+        }
+      }
+    }
   }
   var f = '';
   if (_ih.loading) f = '<span class="ih-note">' + ihEsc(IH_TEXT_LOADING) + '</span>';
@@ -419,6 +441,10 @@ function ihTurnAt(t) {
 function ihReveal() {
   var j = _ih.jump;
   if (!j || j.gen !== _panelGen) return;
+  if (j.timer) {
+    clearTimeout(j.timer);
+    j.timer = 0;
+  }
   if (ihHasTurn(j.id)) {
     _ih.jump = null;
     convPaint();
@@ -428,7 +454,8 @@ function ihReveal() {
   if (_panelTurnsLoading) {
     if (++j.waits > 150) return ihMiss(IH_TEXT_LOAD_FAILED, j);
     // This jump's own wait: a newer jump keeps its own budget (an older timer does not spend it).
-    setTimeout(function() {
+    j.timer = setTimeout(function() {
+      j.timer = 0;
       if (_ih.jump === j) ihReveal();
     }, 100);
     return;
@@ -593,7 +620,7 @@ export const INSTRUCTION_HISTORY_CSS = String.raw`
 /* ── 보낸 지시 (SSOT 2026-11-27, instruction-history-client.ts) — the queue's round button's look and place: 8px
    above the composer at its right. With it there, the queue's button sits left of it (the element's own offset). ── */
 .pc-steer-wrap { position: relative; }
-.pc-steer-wrap[data-ih] > ui-agent-steering { --ui-steering-dock-right: 40px; }
+.pc-steer-wrap[data-ih] > ui-agent-steering { --ui-steering-dock-right: calc(var(--ih-dock-w, 32px) + 8px); }
 .ih-dock { position: absolute; z-index: 3; right: 0; bottom: calc(100% + 8px); display: grid; place-items: center;
   box-sizing: border-box; min-width: 32px; height: 32px; padding: 0 8px; border: 0; border-radius: 999px;
   background: var(--surface); color: var(--text);
@@ -609,7 +636,7 @@ export const INSTRUCTION_HISTORY_CSS = String.raw`
   .ih-dock[aria-expanded="false"]:hover { background: color-mix(in srgb, var(--text) 6%, var(--surface)); }
 }
 @media (pointer: coarse) {
-  .pc-steer-wrap[data-ih] > ui-agent-steering { --ui-steering-dock-right: 52px; }
+  .pc-steer-wrap[data-ih] > ui-agent-steering { --ui-steering-dock-right: calc(var(--ih-dock-w, 44px) + 8px); }
   .ih-dock { min-width: 44px; height: 44px; font-size: 15px; }
 }
 /* The list: a raised card above the button, its right edge on the button's. */

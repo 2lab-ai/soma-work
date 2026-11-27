@@ -204,7 +204,7 @@ describe('the round button — how many instructions, beside the queue’s butto
     expect($('ih-dock').getAttribute('aria-label')).toBe('보낸 지시 42개 — 눌러서 목록 보기');
     expect($('ih-dock').parentElement?.hasAttribute('data-ih')).toBe(true);
     expect(INSTRUCTION_HISTORY_CSS).toContain(
-      '.pc-steer-wrap[data-ih] > ui-agent-steering { --ui-steering-dock-right: 40px; }',
+      '.pc-steer-wrap[data-ih] > ui-agent-steering { --ui-steering-dock-right: calc(var(--ih-dock-w, 32px) + 8px); }',
     );
   });
 
@@ -552,7 +552,8 @@ describe('the open list and new instructions (review on #1512)', () => {
     const fetchMock = vi.fn((url: string) => {
       if (url.includes('limit=0')) return Promise.resolve({ ok: true, json: async () => ({ total }) });
       const off = Number(/offset=(\d+)/.exec(url)?.[1]);
-      if (off === 30)
+      if (off === 29)
+        // page 2 (it starts one row back)
         return new Promise((r) => {
           releasePage = r;
         });
@@ -567,7 +568,8 @@ describe('the open list and new instructions (review on #1512)', () => {
     api.ihSync('c1', true);
     await wait(700);
     await flush();
-    releasePage({ ok: true, json: async () => page(30, 10, 40) }); // answered before #41: nextOffset null
+    expect(releasePage).not.toBeNull();
+    releasePage({ ok: true, json: async () => page(29, 11, 40) }); // answered before #41: nextOffset null
     await flush();
     const rows: any[] = Array.from(document.querySelectorAll('#ih-list .ih-row'));
     expect(rows).toHaveLength(41);
@@ -1224,6 +1226,64 @@ describe('a row — 대화 moves to that instruction', () => {
     await vi.advanceTimersByTimeAsync(300);
     expect(fns.dashToast).not.toHaveBeenCalled();
     expect(api.state().list.map((t: Json) => t.id)).toEqual(['u2', 'a2', 'u9', 'a9']);
+  });
+
+  it('a fresh window keeps a pushed turn whose time ties the window’s last turn', async () => {
+    let releaseFresh: (v: unknown) => void = () => {};
+    const { api } = boot({
+      state: { _panelTurnsList: loaded(['u5', 'a5']), _panelTurnsOldestId: 'u5', _panelTurnsHasMore: true },
+      fns: {
+        fetch: vi.fn((url: string) => {
+          if (!url.includes('through=')) return Promise.resolve({ ok: true, json: async () => ({ total: 1 }) });
+          if (url.includes('before='))
+            return Promise.resolve({
+              ok: true,
+              json: async () => ({ id: 'c1', turns: [], hasMore: false, through: 'none' }),
+            });
+          return new Promise((r) => {
+            releaseFresh = r;
+          });
+        }),
+      },
+    });
+    api.ihJump('u7');
+    await flush();
+    // loaded() puts u7 at timestamp 4: the push lands in the same millisecond.
+    api.state().list.push({ id: 'u8', role: 'user', timestamp: 4, rawContent: '같은 시각' });
+    releaseFresh({
+      ok: true,
+      json: async () => ({
+        id: 'c1',
+        turns: loaded(['u5', 'a5', 'u6', 'a6', 'u7']),
+        hasMore: true,
+        through: 'reached',
+      }),
+    });
+    await flush();
+    expect(api.state().list.map((t: Json) => t.id)).toEqual(['u5', 'a5', 'u6', 'a6', 'u7', 'u8']);
+  });
+
+  it('a row with keyboard focus keeps it when the next page is appended', async () => {
+    const { api } = boot({
+      fetch: (url) => {
+        if (url.includes('limit=0')) return { total: 45 };
+        const off = Number(/offset=(\d+)/.exec(url)?.[1]);
+        const lim = Number(/limit=(\d+)/.exec(url)?.[1]);
+        return page(off, Math.min(lim, 45 - off), 45);
+      },
+    });
+    api.ihSync('c1');
+    await flush();
+    const list = $('ih-list');
+    Object.defineProperty(list, 'scrollHeight', { configurable: true, get: () => 2000 });
+    Object.defineProperty(list, 'clientHeight', { configurable: true, get: () => 400 });
+    api.ihToggle();
+    await flush();
+    (document.querySelector('#ih-list .ih-row[data-id="u29"]') as any).focus();
+    api.ihLoadMore();
+    await flush();
+    expect(document.querySelectorAll('#ih-list .ih-row')).toHaveLength(45);
+    expect((document.activeElement as any)?.getAttribute('data-id')).toBe('u29');
   });
 
   it('a load on its way (the first page) settles first, then the jump goes on', async () => {
