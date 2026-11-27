@@ -187,6 +187,20 @@ describe('buildQueryEnv', () => {
       expect(Object.keys(env)).not.toContain('GOOGLE_APPLICATION_CREDENTIALS');
     });
 
+    it.each([
+      ['CLAUDE_CODE_USE_BEDROCK', '0'],
+      ['CLAUDE_CODE_USE_BEDROCK', 'false'],
+      ['CLAUDE_CODE_USE_BEDROCK', ''],
+      ['CLAUDE_CODE_USE_VERTEX', '0'],
+    ])("the operator's claude.env turning %s off (%j) wins over the host's selector", (selector, value) => {
+      vi.stubEnv(selector, '1');
+      vi.stubEnv('GOOGLE_APPLICATION_CREDENTIALS', '/etc/gcp.json');
+      setQueryEnvAdditional({ [selector]: value });
+      const { env } = buildQueryEnv(makeLease('slot-a', 'LEASE-TOKEN', 'cct'));
+      expect(Object.keys(env)).not.toContain('AWS_SECRET_ACCESS_KEY');
+      expect(Object.keys(env)).not.toContain('GOOGLE_APPLICATION_CREDENTIALS');
+    });
+
     it("Vertex passes Google's credential locators by name, never the bot's own Google client secret", () => {
       vi.stubEnv('CLAUDE_CODE_USE_VERTEX', '1');
       vi.stubEnv('GOOGLE_APPLICATION_CREDENTIALS', '/etc/gcp.json');

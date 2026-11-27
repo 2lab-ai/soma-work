@@ -234,15 +234,13 @@ export function providerEnv(source: NodeJS.ProcessEnv, overlay: Record<string, s
   return env;
 }
 
-/** `LC_*` locale categories. */
-const INHERITED_ENV_PREFIXES: readonly string[] = ['LC_'];
-
-/** The part of `source` (the bot's environment) an agent inherits: {@link INHERITED_ENV_NAMES}. */
+/** The part of `source` (the bot's environment) an agent inherits: {@link INHERITED_ENV_NAMES}, `LC_*`, proxies. */
 export function inheritedAgentEnv(source: NodeJS.ProcessEnv): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(source)) {
     if (typeof value !== 'string') continue;
-    if (INHERITED_ENV_NAMES.has(key) || INHERITED_ENV_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+    // `LC_*`: the locale categories.
+    if (INHERITED_ENV_NAMES.has(key) || key.startsWith('LC_')) {
       env[key] = value;
     } else if (PROXY_NAMES.has(key) && !carriesCredentials(value)) {
       env[key] = value;

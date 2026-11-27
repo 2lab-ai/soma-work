@@ -143,8 +143,9 @@ export interface TenantReadBoundaryInput {
   /** Environment-skill directories the speaker holds a grant for. File tools only. */
   grantedSkillDirs: readonly string[];
   /**
-   * Files the session's own tools read and its owner holds — the mailbox client's settings, which `mailbox send` in
-   * the owner's session needs. Shell only, and only where they really are.
+   * Files the session's own tools read — the mailbox client's settings, which `mailbox send` in the owner's session
+   * needs, and the certificate bundles the environment names. Shell only, only where they really are, and never one
+   * denied on purpose.
    */
   ownFiles?: readonly string[];
   /** Read denies already set on purpose (secret store, logins, environment plugins). Never re-opened. */

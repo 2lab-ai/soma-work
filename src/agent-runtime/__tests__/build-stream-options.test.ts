@@ -1209,17 +1209,48 @@ describe('sandbox: admin profile and write protection (env-access WU2, #1210)', 
 
   it("a sandboxed admin's native writes reach its own CLI temp directory, where its commands write", async () => {
     await asAdmin();
-    const { options } = await withSettings(false, () => build(ADMIN));
-    const entry = (options.hooks?.PreToolUse ?? []).find((e) =>
-      ((e as { matcher?: string }).matcher ?? '').split('|').includes('Write'),
-    ) as { hooks: Array<(input: unknown) => Promise<{ hookSpecificOutput?: { permissionDecision?: string } }>> };
-    const tmp = options.env?.CLAUDE_CODE_TMPDIR as string;
-    const decision = await entry.hooks[0]({
-      hook_event_name: 'PreToolUse',
-      tool_name: 'Write',
-      tool_input: { file_path: path.join(tmp, 'notes.txt'), content: 'x' },
-    } as never);
-    expect(decision.hookSpecificOutput?.permissionDecision).not.toBe('deny');
+    // A temp root outside the working directory, as in production (`/tmp/.soma-ct`): the shared scratch root of
+    // these tests lies inside it.
+    const root = path.join(fs.mkdtempSync(path.join('/tmp', 'soma-ct-native-')), 'soma-ct');
+    try {
+      const { options } = await withSettings(false, () => build(ADMIN, makeDeps({ claudeTmpRoot: root })));
+      const entry = (options.hooks?.PreToolUse ?? []).find((e) =>
+        ((e as { matcher?: string }).matcher ?? '').split('|').includes('Write'),
+      ) as { hooks: Array<(input: unknown) => Promise<{ hookSpecificOutput?: { permissionDecision?: string } }>> };
+      const tmp = options.env?.CLAUDE_CODE_TMPDIR as string;
+      expect(tmp).toBe(path.join(root, ADMIN));
+      const write = (file_path: string) =>
+        entry.hooks[0]({
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Write',
+          tool_input: { file_path, content: 'x' },
+        } as never);
+      expect((await write(path.join(tmp, 'notes.txt'))).hookSpecificOutput?.permissionDecision).not.toBe('deny');
+      // Its own directory, not the parent: another user's CLI temp files stay out of reach.
+      const other = path.join(root, 'U0OTHER001');
+      fs.mkdirSync(other, { recursive: true });
+      expect((await write(path.join(other, 'notes.txt'))).hookSpecificOutput?.permissionDecision).toBe('deny');
+    } finally {
+      fs.rmSync(path.dirname(root), { recursive: true, force: true });
+    }
+  });
+
+  it("a sandboxed session's shell reads the certificate bundle its environment names", async () => {
+    const bundle = path.join(fs.mkdtempSync(path.join(DATA_DIR, 'tls-')), 'ca.pem');
+    fs.writeFileSync(bundle, 'x');
+    const { options } = await withSettings(false, () =>
+      buildStreamOptions(
+        {
+          queryEnv: { CURL_CA_BUNDLE: bundle },
+          slackContext: makeSlackContext({ user: SAFE_USER }),
+          workingDirectory: WORK_DIR,
+        },
+        makeDeps(),
+      ),
+    );
+    const allowRead = (options.sandbox as { filesystem?: { allowRead?: string[] } }).filesystem?.allowRead ?? [];
+    expect(allowRead).toContain(fs.realpathSync(bundle));
+    expect(allowRead).not.toContain(fs.realpathSync(path.dirname(bundle)));
   });
 
   it("a sandboxed admin's turn without a session folder writes natively in the empty cwd made for it, not beside it", async () => {

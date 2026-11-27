@@ -1218,8 +1218,11 @@ function applyTenantReadBoundary(
     ghConfigDir: input.queryEnv.GH_CONFIG_DIR,
     pluginPaths: (options.plugins ?? []).map((plugin) => plugin.path),
     grantedSkillDirs: input.grantedSkillDirs,
-    // The mailbox owner's session sends mail with the client's settings file (`mailbox/session-address.ts`).
-    ownFiles: options.env?.MAILBOX_CONFIG ? [options.env.MAILBOX_CONFIG] : [],
+    // The mailbox owner's session sends mail with the client's settings file (`mailbox/session-address.ts`); TLS tools
+    // read the host's certificate bundles wherever the environment points them.
+    ownFiles: [options.env?.MAILBOX_CONFIG, ...TLS_BUNDLE_ENV.map((name) => options.env?.[name])].filter(
+      (p): p is string => typeof p === 'string' && path.isAbsolute(p),
+    ),
     denied: filesystem.denyRead ?? [],
   });
   if (boundary.redirected.length > 0) {
@@ -1247,6 +1250,9 @@ function applyTenantReadBoundary(
     exempt: boundary.exemptPaths.length,
   });
 }
+
+/** Certificate bundles a TLS client reads from the environment (passed on by `inheritedAgentEnv`). */
+const TLS_BUNDLE_ENV = ['SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE'];
 
 /**
  * A shared thread's session folder lies in the owner's root: a non-admin speaker may still attach what it made
