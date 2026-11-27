@@ -2,8 +2,9 @@
  * The admin sandbox profile, and the write protection every model session gets
  * (env-access WU2, #1210 — `.prd/25-env-access-architecture.md` §0, §1).
  *
- * Admins run in a sandbox too, a wide one: every network domain, gh's TLS check through trustd,
- * local servers, and the temp directory writable. What no model writes — admin or not, sandbox on or
+ * Admins run in a sandbox too, a wide one for the network: every domain, gh's TLS check through trustd,
+ * local servers. Its files are a sandboxed session's like anyone's: it writes its work area and its own temp
+ * directory, and reads only that and the code it runs (`tenant-read-boundary.ts`). What no model writes — admin or not, sandbox on or
  * off — is the deployment (its code, configuration and data: rewriting them runs the model's code as
  * the bot, outside any sandbox) and the files that something outside the sandbox later runs or trusts
  * (launch agents, shell startup files, ssh's authorized keys, git and CLI settings).
@@ -21,8 +22,6 @@ import { DEV_DOMAIN_ALLOWLIST } from './dev-domain-allowlist';
 export const ADMIN_ALL_DOMAINS_RULE = 'WebFetch(domain:*)';
 
 export interface AdminSandboxProfile {
-  /** Added to the sandbox `filesystem.allowWrite`. */
-  allowWrite: string[];
   network: { allowedDomains: string[]; allowLocalBinding: true };
   /** macOS: trustd lookups, so gh and other Go tools can check TLS certificates in the sandbox. */
   enableWeakerNetworkIsolation: true;
@@ -34,11 +33,11 @@ export interface AdminSandboxProfile {
  * No home directory is writable, caches included: the bot runs code from them outside every sandbox
  * (the npm cache holds the MCP servers it starts with `npx -y`). Nor is a cache moved by environment:
  * the CLI's environment is also its MCP servers' (astra R2). A sandboxed install that must write a
- * cache names one the session can write itself (`npm install --cache /tmp/{uid}/npm`).
+ * cache names one the session can write itself (`npm install --cache /tmp/{uid}/npm`). Nor is the bot's
+ * temp directory writable: every admin shared it, and the bot keeps its own files there.
  */
-export function adminSandboxProfile(paths: { home: string; tmpdir: string }): AdminSandboxProfile {
+export function adminSandboxProfile(): AdminSandboxProfile {
   return {
-    allowWrite: [paths.tmpdir],
     network: {
       allowedDomains: [...new Set([...DEV_DOMAIN_ALLOWLIST, 'localhost', '127.0.0.1'])],
       allowLocalBinding: true,

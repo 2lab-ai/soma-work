@@ -482,7 +482,7 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
     expect(settings.permissions?.deny).toEqual(expect.arrayContaining(secretStoreDenyRules()));
   });
 
-  it('sandbox: network omitted when user disabled network', async () => {
+  it('sandbox: every domain when the user turned the allowlist off, as the setting promises', async () => {
     const spy = vi.spyOn(await import('../../user-settings-store'), 'userSettingsStore', 'get').mockReturnValue({
       getUserDefaultModel: () => 'm',
       getUserPermissionMode: () => 'auto', // the execution context reads the mode (#597)
@@ -496,7 +496,12 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
       const { options } = await buildStreamOptions({ queryEnv: {}, slackContext: makeSlackContext() }, deps);
       const sandbox = options.sandbox as Record<string, unknown>;
       expect(sandbox.enabled).toBe(true);
-      expect(sandbox.network).toBeUndefined();
+      // Not strict, and every domain on the allowlist through the rule; without network settings the CLI would ask
+      // per domain instead (measured).
+      expect(sandbox.network).toEqual({ allowedDomains: [...DEV_DOMAIN_ALLOWLIST] });
+      expect((options.settings as { permissions?: { allow?: string[] } }).permissions?.allow).toContain(
+        'WebFetch(domain:*)',
+      );
     } finally {
       spy.mockRestore();
     }
@@ -813,14 +818,14 @@ describe('sandbox: admin profile and write protection (env-access WU2, #1210)', 
   const savedAdmins = process.env.ADMIN_USERS;
   const savedOffAllowed = process.env.SOMA_SANDBOX_OFF_ALLOWED;
 
-  async function withSettings<T>(sandboxDisabled: boolean, run: () => Promise<T>): Promise<T> {
+  async function withSettings<T>(sandboxDisabled: boolean, run: () => Promise<T>, networkDisabled = false): Promise<T> {
     const spy = vi.spyOn(await import('../../user-settings-store'), 'userSettingsStore', 'get').mockReturnValue({
       getUserDefaultModel: () => 'm',
       getUserPermissionMode: () => 'bypass',
       getUserThinkingEnabled: () => true,
       getUserShowThinking: () => false,
       getUserSandboxDisabled: () => sandboxDisabled,
-      getUserNetworkDisabled: () => false,
+      getUserNetworkDisabled: () => networkDisabled,
     } as never);
     try {
       return await run();
@@ -1022,11 +1027,26 @@ describe('sandbox: admin profile and write protection (env-access WU2, #1210)', 
       expect(fs.readdirSync(options.cwd as string)).toEqual([]);
     });
 
-    it('an admin keeps the wide profile: no read block, no read lists', async () => {
+    // The sandbox audit of 27 November 2026: a sandboxed admin read the deployment's .env, the subscription store,
+    // 15 other users' data and the shared CLI temp directory. A sandbox reads the work area, whoever runs in it.
+    it('a sandboxed admin reads its own work area too: the read block, the read lists, its own temp directory', async () => {
       await asAdmin();
       const { options } = await withSettings(false, () => build(ADMIN));
+      expect((options.settings as ReadSettings).permissions?.blockReadsOutsideWorkingDirectories).toBe(true);
+      const filesystem = (options.sandbox as ReadSandbox).filesystem;
+      const real = (p: string) => fs.realpathSync(p);
+      expect(filesystem?.denyRead).toEqual(expect.arrayContaining([real(DATA_DIR), real(path.dirname(CONFIG_FILE))]));
+      expect(filesystem?.allowRead).toContain(real(WORK_DIR));
+      expect(filesystem?.allowRead).not.toContain(real(DATA_DIR));
+      expect(options.env?.CLAUDE_CODE_TMPDIR).toBe(path.join(CLAUDE_TMP_SCRATCH, ADMIN));
+    });
+
+    it('an admin running without the sandbox has no read boundary', async () => {
+      await asAdmin();
+      process.env.SOMA_SANDBOX_OFF_ALLOWED = 'true';
+      const { options } = await withSettings(true, () => build(ADMIN));
+      expect(options.sandbox).toBeUndefined();
       expect((options.settings as ReadSettings).permissions?.blockReadsOutsideWorkingDirectories).toBeUndefined();
-      expect((options.sandbox as ReadSandbox).filesystem?.allowRead).toBeUndefined();
       expect(options.env?.CLAUDE_CODE_TMPDIR).toBeUndefined();
     });
   });
@@ -1038,7 +1058,7 @@ describe('sandbox: admin profile and write protection (env-access WU2, #1210)', 
     expect(options.sandbox).toBeUndefined();
   });
 
-  it('an admin gets the admin profile: every domain, gh TLS, local binding, the caches writable', async () => {
+  it('an admin gets the admin profile: every domain, gh TLS, local binding, its own temp directory writable', async () => {
     await asAdmin();
     const { options } = await withSettings(false, () => build(ADMIN));
     const sandbox = options.sandbox as {
@@ -1049,10 +1069,10 @@ describe('sandbox: admin profile and write protection (env-access WU2, #1210)', 
     expect(sandbox.enableWeakerNetworkIsolation).toBe(true);
     expect(sandbox.network?.allowLocalBinding).toBe(true);
     expect(sandbox.network?.allowedDomains).toEqual(expect.arrayContaining(['localhost', '127.0.0.1']));
-    // The user's temp directory and the OS temp directory, no home cache (astra R1).
-    expect(sandbox.filesystem?.allowWrite).toEqual(
-      expect.arrayContaining([path.join('/tmp', ADMIN), fs.realpathSync(os.tmpdir())]),
-    );
+    // The user's root and its own CLI temp directory — not the bot's temp directory, which every admin shared and
+    // where the bot keeps its own files; no home cache (astra R1).
+    expect(sandbox.filesystem?.allowWrite).toEqual([path.join('/tmp', ADMIN), path.join(CLAUDE_TMP_SCRATCH, ADMIN)]);
+    expect(sandbox.filesystem?.allowWrite).not.toContain(fs.realpathSync(os.tmpdir()));
     expect(sandbox.filesystem?.allowWrite).not.toContain(path.join(os.homedir(), '.npm'));
     expect(sandbox.filesystem?.denyRead).toContain(SECRETS_DIR);
     expect(sandbox.filesystem?.denyWrite).toEqual(expect.arrayContaining(approvalRecordPaths()));
@@ -1148,6 +1168,36 @@ describe('sandbox: admin profile and write protection (env-access WU2, #1210)', 
     );
     expect((await write(path.join(WORK_DIR, 'notes.txt'))).hookSpecificOutput?.permissionDecision).not.toBe('deny');
     expect((await write(path.join('/tmp', ADMIN, 'x.txt'))).hookSpecificOutput?.permissionDecision).not.toBe('deny');
+  });
+
+  // Measured with the CLI: in bypass mode a domain off the allowlist is asked for and allowed, so the allowlist held
+  // nothing; and the allowlist turned off (no network settings) asked per domain, while every screen promised all.
+  describe('network', () => {
+    type NetSandbox = { network?: { allowedDomains?: string[]; strictAllowlist?: boolean } };
+    const allowRules = (options: { settings?: unknown }) =>
+      (options.settings as { permissions?: { allow?: string[] } }).permissions?.allow ?? [];
+
+    it("a non-admin's dev allowlist is strict: a domain off it is refused, not asked for", async () => {
+      const { options } = await withSettings(false, () => build(SAFE_USER));
+      const network = (options.sandbox as NetSandbox).network;
+      expect(network?.strictAllowlist).toBe(true);
+      expect(network?.allowedDomains).toEqual([...DEV_DOMAIN_ALLOWLIST]);
+    });
+
+    it('the allowlist turned off opens every domain, not strictly', async () => {
+      const { options } = await withSettings(false, () => build(SAFE_USER), true);
+      expect((options.sandbox as NetSandbox).network?.strictAllowlist).toBeUndefined();
+      expect(allowRules(options)).toContain('WebFetch(domain:*)');
+    });
+
+    it('an admin keeps every domain, the toggle either way', async () => {
+      await asAdmin();
+      for (const networkDisabled of [false, true]) {
+        const { options } = await withSettings(false, () => build(ADMIN), networkDisabled);
+        expect((options.sandbox as NetSandbox).network?.strictAllowlist, `${networkDisabled}`).toBeUndefined();
+        expect(allowRules(options), `${networkDisabled}`).toContain('WebFetch(domain:*)');
+      }
+    });
   });
 
   it('a non-admin keeps the narrow profile', async () => {
@@ -1381,7 +1431,7 @@ describe('sandbox: deploy-workflow grant (config.json#deploySandbox)', () => {
     expect(withoutClaudeTmp(sandboxOf(options)?.filesystem?.allowWrite)).toEqual([path.join('/tmp', APPROVED)]);
   });
 
-  it('(d) listed sender with networkDisabled: paths appended, network untouched', async () => {
+  it('(d) listed sender with networkDisabled: paths appended, every domain already open', async () => {
     writeHostConfig({ deploySandbox: GRANT });
     const spy = await mockUserSettings({ networkDisabled: true });
     try {
@@ -1397,7 +1447,7 @@ describe('sandbox: deploy-workflow grant (config.json#deploySandbox)', () => {
         '/srv/qa/lock',
         '/srv/qa/runs',
       ]);
-      expect(sandbox?.network).toBeUndefined();
+      expect(sandbox?.network).toEqual({ allowedDomains: [...DEV_DOMAIN_ALLOWLIST] });
       expect(grantLogs(deps)).toEqual([['Deploy sandbox grant applied', { paths: 2, domains: 0 }]]);
     } finally {
       spy.mockRestore();

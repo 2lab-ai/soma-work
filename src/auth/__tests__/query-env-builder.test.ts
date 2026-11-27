@@ -72,14 +72,103 @@ describe('buildQueryEnv', () => {
     expect(process.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('GLOBAL-WRONG-TOKEN');
   });
 
-  it('preserves unrelated process.env variables in the returned env', () => {
+  it("keeps the OS session's variables (PATH among them) and drops a variable it does not know", () => {
     const lease = makeLease('slot-a', 'sk-ant-oat01-X', 'cct');
     const { env } = buildQueryEnv(lease);
-    expect(env.__QENV_BUILDER_FIXTURE__).toBe('keep-me');
-    // The returned env shouldn't clobber PATH either — presence is enough here.
+    expect(Object.keys(env)).not.toContain('__QENV_BUILDER_FIXTURE__');
     if (process.env.PATH !== undefined) {
       expect(env.PATH).toBe(process.env.PATH);
     }
+  });
+
+  // The bot's own environment holds its .env: the agent's shell, hooks and MCP servers inherit `options.env` whole,
+  // so none of the bot's secrets may be in it (the sandbox audit of 27 November 2026 read 17 of them from a shell).
+  describe("the bot's secrets stay in the bot", () => {
+    const SECRETS: Record<string, string> = {
+      SLACK_BOT_TOKEN: 'xoxb-1-2-fixture',
+      SLACK_APP_TOKEN: 'xapp-1-fixture',
+      SLACK_SIGNING_SECRET: 'signing-fixture',
+      GITHUB_APP_ID: '123',
+      GITHUB_PRIVATE_KEY: '-----BEGIN RSA PRIVATE KEY-----\nfixture\n-----END RSA PRIVATE KEY-----',
+      GITHUB_INSTALLATION_ID: '456',
+      DASHBOARD_JWT_SECRET: 'jwt-fixture',
+      GOOGLE_CLIENT_SECRET: 'google-fixture',
+      CONVERSATION_VIEWER_TOKEN: 'viewer-fixture',
+      AI_TOKEN: 'sk-ant-oat01-fixture',
+      CLAUDE_CODE_OAUTH_TOKEN_LIST: 'a,b',
+      ZHUGELIANG_CLAUDE_CODE_OAUTH_TOKEN_LIST: 'c,d',
+      ANTHROPIC_API_KEY: 'sk-ant-api03-fixture',
+      ANTHROPIC_CUSTOM_HEADERS: 'Authorization: Bearer fixture',
+      SSH_AUTH_SOCK: '/tmp/agent.sock',
+    };
+    const KEPT: Record<string, string> = {
+      HOME: '/Users/bot',
+      LANG: 'en_US.UTF-8',
+      LC_ALL: 'en_US.UTF-8',
+      TZ: 'Asia/Seoul',
+      SOMA_CONFIG_DIR: '/opt/soma/dev',
+      CLAUDE_CONFIG_DIR: '/opt/soma/dev/.claude',
+      DATA_DIR: '/opt/soma/dev/data',
+      CONVERSATION_VIEWER_PORT: '33000',
+      DEBUG: 'true',
+      NODE_EXTRA_CA_CERTS: '/etc/ca.pem',
+      HTTPS_PROXY: 'http://proxy.local:3128',
+    };
+    const saved: Record<string, string | undefined> = {};
+    beforeEach(() => {
+      for (const [key, value] of Object.entries({ ...SECRETS, ...KEPT })) {
+        saved[key] = process.env[key];
+        process.env[key] = value;
+      }
+    });
+    afterEach(() => {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    });
+
+    it('none of them reaches the agent, by name or by value', () => {
+      const { env } = buildQueryEnv(makeLease('slot-a', 'LEASE-TOKEN', 'cct'));
+      for (const [key, value] of Object.entries(SECRETS)) {
+        expect(Object.keys(env), key).not.toContain(key);
+        expect(Object.values(env), key).not.toContain(value);
+      }
+      expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('LEASE-TOKEN');
+    });
+
+    it('the locale, the config locations, the hook port, the TLS and proxy setup do', () => {
+      const { env } = buildQueryEnv(makeLease('slot-a', 'LEASE-TOKEN', 'cct'));
+      for (const [key, value] of Object.entries(KEPT)) expect(env[key], key).toBe(value);
+    });
+
+    it("the bot's own GitHub token reaches gh only while no bot-owned gh login serves it", async () => {
+      const { clearAgentGhConfigDir, writeAgentGhHosts } = await import('../../github/agent-gh-config');
+      const fs = await import('node:fs');
+      const os = await import('node:os');
+      const path = await import('node:path');
+      const savedToken = process.env.GITHUB_TOKEN;
+      process.env.GITHUB_TOKEN = 'ghs_fixturetoken';
+      try {
+        clearAgentGhConfigDir();
+        expect(buildQueryEnv(makeLease('slot-a', 'T', 'cct')).env.GITHUB_TOKEN).toBe('ghs_fixturetoken');
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qenv-gh-'));
+        await writeAgentGhHosts(dir, 'ghs_fixturetoken');
+        const { env } = buildQueryEnv(makeLease('slot-a', 'T', 'cct'));
+        expect(env.GITHUB_TOKEN).toBeUndefined();
+        expect(env.GH_CONFIG_DIR).toBe(fs.realpathSync(dir) === dir ? dir : path.resolve(dir));
+      } finally {
+        clearAgentGhConfigDir();
+        if (savedToken === undefined) delete process.env.GITHUB_TOKEN;
+        else process.env.GITHUB_TOKEN = savedToken;
+      }
+    });
+
+    it("the operator's claude.env still adds what an agent's tools need", () => {
+      setQueryEnvAdditional({ SOME_TOOL_SETTING: 'on' });
+      const { env } = buildQueryEnv(makeLease('slot-a', 'LEASE-TOKEN', 'cct'));
+      expect(env.SOME_TOOL_SETTING).toBe('on');
+    });
   });
 
   it('returns independent env objects for separate leases (concurrent isolation)', () => {
@@ -128,12 +217,13 @@ describe('buildQueryEnv', () => {
   // ===== claude.env / setQueryEnvAdditional =====
 
   it('overlays setQueryEnvAdditional values on top of process.env', () => {
-    setQueryEnvAdditional({ FOO: 'bar', __QENV_BUILDER_FIXTURE__: 'overridden' });
+    setQueryEnvAdditional({ FOO: 'bar', __QENV_BUILDER_FIXTURE__: 'overridden', LANG: 'C' });
     const lease = makeLease('slot-a', 'TOKEN-A', 'cct');
     const { env } = buildQueryEnv(lease);
     expect(env.FOO).toBe('bar');
-    // Operator override wins over the inherited process.env value.
+    // Operator intent wins: a name the bot does not pass on, and one it does.
     expect(env.__QENV_BUILDER_FIXTURE__).toBe('overridden');
+    expect(env.LANG).toBe('C');
     // process.env itself remains untouched.
     expect(process.env.FOO).toBeUndefined();
     expect(process.env.__QENV_BUILDER_FIXTURE__).toBe('keep-me');

@@ -207,3 +207,32 @@ describe('redactAnthropicSecrets backward compatibility', () => {
     expect(S(redactAnthropicSecrets('xoxb-1-2-aaaabbbbcccc'))).toBe(S(redactSecrets('xoxb-1-2-aaaabbbbcccc')));
   });
 });
+
+describe('redactSecrets — PEM private keys', () => {
+  // Assembled at load time: a complete PEM header in a source blob reads as a leaked key to every scanner.
+  const dashes = '-'.repeat(5);
+  const pem = (label: string, body: string) =>
+    `${dashes}BEGIN ${label}${dashes}\n${body}\n${dashes}END ${label}${dashes}`;
+  const KEY = pem('RSA PRIVATE KEY', 'MIIEowIBAAKCAQEAfixturefixture\nfixtureLine2fixtureLine2');
+
+  it('redacts a whole key block, header to footer', () => {
+    const out = S(redactSecrets(`before ${KEY} after`));
+    expect(out).toBe('before [REDACTED private key] after');
+  });
+
+  it('redacts a key whose line breaks are escaped, as in an environment dump in JSON', () => {
+    const escaped = KEY.replace(/\n/g, '\\n');
+    const out = S(redactSecrets({ env: { GITHUB_PRIVATE_KEY: escaped } }) as never);
+    expect(JSON.stringify(out)).not.toContain('fixturefixture');
+  });
+
+  it('redacts a header whose footer was cut off', () => {
+    const out = S(redactSecrets(`${dashes}BEGIN PRIVATE KEY${dashes}\nMIIEvQIBADANfixture`));
+    expect(out).not.toContain('MIIEvQIBADANfixture');
+  });
+
+  it('leaves a public key alone', () => {
+    const pub = pem('PUBLIC KEY', 'MIIBIjANpublicfixture');
+    expect(S(redactSecrets(pub))).toBe(pub);
+  });
+});

@@ -37,7 +37,7 @@ import {
   handleClaudeStderrChunk,
   resolveShowSummary,
 } from '../../claude-handler';
-import { getSandboxAllowUnavailable, getSandboxOffAllowed } from '../../config';
+import { getSandboxAllowUnavailable } from '../../config';
 import { CONFIG_FILE, DATA_DIR, PLUGINS_DIR, SECRETS_DIR } from '../../env-paths';
 import {
   checkEnvironmentToolAccess,
@@ -48,7 +48,7 @@ import {
   envSkillRegistry,
   envSkillSandboxDenyRead,
 } from '../../env-skill-registry';
-import { isEnvironmentUser, loadEnvironments } from '../../env-users';
+import { loadEnvironments } from '../../env-users';
 import type { IncidentEvidence, IncidentEvidenceConfig } from '../../incident/evidence';
 import { assertIncidentRequest, buildIncidentSdkOptions, type IncidentRequestLike } from '../../incident/sdk-options';
 import { mailboxEnvFor } from '../../mailbox/session-address';
@@ -60,16 +60,17 @@ import { isSafePathSegment, normalizeTmpPath } from '../../path-utils';
 import type { SdkPluginPath } from '../../plugin/types';
 import { getProjectMemoryStore, projectMemoryPromptBlock } from '../../project-memory-store';
 import {
+  ADMIN_ALL_DOMAINS_RULE,
   adminSandboxProfile,
   credentialPaths,
   credentialReadDenyRules,
-  isSandboxOffInEffect,
   protectedWriteDenyRules,
 } from '../../sandbox/admin-sandbox-profile';
 import { extendSandboxWithGrant, loadDeploySandboxGrant } from '../../sandbox/deploy-sandbox-grant';
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
 import { launchAllFrom, mcpLaunchDir, wrapPluginLaunchers } from '../../sandbox/mcp-launch-dir';
 import { projectConfigRoot } from '../../sandbox/project-config-root';
+import { sandboxOffFor } from '../../sandbox/sandbox-state';
 import {
   ensureClaudeTmpDir,
   tenantReadBoundary,
@@ -400,34 +401,24 @@ export async function buildStreamOptions(
   // the admin profile.
   const contextIsAdmin = contextUser ? isAdminUser(contextUser) : false;
   const sandboxOffRequested = contextUser ? userSettingsStore.getUserSandboxDisabled(contextUser) : false;
-  const sandboxDisabled = isSandboxOffInEffect({
-    isAdmin: contextIsAdmin,
-    requested: sandboxOffRequested,
-    hostAllows: getSandboxOffAllowed(),
-    // An environment user (`env:<name>`) runs without a sandbox on every host — the deploy and QA work an admin
-    // approved for another user. Its skills, crons and requests are gated before its session starts.
-    environmentUser: contextUser ? isEnvironmentUser(contextUser) : false,
-  });
+  const sandboxDisabled = contextUser ? sandboxOffFor(contextUser) : false;
   if (sandboxOffRequested && !sandboxDisabled) {
     logger.warn('Sandbox off is not allowed on this host (SOMA_SANDBOX_OFF_ALLOWED): running sandboxed', {
       user: contextUser,
     });
   }
-  // Admin profile (env-access WU2, #1210): every domain, gh's TLS check, local servers and the temp
-  // directory. The write protection added to every session still holds.
-  const adminProfile =
-    contextIsAdmin && !sandboxDisabled ? adminSandboxProfile({ home: os.homedir(), tmpdir: realTmpdir() }) : undefined;
+  // Admin profile (env-access WU2, #1210): every domain, gh's TLS check and local servers. Its temp directory is its
+  // own, like every sandboxed session's (the read boundary below) — not the bot's. The write protection added to
+  // every session still holds.
+  const adminProfile = contextIsAdmin && !sandboxDisabled ? adminSandboxProfile() : undefined;
+  const networkDisabled = contextUser ? userSettingsStore.getUserNetworkDisabled(contextUser) : false;
   const sandboxUserDir =
     contextUser && isSafePathSegment(contextUser) ? normalizeTmpPath(path.join('/tmp', contextUser)) : undefined;
   // An admin's native writes are held to the same roots as its sandboxed Bash, the temp directory
   // included (env-access WU2, #1210): a native Write anywhere else could replace a binary the bot runs.
   const nativeWriteRoots: readonly string[] | undefined = sandboxDisabled
     ? undefined
-    : [
-        ...(workingDirectory ? [workingDirectory] : []),
-        ...(sandboxUserDir ? [sandboxUserDir] : []),
-        ...(adminProfile ? adminProfile.allowWrite : []),
-      ];
+    : [...(workingDirectory ? [workingDirectory] : []), ...(sandboxUserDir ? [sandboxUserDir] : [])];
 
   // PreToolUse hooks — for every turn that has a context (D3).
   if (execCtx && mcpConfig) {
@@ -836,8 +827,8 @@ export async function buildStreamOptions(
   // Sandbox: enabled by default for all users. Only admin-toggled
   // `sandboxDisabled` (resolved above, with the write roots) skips it. When
   // sandbox is active, a dev-domain allowlist (`DEV_DOMAIN_ALLOWLIST`) is
-  // applied to the network unless the user has set `networkDisabled=true`, in
-  // which case every outbound domain is blocked by the SDK default.
+  // applied to the network, strictly, unless the user turned the allowlist off
+  // (`networkDisabled=true`): then every domain is allowed. Admins: every domain.
   //
   // Applies from the NEXT user turn \u2014 SDK sandbox config is captured at
   // `query()` init and OS-enforced (Seatbelt on macOS, bubblewrap on
@@ -870,18 +861,19 @@ export async function buildStreamOptions(
       sandboxConfig.filesystem.allowWrite = [sandboxUserDir];
     }
     if (adminProfile) {
-      sandboxConfig.filesystem.allowWrite = [
-        ...(sandboxConfig.filesystem.allowWrite ?? []),
-        ...adminProfile.allowWrite,
-      ];
       sandboxConfig.enableWeakerNetworkIsolation = adminProfile.enableWeakerNetworkIsolation;
     }
-    const networkDisabled = contextUser ? userSettingsStore.getUserNetworkDisabled(contextUser) : false;
     if (adminProfile) {
       // Every domain is allowed by the rule added to `settings.permissions.allow` below.
       sandboxConfig.network = { ...adminProfile.network, allowedDomains: [...adminProfile.network.allowedDomains] };
-    } else if (!networkDisabled) {
+    } else if (networkDisabled) {
+      // The allowlist turned off (`sandbox network off`): every domain, by the same rule — what the setting promises
+      // everywhere it is shown. Without network settings the CLI would ask per domain instead.
       sandboxConfig.network = { allowedDomains: [...DEV_DOMAIN_ALLOWLIST] };
+    } else {
+      // A domain off the allowlist is refused, not asked for: in bypass mode the CLI grants every ask, so an
+      // allowlist that asks held nothing (measured).
+      sandboxConfig.network = { allowedDomains: [...DEV_DOMAIN_ALLOWLIST], strictAllowlist: true };
     }
     // Deploy-workflow grant (`config.json#deploySandbox`, written per runner
     // by the fleet deploy): post-deploy QA, run in the requester's deploy
@@ -949,7 +941,9 @@ export async function buildStreamOptions(
         }),
       ),
     ];
-    const allow = [...(base.permissions?.allow ?? []), ...(adminProfile?.allowRules ?? [])];
+    // Every domain: an admin's sandbox, or one whose user turned the allowlist off.
+    const allDomains = adminProfile || (!sandboxDisabled && networkDisabled);
+    const allow = [...(base.permissions?.allow ?? []), ...(allDomains ? [ADMIN_ALL_DOMAINS_RULE] : [])];
     options.settings = {
       ...base,
       // Plan mode writes its plan file with the native Write tool, by default under the CLI's config
@@ -1085,7 +1079,6 @@ export async function buildStreamOptions(
   const writeRoots = [
     ...(workingDirectory ? [workingDirectory] : []),
     ...(sandboxUserDir ? [sandboxUserDir] : []),
-    ...(adminProfile ? adminProfile.allowWrite : []),
     ...(options.sandbox?.filesystem?.allowWrite ?? []),
   ];
   options.projectConfigRoot = projectConfigRoot(DATA_DIR, writeRoots);
@@ -1106,9 +1099,10 @@ export async function buildStreamOptions(
     options.plugins = launchers.plugins;
   }
 
-  // Reads: a non-admin session reads its own work area and the code it runs, nothing else of the host
-  // (`src/sandbox/tenant-read-boundary.ts`). Last, once the plugins and the write roots are final.
-  if (!sandboxDisabled && options.sandbox && contextUser && sandboxUserDir && !isAdminUser(contextUser)) {
+  // Reads: a sandboxed session — an admin's too — reads its own work area and the code it runs, nothing else of the
+  // host (`src/sandbox/tenant-read-boundary.ts`). Last, once the plugins and the write roots are final. An admin who
+  // needs the host turns the sandbox off, on a host that allows it.
+  if (!sandboxDisabled && options.sandbox && contextUser && sandboxUserDir) {
     const envRegistry = deps.getEnvSkillRegistry?.() ?? envSkillRegistry(undefined, PLUGINS_DIR, CONFIG_FILE);
     const scope = slackContext
       ? { channel: slackContext.channel, threadTs: slackContext.threadTs }
@@ -1128,7 +1122,7 @@ export async function buildStreamOptions(
       logger,
     );
   }
-  if (contextUser && !isAdminUser(contextUser)) {
+  if (contextUser && !sandboxDisabled) {
     addUploadRoots(options, [workingDirectory, options.env?.CLAUDE_CODE_TMPDIR]);
   }
 

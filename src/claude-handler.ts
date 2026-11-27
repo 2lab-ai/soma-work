@@ -38,6 +38,7 @@ import {
   type EnvSkillDenial,
   type SecretUseDenial,
 } from './agent-runtime/claude-code/build-stream-options';
+import { loggableOptions } from './agent-runtime/claude-code/loggable-options';
 import { ExecutionContextMissingError } from './agent-runtime/execution-context';
 import { pumpFrames } from './agent-runtime/frame-pump';
 import { permissionAdviceBoard, resolvePermissionAdvice } from './agent-runtime/policy/permission-advice';
@@ -1912,7 +1913,8 @@ export class ClaudeHandler implements TurnSteeringPort {
           allowedTools: options.allowedTools,
         });
       } else {
-        this.logger.debug('Claude query options', options);
+        // Variable and header names only: the values are the agent's credentials (`loggable-options.ts`).
+        this.logger.debug('Claude query options', loggableOptions(options));
       }
 
       // Minted per turn: the CLI echoes it as `user_message_uuid` on the result

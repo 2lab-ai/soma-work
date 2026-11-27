@@ -97,6 +97,73 @@ export function getQueryEnvAdditional(): Record<string, string> {
   return { ..._additionalEnv };
 }
 
+/**
+ * What of the bot's own environment an agent inherits: the OS session, the locale, the TLS and proxy setup, and
+ * soma-work's non-secret locations (its config directory, the CLI's, the data directory, the hook port, log knobs).
+ *
+ * Nothing else. The bot's environment also holds its `.env` — the Slack app's tokens and signing secret, the GitHub
+ * App's private key, the subscription tokens, the dashboard's signing key — and an agent's shell, its hooks and its
+ * stdio MCP servers all inherit `options.env` whole: a copy of `process.env` handed every one of them to the model.
+ * The servers soma-work starts get what they need in their own `env` (`mcp-config-builder.ts`). A variable an agent's
+ * tools need and this list lacks belongs in `config.json#claude.env` (layer 2), where the operator names it.
+ */
+const INHERITED_ENV_NAMES: ReadonlySet<string> = new Set([
+  // The OS session.
+  'PATH',
+  'HOME',
+  'USER',
+  'LOGNAME',
+  'SHELL',
+  'TMPDIR',
+  'TZ',
+  'LANG',
+  'TERM',
+  'COLORTERM',
+  '__CF_USER_TEXT_ENCODING',
+  // How the host reaches the network and checks certificates.
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+  'NODE_EXTRA_CA_CERTS',
+  'REQUESTS_CA_BUNDLE',
+  'CURL_CA_BUNDLE',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'NO_PROXY',
+  'ALL_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'no_proxy',
+  'all_proxy',
+  // soma-work's locations: its config directory (the MCP servers resolve their files from it), the CLI's, the data
+  // directory, and the port the hook proxy posts to.
+  'SOMA_CONFIG_DIR',
+  'CLAUDE_CONFIG_DIR',
+  'DATA_DIR',
+  'CONVERSATION_VIEWER_PORT',
+  'SOMA_HOOK_PORT',
+  'HOOKS_PROXY_ENABLED',
+  // The MCP servers' log level.
+  'DEBUG',
+  'LOG_LEVEL',
+  'LOG_CATEGORIES',
+  'LOG_MUTE',
+]);
+
+/** `LC_*` locale categories. */
+const INHERITED_ENV_PREFIXES: readonly string[] = ['LC_'];
+
+/** The part of `source` (the bot's environment) an agent inherits: {@link INHERITED_ENV_NAMES}. */
+export function inheritedAgentEnv(source: NodeJS.ProcessEnv): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (typeof value !== 'string') continue;
+    if (INHERITED_ENV_NAMES.has(key) || INHERITED_ENV_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+      env[key] = value;
+    }
+  }
+  return env;
+}
+
 /** Provider selectors recognized by the pinned SDK; llmux owns routing instead. */
 const LLMUX_COMPETING_ENV_KEYS = [
   'CLAUDE_CODE_OAUTH_TOKEN',
@@ -140,7 +207,8 @@ function isolateLlmuxAuth(env: Record<string, string>): void {
  *   per-spawn env map, scoped to a single `query()` invocation.
  *
  * Layering (last write wins):
- *   1. Shallow copy of `process.env` (PATH, HOME, NODE_ENV, etc.).
+ *   1. The allow-listed part of `process.env` ({@link inheritedAgentEnv}: PATH, HOME, the locale, config
+ *      locations …) — never the bot's `.env` secrets, which the agent's shell would otherwise inherit.
  *   2. Operator-controlled additional env from `config.json#claude.env`,
  *      installed via {@link setQueryEnvAdditional}. Operator intent overrides
  *      the inherited shell environment.
@@ -171,32 +239,32 @@ function isolateLlmuxAuth(env: Record<string, string>): void {
  *   - In llmux mode, the `LLMUX_COMPETING_ENV_KEYS` credentials/provider
  *     selectors are removed after both layers, and `authorization` /
  *     `x-api-key` lines are filtered out of `ANTHROPIC_CUSTOM_HEADERS`.
- *   - All other `process.env` variables are copied through, then the
- *     operator-controlled additional env overlays them.
+ *   - No other `process.env` variable is copied: the operator-controlled
+ *     additional env is the only way to hand an agent another one.
  *
  * Non-goals for this module (tracked in #575 PR-2 / v2.1):
  *   - `api_key` lease kind + `ANTHROPIC_API_KEY` env var.
  *   - `CLAUDE_CONFIG_DIR` credential-directory isolation.
  */
 export function buildQueryEnv(lease: SlotAuthLease, opts?: QueryEnvOptions): QueryEnvResult {
-  // Shallow-copy process.env into a plain record. process.env is a proxy
-  // whose enumerable string values are what Node forwards to subprocesses,
-  // so copying owned string entries is both correct and explicit.
-  const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (typeof value === 'string') env[key] = value;
-  }
+  // Layer 1 — the part of the bot's environment an agent may have (never its secrets): a fresh record, so the
+  // caller's map and process.env stay apart.
+  const env = inheritedAgentEnv(process.env);
 
   // Layer 1b — the GitHub CLI credential (#834). This env is a copy taken once per turn, and the App installation token
   // lives an hour: a `gh` reading GITHUB_TOKEN from the copy fails with 401 once it expires (git does not — it re-reads
   // its config, which every refresh rewrites). While a bot-owned hosts.yml holds the live token, agent shells get its
   // dir instead of the frozen token — gh re-reads hosts.yml on every call. The operator's claude.env (layer 2) still
-  // wins. Without one (a PAT setup), the env passes through.
+  // wins. Without one (a PAT setup, or a hosts.yml that could not be written), the bot's own GitHub token is passed
+  // on: git and gh run as the bot on purpose — the one secret of the bot an agent is meant to use.
   const ghConfigDir = getAgentGhConfigDir();
   if (ghConfigDir) {
     env.GH_CONFIG_DIR = ghConfigDir;
-    delete env.GITHUB_TOKEN;
-    delete env.GH_TOKEN;
+  } else {
+    for (const key of ['GITHUB_TOKEN', 'GH_TOKEN'] as const) {
+      const value = process.env[key];
+      if (typeof value === 'string') env[key] = value;
+    }
   }
 
   // Layer 2 — operator-controlled additional env. Already validated +

@@ -11,7 +11,7 @@ vi.mock('../../config', () => ({
 }));
 
 import { resetAuthRuntimeForTests } from '../auth-runtime';
-import { buildQueryEnv } from '../query-env-builder';
+import { buildQueryEnv, setQueryEnvAdditional } from '../query-env-builder';
 
 it.each([
   'bearer',
@@ -74,12 +74,13 @@ it.each([
     // OAuth alone is a compatibility case; an empty bearer token also creates an auth header.
     vi.stubEnv('CLAUDE_CODE_OAUTH_TOKEN', source === 'oauth' ? 'fixture-unrelated-oauth' : undefined);
     vi.stubEnv('ANTHROPIC_AUTH_TOKEN', source === 'bearer' ? 'fixture-unrelated-bearer' : undefined);
-    vi.stubEnv(
-      'ANTHROPIC_CUSTOM_HEADERS',
-      source === 'custom-header'
-        ? 'x-api-key: fixture-wrong-tenant\nAuthorization: Bearer fixture-header-bearer\nX-Fixture-Trace: retained'
-        : 'X-Fixture-Trace: retained',
-    );
+    // Custom headers reach an agent only from the operator's claude.env: the bot's own environment is not passed on.
+    setQueryEnvAdditional({
+      ANTHROPIC_CUSTOM_HEADERS:
+        source === 'custom-header'
+          ? 'x-api-key: fixture-wrong-tenant\nAuthorization: Bearer fixture-header-bearer\nX-Fixture-Trace: retained'
+          : 'X-Fixture-Trace: retained',
+    });
     const { env } = buildQueryEnv(
       { keyId: 'llmux', accessToken: 'unused', kind: 'api_key', release: async () => {}, heartbeat: async () => {} },
       { llmuxTenant: { baseUrl, secret: 'lmk-fixture-tenant' } },
@@ -125,6 +126,7 @@ it.each([
       await new Promise<void>((resolve) => fixture.close(() => resolve()));
     }
     vi.unstubAllEnvs();
+    setQueryEnvAdditional({});
     resetAuthRuntimeForTests();
     if (dir) fs.rmSync(dir, { recursive: true, force: true });
   }

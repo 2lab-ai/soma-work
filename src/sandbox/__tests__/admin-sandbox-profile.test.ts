@@ -18,10 +18,9 @@ import {
 import { DEV_DOMAIN_ALLOWLIST } from '../dev-domain-allowlist';
 
 const HOME = '/Users/owner';
-const TMP = '/private/var/folders/xy/T';
 
 describe('adminSandboxProfile', () => {
-  const profile = adminSandboxProfile({ home: HOME, tmpdir: TMP });
+  const profile = adminSandboxProfile();
 
   it('opens the network: every domain, the dev list, localhost, local binding, gh TLS through trustd', () => {
     expect(profile.allowRules).toEqual([ADMIN_ALL_DOMAINS_RULE]);
@@ -32,9 +31,10 @@ describe('adminSandboxProfile', () => {
     expect(profile.enableWeakerNetworkIsolation).toBe(true);
   });
 
-  it('writes the temp directory only: no home cache the bot also runs code from (astra R1)', () => {
-    // The npm cache holds the MCP servers the bot launches with `npx -y`, outside every sandbox.
-    expect(profile.allowWrite).toEqual([TMP]);
+  it('opens no file: no home cache the bot runs code from (astra R1), not the temp directory the bot keeps files in', () => {
+    // The npm cache holds the MCP servers the bot launches with `npx -y`, outside every sandbox; the admin's own
+    // temp directory comes with the read boundary, as anyone's does.
+    expect(Object.keys(profile).sort()).toEqual(['allowRules', 'enableWeakerNetworkIsolation', 'network']);
   });
 });
 

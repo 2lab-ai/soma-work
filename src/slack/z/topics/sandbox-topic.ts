@@ -34,7 +34,7 @@ export async function renderSandboxCard(args: { userId: string; issuedAt: number
     : offRequested && admin
       ? '• Sandbox: `ON` — off was requested, but this host runs admins in the admin sandbox (`SOMA_SANDBOX_OFF_ALLOWED` is not set)'
       : admin
-        ? '• Sandbox: `ON` — admin sandbox: every domain, gh, local servers and caches; secrets, approval records and the deployment stay blocked'
+        ? '• Sandbox: `ON` — admin sandbox: every domain, gh and local servers; it reads and writes only your work area (session folder, `/tmp/<your id>`, your data) and the code it runs'
         : '• Sandbox: `ON` — bash runs in an isolated environment';
 
   let networkLine: string;
@@ -44,11 +44,11 @@ export async function renderSandboxCard(args: { userId: string; issuedAt: number
   } else if (networkDisabled) {
     networkLine = sandboxDisabled
       ? '• Network allowlist: `OFF` _(stored; inactive while sandbox is OFF)_'
-      : '• Network allowlist: `OFF` — outbound traffic is not restricted to the dev allowlist';
+      : '• Network allowlist: `OFF` — sandboxed commands may reach every domain';
   } else {
     networkLine = sandboxDisabled
       ? '• Network allowlist: `ON` _(stored; inactive while sandbox is OFF)_'
-      : `• Network allowlist: \`ON\` — outbound restricted to ${DEV_DOMAIN_ALLOWLIST.length} preset dev domains`;
+      : `• Network allowlist: \`ON\` — outbound restricted to ${DEV_DOMAIN_ALLOWLIST.length} preset dev domains; others are refused`;
   }
 
   const currentDescription = [sandboxLine, networkLine].join('\n');
@@ -120,7 +120,7 @@ export async function applySandbox(args: { userId: string; value: string }): Pro
         ok: false,
         summary: '🛡️ Sandbox stays ON — 이 호스트는 sandbox off를 허용하지 않습니다 (`SOMA_SANDBOX_OFF_ALLOWED`).',
         description:
-          '어드민은 어드민 샌드박스에서 실행됩니다(모든 도메인·gh·로컬 서버 사용 가능, 비밀 저장소·승인 기록·배포 디렉터리는 막힘). 홈의 패키지 캐시는 읽기 전용이니 설치 명령에 임시 디렉터리 캐시를 직접 지정하세요(`npm install --cache /tmp/<유저 ID>/npm` 또는 그 도구의 캐시 옵션). 끄기는 호스트 운영자가 `.env`에서만 허용합니다.',
+          '어드민은 어드민 샌드박스에서 실행됩니다(모든 도메인·gh·로컬 서버 사용 가능, 읽기·쓰기는 내 작업 영역(세션 폴더·`/tmp/<유저 ID>`·내 데이터)과 실행 코드만). 홈의 패키지 캐시는 읽기 전용이니 설치 명령에 임시 디렉터리 캐시를 직접 지정하세요(`npm install --cache /tmp/<유저 ID>/npm` 또는 그 도구의 캐시 옵션). 끄기는 호스트 운영자가 `.env`에서만 허용합니다.',
       };
     }
     userSettingsStore.setUserSandboxDisabled(userId, disable);
