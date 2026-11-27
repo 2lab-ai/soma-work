@@ -501,14 +501,20 @@ describe('laneData — the CRON plan as the element’s lane', () => {
       status: 'unknown',
       label: '대기열에 넣음 (세션 사용 중 — 이후 실행 결과는 기록 없음)',
     });
+    // A DM or a thread reply is recorded once the post went out: its result is known — it was sent (sw-webui fix,
+    // 2026-11-27: these drew as empty '결과 미확인' boxes while the lane's 24-hour counts called them successes).
     expect(cronRunAsAq(run(M, { executionPath: 'dm' }))).toMatchObject({
-      status: 'unknown',
+      status: 'ok',
       label: 'DM 전송 (세션 없음)',
     });
     expect(cronRunAsAq(run(M, { executionPath: 'thread_reply' }))).toMatchObject({
-      status: 'unknown',
+      status: 'ok',
       label: '스레드 답글 (세션 없음)',
     });
+    // A post that did not go out is a failure like any other.
+    expect(
+      cronRunAsAq(run(M, { executionPath: 'thread_reply', status: 'failed', error: 'channel_not_found' })),
+    ).toEqual({ at: NOWC - M, status: 'failed', label: '실패', error: 'channel_not_found' });
     const unrecorded = cronRunAsAq({
       executedAt: NOWC - M,
       status: 'unrecorded',
@@ -540,6 +546,20 @@ describe('laneData — the CRON plan as the element’s lane', () => {
   });
 
   // #554 review P3: the host must not window runs24h again — the element does, and its ≥ needs every record.
+  it('the strip and the 24-hour counts read a recorded run the same way (a DM or a thread reply too)', () => {
+    const f = laneFns();
+    const paths = ['new_thread', 'idle_inject', 'dm', 'thread_reply'];
+    const recorded = paths.flatMap((p, i) => [
+      run((i + 1) * M, { executionPath: p }),
+      run((i + 1) * M + 1, { executionPath: p, status: 'failed', error: 'x' }),
+    ]);
+    const plan = f.planCronLane(empty, [job('job-mix', 'mix', 10 * M, recorded, { historyCap: 20 })], null);
+    const strip = f.laneData(plan).lane.jobs[0].runs.map((r: any) => [r.at, r.status]);
+    const counts = f.cronDayRuns(plan).map((r: any) => [r.at, r.status]);
+    expect(strip.sort()).toEqual(counts.sort());
+    expect(strip.every(([, st]: [number, string]) => st !== 'unknown')).toBe(true);
+  });
+
   it('cronDayRuns passes every record, older than 24 hours too: the element applies the window', () => {
     const f = laneFns();
     const old = [job('job-old', 'weekly-report', 30 * M, [run(10 * M), run(3 * 24 * HR), run(30 * 24 * HR)])];

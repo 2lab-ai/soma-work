@@ -234,10 +234,18 @@ describe('T5 — run glyphs and schedule label', () => {
       glyph: 'alert',
       tone: 'wait',
     });
+    // A sent DM or thread reply is a known result: the post went out (sw-webui fix, 2026-11-27).
     expect(fns.cronRunGlyph({ status: 'success', executionPath: 'dm' })).toMatchObject({
-      glyph: 'circle-dashed',
-      tone: '',
+      glyph: 'check',
+      tone: 'done',
+      label: 'DM 전송 (세션 없음)',
     });
+    expect(fns.cronRunGlyph({ status: 'success', executionPath: 'thread_reply' })).toMatchObject({
+      glyph: 'check',
+      tone: 'done',
+      label: '스레드 답글 (세션 없음)',
+    });
+    expect(fns.cronRunGlyph({ status: 'failed', executionPath: 'dm' })).toMatchObject({ glyph: 'cross', tone: 'fail' });
     // A board card no history record backs is never shown as a success.
     expect(fns.cronRunGlyph({ status: 'unrecorded', session: { activityState: 'idle', live: true } })).toMatchObject({
       glyph: 'circle-dashed',
