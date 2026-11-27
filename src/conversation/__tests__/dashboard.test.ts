@@ -1105,6 +1105,137 @@ describe('Dashboard API', () => {
     expect(bodyNaN.turns).toHaveLength(30);
   });
 
+  // 보낸 지시 (SSOT 2026-11-27): a row of the list moves 대화 to its instruction — the page loads every turn from the
+  // oldest it holds back to that one in one answer (`through`), so the chat stays one unbroken run of turns.
+  it('pagination: through=<turnId> extends a before page back to that turn (inclusive), past the limit', async () => {
+    const { getConversation } = await import('../recorder');
+    (getConversation as any).mockResolvedValueOnce(makePaginatedConv('conv-pg-through', 300));
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/session/conv-pg-through?limit=30&before=t271&through=t3',
+      headers: AUTH_HEADER,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.turns).toHaveLength(268); // t3..t270
+    expect(body.turns[0].id).toBe('t3');
+    expect(body.turns[267].id).toBe('t270');
+    expect(body.hasMore).toBe(true); // t1, t2 remain
+    expect(body.through).toBe('reached');
+
+    // A target inside the page changes nothing; one newer than the cursor or unknown is ignored.
+    for (const [through, state] of [
+      ['t265', 'reached'],
+      ['t290', 'none'],
+      ['t999', 'none'],
+    ]) {
+      (getConversation as any).mockResolvedValueOnce(makePaginatedConv('conv-pg-through', 300));
+      const r = await injectWebServer({
+        method: 'GET',
+        url: `/api/dashboard/session/conv-pg-through?limit=30&before=t271&through=${through}`,
+        headers: AUTH_HEADER,
+      });
+      const b = JSON.parse(r.body);
+      expect({ through, first: b.turns[0].id, n: b.turns.length, state: b.through }).toEqual({
+        through,
+        first: 't241',
+        n: 30,
+        state,
+      });
+    }
+
+    // Without a cursor: the latest page reaches back to the target.
+    (getConversation as any).mockResolvedValueOnce(makePaginatedConv('conv-pg-through', 300));
+    const latest = JSON.parse(
+      (
+        await injectWebServer({
+          method: 'GET',
+          url: '/api/dashboard/session/conv-pg-through?limit=30&through=t1',
+          headers: AUTH_HEADER,
+        })
+      ).body,
+    );
+    expect(latest.turns).toHaveLength(300);
+    expect(latest.hasMore).toBe(false);
+  });
+
+  it('pagination: one through answer holds at most 1000 turns — the page asks again for the rest', async () => {
+    const { getConversation } = await import('../recorder');
+    (getConversation as any).mockResolvedValueOnce(makePaginatedConv('conv-pg-through-cap', 1500));
+    const body = JSON.parse(
+      (
+        await injectWebServer({
+          method: 'GET',
+          url: '/api/dashboard/session/conv-pg-through-cap?limit=30&before=t1401&through=t1',
+          headers: AUTH_HEADER,
+        })
+      ).body,
+    );
+    expect(body.turns).toHaveLength(1000);
+    expect(body.turns[0].id).toBe('t401');
+    expect(body.hasMore).toBe(true);
+    expect(body.through).toBe('capped'); // the page asks again before t401
+  });
+
+  it('보낸 지시: GET …/instructions lists the people’s instructions — numbered from the first, a page at a time', async () => {
+    const { getConversation } = await import('../recorder');
+    const conv = {
+      ...makePaginatedConv('conv-ih', 0),
+      turns: [
+        { id: 'u1', role: 'user', timestamp: 1, userName: 'Z', rawContent: '첫 지시', origin: { by: 'user' } },
+        { id: 'a1', role: 'assistant', timestamp: 2, rawContent: '' },
+        { id: 's1', role: 'user', timestamp: 3, rawContent: '[cron:daily] report', origin: { by: 'system' } },
+        { id: 'u2', role: 'user', timestamp: 4, userName: 'Kim', rawContent: '두 번째', origin: { by: 'user' } },
+        { id: 'u3', role: 'user', timestamp: 5, userName: 'Z', rawContent: '되돌린 지시', rewoundAt: 9 },
+        { id: 'u4', role: 'user', timestamp: 6, userName: 'Z', rawContent: '세 번째' },
+      ],
+    };
+    (getConversation as any).mockResolvedValueOnce(conv);
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/session/conv-ih/instructions',
+      headers: AUTH_HEADER,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['cache-control']).toBe('no-store');
+    expect(res.json()).toEqual({
+      total: 3,
+      offset: 0,
+      nextOffset: null,
+      order: 'asc',
+      lastId: 'u4',
+      items: [
+        { id: 'u1', n: 1, at: 1, userName: 'Z', text: '첫 지시' },
+        { id: 'u2', n: 2, at: 4, userName: 'Kim', text: '두 번째' },
+        { id: 'u4', n: 3, at: 6, userName: 'Z', text: '세 번째' },
+      ],
+    });
+
+    (getConversation as any).mockResolvedValueOnce(conv);
+    const desc = await injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/session/conv-ih/instructions?order=desc&limit=2',
+      headers: AUTH_HEADER,
+    });
+    expect(desc.json()).toMatchObject({
+      total: 3,
+      nextOffset: 2,
+      order: 'desc',
+      items: [
+        { id: 'u4', n: 3 },
+        { id: 'u2', n: 2 },
+      ],
+    });
+
+    (getConversation as any).mockResolvedValueOnce(null);
+    const gone = await injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/session/conv-x/instructions',
+      headers: AUTH_HEADER,
+    });
+    expect(gone.statusCode).toBe(404);
+  });
+
   // ── Inline JS escaping regression (PR #280) ──
 
   it('should render syntactically valid inline JavaScript', async () => {

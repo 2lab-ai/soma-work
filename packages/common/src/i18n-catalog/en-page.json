@@ -2133,5 +2133,17 @@
   "<table class=\"tq-hist\"><thead><tr><th>항목</th><th>작업</th><th>키</th><th>줄 선 시각</th><th>진행</th><th>끝</th></tr></thead><tbody>": "<table class=\"tq-hist\"><thead><tr><th>Entry</th><th>Task</th><th>Keys</th><th>Lined up</th><th>Ran</th><th>End</th></tr></thead><tbody>",
   "<div class=\"notice\">아직 쓰인 레인이 없습니다.</div>": "<div class=\"notice\">No lane has been used yet.</div>",
   "<div class=\"notice is-error\" role=\"alert\">레인 큐를 불러오지 못했습니다 (HTTP ": "<div class=\"notice is-error\" role=\"alert\">Could not load the lanes (HTTP ",
-  "<div class=\"notice is-error\" role=\"alert\">레인 큐를 불러오지 못했습니다. 다시 시도하세요.</div>": "<div class=\"notice is-error\" role=\"alert\">Could not load the lanes. Try again.</div>"
+  "<div class=\"notice is-error\" role=\"alert\">레인 큐를 불러오지 못했습니다. 다시 시도하세요.</div>": "<div class=\"notice is-error\" role=\"alert\">Could not load the lanes. Try again.</div>",
+  "보낸 지시": "Sent instructions",
+  "보낸 지시 목록": "Sent instructions list",
+  "보낸 지시 {0}개 — 눌러서 목록 보기": "{0} sent instructions — press to list them",
+  "처음부터": "From the first",
+  "최근부터": "Newest first",
+  "더 보기": "Show more",
+  "보낸 지시가 없습니다": "No instructions sent yet",
+  "파일 {0}개": "{0} files",
+  "(스킬만 호출)": "(skills only)",
+  "목록을 불러오지 못했어요": "Could not load the list",
+  "대화를 불러오지 못했어요": "Could not load the chat",
+  "그 지시를 대화에서 찾지 못했어요": "Could not find that instruction in the chat"
 }

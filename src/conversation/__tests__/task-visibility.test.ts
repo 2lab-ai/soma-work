@@ -768,6 +768,7 @@ describe('task-visibility — board, live pushes and routes', () => {
       `/api/dashboard/session/conv-${id}/media`,
       `/api/dashboard/session/conv-${id}/artifacts`,
       `/api/dashboard/session/conv-${id}/worklog`,
+      `/api/dashboard/session/conv-${id}/instructions`,
       `/api/conversations/conv-${id}`,
       `/api/conversations/conv-${id}/turns/a1/raw`,
       `/conversations/conv-${id}`,

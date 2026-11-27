@@ -192,6 +192,8 @@ import {
   startPermissionPromptWatch,
   stopPermissionPromptWatch,
 } from './permission-prompts';
+import { registerInstructionHistoryRoute } from './instruction-history';
+import { INSTRUCTION_HISTORY_CLIENT_JS, INSTRUCTION_HISTORY_CSS } from './instruction-history-client';
 import { getConversation, resummarizeTurn } from './recorder';
 import { soundClientJs } from './sound-client';
 import { bootScreenCss, withBootScreen } from './boot-screen';
@@ -4907,10 +4909,13 @@ export async function registerDashboardRoutes(
   // Supports pagination via ?limit=N&before=<turnId>. Default limit=30, max=200.
   // - No `before`: returns the latest N turns (chronological order preserved).
   // - With `before`: returns up to N turns strictly BEFORE the turn with that id.
+  // - With `through=<turnId>` (보낸 지시, SSOT 2026-11-27): the window reaches back to that turn (inclusive), past the
+  //   limit, at most THROUGH_MAX turns — a row of the instruction list moves 대화 to its turn and the chat stays one
+  //   unbroken run of turns. A target inside the window, newer than it or unknown changes nothing.
   // Response includes `hasMore: true` when older turns exist beyond the returned window.
   server.get<{
     Params: { conversationId: string };
-    Querystring: { limit?: string; before?: string };
+    Querystring: { limit?: string; before?: string; through?: string };
   }>('/api/dashboard/session/:conversationId', { preHandler: [authMiddleware] }, async (request, reply) => {
     try {
       const record = await getConversation(request.params.conversationId);
@@ -4954,6 +4959,23 @@ export async function registerDashboardRoutes(
         endIdx = source.length;
         hasMore = startIdx > 0;
       }
+      // `through` says what it did: 'reached' (the target is in the window), 'capped' (it is further back than one
+      // answer holds — ask again before the new oldest), 'none' (unknown, or not behind the cursor: asking again
+      // will not find it).
+      const through = request.query.through;
+      let throughState: 'reached' | 'capped' | 'none' | undefined;
+      if (through) {
+        const THROUGH_MAX = 1000;
+        const throughIdx = endIdx > 0 ? source.findIndex((t) => t.id === through) : -1;
+        if (throughIdx < 0 || throughIdx >= endIdx) throughState = 'none';
+        else {
+          if (throughIdx < startIdx) {
+            startIdx = Math.max(throughIdx, endIdx - THROUGH_MAX);
+            hasMore = startIdx > 0;
+          }
+          throughState = throughIdx >= startIdx ? 'reached' : 'capped';
+        }
+      }
 
       // Lightweight turn summaries (no rawContent for assistant turns).
       const turns = source.slice(startIdx, endIdx).map((t) => ({
@@ -4995,12 +5017,16 @@ export async function registerDashboardRoutes(
         turnCount: record.turns.length,
         turns,
         hasMore,
+        through: throughState,
       });
     } catch (error) {
       logger.error('Error fetching session detail', error);
       reply.status(500).send({ error: 'Internal Server Error' });
     }
   });
+
+  // 보낸 지시 (SSOT 2026-11-27): the people's instructions of a session, counted and paged (instruction-history.ts).
+  registerInstructionHistoryRoute(server, authMiddleware);
 
   // Resummarize a specific assistant turn
   server.post<{ Params: { conversationId: string; turnId: string } }>(
@@ -8811,6 +8837,10 @@ ${CARD_FINISH_CSS}
 <style id="work-queue-css">
 ${WORK_QUEUE_CSS}
 </style>
+<!-- 보낸 지시 — the detail card's round button and its list (SSOT 2026-11-27, instruction-history-client.ts). -->
+<style id="instruction-history-css">
+${INSTRUCTION_HISTORY_CSS}
+</style>
 </head>
 <body data-view-mode="minimal" data-view-plan="1" data-detail="" data-tasks="list">
 <!-- boot-screen -->
@@ -9203,6 +9233,19 @@ ${WORK_QUEUE_CSS}
            child (#918, @2lab.ai/ui ≥ 0.36.0) — their own container, so the input is never morphed; pcFreshSteer
            carries it into a new card's composer. -->
       <div class="ui-tok pc-steer-wrap">
+        <!-- 보낸 지시 (SSOT 2026-11-27, instruction-history-client.ts): how many instructions people sent this session,
+             as a round button at the composer's top right (the queue's round button sits left of it); a press lists
+             them, numbered from the first, a page at a time, and a row moves 대화 to that instruction. -->
+        <button type="button" class="ih-dock" id="ih-dock" hidden aria-haspopup="dialog" aria-expanded="false" aria-controls="ih-pop" aria-label="보낸 지시" title="보낸 지시" onclick="ihToggle()"><span class="ih-dock-n" id="ih-dock-n">0</span></button>
+        <div class="ih-pop" id="ih-pop" role="dialog" aria-label="보낸 지시" tabindex="-1">
+          <div class="ih-head">
+            <span class="ih-title">보낸 지시</span><span class="ih-count" id="ih-count">0</span>
+            <span class="ih-order" role="group" aria-label="순서"><button type="button" class="ih-ord" data-order="asc" aria-pressed="true" onclick="ihSetOrder('asc')">처음부터</button><button type="button" class="ih-ord" data-order="desc" aria-pressed="false" onclick="ihSetOrder('desc')">최근부터</button></span>
+            <button type="button" class="ui-icon-btn ih-close" aria-label="닫기" title="닫기" onclick="ihClose(true)"><i data-ui-icon="close"></i></button>
+          </div>
+          <ol class="ih-list" id="ih-list" aria-label="보낸 지시 목록"></ol>
+          <div class="ih-foot" id="ih-foot" aria-live="polite"></div>
+        </div>
         <ui-agent-steering id="cmd-steer" lang="ko"><ui-composer id="pc-composer" slot="composer" lang="ko"><div class="panel-controls" id="panel-controls" slot="end" aria-label="이 세션의 모델과 추론 강도"></div></ui-composer></ui-agent-steering>
       </div>
     </div>
@@ -15708,6 +15751,7 @@ var VIEW_BUILTINS = ${JSON.stringify(BUILTIN_PRESETS)};
 ${VIEW_LAYOUT_CLIENT_JS}
 ${CARD_FINISH_CLIENT_JS}
 ${WORK_QUEUE_CLIENT_JS}
+${INSTRUCTION_HISTORY_CLIENT_JS}
 ${DICTATION_PREF_JS}
 ${DICTATION_SERVER_JS}
 ${CODE_CHANGES_JS}
@@ -23919,6 +23963,8 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   renderPanelNext(); // the previous card's steps go with its turns
   _panelTurnsWhy = '';
   _panelOlderWhy = '';
+  // 보낸 지시 (instruction-history-client.ts): this card's count; another card's list closes.
+  if (typeof ihSync === 'function') ihSync(s.conversationId || '');
 
   // 되돌리기 모드 belongs to the session it was turned on for.
   if (_rb && _rb.key !== sessionKey) { _rb = null; _rbPick = null; }
@@ -24194,6 +24240,7 @@ function loadPanelTurns(land) {
         convPaint();
         psecToNewest();
       }
+      if (typeof ihSync === 'function') ihSync(_panelTurnsCid);
       if (land) landPanel();
     })
     .catch(function(err) {
@@ -24958,6 +25005,8 @@ function onConversationTurn(cid, turn) {
   umOnTurn(cid, turn);
   if (!panelOpen || panelConvId !== cid || !turn) return;
   appendTurnToPanel(turn, false, ptOptimisticFor(_panelTurnsList, turn) || undefined);
+  // 보낸 지시: a person's turn may be one more instruction — the button asks for the count again.
+  if (turn.role === 'user' && typeof ihSync === 'function') ihSync(cid, true);
 }
 // A turn leaves the data (an instruction that could not be sent).
 function dropTurnFromPanel(id) {
@@ -25445,6 +25494,8 @@ function closePanel() {
   // The goal composer too: no recording or dictation goes on in a closed drawer (its text and files stay).
   if (typeof goalComposerReset === 'function') goalComposerReset();
   if (_ansIo) { _ansIo.disconnect(); _ansIo = null; }
+  // 보낸 지시 (instruction-history-client.ts): no card, no button; its list closes.
+  if (typeof ihSync === 'function') ihSync('');
   layoutBeforeChange();
   // An opening still waiting for the element is dropped; a drawer not yet defined has nothing open to close.
   _panelOpenWaiting = null;
