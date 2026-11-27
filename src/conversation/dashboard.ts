@@ -2025,6 +2025,8 @@ export interface DashboardFollowupRequest {
   actorUserId?: string;
   /** The presser may manage the session (#716: the owner, a token, an admin in admin mode): they act as its owner. */
   manages?: boolean;
+  /** Z 2026-11-27 — a signed-in admin in 관리자 모드 pressed it: an Edit's new words keep the mode (else they lose it). */
+  adminMode?: true;
 }
 /**
  * A refusal carries the queue's own words (the item stays) and the status the route answers with. `unfulfilled`: the
@@ -2158,6 +2160,8 @@ type GoalActionHandler = (
   sessionKey: string,
   action: HostGoalAction,
   actorUserId?: string,
+  /** Z 2026-11-27 — an admin in 관리자 모드 added it: the goal's opening turn runs without the owner's approval. */
+  opts?: { adminMode?: true },
 ) => Promise<HostGoalActionResult>;
 let _goalActionHandlerFn: GoalActionHandler | null = null;
 
@@ -5722,6 +5726,7 @@ export async function registerDashboardRoutes(
           ...(text !== undefined ? { text } : {}),
           ...(actorUserId ? { actorUserId } : {}),
           manages,
+          ...adminModeOpts(request),
         });
         // Whatever the queue answered, the panel gets the queue as it is now.
         scheduleLiveSessionUpdate(originalKey);
@@ -5838,7 +5843,10 @@ export async function registerDashboardRoutes(
         // The acting dashboard user (owner, or an admin in admin mode); a bearer
         // client has none and the handler falls back to the session owner.
         const actorUserId = (request as { authContext?: { userId?: string } }).authContext?.userId;
-        const result = await _goalActionHandlerFn(originalKey, action, actorUserId);
+        const admin = adminModeOpts(request);
+        const result = admin
+          ? await _goalActionHandlerFn(originalKey, action, actorUserId, admin)
+          : await _goalActionHandlerFn(originalKey, action, actorUserId);
         broadcastSessionUpdate();
         reply.send({ ok: true, result });
       } catch (error) {
@@ -10547,7 +10555,9 @@ function acInstructionApprovalData(s, a) {
     label: '지시 승인 요청',
     question: who + '님이 이 작업에 지시를 보냈습니다' + (n > 1 ? ' (' + n + '건)' : '') + '.\\n실행할까요? 승인하면 ' + who + '님의 권한으로 실행됩니다.',
     description: String(a.preview || ''),
-    choices: INSTRUCTION_APPROVAL_CHOICES.map(function(c) { return { id: c.id, label: c.label }; }),
+    // An admin answering for the owner (관리자 모드) decides this request only: "이 사람의 지시 항상 승인" would rewrite the
+    // owner's own trust list, so it is the owner's alone (the server refuses it too).
+    choices: INSTRUCTION_APPROVAL_CHOICES.filter(function(c) { return c.id !== 'approve_always' || !a.ownerId || a.ownerId === _viewerUserId; }).map(function(c) { return { id: c.id, label: c.label }; }),
     allowOther: false,
   };
   var asked = toNum(a.createdAt);

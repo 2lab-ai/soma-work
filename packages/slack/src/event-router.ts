@@ -369,11 +369,27 @@ export const HOST_ONLY_EVENT_FIELDS = [
   'questionAnswer',
 ] as const;
 
+/**
+ * Z 2026-11-27 — route-context fields only the host sets: `adminModeInstruction` (an admin's dashboard instruction in
+ * 관리자 모드, which the #767 gate lets run without the owner). A Slack event never carries it; one that did is not
+ * trusted (review R1).
+ */
+export const HOST_ONLY_ROUTE_FIELDS = ['adminModeInstruction'] as const;
+
 /** The event without the host-only fields (the same object when it has none). */
 export function withoutHostOnlyFields<T extends object>(event: T): T {
-  if (!event || !HOST_ONLY_EVENT_FIELDS.some((k) => k in event)) return event;
+  if (!event) return event;
+  const route = (event as { routeContext?: unknown }).routeContext;
+  const routeTainted =
+    !!route && typeof route === 'object' && HOST_ONLY_ROUTE_FIELDS.some((k) => k in (route as object));
+  if (!routeTainted && !HOST_ONLY_EVENT_FIELDS.some((k) => k in event)) return event;
   const copy = { ...event } as Record<string, unknown>;
   for (const k of HOST_ONLY_EVENT_FIELDS) delete copy[k];
+  if (routeTainted) {
+    const cleaned = { ...(route as Record<string, unknown>) };
+    for (const k of HOST_ONLY_ROUTE_FIELDS) delete cleaned[k];
+    copy.routeContext = cleaned;
+  }
   return copy as T;
 }
 
@@ -849,7 +865,7 @@ export class EventRouter {
       if (
         event.thread_ts &&
         stripZPrefix(text) !== null &&
-        this.deps.holdsForOwnerApproval?.({ ...event, text } as MessageEvent)
+        this.deps.holdsForOwnerApproval?.(withoutHostOnlyFields({ ...event, text } as MessageEvent))
       ) {
         await this.messageHandler({ ...event, text } as MessageEvent, say);
         return;

@@ -53,7 +53,7 @@ import { captureUserMedia, getConversation, recordUserTurn } from './conversatio
 import { readWorkLog } from './conversation/work-log';
 import { FileHandler, type ProcessedFile } from './file-handler';
 import { buildIncidentAttemptOutput } from './incident/attempt-output';
-import { type InstructionApprovals, isAdminModeRoute } from './instruction-approval';
+import { ADMIN_MODE_ROUTE, type InstructionApprovals, isAdminModeRoute } from './instruction-approval';
 import { getLastCommandChannelStore } from './last-command-channel-store';
 import { Logger } from './logger';
 import { mcpCallTracker } from './mcp-call-tracker';
@@ -4557,6 +4557,8 @@ export class SlackHandler {
               ...(opening.cause === 'set' && isClientRef(event.dashboardClientRef)
                 ? { dashboardClientRef: event.dashboardClientRef }
                 : {}),
+              // Z 2026-11-27 — only the goal this 관리자 모드 message set carries the mode, never one it promoted.
+              ...(opening.cause === 'set' && isAdminModeRoute(event) ? { adminMode: true } : {}),
             },
             opening,
           );
@@ -4632,6 +4634,8 @@ export class SlackHandler {
       files?: MessageEvent['files'];
       /** #785 — the dashboard send that set this goal: its opening turn records the ref. */
       dashboardClientRef?: string;
+      /** Z 2026-11-27 — an admin in 관리자 모드 set this goal: its opening turn passes the #767 gate as theirs. */
+      adminMode?: boolean;
     },
     opening: { goalId: string; objective: string; prompt?: string },
   ): GoalOpeningAdmission {
@@ -4658,6 +4662,8 @@ export class SlackHandler {
       files?: MessageEvent['files'];
       /** #785 — the dashboard send that set this goal: its opening turn records the ref. */
       dashboardClientRef?: string;
+      /** Z 2026-11-27 — an admin in 관리자 모드 set this goal: its opening turn passes the #767 gate as theirs. */
+      adminMode?: boolean;
     },
     opening: { goalId: string; objective: string; prompt?: string },
   ): GoalOpeningAdmission {
@@ -4708,10 +4714,11 @@ export class SlackHandler {
       ...(anchor.team ? { team: anchor.team } : {}),
       ...(files?.length ? { files } : {}),
       ...(anchor.dashboardClientRef ? { dashboardClientRef: anchor.dashboardClientRef } : {}),
-      routeContext:
-        prompt === undefined
-          ? { verbatimPrompt: true, goalOpeningId: opening.goalId }
-          : { goalOpeningId: opening.goalId },
+      routeContext: {
+        ...(prompt === undefined ? { verbatimPrompt: true } : {}),
+        goalOpeningId: opening.goalId,
+        ...(anchor.adminMode ? ADMIN_MODE_ROUTE : {}),
+      },
     } as MessageEvent;
 
     // Marked BEFORE the turn is handed over (the callers' snapshots predate
@@ -6713,6 +6720,8 @@ export class SlackHandler {
     text?: string;
     actorUserId?: string;
     manages?: boolean;
+    /** Z 2026-11-27 — an admin in 관리자 모드 pressed it (the route checked it): an Edit's words keep the mode. */
+    adminMode?: true;
   }): Promise<{ ok: true; message?: string; unfulfilled?: true } | { ok: false; status: number; message: string }> {
     const deps = this.followupActionDeps;
     const queue = this.followupQueue;
@@ -6791,7 +6800,7 @@ export class SlackHandler {
    * would be the clicker rewriting the item (A30).
    */
   private async editFollowupFromDashboard(
-    request: { sessionKey: string; itemId: string; epoch: number; text?: string },
+    request: { sessionKey: string; itemId: string; epoch: number; text?: string; adminMode?: true },
     presser: string,
   ): Promise<{ ok: true } | { ok: false; status: number; message: string }> {
     const queue = this.followupQueue;
@@ -6813,7 +6822,10 @@ export class SlackHandler {
           '이 goal 명령은 이미 실행되어 수정할 수 없습니다 — goal을 바꾸려면 goal 목록에서 삭제하고 새로 추가해 주세요.',
       };
     }
-    const result = queue.editQueued(request.sessionKey, request.itemId, request.epoch, text);
+    // Z 2026-11-27 — the new words carry 관리자 모드 only when this edit was made in it.
+    const result = queue.editQueued(request.sessionKey, request.itemId, request.epoch, text, {
+      adminModeInstruction: request.adminMode === true,
+    });
     if (!result.ok) return { ok: false, status: 409, message: SlackHandler.dashboardEditRefusal(result.reason, item) };
     // #1472 — an edit can turn the head of the line into a command: the held turn asks its gate again.
     this.claudeHandler.requestHoldRelease?.(this.canonicalFollowupKey(request.sessionKey));
@@ -10300,7 +10312,15 @@ export class SlackHandler {
       this.persistHostGoalMutation(live);
       const admission = this.admitGoalOpeningTurn(
         sessionKey,
-        { channel, threadTs, ts: anchorTs, user: actor, say: this.threadSay(channel, threadTs) },
+        {
+          channel,
+          threadTs,
+          ts: anchorTs,
+          user: actor,
+          say: this.threadSay(channel, threadTs),
+          // Z 2026-11-27 — the goal this admin (관리자 모드) added: its opening runs without the owner's approval.
+          ...(options.adminMode ? { adminMode: true } : {}),
+        },
         { goalId: result.goal.goalId, objective },
       );
       if (typeof admission === 'object') {

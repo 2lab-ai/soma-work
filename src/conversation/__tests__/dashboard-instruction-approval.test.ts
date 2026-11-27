@@ -246,6 +246,16 @@ describe('dashboard instruction approvals — board, route, shipped client (#767
     );
     const other = load({ _viewerUserId: 'U2', isSiblingSession: () => false }).acInstructionApprovalData(c, a);
     expect(other.canAnswer).toContain('소유자만');
+    // Z 2026-11-27 (review R1) — an admin in 관리자 모드 answers it for the owner, but not with "항상 승인" (the owner's
+    // own trust list): the card offers the other three.
+    const admin = load({
+      _viewerUserId: 'U9',
+      _viewerIsAdmin: true,
+      _isAdminModeOn: () => true,
+      isSiblingSession: () => false,
+    }).acInstructionApprovalData(c, a);
+    expect(admin.canAnswer).toBeUndefined();
+    expect(admin.choices.map((x: any) => x.id)).toEqual(['approve', 'approve_session', 'deny']);
   });
 
   it('T3 — answered on the dashboard: released, the DM rewritten, the card leaves; a second answer is 409', async () => {

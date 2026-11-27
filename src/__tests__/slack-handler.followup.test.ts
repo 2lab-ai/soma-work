@@ -7422,6 +7422,33 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(items()[0].state).toBe('resolved');
     });
 
+    // Z 2026-11-27 (review R1) — `goal …` sent from the dashboard in 관리자 모드: the opening turn of the goal it set carries
+    // the mode, so the #767 gate does not hold it (and the goal is not rolled back); a plain `goal …` carries nothing.
+    it('the opening turn of a goal set in 관리자 모드 carries the mode; a plain one does not', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(
+        message({ ts: '333.445', text: 'goal 관리자 목표', routeContext: { adminModeInstruction: true } }),
+        say(),
+      );
+      const goalId = registrySession.goal.goalId;
+      expect(items()[0].message.routeContext).toEqual({
+        verbatimPrompt: true,
+        goalOpeningId: goalId,
+        adminModeInstruction: true,
+      });
+      await settle();
+    });
+
+    it('a plain `goal …` opening carries no 관리자 모드 flag', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.446', text: 'goal 평범한 목표' }), say());
+      expect(items()[0].message.routeContext).toEqual({
+        verbatimPrompt: true,
+        goalOpeningId: registrySession.goal.goalId,
+      });
+      await settle();
+    });
+
     it('T1.2 admits the opening turn even when the Slack notice fails', async () => {
       goalNotices.mockRejectedValue(new Error('slack down'));
       const { settle } = await startBusyTurn();

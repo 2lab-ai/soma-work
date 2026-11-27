@@ -26,6 +26,11 @@ export interface HostGoalAttachment {
  */
 export interface HostGoalActionOptions {
   uploadFiles?: (channel: string, threadTs: string, files: HostGoalAttachment[]) => Promise<SessionGoalFile[]>;
+  /**
+   * Z 2026-11-27 — a signed-in admin in 관리자 모드 sent it (the dashboard route checked it). Only the opening turn of a
+   * goal this action adds carries the mode — never a goal it merely promotes or resumes.
+   */
+  adminMode?: boolean;
 }
 
 export type HostGoalAction =

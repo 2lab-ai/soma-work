@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('@soma/slack/pipeline/stream-executor', () => ({ recordConversationWorkLog: vi.fn() }));
 
 import { recordConversationWorkLog } from '@soma/slack/pipeline/stream-executor';
+import { resetAdminUsersCache } from '../admin-utils';
 import { answerPermissionPrompt, isPermissionPromptDecision } from '../permission-prompt-response';
 
 const ids: string[] = [];
@@ -73,6 +74,29 @@ describe('second confirmation (T4)', () => {
     expect(await sharedStore.getPendingApproval(id)).not.toBeNull();
     expect(reg.disableDangerousRules).not.toHaveBeenCalled();
     expect(recordConversationWorkLog).not.toHaveBeenCalled();
+  });
+
+  // Z 2026-11-27 (review R1) — the requester and an admin in 관리자 모드 answer one prompt: one's first ask stays.
+  it("an admin's first ask does not erase the requester's: the requester's confirmation still runs", async () => {
+    const prev = process.env.ADMIN_USERS;
+    process.env.ADMIN_USERS = 'U_ADMIN';
+    resetAdminUsersCache();
+    try {
+      const id = await seed({ advice: DENY });
+      expect(await answerPermissionPrompt({ approvalId: id, actor: 'U_REQ', decision: 'approve' })).toMatchObject({
+        ok: false,
+        reason: 'confirm_required',
+      });
+      expect(
+        await answerPermissionPrompt({ approvalId: id, actor: 'U_ADMIN', decision: 'approve', adminMode: true }),
+      ).toMatchObject({ ok: false, reason: 'confirm_required' });
+      const confirmed = await answerPermissionPrompt({ approvalId: id, actor: 'U_REQ', decision: 'approve_confirmed' });
+      expect(confirmed.ok).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.ADMIN_USERS;
+      else process.env.ADMIN_USERS = prev;
+      resetAdminUsersCache();
+    }
   });
 
   it('runs it on approve_confirmed after the first ask — and does not silence any rule', async () => {

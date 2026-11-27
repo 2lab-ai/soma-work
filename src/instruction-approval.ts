@@ -548,8 +548,9 @@ export class InstructionApprovals {
     const request = this.requests.get(requestId);
     if (!request) return { ok: false, reason: 'not_found' };
     const decidesForEnvironment = isEnvironmentUser(request.ownerId) && getAdminUsers().has(actor);
-    // Z 2026-11-27 — an admin in 관리자 모드 (the dashboard route checked it) decides for any owner.
-    const decidesAsAdmin = input.adminMode === true && getAdminUsers().has(actor);
+    // Z 2026-11-27 — an admin in 관리자 모드 (the dashboard route checked it) decides this request for any owner — but
+    // "항상 승인" rewrites the owner's own trust list for every later session: that stays the owner's (review R1).
+    const decidesAsAdmin = input.adminMode === true && getAdminUsers().has(actor) && decision !== 'approve_always';
     if (request.ownerId !== actor && !decidesForEnvironment && !decidesAsAdmin) {
       return { ok: false, reason: 'not_owner', request };
     }

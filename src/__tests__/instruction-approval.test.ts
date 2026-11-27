@@ -534,6 +534,30 @@ describe('InstructionApprovals (#767)', () => {
       expect(isAdminModeRoute(undefined)).toBe(false);
     });
 
+    it("an admin in 관리자 모드 cannot answer 항상 승인 — that rewrites the owner's own trust list (review R1)", async () => {
+      const approvals = new InstructionApprovals(deps());
+      const { requestId } = await holdOne(approvals);
+      expect(
+        approvals.answer({
+          requestId,
+          decision: 'approve_always',
+          actor: ADMIN,
+          surface: 'dashboard',
+          adminMode: true,
+        }),
+      ).toMatchObject({ ok: false, reason: 'not_owner' });
+      expect(trusted.get(OWNER)?.has(OTHER)).not.toBe(true);
+      expect(approvals.get(requestId)?.status).toBe('pending');
+      const session = approvals.answer({
+        requestId,
+        decision: 'approve_session',
+        actor: ADMIN,
+        surface: 'dashboard',
+        adminMode: true,
+      });
+      expect(session.ok).toBe(true);
+    });
+
     it("an admin in 관리자 모드 answers someone's held instruction for the owner; the thread names the admin", async () => {
       const approvals = new InstructionApprovals(deps());
       const { requestId } = await holdOne(approvals);
