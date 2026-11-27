@@ -36,6 +36,25 @@ function executablePath(server: { args?: string[] }): string {
 }
 
 describe('McpConfigBuilder internal MCP servers e2e', () => {
+  it("hands the permission server who the admins are: the agent's environment carries none of the bot's", async () => {
+    const saved = process.env.ADMIN_USERS;
+    const { resetAdminUsersCache } = await import('../admin-utils');
+    process.env.ADMIN_USERS = 'UADMIN0001, UADMIN0002';
+    resetAdminUsersCache();
+    try {
+      const config = await new McpConfigBuilder(createMockMcpManager()).buildConfig({
+        channel: 'C123',
+        threadTs: '1700000000.000000',
+        user: 'U123',
+      });
+      expect(config.mcpServers?.['mcp-tool-permission'].env.ADMIN_USERS).toBe('UADMIN0001,UADMIN0002');
+    } finally {
+      if (saved === undefined) delete process.env.ADMIN_USERS;
+      else process.env.ADMIN_USERS = saved;
+      resetAdminUsersCache();
+    }
+  });
+
   it('wires the main Slack-context MCP capabilities with stable env and allowed-tool contracts', async () => {
     const builder = new McpConfigBuilder(createMockMcpManager());
     builder.setAgentConfigs({

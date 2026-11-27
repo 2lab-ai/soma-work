@@ -157,7 +157,8 @@ function renderMessage(json, options = {}) {
 // ── Main ──
 (async () => {
   const html = renderMessage(BLOCK_KIT_JSON);
-  const htmlPath = '/tmp/block-kit-preview.html';
+  // Next to the script, in your own directory: a sandboxed session cannot write the shared /tmp root.
+  const htmlPath = `${process.cwd()}/block-kit-preview.html`;
   writeFileSync(htmlPath, html);
 
   const browser = await chromium.launch({ headless: true });
@@ -166,7 +167,7 @@ function renderMessage(json, options = {}) {
   await page.waitForTimeout(500);
 
   const container = page.locator('.message-container');
-  const screenshotPath = '/tmp/block-kit-preview.png';
+  const screenshotPath = `${process.cwd()}/block-kit-preview.png`;
   await container.screenshot({ path: screenshotPath });
   console.log(`Screenshot saved: ${screenshotPath}`);
 

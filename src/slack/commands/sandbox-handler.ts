@@ -19,8 +19,8 @@ import type { CommandContext, CommandHandler, CommandResult } from './types';
  */
 /** Reply to an admin's `sandbox off` on a host whose operator has not allowed it. */
 export const SANDBOX_OFF_NOT_ALLOWED_TEXT =
-  `🛡️ *Sandbox stays ON*\n\nAdmins run in the admin sandbox: every network domain, gh and local servers work, while the ` +
-  `secret store, the approval records and the deployment stay out of reach. The home package caches are read-only: ` +
+  `🛡️ *Sandbox stays ON*\n\nAdmins run in the admin sandbox: every network domain, gh and local servers work, while ` +
+  `reads and writes stay in your work area (session folder, \`/tmp/<your user id>\`, your data) and the code it runs. The home package caches are read-only: ` +
   `give the install command its own cache in your temp directory (\`npm install --cache /tmp/<your user id>/npm\`, or the tool's cache option). ` +
   `Turning it off is allowed only by the host's operator (\`SOMA_SANDBOX_OFF_ALLOWED=true\` in \`.env\`), for an emergency.`;
 
@@ -83,23 +83,26 @@ export class SandboxHandler implements CommandHandler {
       return { handled: true };
     }
 
-    // target === 'network' — any user can toggle
+    // target === 'network' — any user can toggle. An admin's sandbox reaches every domain either way.
+    const adminNote = isAdminUser(user)
+      ? '\n\n_The admin sandbox reaches every domain whatever this setting says: it applies to non-admin sessions._'
+      : '';
     if (action === 'off') {
       userSettingsStore.setUserNetworkDisabled(user, true);
       const effective = sandboxDisabled
         ? '_Note: sandbox is currently OFF, so this setting is stored but inactive until you turn sandbox back on._'
-        : '_Takes effect on your next message. Outbound network in the sandbox will no longer be restricted by the dev allowlist._';
+        : '_Takes effect on your next message. Sandboxed commands may reach every domain, not only the dev allowlist._';
       await say({
-        text: `⚠️ *Sandbox Network Allowlist Disabled*\n\n${effective}`,
+        text: `⚠️ *Sandbox Network Allowlist Disabled*\n\n${effective}${adminNote}`,
         thread_ts: threadTs,
       });
     } else {
       userSettingsStore.setUserNetworkDisabled(user, false);
       const effective = sandboxDisabled
         ? '_Note: sandbox is currently OFF, so this setting is stored but inactive until you turn sandbox back on._'
-        : `_Takes effect on your next message. Outbound traffic inside the sandbox is restricted to the preset dev allowlist (${DEV_DOMAIN_ALLOWLIST.length} domains)._`;
+        : `_Takes effect on your next message. Outbound traffic inside the sandbox is restricted to the preset dev allowlist (${DEV_DOMAIN_ALLOWLIST.length} domains); any other domain is refused._`;
       await say({
-        text: `✅ *Sandbox Network Allowlist Enabled*\n\n${effective}`,
+        text: `✅ *Sandbox Network Allowlist Enabled*\n\n${effective}${adminNote}`,
         thread_ts: threadTs,
       });
     }

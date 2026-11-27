@@ -110,6 +110,46 @@ describe('McpConfigBuilder slack-mcp server', () => {
     expect(roots).toEqual([path.join('/tmp', 'U123'), path.join(DATA_DIR, 'U123', 'uploads')]);
   });
 
+  it('slack-mcp holds a sandboxed admin to its own roots too, and opens /tmp only to an admin running without one', async () => {
+    const { resetAdminUsersCache } = await import('../admin-utils');
+    const { userSettingsStore } = await import('../user-settings-store');
+    const { DATA_DIR } = await import('../env-paths');
+    vi.stubEnv('ADMIN_USERS', 'UADMIN0001');
+    vi.stubEnv('SOMA_SANDBOX_OFF_ALLOWED', '');
+    resetAdminUsersCache();
+    const off = vi.spyOn(userSettingsStore, 'getUserSandboxDisabled');
+    const build = async () =>
+      (
+        await new McpConfigBuilder(createMockMcpManager()).buildConfig({
+          channel: 'C123',
+          threadTs: '1700000000.000000',
+          user: 'UADMIN0001',
+        })
+      ).mcpServers?.['slack-mcp']?.env ?? {};
+    const ownRoots = [path.join('/tmp', 'UADMIN0001'), path.join(DATA_DIR, 'UADMIN0001', 'uploads')];
+    try {
+      // Sandboxed: its reads stop at its own area, so do its uploads.
+      off.mockReturnValue(false);
+      let env = await build();
+      expect(JSON.parse(env.SOMA_UPLOAD_ROOTS ?? '[]')).toEqual(ownRoots);
+      expect(env.SOMA_UPLOAD_EXTRA_ROOTS).toBeUndefined();
+      // Off requested on a host that does not allow it: still sandboxed, still only its own roots.
+      off.mockReturnValue(true);
+      env = await build();
+      expect(JSON.parse(env.SOMA_UPLOAD_ROOTS ?? '[]')).toEqual(ownRoots);
+      expect(env.SOMA_UPLOAD_EXTRA_ROOTS).toBeUndefined();
+      // Sandbox off on a host that allows it: the /tmp rule, plus its uploads directory.
+      vi.stubEnv('SOMA_SANDBOX_OFF_ALLOWED', 'true');
+      env = await build();
+      expect(env.SOMA_UPLOAD_ROOTS).toBeUndefined();
+      expect(JSON.parse(env.SOMA_UPLOAD_EXTRA_ROOTS ?? '[]')).toEqual([path.join(DATA_DIR, 'UADMIN0001', 'uploads')]);
+    } finally {
+      off.mockRestore();
+      vi.unstubAllEnvs();
+      resetAdminUsersCache();
+    }
+  });
+
   it('passes both work and source thread in SLACK_MCP_CONTEXT when bot migrates to new thread', async () => {
     const builder = new McpConfigBuilder(createMockMcpManager());
     // After bot-initiated thread migration:

@@ -142,6 +142,12 @@ export interface TenantReadBoundaryInput {
   pluginPaths: readonly string[];
   /** Environment-skill directories the speaker holds a grant for. File tools only. */
   grantedSkillDirs: readonly string[];
+  /**
+   * Files the session's own tools read — the mailbox client's settings, which `mailbox send` in the owner's session
+   * needs, and the certificate bundles the environment names. Shell only, only where they really are, and never one
+   * denied on purpose.
+   */
+  ownFiles?: readonly string[];
   /** Read denies already set on purpose (secret store, logins, environment plugins). Never re-opened. */
   denied: readonly string[];
   /** Test seam. */
@@ -244,6 +250,7 @@ export function tenantReadBoundary(input: TenantReadBoundaryInput): TenantReadBo
       ...HOME_TOOLCHAINS.map((name) => path.join(input.home, name)),
       path.join(input.claudeConfigDir, 'shell-snapshots'),
       ...(input.ghConfigDir ? [input.ghConfigDir] : []),
+      ...(input.ownFiles ?? []).filter((p) => !throughLink(p, input.platform, fsx)),
     ]
       .filter(present)
       .map(real)

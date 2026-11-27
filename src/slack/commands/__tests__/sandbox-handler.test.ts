@@ -89,7 +89,7 @@ describe('SandboxHandler', () => {
       const text = sayCall(ctx);
       expect(text).toContain('Sandbox: `ON`');
       expect(text).toContain('Network allowlist: `OFF`');
-      expect(text).toContain('not restricted');
+      expect(text).toContain('every domain');
     });
 
     it('sandbox OFF + network ON (stored but inactive)', async () => {
@@ -207,6 +207,24 @@ describe('SandboxHandler', () => {
       await handler.execute(ctx);
       expect(userSettingsStore.setUserNetworkDisabled).toHaveBeenCalledWith('U_TEST', false);
       expect(sayCall(ctx)).toContain('stored but inactive');
+    });
+
+    it('says what each state does: every domain when off, only the allowlist (others refused) when on', async () => {
+      const off = makeCtx({ text: 'sandbox network off' });
+      await handler.execute(off);
+      expect(sayCall(off)).toContain('every domain');
+      const on = makeCtx({ text: 'sandbox network on' });
+      await handler.execute(on);
+      expect(sayCall(on)).toContain('refused');
+    });
+
+    it('tells an admin the toggle does not change its own sandbox, which reaches every domain', async () => {
+      vi.mocked(isAdminUser).mockReturnValue(true);
+      for (const text of ['sandbox network on', 'sandbox network off']) {
+        const ctx = makeCtx({ text });
+        await handler.execute(ctx);
+        expect(sayCall(ctx), text).toContain('admin sandbox reaches every domain');
+      }
     });
 
     it('network toggle while sandbox is ON announces next-turn semantics', async () => {

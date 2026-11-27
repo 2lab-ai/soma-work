@@ -15,7 +15,7 @@ import {
 import type { ModelCommandContext } from 'somalib/model-commands/types';
 import type { PermissionAdvice } from 'somalib/permission/shared-store';
 import { z } from 'zod';
-import { isAdminUser } from './admin-utils';
+import { getAdminUsers, isAdminUser } from './admin-utils';
 import type { ExecutionContext } from './agent-runtime/execution-context';
 import { NO_CONTEXT_PERMISSION_MODE, type PermissionMode } from './agent-runtime/policy/permission-mode';
 import { substituteEnvVars } from './config-env-substitution';
@@ -39,6 +39,7 @@ import {
   type PermissionLevel,
 } from './mcp-tool-permission-config';
 import { isSafePathSegment, normalizeTmpPath } from './path-utils';
+import { sandboxOffFor } from './sandbox/sandbox-state';
 import { userUploadsDir } from './sandbox/tenant-read-boundary';
 import { attachesEpicServer, buildEpicServer, EPIC_SERVER } from './task-turn/epic-server';
 import { attachesPlanServer, buildPlanServer, PLAN_SERVER } from './task-turn/plan-server';
@@ -506,9 +507,9 @@ export class McpConfigBuilder {
         SOMA_DISPLAY_LANG: userSettingsStore.getUserDisplayLanguage(slackContext.user),
         ...(artifactIndex ? { SOMA_ARTIFACT_INDEX: artifactIndex } : {}),
         ...(uploads ? { SOMA_DOWNLOAD_DIR: path.join(uploads, 'thread-files') } : {}),
-        // A non-admin uploads only from its own root and its uploads directory, as it reads only there; an admin may
-        // also send on what it downloaded.
-        ...(uploads && !isAdminUser(slackContext.user) && isSafePathSegment(slackContext.user)
+        // A sandboxed session — admin or not — uploads only from its own root and its uploads directory, as it reads
+        // only there; one running without the sandbox (an admin who turned it off) may also send on what it downloaded.
+        ...(uploads && !sandboxOffFor(slackContext.user) && isSafePathSegment(slackContext.user)
           ? { SOMA_UPLOAD_ROOTS: JSON.stringify([normalizeTmpPath(path.join('/tmp', slackContext.user)), uploads]) }
           : uploads
             ? { SOMA_UPLOAD_EXTRA_ROOTS: JSON.stringify([uploads]) }
@@ -812,6 +813,9 @@ export class McpConfigBuilder {
             }
           : {}),
         ...(requester ? { SOMA_REQUESTER: requester } : {}),
+        // Its host commands run outside every sandbox: a host key held only by the agent reaches them here, since
+        // the agent's own environment (which this server inherits) no longer carries the agent socket.
+        ...(process.env.SSH_AUTH_SOCK ? { SSH_AUTH_SOCK: process.env.SSH_AUTH_SOCK } : {}),
       },
     };
   }
@@ -832,6 +836,8 @@ export class McpConfigBuilder {
         SOMA_CONFIG_FILE: CONFIG_FILE,
         // One grants file: the child resolves DATA_DIR from SOMA_DATA_DIR, like cron and model-command.
         SOMA_DATA_DIR: DATA_DIR,
+        // Who may grant: the agent's environment, which the server inherits, carries none of the bot's own.
+        ADMIN_USERS: [...getAdminUsers()].join(','),
       },
     };
   }

@@ -79,6 +79,17 @@ const OAUTH_KV_RE =
 const OAUTH_CODE_KV_RE = /\b(code)(["']?\s*[:=]\s*["']?)([A-Za-z0-9._~-]{20,})/gi;
 const ERROR_IDENTIFIER_RE = /^[A-Z][A-Z0-9_]*$/;
 
+/**
+ * A PEM private key — RSA, EC, OpenSSH, PKCS#8 — from its header to its footer, whether the line breaks are real or
+ * escaped (`\\n` in a JSON dump of an environment, where the GitHub App's key was found logged whole). A header
+ * followed by key material but no footer is redacted to the end of the string: the key was cut, not ended. A header
+ * quoted alone (an error naming the format it expected) is left as it is. The search for a footer stops at the next
+ * header and after 20 000 characters (a key is a few thousand), so a string of many headers is scanned in linear
+ * time on the logging path. Written with `-{5}` so this file holds no header the bundle's credential scan would flag.
+ */
+const PEM_PRIVATE_KEY_RE =
+  /-{5}BEGIN ((?:[A-Z0-9]+ )*)PRIVATE KEY-{5}(?:(?:(?!-{5}BEGIN )[\s\S]){0,20000}?-{5}END \1PRIVATE KEY-{5}|(?:\s|\\n)*[A-Za-z0-9+/=]{16,}[\s\S]*$)/g;
+
 /** Options for {@link redactSecrets}. */
 export interface RedactOptions {
   /**
@@ -104,6 +115,7 @@ function redactString(value: string, ephemeral: readonly string[]): string {
   }
 
   return out
+    .replace(PEM_PRIVATE_KEY_RE, '[REDACTED private key]')
     .replace(ANTHROPIC_SECRET_RE, (match, kind: string) => `[REDACTED sk-ant-${kind}-...${match.slice(-4)}]`)
     .replace(LLMUX_KEY_RE, (match) => `[REDACTED lmk-...${match.slice(-4)}]`)
     .replace(SLACK_ROTATION_TOKEN_RE, (match) => `[REDACTED xoxe-...${match.slice(-4)}]`)
@@ -119,7 +131,7 @@ function redactString(value: string, ephemeral: readonly string[]): string {
 /**
  * Deep-clone `input` and redact every known credential shape found in strings.
  *
- * Covered: Anthropic `sk-ant-*`, llmux `lmk-*`, Slack `xoxb/xoxp/xoxa/xoxr/
+ * Covered: PEM private keys, Anthropic `sk-ant-*`, llmux `lmk-*`, Slack `xoxb/xoxp/xoxa/xoxr/
  * xoxs`, `xapp-*` and `xoxe.`/`xoxe-` rotation tokens, Socket Mode `wss://`
  * URLs, unambiguous OAuth key/value pairs (`access_token`, `refresh_token`,
  * `client_secret`, `signing_secret`, `bot_token`, `app_token`), long OAuth

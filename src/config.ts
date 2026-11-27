@@ -180,8 +180,8 @@ export function getSandboxAllowUnavailable(): boolean {
 
 /**
  * Whether an admin's `sandbox off` takes effect on this host (env-access WU2, #1210). Default false:
- * every model session, admins included, runs sandboxed — admins with the admin profile — so the
- * secret store and the approval records stay out of reach. Only the host's operator turns it on, in
+ * every model session, admins included, runs sandboxed — admins with the admin profile — so it reads
+ * only its work area and the code it runs. Only the host's operator turns it on, in
  * `.env`, for an emergency; the sandbox command reports the refusal otherwise.
  */
 export function getSandboxOffAllowed(): boolean {
