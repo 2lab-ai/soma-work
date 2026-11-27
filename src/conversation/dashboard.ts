@@ -13284,6 +13284,7 @@ var _viewBackAt = 0; // when the page came back into view while it catches up (0
 var _viewSettleTimer = 0;
 var _viewHolds = 0; // board loads asked during this time away that have not answered yet
 var _viewGen = 0; // one per time away: a load asked during an earlier one no longer holds the window
+var _viewFinishRaf = 0; // the frame loop that lands every element's entrance while the page catches up (viewFinishLoop)
 function viewCatchingUp() { return _viewAway; }
 function viewLeave() {
   _viewAway = true;
@@ -13292,6 +13293,8 @@ function viewLeave() {
   _viewHolds = 0;
   clearTimeout(_viewSettleTimer);
   _viewSettleTimer = 0;
+  if (_viewFinishRaf) cancelAnimationFrame(_viewFinishRaf);
+  _viewFinishRaf = 0;
 }
 // Back in view (shown, unfrozen, restored from the back/forward cache): what the board elements were still doing when
 // the page left (a card held in its lane) lands now, and the window settles once the held work has run.
@@ -13300,6 +13303,9 @@ function viewReturn() {
   _viewBackAt = Date.now();
   viewSettleSoon();
   viewLand();
+  // Rows added while hidden start their entrance on the first frame back; held messages add more: each frame lands them.
+  viewFinishMotion();
+  if (!_viewFinishRaf) _viewFinishRaf = requestAnimationFrame(viewFinishLoop);
 }
 // The socket opened: the board it brings first is the whole board, not news.
 function viewSync() {
@@ -13356,6 +13362,46 @@ function viewQuiet(fn) {
 function viewStill(host) {
   if (!_viewAway || document.hidden || !host || typeof host.renderNow !== 'function') return;
   viewQuiet(function() { host.renderNow(); });
+}
+// Every finite animation on the page — in the document and every element's shadow tree: a chat turn's or a work-log
+// row's entrance, an approval card's, an agent-tree node's — jumps to its end, so the frame shows the present. Endless
+// ones (spinners, the border beam) run on. Their end events fire as usual, so each element tidies up as it would.
+function viewFinishMotion() {
+  var roots = [document];
+  for (var i = 0; i < roots.length; i++) {
+    var all = roots[i].querySelectorAll('*');
+    for (var j = 0; j < all.length; j++) if (all[j].shadowRoot) roots.push(all[j].shadowRoot);
+  }
+  var n = 0;
+  for (var k = 0; k < roots.length; k++) {
+    var list = typeof roots[k].getAnimations === 'function' ? roots[k].getAnimations() : [];
+    for (var a = 0; a < list.length; a++) {
+      var anim = list[a];
+      var t = anim.effect && typeof anim.effect.getComputedTiming === 'function' ? anim.effect.getComputedTiming() : null;
+      if (!t || !isFinite(t.endTime) || anim.playState === 'finished') continue;
+      try {
+        anim.finish();
+        n++;
+      } catch (e) {
+        /* a zero-rate animation cannot finish: it stays */
+      }
+    }
+  }
+  return n;
+}
+// A panel element (the chat, the work log) given data while the page catches up: its new rows land without their
+// entrance as soon as it has drawn them — its render is a microtask queued when the data was set, this one runs after —
+// even when it draws them in a frame callback that runs after viewFinishLoop's.
+function viewLandSoon() {
+  if (!_viewAway || !_viewBackAt || document.hidden) return;
+  queueMicrotask(viewFinishMotion);
+}
+// While the page catches up, once per frame before it is painted (rAF runs before the frame's style and paint).
+function viewFinishLoop() {
+  _viewFinishRaf = 0;
+  if (!_viewAway || !_viewBackAt || document.hidden) return;
+  viewFinishMotion();
+  _viewFinishRaf = requestAnimationFrame(viewFinishLoop);
 }
 // Every board element the page paints (the board, each CRON job's, each work queue's), drawn still once.
 function viewLand() {
@@ -23591,6 +23637,8 @@ function wlPaint() {
   if (el._wlSig !== sig) {
     el._wlSig = sig;
     el.data = d;
+    // Rows that came in while the page was away land without their entrance (viewLandSoon).
+    if (typeof viewLandSoon === 'function') viewLandSoon();
   }
   wlRbSync();
   if (!st) return;
@@ -25083,6 +25131,8 @@ function convSetData(el, d) {
   el._convSig = sig;
   el.data = d;
   queueMicrotask(function() { convWatchAnswers(el); });
+  // Turns that came in while the page was away land without their entrance (viewLandSoon).
+  if (typeof viewLandSoon === 'function') viewLandSoon();
 }
 // The section's data now: the main agent's turns, or a subagent's 지시와 답변.
 function convPaint() {

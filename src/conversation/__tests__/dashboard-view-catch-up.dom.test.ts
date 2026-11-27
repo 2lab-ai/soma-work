@@ -19,6 +19,12 @@
  *       return itself lands every planned board element still (a card held in its lane when the page left)
  *   C8  the wiring: visibility / freeze / page show events, the socket's open and the end of every message, the board
  *       poll's hold, the layout check's quiet view switch; the reader's own motion (canAnimate) is left alone
+ *   C9  every finite animation on the page — the document's and each element's shadow tree's, nested — jumps to its
+ *       end (a chat turn's or a work-log row's entrance); endless ones run on; one that cannot finish is left
+ *   C10 the return lands them at once and then once per frame while the page catches up; settled or gone again, the
+ *       frame loop stops
+ *   C11 the chat and the work log, given data while catching up, land their new rows right after they draw them
+ *       (a microtask after the element's render) — also when they draw in a frame callback after the loop's
  *
  * Executes the shipped client code cut out of renderDashboardPage()'s template literal; C7 runs it against the
  * installed @2lab.ai/ui.
@@ -77,6 +83,9 @@ const VIEW_FNS = [
   'viewQuiet',
   'viewStill',
   'viewLand',
+  'viewFinishMotion',
+  'viewFinishLoop',
+  'viewLandSoon',
 ];
 const VIEW_VARS = [
   'VIEW_SETTLE_QUIET_MS',
@@ -86,6 +95,7 @@ const VIEW_VARS = [
   '_viewSettleTimer',
   '_viewHolds',
   '_viewGen',
+  '_viewFinishRaf',
 ];
 type View = {
   viewCatchingUp(): boolean;
@@ -99,7 +109,11 @@ type View = {
 // A page whose visibility the test flips (document.hidden), with the timers faked; no board elements on it.
 function page(hidden = false) {
   const doc = { hidden, querySelectorAll: () => [] };
-  const v = load<View>(VIEW_FNS, VIEW_VARS, { document: doc });
+  const v = load<View>(VIEW_FNS, VIEW_VARS, {
+    document: doc,
+    requestAnimationFrame: () => 0,
+    cancelAnimationFrame: () => {},
+  });
   return { v, doc };
 }
 
@@ -405,6 +419,153 @@ describe('the board element paints the past still (C7)', () => {
     expect(seen).toBe(true);
     expect(Object.getOwnPropertyDescriptor(doc, 'hidden')).toBeUndefined();
     expect(doc.hidden).toBe(false);
+  });
+});
+
+// ── C9 / C10: every element's entrance lands while the page catches up ──
+type Anim = { name: string; endTime: number; playState: string; finished: number; finish(): void };
+function anim(name: string, endTime: number, playState = 'running', throws = false): Anim {
+  const a: Anim = {
+    name,
+    endTime,
+    playState,
+    finished: 0,
+    finish() {
+      if (throws) throw new Error('InvalidStateError');
+      a.finished++;
+      a.playState = 'finished';
+    },
+  };
+  return a;
+}
+// A scope (the document or a shadow root): its elements, and the animations whose targets are in it.
+function scope(els: unknown[], anims: Anim[]) {
+  return {
+    querySelectorAll: (sel: string) => (sel === '*' ? els : []),
+    getAnimations: () =>
+      anims.map((a) => ({
+        ...a,
+        effect: { getComputedTiming: () => ({ endTime: a.endTime }) },
+        finish: () => a.finish(),
+        playState: a.playState,
+      })),
+  };
+}
+
+describe('every finite animation lands while catching up (C9)', () => {
+  it('the document’s and each shadow tree’s, nested; endless and finished ones are left; one that throws is skipped', () => {
+    const turnIn = anim('ls-in@cv-turn', 360);
+    const rowIn = anim('wl-rise@wl-entry', 320);
+    const spin = anim('wl-spin', Number.POSITIVE_INFINITY);
+    const beam = anim('beam', Number.POSITIVE_INFINITY);
+    const done = anim('old', 200, 'finished');
+    const stuck = anim('zero-rate', 300, 'running', true);
+    const pageFade = anim('panel-fade', 180);
+    // document → <ui-conversation> (shadow) → <ui-ai-answer> (shadow); document → <ui-work-log> (shadow)
+    // The one that cannot finish comes first, in the first shadow tree visited: the rest still land.
+    const answerRoot = scope([], [turnIn, beam]);
+    const convRoot = scope([{ shadowRoot: answerRoot }, {}], [stuck, rowIn]);
+    const wlRoot = scope([], [spin, done, pageFade]);
+    const doc = scope([{ shadowRoot: convRoot }, { shadowRoot: null }, { shadowRoot: wlRoot }], []);
+    const v = load<{ viewFinishMotion(): number }>(['viewFinishMotion'], [], { document: doc });
+    expect(v.viewFinishMotion()).toBe(3);
+    expect([turnIn, rowIn, pageFade].map((a) => a.finished)).toEqual([1, 1, 1]);
+    expect([spin, beam, done, stuck].map((a) => a.finished)).toEqual([0, 0, 0, 0]);
+  });
+
+  it('a scope without getAnimations (an old browser) is passed over', () => {
+    const doc = { querySelectorAll: () => [] };
+    const v = load<{ viewFinishMotion(): number }>(['viewFinishMotion'], [], { document: doc });
+    expect(v.viewFinishMotion()).toBe(0);
+  });
+});
+
+describe('the return lands them at once, then once per frame while catching up (C10)', () => {
+  it('runs on the return and each frame until settled; a leave stops the loop', () => {
+    vi.useFakeTimers();
+    const frames: Array<() => void> = [];
+    let cancelled = 0;
+    const row = anim('wl-rise@wl-entry', 320);
+    const anims: Anim[] = [row];
+    const doc = { hidden: true, ...scope([], anims) };
+    const v = load<View>(VIEW_FNS, VIEW_VARS, {
+      document: doc,
+      requestAnimationFrame: (f: () => void) => frames.push(f),
+      cancelAnimationFrame: () => cancelled++,
+    });
+    v.viewLeave();
+    doc.hidden = false;
+    v.viewReturn();
+    expect(row.finished).toBe(1); // at once, before the first frame back is painted
+    expect(frames).toHaveLength(1);
+    // A held message adds a row: the next frame lands it, and asks for the next.
+    const next = anim('ls-in@cv-turn', 360);
+    anims.push(next);
+    frames.shift()?.();
+    expect(next.finished).toBe(1);
+    expect(frames).toHaveLength(1);
+    // Settled: the loop's next frame finds nothing to do and stops.
+    vi.advanceTimersByTime(400);
+    expect(v.viewCatchingUp()).toBe(false);
+    const live = anim('ls-in@cv-turn', 360);
+    anims.push(live);
+    frames.shift()?.();
+    expect(live.finished).toBe(0); // a live entrance plays
+    expect(frames).toHaveLength(0);
+    // Back again, then away before settling: the loop is cancelled.
+    doc.hidden = true;
+    v.viewLeave();
+    doc.hidden = false;
+    v.viewReturn();
+    expect(frames).toHaveLength(1);
+    doc.hidden = true;
+    v.viewLeave();
+    expect(cancelled).toBeGreaterThan(0);
+  });
+});
+
+describe('the chat and the work log land their rows right after drawing them (C11)', () => {
+  it('queues one landing after the element’s render while back and catching up; not in view or settled, nothing', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const row = anim('ls-in@cv-turn', 360);
+    const anims: Anim[] = [];
+    const doc = { hidden: true, ...scope([], anims) };
+    const v = load<View & { viewLandSoon(): void }>(VIEW_FNS, VIEW_VARS, {
+      document: doc,
+      requestAnimationFrame: () => 0,
+      cancelAnimationFrame: () => {},
+    });
+    v.viewLeave();
+    v.viewLandSoon(); // hidden: the return lands everything at once instead
+    doc.hidden = false;
+    v.viewReturn();
+    // The element's render was queued when the data was set (first), the landing after it: the row it draws lands.
+    queueMicrotask(() => anims.push(row));
+    v.viewLandSoon();
+    expect(row.finished).toBe(0);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(row.finished).toBe(1);
+    // Settled: a live row keeps its entrance.
+    vi.advanceTimersByTime(400);
+    const live = anim('ls-in@cv-turn', 360);
+    queueMicrotask(() => anims.push(live));
+    v.viewLandSoon();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(live.finished).toBe(0);
+  });
+
+  it('the chat and the work log ask for it right after setting their element’s data', () => {
+    const conv = clientFn('convSetData');
+    expect(conv.indexOf("if (typeof viewLandSoon === 'function') viewLandSoon();")).toBeGreaterThan(
+      conv.indexOf('el.data = d;'),
+    );
+    const wl = clientFn('wlPaint');
+    const set = wl.indexOf('el.data = d;');
+    const land = wl.indexOf("if (typeof viewLandSoon === 'function') viewLandSoon();");
+    expect(land).toBeGreaterThan(set);
+    expect(land).toBeLessThan(wl.indexOf('wlRbSync();')); // inside the branch that set new data
   });
 });
 
