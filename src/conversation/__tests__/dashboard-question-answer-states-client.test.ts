@@ -193,3 +193,63 @@ describe('an answer on its way to the model (#1474)', () => {
     expect(cardOf(working([answerRow('queued', { answer: undefined })]), 'working').statusText).toBeUndefined();
   });
 });
+
+/**
+ * 2026-11-27 (a goal session on a shared host): the model asked two questions and its run kept working — 13
+ * processes, background workers, a turn 32 minutes in. The card face got 작업 중 · 응답 필요 (#1474), but the open
+ * card's head — the session's status as <ui-status-bar> shows it (spec 13: the root's status is the head chip) — still
+ * read 입력 대기, as if the session had stopped for its owner. The head says what the card says.
+ */
+describe('the open card head says the same as the card (#1474)', () => {
+  const head = (s: Record<string, unknown>, col: string) =>
+    load<{ panelHeadData(s: unknown, col: string): Record<string, unknown> }>(
+      [
+        'toNum',
+        'pendingAutoResume',
+        'pendingQueueWait',
+        'rootStatusOf',
+        'isBusy',
+        'sessionActionsOf',
+        'panelHeadData',
+        'planHeadActions',
+      ],
+      ['AGENT_STATUS_LABEL', 'PS_BAR_STATUS', 'SESSION_ACTION_ARIA', '_busy'],
+      { currentUserId: 'U1', SELF_INSTANCE_NAME: '', READ_ONLY_MSG: 'read only' },
+    ).panelHeadData(s, col);
+  const { cardOf } = mapper();
+  // The board row as the server sent it: a question open, a turn holding the session, the goal loop's own place
+  // (goalBoard) RUNNING — the question keeps it in 응답 필요.
+  const asked = (over: Record<string, unknown> = {}) =>
+    faceCard({
+      activityState: 'waiting',
+      pendingQuestion: { type: 'user_choices', question: '두 가지를 정해 주세요', questions: [] },
+      turnBusy: true,
+      waitingSince: T0 + 60_000,
+      activeLegStartedAtMs: T0,
+      goalBoard: { col: 'working', why: 'turn' },
+      ...over,
+    });
+
+  it('a question open while a turn holds the session: 작업 중 · 응답 필요 on the head, the wait tone and the turn clock kept', () => {
+    expect(head(asked(), 'waiting')).toMatchObject({
+      status: 'waiting',
+      words: { waiting: '작업 중 · 응답 필요' },
+      startedAt: T0,
+    });
+    expect(cardOf(asked(), 'waiting')).toMatchObject({ status: 'waiting', statusText: '작업 중 · 응답 필요' });
+  });
+
+  it('the run reporting working while the question is open reads the same', () => {
+    expect(head(asked({ activityState: 'working', turnBusy: undefined }), 'waiting').words).toEqual({
+      waiting: '작업 중 · 응답 필요',
+    });
+  });
+
+  it('no turn holds it: the plain 입력 대기 — the session stopped for its owner', () => {
+    expect(head(asked({ turnBusy: undefined }), 'waiting').words).toEqual({ waiting: '입력 대기' });
+  });
+
+  it('a wait with no question (a permission prompt) is not said to need an answer to a question', () => {
+    expect(head(asked({ pendingQuestion: undefined }), 'waiting').words).toEqual({ waiting: '입력 대기' });
+  });
+});
