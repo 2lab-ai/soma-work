@@ -38,7 +38,7 @@ describe('index.ts — plan mode on every session (#853)', () => {
     );
     expect(decider).not.toMatch(/isBusy/);
     expect(decider).toMatch(
-      /sendPlan: \(key, text, actorUserId\) =>[\s\S]*injectDashboardMessage\(key, text, undefined, \[\], actorUserId, undefined, \{\s*onAccepted: \(\) => resolve\(true\),\s*verbatim: true,\s*\}\)\.then\(\s*\(\) => resolve\(false\)/,
+      /sendPlan: \(key, text, actorUserId, opts\) =>[\s\S]*injectDashboardMessage\(key, text, undefined, \[\], actorUserId, undefined, \{\s*onAccepted: \(\) => resolve\(true\),\s*verbatim: true,\s*\.\.\.\(opts\?\.adminMode \? \{ adminMode: true as const \} : \{\}\),\s*\}\)\.then\(\s*\(\) => resolve\(false\)/,
     );
     // #855 — one kind of work session: every plan is a Slack session's.
     const handler = section('setDashboardTaskPlanHandler(', ');\n');
@@ -51,10 +51,12 @@ describe('index.ts — plan mode on every session (#853)', () => {
     expect(inject).toMatch(
       /const unwatch = extra\.onAccepted\s*\?\s*slackHandler\.onTurnAccepted\(session\.channelId, ts, extra\.onAccepted\)\s*:\s*undefined;/,
     );
-    // Verbatim on request; a host turn too when the host says so (#854 — an epic's wake or instruction).
-    expect(inject).toMatch(
-      /\.\.\.\(extra\.verbatim\s*\?\s*\{ routeContext: \{ verbatimPrompt: true, \.\.\.\(extra\.hostTurn \? \{ hostTurn: true \} : \{\}\) \} \}\s*:\s*\{\}\)/,
-    );
+    // Verbatim on request; a host turn too when the host says so (#854 — an epic's wake or instruction); the 관리자 모드
+    // flag when an admin in the mode sent it (Z 2026-11-27) — all three in one route context.
+    expect(inject).toMatch(/\.\.\.\(extra\.verbatim \|\| extra\.adminMode\s*\?\s*\{\s*routeContext: \{/);
+    expect(inject).toMatch(/\.\.\.\(extra\.verbatim \? \{ verbatimPrompt: true \} : \{\}\),/);
+    expect(inject).toMatch(/\.\.\.\(extra\.verbatim && extra\.hostTurn \? \{ hostTurn: true \} : \{\}\),/);
+    expect(inject).toMatch(/\.\.\.\(extra\.adminMode \? ADMIN_MODE_ROUTE : \{\}\),/);
     expect(inject).toMatch(/\} finally \{\s*unwatch\?\.\(\);\s*\}/);
   });
 });

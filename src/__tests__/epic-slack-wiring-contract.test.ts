@@ -38,9 +38,9 @@ describe('index.ts — epics as Slack sessions (#854)', () => {
     );
     // An epic's wake and its word to a child are host turns (review #872 astra): never the owner's answer.
     expect(send).toMatch(/\.\.\.\(opts\.hostTurn \? \{ hostTurn: true as const \} : \{\}\)/);
-    expect(source).toMatch(
-      /routeContext: \{ verbatimPrompt: true, \.\.\.\(extra\.hostTurn \? \{ hostTurn: true \} : \{\}\) \}/,
-    );
+    // The injection's route context: verbatim, and a host turn when the host says so.
+    expect(source).toMatch(/\.\.\.\(extra\.verbatim \? \{ verbatimPrompt: true \} : \{\}\),/);
+    expect(source).toMatch(/\.\.\.\(extra\.verbatim && extra\.hostTurn \? \{ hostTurn: true \} : \{\}\),/);
   });
 
   it('W1b (#1020) — the host finds the owner’s tasks in the registry and adopts through it, in the report timezone', () => {
