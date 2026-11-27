@@ -13188,6 +13188,107 @@ function reduceMotion() { return _reducedMotionMq.matches; }
 function canAnimate() {
   return _boardRenders > 0 && !document.hidden && typeof Element.prototype.animate === 'function';
 }
+
+// ── Out of view → back: the past lands still ──
+// A page out of view gets that time's pushes late. A tab the browser froze (Chrome's Energy Saver, a collapsed tab
+// group) or suspended (Safari) holds its socket's messages and its 30 s board poll and runs them back to back once it
+// is shown again; a socket that opens again brings the whole board at once. The page is visible by then, so each push
+// played its glides, enter fades, status waves and count-ups: the board replayed the time nobody watched. Those pushes
+// are the past — until the page has caught up, the board lands on where things are now, without motion.
+// The window opens when the page leaves view (hidden, frozen, put in the back/forward cache) or its socket opens, and
+// closes once the page is in view, every board load asked meanwhile has answered (viewHold) and the socket has been
+// quiet for VIEW_SETTLE_QUIET_MS (held messages run back to back, live ones leave gaps) — or VIEW_SETTLE_MAX_MS after
+// the page came back, whatever is still outstanding.
+var VIEW_SETTLE_QUIET_MS = 400;
+var VIEW_SETTLE_MAX_MS = 8000;
+var _viewAway = !!document.hidden; // a page that loads in a background tab starts away
+var _viewBackAt = 0; // when the page came back into view while it catches up (0: still out of view, or settled)
+var _viewSettleTimer = 0;
+var _viewHolds = 0; // board loads asked during this time away that have not answered yet
+var _viewGen = 0; // one per time away: a load asked during an earlier one no longer holds the window
+function viewCatchingUp() { return _viewAway; }
+function viewLeave() {
+  _viewAway = true;
+  _viewBackAt = 0;
+  _viewGen++;
+  _viewHolds = 0;
+  clearTimeout(_viewSettleTimer);
+  _viewSettleTimer = 0;
+}
+// Back in view (shown, unfrozen, restored from the back/forward cache): what the board elements were still doing when
+// the page left (a card held in its lane) lands now, and the window settles once the held work has run.
+function viewReturn() {
+  if (document.hidden || !_viewAway) return;
+  _viewBackAt = Date.now();
+  viewSettleSoon();
+  viewLand();
+}
+// The socket opened: the board it brings first is the whole board, not news.
+function viewSync() {
+  _viewAway = true;
+  if (document.hidden) return;
+  _viewBackAt = Date.now();
+  viewSettleSoon();
+}
+// A socket message has run while the page catches up: the quiet is counted from the end of its work.
+function viewHeard() {
+  if (_viewAway && _viewBackAt) viewSettleSoon();
+}
+// A board load asked while the page catches up (the poll a frozen tab fires on its return): its answer is the past too,
+// so the window waits for it. Returns its release, to call once it has answered (or failed).
+function viewHold() {
+  if (!_viewAway) return function() {};
+  var gen = _viewGen;
+  var done = false;
+  _viewHolds++;
+  return function() {
+    if (done) return;
+    done = true;
+    if (gen !== _viewGen) return;
+    _viewHolds--;
+    viewHeard();
+  };
+}
+function viewSettleSoon() {
+  clearTimeout(_viewSettleTimer);
+  var left = _viewBackAt + VIEW_SETTLE_MAX_MS - Date.now();
+  _viewSettleTimer = setTimeout(viewSettle, Math.max(0, Math.min(VIEW_SETTLE_QUIET_MS, left)));
+}
+function viewSettle() {
+  _viewSettleTimer = 0;
+  if (document.hidden || !_viewAway) return;
+  if (_viewHolds > 0 && Date.now() < _viewBackAt + VIEW_SETTLE_MAX_MS) { viewSettleSoon(); return; }
+  _viewAway = false;
+  _viewBackAt = 0;
+  _viewHolds = 0;
+}
+// fn runs with document.hidden reading true, as in a background tab — <ui-agent-inbox> moves nothing then (no glide,
+// enter fade, status pop or wave, no count-up, no held lane) — and document.hidden is the browser's again right after.
+function viewQuiet(fn) {
+  var own = Object.getOwnPropertyDescriptor(document, 'hidden');
+  Object.defineProperty(document, 'hidden', { configurable: true, get: function() { return true; } });
+  try {
+    return fn();
+  } finally {
+    if (own) Object.defineProperty(document, 'hidden', own);
+    else delete document.hidden;
+  }
+}
+// A board element painted while the page catches up is drawn at once, without motion.
+function viewStill(host) {
+  if (!_viewAway || document.hidden || !host || typeof host.renderNow !== 'function') return;
+  viewQuiet(function() { host.renderNow(); });
+}
+// Every board element the page paints (the board, each CRON job's, each work queue's), drawn still once.
+function viewLand() {
+  var hosts = document.querySelectorAll('ui-agent-inbox');
+  for (var i = 0; i < hosts.length; i++) if (hosts[i]._ibPlan) viewStill(hosts[i]);
+}
+document.addEventListener('visibilitychange', function() { if (document.hidden) viewLeave(); else viewReturn(); });
+document.addEventListener('freeze', viewLeave);
+document.addEventListener('resume', viewReturn);
+window.addEventListener('pagehide', viewLeave);
+window.addEventListener('pageshow', viewReturn);
 function setTextIfChanged(el, text) {
   if (el && el.textContent !== text) el.textContent = text;
 }
@@ -13687,6 +13788,8 @@ function inboxPaint(host) {
   };
   boardFoldDeck(host);
   if (typeof syncCardFinish === 'function') syncCardFinish();
+  // A page catching up after it was out of view paints the element now, without motion (viewStill).
+  if (typeof viewStill === 'function') viewStill(host);
 }
 
 // ── Task card window controls (.prd/34) ──
@@ -20366,7 +20469,12 @@ function runLayoutCheck() {
   // The default view follows the screen until the reader picks one (no event:
   // setBoardView neither saves it nor adopts it — this runs the only glide).
   var autoView = defaultBoardView(viewWidth(), savedBoardView());
-  if (kb.getAttribute('view') !== autoView) setBoardView(autoView);
+  // The window changed while the page was out of view: the new layout lands without its glide (viewQuiet).
+  var quiet = typeof viewCatchingUp === 'function' && viewCatchingUp() && !document.hidden;
+  if (kb.getAttribute('view') !== autoView) {
+    if (quiet) viewQuiet(function() { setBoardView(autoView); });
+    else setBoardView(autoView);
+  }
   // The secondary sections' defaults follow the window in this same frame, so a
   // fold or a window change that also folds them is one shift.
   if (applySectionState()) renderBoardForLayout();
@@ -20385,7 +20493,7 @@ function runLayoutCheck() {
   // A key acting while a glide is still in flight retargets that glide (flipFrom moves cards in flight from where they
   // are drawn) rather than leave it running toward a layout that is gone.
   var keyed = keyedNow() && !flying;
-  var animate = canAnimate() && !keyed;
+  var animate = canAnimate() && !keyed && !quiet;
   var reduce = reduceMotion();
   // Every card and head glides from where the reader saw it (the element does
   // nothing on its first paint, in a hidden tab or under reduced motion).
@@ -21620,6 +21728,8 @@ async function loadSessions() {
   var forUser = currentUserId;
   var entry = null;
   var timer = 0;
+  // Asked while the page catches up (the poll a frozen tab fires on its return): its answer lands still (viewHold).
+  var viewRelease = typeof viewHold === 'function' ? viewHold() : null;
   if (_boardLoad !== 'ready' && typeof AbortController === 'function') {
     entry = { user: forUser, ctl: new AbortController() };
     entry.done = new Promise(function(r) { entry.settle = r; });
@@ -21666,6 +21776,7 @@ async function loadSessions() {
       if (_sessionsInflight === entry) _sessionsInflight = null;
       entry.settle();
     }
+    if (viewRelease) viewRelease();
   }
 }
 
@@ -22467,6 +22578,8 @@ function connectWs() {
 
   // The app bar's status (role=status, polite): a tone dot and a word; the dot pulses while live.
   ws.onopen = function() {
+    // The board this socket brings first is the whole board: the page catches up still (viewSync).
+    if (typeof viewSync === 'function') viewSync();
     _appBarStatus = { tone: 'done', label: STRINGS.wsLive, live: true, description: STRINGS.wsAbout };
     paintAppBar();
     // Reconnect: recover the work-log entries broadcast while we were offline
@@ -22602,7 +22715,12 @@ function connectWs() {
         if (panelOpen) pushLiveWorkLog(msg.conversationId, msg.entry);
         if (msg.entry.kind === 'instruction' || msg.entry.kind === 'final') invalidateCardIo(msg.conversationId);
       }
-    } catch (e) { /* ignore */ }
+    } catch (e) {
+      /* ignore */
+    } finally {
+      // While the page catches up, held messages run back to back: the quiet counts from the end of this one (viewHeard).
+      if (typeof viewHeard === 'function') viewHeard();
+    }
   };
 }
 
