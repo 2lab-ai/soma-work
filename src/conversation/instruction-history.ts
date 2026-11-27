@@ -169,15 +169,14 @@ export function parseInstructionQuery(q: { offset?: string; limit?: string; orde
 
 /** One page of the session's instructions (turns oldest first, as the record keeps them). */
 export function instructionPage(turns: readonly ConversationTurn[], q: InstructionQuery): InstructionPage {
-  const idx: number[] = [];
-  for (let i = 0; i < turns.length; i++) if (isInstructionTurn(turns[i])) idx.push(i);
-  const total = idx.length;
+  const list = turns.filter(isInstructionTurn);
+  const total = list.length;
   const offset = Math.min(q.offset, total);
   const end = Math.min(total, offset + q.limit);
   const items: InstructionRow[] = [];
   for (let k = offset; k < end; k++) {
     const pos = q.order === 'desc' ? total - 1 - k : k;
-    const t = turns[idx[pos]];
+    const t = list[pos];
     const p = instructionPreview(t.rawContent);
     const row: InstructionRow = { id: String(t.id), n: pos + 1, at: Number(t.timestamp) || 0, text: p.text };
     if (t.userName) row.userName = String(t.userName);

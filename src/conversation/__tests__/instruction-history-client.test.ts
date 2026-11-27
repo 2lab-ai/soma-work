@@ -7,7 +7,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pageText, registerPageCatalog, scanPage } from '@soma/common/i18n-page';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { INSTRUCTION_HISTORY_CLIENT_JS, INSTRUCTION_HISTORY_CSS } from '../instruction-history-client';
 
 // tsc compiles the tests without the DOM lib; happy-dom supplies these at run time.
@@ -143,8 +143,17 @@ return {
   const api = new Function(...names, body)(...values) as any;
   return { api, calls, fns: fns as any, vp, turnNode, conv };
 }
+// Settles the client's promise chains and timers: real timers step in small waits; fake timers (vi.useFakeTimers)
+// are advanced instead, so a test that waits out a debounce or a retry does not depend on the host's load.
 const flush = async (ms = 10) => {
-  for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, ms));
+  for (let i = 0; i < 6; i++) {
+    if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(ms);
+    else await new Promise((r) => setTimeout(r, ms));
+  }
+};
+const wait = async (ms: number) => {
+  if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(ms);
+  else await new Promise((r) => setTimeout(r, ms));
 };
 const $ = (id: string) => document.getElementById(id) as HTMLElement;
 const page = (offset: number, n: number, total: number, order = 'asc') => ({
@@ -264,6 +273,63 @@ describe('the list — every instruction from the first, a page at a time', () =
     expect($('ih-foot').textContent).toBe('');
   });
 
+  it('a laid-out list asks for the next page only as its end nears (scroll), and 더 보기 asks too', async () => {
+    const { api, calls } = boot({
+      fetch: (url) => {
+        if (url.includes('limit=0')) return { total: 75 };
+        const off = Number(/offset=(\d+)/.exec(url)?.[1]);
+        return page(off, Math.min(30, 75 - off), 75);
+      },
+    });
+    api.ihSync('c1');
+    await flush();
+    const list = $('ih-list');
+    // 50px a row, a 400px box: the list grows as its rows come.
+    Object.defineProperty(list, 'scrollHeight', {
+      configurable: true,
+      get: () => list.querySelectorAll('.ih-row').length * 50,
+    });
+    Object.defineProperty(list, 'clientHeight', { configurable: true, get: () => 400 });
+    api.ihToggle();
+    await flush();
+    const pages = () => calls.filter((u) => !u.includes('limit=0'));
+    expect(pages()).toEqual(['/api/dashboard/session/c1/instructions?offset=0&limit=30&order=asc']);
+    list.scrollTop = 1000; // 1400 of 1500: not within 80px of the end yet
+    list.dispatchEvent(new dom.Event('scroll'));
+    await flush();
+    expect(pages()).toHaveLength(1);
+    list.scrollTop = 1100; // within 80px of the end
+    list.dispatchEvent(new dom.Event('scroll'));
+    await flush();
+    expect(pages()[1]).toBe('/api/dashboard/session/c1/instructions?offset=30&limit=30&order=asc');
+    expect(document.querySelectorAll('#ih-list .ih-row')).toHaveLength(60);
+    list.scrollTop = 0;
+    ($('ih-foot').querySelector('[data-ih="more"]') as HTMLElement).click();
+    await flush();
+    expect(pages()[2]).toBe('/api/dashboard/session/c1/instructions?offset=60&limit=30&order=asc');
+    expect(document.querySelectorAll('#ih-list .ih-row')).toHaveLength(75);
+    expect($('ih-foot').querySelector('[data-ih="more"]')).toBeNull();
+  });
+
+  it('a count that fails is asked again (a blip does not lose the button)', async () => {
+    vi.useFakeTimers();
+    try {
+      let fails = 2;
+      const { api, calls } = boot({ fetch: () => (fails-- > 0 ? new Error('blip') : { total: 7 }) });
+      api.ihSync('c1');
+      await vi.advanceTimersByTimeAsync(10);
+      expect($('ih-dock').hidden).toBe(true);
+      await vi.advanceTimersByTimeAsync(2100);
+      expect(calls).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(5100);
+      expect(calls).toHaveLength(3);
+      expect($('ih-dock').hidden).toBe(false);
+      expect($('ih-dock-n').textContent).toBe('7');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('최근부터: the newest first, kept for the next time', async () => {
     const { api, calls } = boot({
       fetch: (url) => (url.includes('limit=0') ? { total: 5 } : page(0, 5, 5, url.includes('desc') ? 'desc' : 'asc')),
@@ -338,6 +404,12 @@ describe('the list — every instruction from the first, a page at a time', () =
 });
 
 describe('the open list and new instructions (review on #1512)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
   // A server whose total can change between answers: desc pages answered against `total`.
   const server = (st: { total: number }) => (url: string) => {
     if (url.includes('limit=0')) return { total: st.total };
@@ -371,9 +443,35 @@ describe('the open list and new instructions (review on #1512)', () => {
     // The count then lands with the same news: nothing is fetched twice for it.
     const before = calls.length;
     api.ihSync('c1', true);
-    await new Promise((r) => setTimeout(r, 700));
+    await wait(700);
     await flush();
     expect(calls.length).toBe(before + 1); // the count alone
+  });
+
+  it('최근부터: the fetch for the new rows fails — the news is kept, and the next answer brings the rows', async () => {
+    const st = { total: 40 };
+    let failTop = true;
+    const base = server(st);
+    const { api } = boot({
+      fetch: (url) => (failTop && url.includes('offset=0&limit=6&order=desc') ? new Error('blip') : base(url)),
+    });
+    api.ihSetOrder('desc');
+    api.ihSync('c1');
+    await flush();
+    const list = $('ih-list');
+    Object.defineProperty(list, 'scrollHeight', { configurable: true, get: () => 2000 });
+    Object.defineProperty(list, 'clientHeight', { configurable: true, get: () => 400 });
+    api.ihToggle();
+    await flush();
+    st.total = 41;
+    api.ihSync('c1', true);
+    await wait(700);
+    await flush();
+    expect(document.querySelector('#ih-list .ih-n')?.textContent).toBe('#40'); // the top fetch failed
+    failTop = false;
+    await wait(2100); // the count is asked again
+    await flush();
+    expect(document.querySelector('#ih-list .ih-n')?.textContent).toBe('#41');
   });
 
   it('a slow page answered against an older total does not take the button’s newer count back', async () => {
@@ -393,7 +491,7 @@ describe('the open list and new instructions (review on #1512)', () => {
     await flush(); // the second page is now on its way, held
     total = 41;
     api.ihSync('c1', true);
-    await new Promise((r) => setTimeout(r, 700));
+    await wait(700);
     await flush();
     expect($('ih-dock-n').textContent).toBe('41');
     releasePage({ ok: true, json: async () => page(30, 10, 40) });
@@ -474,7 +572,7 @@ describe('a row — 대화 moves to that instruction', () => {
     expect(fns.dashToast).not.toHaveBeenCalled();
   });
 
-  it('the route says the target is not behind the turns held (none): one ask, then the warning', async () => {
+  it('the route says none twice (behind the turns held, then in the latest window): the warning, the chat repainted', async () => {
     const asks: string[] = [];
     const { api, fns } = boot({
       state: { _panelTurnsList: loaded(['u9']), _panelTurnsOldestId: 'u9', _panelTurnsHasMore: true },
@@ -484,10 +582,18 @@ describe('a row — 대화 moves to that instruction', () => {
         return { id: 'c1', turns: loaded(['u7', 'a7']), hasMore: true, through: 'none' };
       },
     });
+    const paintedWhileLoading: boolean[] = [];
+    fns.convPaint.mockImplementation(() => paintedWhileLoading.push(api.state().loading));
     api.ihJump('u99');
     await flush();
-    expect(asks).toHaveLength(1);
+    await flush();
+    expect(asks).toEqual([
+      '/api/dashboard/session/c1?limit=20&before=u9&through=u99',
+      '/api/dashboard/session/c1?limit=20&through=u99',
+    ]);
     expect(fns.dashToast).toHaveBeenCalledWith({ title: '그 지시를 대화에서 찾지 못했어요', tone: 'warning' });
+    // The last paint comes after the load ended: no "loading older" line is left behind.
+    expect(paintedWhileLoading[paintedWhileLoading.length - 1]).toBe(false);
   });
 
   it('no page yet (the first one failed): the chat says loading while the jump loads — no 다시 시도 to race it', async () => {
@@ -515,7 +621,41 @@ describe('a row — 대화 moves to that instruction', () => {
     expect(api.state().loading).toBe(false);
   });
 
+  it('the chat’s copy is behind the record (a missed push): the latest window back to the turn takes its place', async () => {
+    const asks: string[] = [];
+    const pending = { id: 'opt-1', role: 'user', timestamp: 99, rawContent: '보내는 중', _optimistic: true };
+    const { api, fns } = boot({
+      state: {
+        _panelTurnsList: [...loaded(['u5', 'a5']), pending],
+        _panelTurnsOldestId: 'u5',
+        _panelTurnsHasMore: true,
+      },
+      fetch: (url) => {
+        if (!url.includes('through=')) return { total: 1 };
+        asks.push(url);
+        return url.includes('before=')
+          ? { id: 'c1', turns: loaded(['u4', 'a4']), hasMore: true, through: 'none' }
+          : { id: 'c1', turns: loaded(['u5', 'a5', 'u6', 'a6', 'u7']), hasMore: true, through: 'reached' };
+      },
+    });
+    api.ihJump('u7');
+    await flush();
+    await flush();
+    expect(asks).toEqual([
+      '/api/dashboard/session/c1?limit=20&before=u5&through=u7',
+      '/api/dashboard/session/c1?limit=20&through=u7',
+    ]);
+    const st = api.state();
+    expect(st.list.map((t: Json) => t.id)).toEqual(['u5', 'a5', 'u6', 'a6', 'u7', 'opt-1']);
+    expect(st.oldest).toBe('u5');
+    expect(fns.dashToast).not.toHaveBeenCalled();
+  });
+
   it('a load on its way (the first page) settles first, then the jump goes on', async () => {
+    vi.useFakeTimers();
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
     const { api, calls } = boot({
       state: { _panelTurnsLoading: true },
       fetch: (url) =>
@@ -525,7 +665,7 @@ describe('a row — 대화 moves to that instruction', () => {
     await flush();
     expect(calls.some((u) => u.includes('through='))).toBe(false);
     api.set('_panelTurnsLoading', false);
-    await new Promise((r) => setTimeout(r, 150));
+    await wait(150);
     await flush();
     expect(calls).toContain('/api/dashboard/session/c1?limit=20&through=u1');
     expect(api.state().list.map((t: Json) => t.id)).toEqual(['u1', 'a1']);

@@ -16,6 +16,7 @@ export const INSTRUCTION_HISTORY_CLIENT_JS = String.raw`
 // ── 보낸 지시 (instruction-history-client.ts) ──
 var IH_PAGE = 30; // rows per page of the list
 var IH_COUNT_DEBOUNCE_MS = 600; // a burst of turns asks for the count once
+var IH_COUNT_RETRY_MS = [2000, 5000, 15000]; // a count that failed is asked again (a blip must not lose the button)
 var IH_TEXT_LABEL = '보낸 지시 {0}개 — 눌러서 목록 보기';
 var IH_TEXT_NOT_FOUND = '그 지시를 대화에서 찾지 못했어요';
 var IH_TEXT_LOAD_FAILED = '대화를 불러오지 못했어요';
@@ -31,7 +32,7 @@ var IH_TEXT_SKILLS_ONLY = '(스킬만 호출)';
 // page's offset (null: all loaded) · gen: bumped on a new conversation, an order change and each reopening (an older
 // answer is dropped) · countSeq: the latest count asked for (an older count's answer is dropped) · jump: the
 // instruction 대화 is moving to.
-var _ih = { cid: '', total: 0, rows: [], listTotal: 0, next: 0, order: 'asc', loading: false, why: '', open: false, gen: 0, countSeq: 0, timer: 0, jump: null };
+var _ih = { cid: '', total: 0, rows: [], listTotal: 0, next: 0, order: 'asc', loading: false, why: '', open: false, gen: 0, countSeq: 0, countTries: 0, timer: 0, jump: null };
 
 // Pure: the number on the button — 999+ past three digits.
 function ihCountText(n) {
@@ -102,6 +103,7 @@ function ihSync(cid, refresh) {
     _ih.why = '';
     _ih.loading = false;
     _ih.jump = null;
+    _ih.countTries = 0;
     _ih.gen++;
     ihClose(false);
     ihPaint();
@@ -123,10 +125,15 @@ function ihCount() {
   var seq = ++_ih.countSeq;
   ihGetJson(ihUrl(cid, 0, 0, 'asc')).then(function(d) {
     if (cid !== _ih.cid || seq !== _ih.countSeq) return;
+    _ih.countTries = 0;
     _ih.total = Math.max(0, Number(d && d.total) || 0);
     ihPaint();
     ihSeen(_ih.total);
-  }).catch(function() {}); // a count that could not be had keeps the last one (none: no button)
+  }).catch(function() {
+    // A count that could not be had keeps the last one (none: no button) and is asked again a few times.
+    if (cid !== _ih.cid || seq !== _ih.countSeq || _ih.countTries >= IH_COUNT_RETRY_MS.length) return;
+    ihCountSoon(IH_COUNT_RETRY_MS[_ih.countTries++]);
+  });
 }
 // A total the server reported (the count, or a list page): the open list takes in the instructions newer than the ones
 // it has — whichever answer brings the news first, once.
@@ -136,14 +143,15 @@ function ihSeen(total) {
     ihPaint();
   }
   if (!_ih.open || !_ih.listTotal || total <= _ih.listTotal) return;
-  var by = total - _ih.listTotal;
+  var prev = _ih.listTotal;
   _ih.listTotal = total;
-  ihGrow(by);
+  ihGrow(total - prev, prev);
 }
 // New instructions for the open list: 처음부터 — the rows past the last one loaded are a page away again; 최근부터 —
 // the newest rows (a few more than came, so one that lands meanwhile is not skipped) go on top, each once. Later
-// 최근부터 pages start where they would have: a row the shift brings up again is listed once.
-function ihGrow(by) {
+// 최근부터 pages start where they would have: a row the shift brings up again is listed once. A fetch that fails gives
+// the news back (listTotal: prev) and asks for the count again, so the rows come with the next answer.
+function ihGrow(by, prev) {
   if (_ih.order === 'asc') {
     if (_ih.next === null) _ih.next = _ih.rows.length;
     ihPaintList();
@@ -161,7 +169,11 @@ function ihGrow(by) {
     // The reader keeps the rows they were on (none moves under them unless they were at the very top).
     if (list && list.scrollTop > 0) list.scrollTop += list.scrollHeight - h;
     if (d && typeof d.total === 'number') ihSeen(d.total);
-  }).catch(function() {});
+  }).catch(function() {
+    if (gen !== _ih.gen) return;
+    if (_ih.listTotal > prev) _ih.listTotal = prev;
+    ihCountSoon(IH_COUNT_RETRY_MS[0]);
+  });
 }
 
 // The button: shown while the open card has an instruction; the queue's round button moves left of it.
@@ -293,7 +305,7 @@ function ihMaybeMore() {
 function ihJump(id) {
   ihClose(false);
   if (!id || !panelSessionKey) return;
-  _ih.jump = { id: String(id), gen: _panelGen, waits: 0, asks: 0, done: false, failed: false };
+  _ih.jump = { id: String(id), gen: _panelGen, waits: 0, asks: 0, done: false, failed: false, fresh: false, freshNext: false };
   if (_panelAgent) selectPanelAgent('');
   if (_psec !== 'conv') selectPanelSection('conv');
   ihReveal();
@@ -305,7 +317,8 @@ function ihHasTurn(id) {
 // The turn is in the chat's data: there it goes. Else the turns back to it come first (one answer, the route's
 // through; a very long way back takes a few — the route says 'capped' while the target is still further) — after a
 // load already on its way (the first page, an older page) settles. The route says when the target is not behind the
-// turns held ('none'): that is the last ask.
+// turns held ('none'): the chat's copy may be behind the record (a missed push) — one ask for the latest window back to
+// it takes the chat's place (contiguous; older pages come back on scroll-up); after that, 'none' is the last word.
 function ihReveal() {
   var j = _ih.jump;
   if (!j || j.gen !== _panelGen) return;
@@ -323,7 +336,10 @@ function ihReveal() {
   var cid = panelConvId;
   if (!cid || j.done || j.asks >= 50) return ihMiss(IH_TEXT_NOT_FOUND);
   j.asks++;
-  var oldest = _panelTurnsOldestId;
+  var fresh = !!j.freshNext;
+  j.freshNext = false;
+  if (fresh) j.fresh = true;
+  var oldest = fresh ? null : _panelTurnsOldestId;
   var url = '/api/dashboard/session/' + encodeURIComponent(cid) + '?limit=' + PANEL_TURNS_PAGE
     + (oldest ? '&before=' + encodeURIComponent(oldest) : '') + '&through=' + encodeURIComponent(j.id);
   _panelTurnsLoading = true;
@@ -342,8 +358,9 @@ function ihReveal() {
         _panelTurnsList = turns.concat(_panelTurnsList);
       }
     } else {
-      // No page yet (the first one failed or was empty): this answer is the chat's first page, reaching back to it.
-      _panelTurnsList = ptMergeFetched(turns, _panelTurnsList);
+      // No page yet (the first one failed or was empty), or the chat's copy is behind: this answer is the chat's first
+      // page, reaching back to it — only this browser's own pending instructions stay on from the old copy.
+      _panelTurnsList = ptMergeFetched(turns, fresh ? _panelTurnsList.filter(function(t) { return t && t._optimistic; }) : _panelTurnsList);
       _panelTurnsCid = (data && data.id) || cid;
       _panelTurnsOldestId = turns.length ? turns[0].id : null;
       _panelTurnsMsg = _panelTurnsList.length ? '' : 'none';
@@ -351,7 +368,10 @@ function ihReveal() {
     }
     _panelTurnsHasMore = turns.length > 0 && !!(data && data.hasMore);
     _panelOlderWhy = '';
-    if (!(data && data.through === 'capped' && _panelTurnsHasMore)) j.done = true;
+    var state = data && data.through;
+    if (state === 'capped' && _panelTurnsHasMore) return; // further back: ask again
+    if (state === 'none' && !j.fresh && !ihHasTurn(j.id)) j.freshNext = true;
+    else j.done = true;
   }).catch(function(err) {
     if (j.gen !== _panelGen) return;
     var why = String((err && err.message) || '네트워크 오류');
@@ -364,10 +384,8 @@ function ihReveal() {
   }).then(function() {
     if (j.gen !== _panelGen) return;
     _panelTurnsLoading = false;
-    if (j.failed) {
-      convPaint();
-      return ihMiss(IH_TEXT_LOAD_FAILED);
-    }
+    convPaint(); // the loading line goes, whatever comes next
+    if (j.failed) return ihMiss(IH_TEXT_LOAD_FAILED);
     ihReveal();
   });
 }

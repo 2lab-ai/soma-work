@@ -147,7 +147,6 @@ function turnsPage(url: URL) {
 }
 
 const PAGE_HELPERS = [
-  'window.__card = function (k) { var h = document.getElementById("kanban"); var r = h && h.shadowRoot; var all = r ? r.querySelectorAll("li.ib-card[data-card]") : []; for (var i = 0; i < all.length; i++) if (all[i].getAttribute("data-card") === k) return all[i]; return null; };',
   'window.WebSocket = function StubWebSocket(url) { this.url = url; window.__ws = this; };',
   'window.WebSocket.prototype.close = function () {};',
   'window.__name = function (f) { return f; };',
