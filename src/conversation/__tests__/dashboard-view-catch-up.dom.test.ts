@@ -19,6 +19,10 @@
  *       return itself lands every planned board element still (a card held in its lane when the page left)
  *   C8  the wiring: visibility / freeze / page show events, the socket's open and the end of every message, the board
  *       poll's hold, the layout check's quiet view switch; the reader's own motion (canAnimate) is left alone
+ *   C9  every finite animation on the page — the document's and each element's shadow tree's, nested — jumps to its
+ *       end (a chat turn's or a work-log row's entrance); endless ones run on; one that cannot finish is left
+ *   C10 the return lands them at once and then once per frame while the page catches up; settled or gone again, the
+ *       frame loop stops
  *
  * Executes the shipped client code cut out of renderDashboardPage()'s template literal; C7 runs it against the
  * installed @2lab.ai/ui.
@@ -77,6 +81,8 @@ const VIEW_FNS = [
   'viewQuiet',
   'viewStill',
   'viewLand',
+  'viewFinishMotion',
+  'viewFinishLoop',
 ];
 const VIEW_VARS = [
   'VIEW_SETTLE_QUIET_MS',
@@ -86,6 +92,7 @@ const VIEW_VARS = [
   '_viewSettleTimer',
   '_viewHolds',
   '_viewGen',
+  '_viewFinishRaf',
 ];
 type View = {
   viewCatchingUp(): boolean;
@@ -99,7 +106,11 @@ type View = {
 // A page whose visibility the test flips (document.hidden), with the timers faked; no board elements on it.
 function page(hidden = false) {
   const doc = { hidden, querySelectorAll: () => [] };
-  const v = load<View>(VIEW_FNS, VIEW_VARS, { document: doc });
+  const v = load<View>(VIEW_FNS, VIEW_VARS, {
+    document: doc,
+    requestAnimationFrame: () => 0,
+    cancelAnimationFrame: () => {},
+  });
   return { v, doc };
 }
 
@@ -405,6 +416,114 @@ describe('the board element paints the past still (C7)', () => {
     expect(seen).toBe(true);
     expect(Object.getOwnPropertyDescriptor(doc, 'hidden')).toBeUndefined();
     expect(doc.hidden).toBe(false);
+  });
+});
+
+// ── C9 / C10: every element's entrance lands while the page catches up ──
+type Anim = { name: string; endTime: number; playState: string; finished: number; finish(): void };
+function anim(name: string, endTime: number, playState = 'running', throws = false): Anim {
+  const a: Anim = {
+    name,
+    endTime,
+    playState,
+    finished: 0,
+    finish() {
+      if (throws) throw new Error('InvalidStateError');
+      a.finished++;
+      a.playState = 'finished';
+    },
+  };
+  return a;
+}
+// A scope (the document or a shadow root): its elements, and the animations whose targets are in it.
+function scope(els: unknown[], anims: Anim[]) {
+  return {
+    querySelectorAll: (sel: string) => (sel === '*' ? els : []),
+    getAnimations: () =>
+      anims.map((a) => ({
+        ...a,
+        effect: { getComputedTiming: () => ({ endTime: a.endTime }) },
+        finish: () => a.finish(),
+        playState: a.playState,
+      })),
+  };
+}
+
+describe('every finite animation lands while catching up (C9)', () => {
+  it('the document’s and each shadow tree’s, nested; endless and finished ones are left; one that throws is skipped', () => {
+    const turnIn = anim('ls-in@cv-turn', 360);
+    const rowIn = anim('wl-rise@wl-entry', 320);
+    const spin = anim('wl-spin', Number.POSITIVE_INFINITY);
+    const beam = anim('beam', Number.POSITIVE_INFINITY);
+    const done = anim('old', 200, 'finished');
+    const stuck = anim('zero-rate', 300, 'running', true);
+    const pageFade = anim('panel-fade', 180);
+    // document → <ui-conversation> (shadow) → <ui-ai-answer> (shadow); document → <ui-work-log> (shadow)
+    const answerRoot = scope([], [stuck]);
+    const convRoot = scope([{ shadowRoot: answerRoot }, {}], [turnIn, beam]);
+    const wlRoot = scope([], [rowIn, spin, done]);
+    const doc = scope([{ shadowRoot: convRoot }, { shadowRoot: null }, { shadowRoot: wlRoot }], [pageFade]);
+    const v = load<{ viewFinishMotion(): number }>(['viewFinishMotion'], [], { document: doc });
+    expect(v.viewFinishMotion()).toBe(3);
+    expect([turnIn, rowIn, pageFade].map((a) => a.finished)).toEqual([1, 1, 1]);
+    expect([spin, beam, done, stuck].map((a) => a.finished)).toEqual([0, 0, 0, 0]);
+  });
+
+  it('a scope without getAnimations (an old browser) is passed over', () => {
+    const doc = { querySelectorAll: () => [] };
+    const v = load<{ viewFinishMotion(): number }>(['viewFinishMotion'], [], { document: doc });
+    expect(v.viewFinishMotion()).toBe(0);
+  });
+});
+
+describe('the return lands them at once, then once per frame while catching up (C10)', () => {
+  it('runs on the return and each frame until settled; a leave stops the loop', () => {
+    vi.useFakeTimers();
+    const frames: Array<() => void> = [];
+    let cancelled = 0;
+    const row = anim('wl-rise@wl-entry', 320);
+    const anims: Anim[] = [row];
+    const doc = { hidden: true, ...scope([], anims) };
+    doc.getAnimations = () =>
+      anims.map((a) => ({
+        ...a,
+        effect: { getComputedTiming: () => ({ endTime: a.endTime }) },
+        finish: () => a.finish(),
+        playState: a.playState,
+      }));
+    const v = load<View>(VIEW_FNS, VIEW_VARS, {
+      document: doc,
+      requestAnimationFrame: (f: () => void) => frames.push(f),
+      cancelAnimationFrame: () => cancelled++,
+    });
+    v.viewLeave();
+    doc.hidden = false;
+    v.viewReturn();
+    expect(row.finished).toBe(1); // at once, before the first frame back is painted
+    expect(frames).toHaveLength(1);
+    // A held message adds a row: the next frame lands it, and asks for the next.
+    const next = anim('ls-in@cv-turn', 360);
+    anims.push(next);
+    frames.shift()?.();
+    expect(next.finished).toBe(1);
+    expect(frames).toHaveLength(1);
+    // Settled: the loop's next frame finds nothing to do and stops.
+    vi.advanceTimersByTime(400);
+    expect(v.viewCatchingUp()).toBe(false);
+    const live = anim('ls-in@cv-turn', 360);
+    anims.push(live);
+    frames.shift()?.();
+    expect(live.finished).toBe(0); // a live entrance plays
+    expect(frames).toHaveLength(0);
+    // Back again, then away before settling: the loop is cancelled.
+    doc.hidden = true;
+    v.viewLeave();
+    doc.hidden = false;
+    v.viewReturn();
+    expect(frames).toHaveLength(1);
+    doc.hidden = true;
+    v.viewLeave();
+    expect(cancelled).toBeGreaterThan(0);
   });
 });
 
