@@ -157,6 +157,19 @@ describe('tenantReadBoundary', () => {
     }
   });
 
+  it("the owner's own file a tool of the session reads is opened to the shell only, and not through a link", () => {
+    const client = mk('home/.config/agent-mailbox/client.json', true);
+    const linked = path.join(home, '.config', 'mailbox-link.json');
+    fs.symlinkSync(path.join(home, '.config', 'llmux.json'), linked);
+    const { allowRead, exemptPaths } = tenantReadBoundary(input({ ownFiles: [client, linked] }));
+    expect(allowRead).toContain(client);
+    expect(exemptPaths).not.toContain(client);
+    expect(allowRead).not.toContain(path.join(home, '.config', 'llmux.json'));
+    // Nothing denied on purpose comes back through it.
+    const loginDir = path.join(home, '.ssh');
+    expect(tenantReadBoundary(input({ ownFiles: [loginDir] })).allowRead).not.toContain(loginDir);
+  });
+
   it('skips what is not there', () => {
     const { allowRead, exemptPaths } = tenantReadBoundary(
       input({ ownDataDir: path.join(dataDir, 'U-none'), ghConfigDir: path.join(ROOT, 'nope') }),

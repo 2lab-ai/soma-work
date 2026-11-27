@@ -813,6 +813,9 @@ export class McpConfigBuilder {
             }
           : {}),
         ...(requester ? { SOMA_REQUESTER: requester } : {}),
+        // Its host commands run outside every sandbox: a host key held only by the agent reaches them here, since
+        // the agent's own environment (which this server inherits) no longer carries the agent socket.
+        ...(process.env.SSH_AUTH_SOCK ? { SSH_AUTH_SOCK: process.env.SSH_AUTH_SOCK } : {}),
       },
     };
   }

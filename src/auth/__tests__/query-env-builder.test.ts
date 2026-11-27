@@ -100,6 +100,10 @@ describe('buildQueryEnv', () => {
       ANTHROPIC_API_KEY: 'sk-ant-api03-fixture',
       ANTHROPIC_CUSTOM_HEADERS: 'Authorization: Bearer fixture',
       SSH_AUTH_SOCK: '/tmp/agent.sock',
+      GH_TOKEN: 'gho_operator-fixture',
+      HTTP_PROXY: 'http://user:proxy-password-fixture@proxy.local:3128',
+      JIRA_API_TOKEN: 'jira-fixture',
+      AWS_SECRET_ACCESS_KEY: 'aws-fixture-without-a-selector',
     };
     const KEPT: Record<string, string> = {
       HOME: '/Users/bot',
@@ -113,6 +117,11 @@ describe('buildQueryEnv', () => {
       DEBUG: 'true',
       NODE_EXTRA_CA_CERTS: '/etc/ca.pem',
       HTTPS_PROXY: 'http://proxy.local:3128',
+      SOMA_DATA_DIR: '/opt/soma/dev/data',
+      DISABLE_AUTO_COMPACT: '0',
+      SOMA_HTML_SERVE_BIND: '127.0.0.1',
+      CHORE_REPOS_MD: '/opt/soma/repos.md',
+      PLAYWRIGHT_FROM: '/opt/playwright',
     };
     beforeEach(() => {
       for (const [key, value] of Object.entries({ ...SECRETS, ...KEPT })) vi.stubEnv(key, value);
@@ -131,6 +140,15 @@ describe('buildQueryEnv', () => {
     it('the locale, the config locations, the hook port, the TLS and proxy setup do', () => {
       const { env } = buildQueryEnv(makeLease('slot-a', 'LEASE-TOKEN', 'cct'));
       for (const [key, value] of Object.entries(KEPT)) expect(env[key], key).toBe(value);
+    });
+
+    it("a host that selected Bedrock hands the CLI that provider's settings, and only then", () => {
+      vi.stubEnv('CLAUDE_CODE_USE_BEDROCK', '1');
+      vi.stubEnv('AWS_REGION', 'us-east-1');
+      const { env } = buildQueryEnv(makeLease('slot-a', 'LEASE-TOKEN', 'cct'));
+      expect(env.CLAUDE_CODE_USE_BEDROCK).toBe('1');
+      expect(env.AWS_REGION).toBe('us-east-1');
+      expect(env.AWS_SECRET_ACCESS_KEY).toBe('aws-fixture-without-a-selector');
     });
 
     it("the bot's own GitHub token reaches gh only while no bot-owned gh login serves it", async () => {

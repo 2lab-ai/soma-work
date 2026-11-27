@@ -11,10 +11,14 @@ describe('loggableOptions — query options as they may be logged', () => {
     mcpServers: {
       'slack-mcp': {
         command: 'node',
-        args: ['x.js'],
+        args: ['x.js', '--api-key', 'arg-fixture'],
         env: { SLACK_BOT_TOKEN: 'bot-fixture', SLACK_MCP_CONTEXT: '{}' },
       },
-      remote: { type: 'http', url: 'https://mcp.example', headers: { Authorization: 'Bearer header-fixture' } },
+      remote: {
+        type: 'http',
+        url: 'https://mcp.example/sse?sig=url-fixture',
+        headers: { Authorization: 'Bearer header-fixture' },
+      },
       inproc: { type: 'sdk', name: 'inproc' },
     },
   };
@@ -22,12 +26,22 @@ describe('loggableOptions — query options as they may be logged', () => {
   it("names the environment variables, the CLI's and each MCP server's, and holds none of their values", () => {
     const logged = loggableOptions(options as never);
     const text = JSON.stringify(logged);
-    for (const secret of ['lmk-fixture-secret', 'oauth-fixture', 'bot-fixture', 'header-fixture', '/usr/bin']) {
+    for (const secret of [
+      'lmk-fixture-secret',
+      'oauth-fixture',
+      'bot-fixture',
+      'header-fixture',
+      'arg-fixture',
+      'url-fixture',
+      '/usr/bin',
+    ]) {
       expect(text).not.toContain(secret);
     }
     expect(logged.env).toEqual(['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'PATH']);
     const servers = logged.mcpServers as Record<string, Record<string, unknown>>;
     expect(servers['slack-mcp'].env).toEqual(['SLACK_BOT_TOKEN', 'SLACK_MCP_CONTEXT']);
+    expect(servers['slack-mcp'].args).toBe('3 args');
+    expect(servers['slack-mcp'].command).toBe('node');
     expect(servers.remote.headers).toEqual(['Authorization']);
     expect(servers.remote.url).toBe('https://mcp.example');
   });

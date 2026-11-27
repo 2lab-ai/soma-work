@@ -231,6 +231,11 @@ describe('redactSecrets — PEM private keys', () => {
     expect(out).not.toContain('MIIEvQIBADANfixture');
   });
 
+  it('leaves a header quoted alone, and the message after it', () => {
+    const message = `expected a ${dashes}BEGIN RSA PRIVATE KEY${dashes} header; got a public key in deploy.pem`;
+    expect(S(redactSecrets(message))).toBe(message);
+  });
+
   it('leaves a public key alone', () => {
     const pub = pem('PUBLIC KEY', 'MIIBIjANpublicfixture');
     expect(S(redactSecrets(pub))).toBe(pub);

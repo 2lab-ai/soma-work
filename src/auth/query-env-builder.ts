@@ -126,19 +126,16 @@ const INHERITED_ENV_NAMES: ReadonlySet<string> = new Set([
   'NODE_EXTRA_CA_CERTS',
   'REQUESTS_CA_BUNDLE',
   'CURL_CA_BUNDLE',
-  'HTTP_PROXY',
-  'HTTPS_PROXY',
   'NO_PROXY',
-  'ALL_PROXY',
-  'http_proxy',
-  'https_proxy',
   'no_proxy',
-  'all_proxy',
   // soma-work's locations: its config directory (the MCP servers resolve their files from it), the CLI's, the data
-  // directory, and the port the hook proxy posts to.
+  // directory, a profile install's home and data, and the port the hook proxy posts to.
   'SOMA_CONFIG_DIR',
   'CLAUDE_CONFIG_DIR',
   'DATA_DIR',
+  'SOMA_DATA_DIR',
+  'SOMAWORK_HOME',
+  'SOMA_HOME',
   'CONVERSATION_VIEWER_PORT',
   'SOMA_HOOK_PORT',
   'HOOKS_PROXY_ENABLED',
@@ -147,7 +144,89 @@ const INHERITED_ENV_NAMES: ReadonlySet<string> = new Set([
   'LOG_LEVEL',
   'LOG_CATEGORIES',
   'LOG_MUTE',
+  // CLI settings an operator may set for every turn; the builder keeps them when set (build-stream-options.ts).
+  'DISABLE_AUTO_COMPACT',
+  'CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE',
+  'CLAUDE_CODE_STREAM_CLOSE_TIMEOUT',
+  // The bundled skills' settings — locations and switches, no credentials: the HTML publisher (`SOMA_HTML_SERVE_BIND`
+  // keeps it on loopback), the chore registry, Playwright and Chromium.
+  'SOMA_HTML_SERVE_ROOT',
+  'SOMA_HTML_SERVE_PORT',
+  'SOMA_HTML_SERVE_BIND',
+  'SOMA_HTML_LEGACY_ROOT',
+  'CHORE_REPOS_MD',
+  'CHORE_ENV_FILE',
+  'PLAYWRIGHT_FROM',
+  'CHROMIUM_PATH',
+  'LOTTIE_CDN',
 ]);
+
+/** Proxy settings, passed on only when they carry no password (`http://user:pass@proxy`). */
+const PROXY_NAMES: ReadonlySet<string> = new Set([
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'all_proxy',
+]);
+
+function carriesCredentials(proxy: string): boolean {
+  try {
+    const url = new URL(proxy);
+    return url.username !== '' || url.password !== '';
+  } catch {
+    return /\/\/[^/]*@/.test(proxy);
+  }
+}
+
+/**
+ * Bedrock and Vertex: the CLI's own credentials when the host selects one of them (ccp mode only — llmux owns
+ * routing). Passed on only with the selector, as the lease's OAuth token is: the CLI cannot run without them.
+ */
+const PROVIDER_ENV: ReadonlyArray<{ selector: string; names: readonly string[]; prefixes: readonly string[] }> = [
+  {
+    selector: 'CLAUDE_CODE_USE_BEDROCK',
+    names: [
+      'AWS_REGION',
+      'AWS_DEFAULT_REGION',
+      'AWS_PROFILE',
+      'AWS_ACCESS_KEY_ID',
+      'AWS_SECRET_ACCESS_KEY',
+      'AWS_SESSION_TOKEN',
+      'AWS_BEARER_TOKEN_BEDROCK',
+      'ANTHROPIC_BEDROCK_BASE_URL',
+      'CLAUDE_CODE_SKIP_BEDROCK_AUTH',
+    ],
+    prefixes: [],
+  },
+  {
+    selector: 'CLAUDE_CODE_USE_VERTEX',
+    names: [
+      'ANTHROPIC_VERTEX_PROJECT_ID',
+      'CLOUD_ML_REGION',
+      'GOOGLE_APPLICATION_CREDENTIALS',
+      'ANTHROPIC_VERTEX_BASE_URL',
+      'CLAUDE_CODE_SKIP_VERTEX_AUTH',
+    ],
+    prefixes: ['VERTEX_REGION_'],
+  },
+];
+
+/** The selected provider's variables from `source`; none when no provider is selected. */
+export function providerEnv(source: NodeJS.ProcessEnv): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const provider of PROVIDER_ENV) {
+    const selected = source[provider.selector];
+    if (!selected || selected === '0' || selected.toLowerCase() === 'false') continue;
+    env[provider.selector] = selected;
+    for (const [key, value] of Object.entries(source)) {
+      if (typeof value !== 'string') continue;
+      if (provider.names.includes(key) || provider.prefixes.some((prefix) => key.startsWith(prefix))) env[key] = value;
+    }
+  }
+  return env;
+}
 
 /** `LC_*` locale categories. */
 const INHERITED_ENV_PREFIXES: readonly string[] = ['LC_'];
@@ -158,6 +237,8 @@ export function inheritedAgentEnv(source: NodeJS.ProcessEnv): Record<string, str
   for (const [key, value] of Object.entries(source)) {
     if (typeof value !== 'string') continue;
     if (INHERITED_ENV_NAMES.has(key) || INHERITED_ENV_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+      env[key] = value;
+    } else if (PROXY_NAMES.has(key) && !carriesCredentials(value)) {
       env[key] = value;
     }
   }
@@ -260,12 +341,15 @@ export function buildQueryEnv(lease: SlotAuthLease, opts?: QueryEnvOptions): Que
   const ghConfigDir = getAgentGhConfigDir();
   if (ghConfigDir) {
     env.GH_CONFIG_DIR = ghConfigDir;
-  } else {
-    for (const key of ['GITHUB_TOKEN', 'GH_TOKEN'] as const) {
-      const value = process.env[key];
-      if (typeof value === 'string') env[key] = value;
-    }
+  } else if (typeof process.env.GITHUB_TOKEN === 'string') {
+    // The bot's token only (`git-credentials-manager.ts` sets it): an ambient GH_TOKEN would be someone else's, and gh
+    // prefers it.
+    env.GITHUB_TOKEN = process.env.GITHUB_TOKEN;
   }
+
+  // Layer 1c — a host that selected Bedrock or Vertex hands the CLI that provider's own settings (ccp mode: llmux owns
+  // routing and removes the selectors below).
+  if (getAuthMode() !== 'llmux') Object.assign(env, providerEnv(process.env));
 
   // Layer 2 — operator-controlled additional env. Already validated +
   // denylist-filtered by `parseClaudeEnv` at load time; values are guaranteed

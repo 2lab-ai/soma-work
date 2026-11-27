@@ -60,7 +60,6 @@ import { isSafePathSegment, normalizeTmpPath } from '../../path-utils';
 import type { SdkPluginPath } from '../../plugin/types';
 import { getProjectMemoryStore, projectMemoryPromptBlock } from '../../project-memory-store';
 import {
-  ADMIN_ALL_DOMAINS_RULE,
   adminSandboxProfile,
   credentialPaths,
   credentialReadDenyRules,
@@ -416,7 +415,9 @@ export async function buildStreamOptions(
     contextUser && isSafePathSegment(contextUser) ? normalizeTmpPath(path.join('/tmp', contextUser)) : undefined;
   // An admin's native writes are held to the same roots as its sandboxed Bash, the temp directory
   // included (env-access WU2, #1210): a native Write anywhere else could replace a binary the bot runs.
-  const nativeWriteRoots: readonly string[] | undefined = sandboxDisabled
+  // Grows once the read boundary has made the session's own CLI temp directory (or an empty cwd): the check reads it
+  // per call.
+  const nativeWriteRoots: string[] | undefined = sandboxDisabled
     ? undefined
     : [...(workingDirectory ? [workingDirectory] : []), ...(sandboxUserDir ? [sandboxUserDir] : [])];
 
@@ -867,9 +868,10 @@ export async function buildStreamOptions(
       // Every domain is allowed by the rule added to `settings.permissions.allow` below.
       sandboxConfig.network = { ...adminProfile.network, allowedDomains: [...adminProfile.network.allowedDomains] };
     } else if (networkDisabled) {
-      // The allowlist turned off (`sandbox network off`): every domain, by the same rule — what the setting promises
-      // everywhere it is shown. Without network settings the CLI would ask per domain instead.
-      sandboxConfig.network = { allowedDomains: [...DEV_DOMAIN_ALLOWLIST] };
+      // The allowlist turned off (`sandbox network off`): every domain for sandboxed commands — what the setting
+      // promises everywhere it is shown. `*` opens the sandbox's network only, not native WebFetch's approvals (both
+      // measured); without network settings the CLI would ask per domain instead.
+      sandboxConfig.network = { allowedDomains: ['*'] };
     } else {
       // A domain off the allowlist is refused, not asked for: in bypass mode the CLI grants every ask, so an
       // allowlist that asks held nothing (measured).
@@ -941,13 +943,7 @@ export async function buildStreamOptions(
         }),
       ),
     ];
-    // The admin profile's rules (every domain); for anyone else, the every-domain rule once the allowlist is off.
-    const networkRules = adminProfile
-      ? adminProfile.allowRules
-      : !sandboxDisabled && networkDisabled
-        ? [ADMIN_ALL_DOMAINS_RULE]
-        : [];
-    const allow = [...(base.permissions?.allow ?? []), ...networkRules];
+    const allow = [...(base.permissions?.allow ?? []), ...(adminProfile?.allowRules ?? [])];
     options.settings = {
       ...base,
       // Plan mode writes its plan file with the native Write tool, by default under the CLI's config
@@ -1122,6 +1118,7 @@ export async function buildStreamOptions(
         queryEnv,
         grantedSkillDirs: envSkillReadableSkillDirs(envRegistry, contextUser, scope),
         claudeTmpRoot: deps.claudeTmpRoot,
+        nativeWriteRoots,
       },
       logger,
     );
@@ -1147,6 +1144,8 @@ function applyTenantReadBoundary(
     queryEnv: Record<string, string | undefined>;
     grantedSkillDirs: string[];
     claudeTmpRoot?: string;
+    /** The native write check's roots: the temp directory and an empty cwd made here are the session's too. */
+    nativeWriteRoots?: string[];
   },
   logger: BuildStreamOptionsDeps['logger'],
 ): void {
@@ -1164,7 +1163,8 @@ function applyTenantReadBoundary(
   // working directory: give them an empty one instead.
   if (!options.cwd) {
     options.cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'soma-no-cwd-'));
-    logger.warn('A non-admin turn without a session folder runs in an empty directory', { user: input.user });
+    input.nativeWriteRoots?.push(options.cwd);
+    logger.warn('A turn without a session folder runs in an empty directory', { user: input.user });
   }
   // The user's root, also a working directory of the file tools, is kept only where it really is.
   if (options.additionalDirectories) {
@@ -1187,6 +1187,7 @@ function applyTenantReadBoundary(
     if (!options.env) options.env = {};
     options.env.CLAUDE_CODE_TMPDIR = claudeTmpDir;
     filesystem.allowWrite = [...(filesystem.allowWrite ?? []), claudeTmpDir];
+    input.nativeWriteRoots?.push(claudeTmpDir);
   } else {
     logger.warn("The session's temp directory could not be made: its shell keeps the CLI's default", {
       user: input.user,
@@ -1217,6 +1218,8 @@ function applyTenantReadBoundary(
     ghConfigDir: input.queryEnv.GH_CONFIG_DIR,
     pluginPaths: (options.plugins ?? []).map((plugin) => plugin.path),
     grantedSkillDirs: input.grantedSkillDirs,
+    // The mailbox owner's session sends mail with the client's settings file (`mailbox/session-address.ts`).
+    ownFiles: options.env?.MAILBOX_CONFIG ? [options.env.MAILBOX_CONFIG] : [],
     denied: filesystem.denyRead ?? [],
   });
   if (boundary.redirected.length > 0) {

@@ -496,10 +496,10 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
       const { options } = await buildStreamOptions({ queryEnv: {}, slackContext: makeSlackContext() }, deps);
       const sandbox = options.sandbox as Record<string, unknown>;
       expect(sandbox.enabled).toBe(true);
-      // Not strict, and every domain on the allowlist through the rule; without network settings the CLI would ask
-      // per domain instead (measured).
-      expect(sandbox.network).toEqual({ allowedDomains: [...DEV_DOMAIN_ALLOWLIST] });
-      expect((options.settings as { permissions?: { allow?: string[] } }).permissions?.allow).toContain(
+      // Every domain for sandboxed commands; without network settings the CLI would ask per domain instead
+      // (measured). Native WebFetch keeps its own approvals.
+      expect(sandbox.network).toEqual({ allowedDomains: ['*'] });
+      expect((options.settings as { permissions?: { allow?: string[] } }).permissions?.allow ?? []).not.toContain(
         'WebFetch(domain:*)',
       );
     } finally {
@@ -1186,10 +1186,10 @@ describe('sandbox: admin profile and write protection (env-access WU2, #1210)', 
       expect(allowRules(options)).not.toContain('WebFetch(domain:*)');
     });
 
-    it('the allowlist turned off opens every domain, not strictly', async () => {
+    it("the allowlist turned off opens every domain to sandboxed commands, and leaves WebFetch's approvals alone", async () => {
       const { options } = await withSettings(false, () => build(SAFE_USER), true);
-      expect((options.sandbox as NetSandbox).network?.strictAllowlist).toBeUndefined();
-      expect(allowRules(options)).toContain('WebFetch(domain:*)');
+      expect((options.sandbox as NetSandbox).network).toEqual({ allowedDomains: ['*'] });
+      expect(allowRules(options)).not.toContain('WebFetch(domain:*)');
     });
 
     it('an admin keeps every domain, the toggle either way', async () => {
@@ -1200,6 +1200,21 @@ describe('sandbox: admin profile and write protection (env-access WU2, #1210)', 
         expect(allowRules(options), `${networkDisabled}`).toContain('WebFetch(domain:*)');
       }
     });
+  });
+
+  it("a sandboxed admin's native writes reach its own CLI temp directory, where its commands write", async () => {
+    await asAdmin();
+    const { options } = await withSettings(false, () => build(ADMIN));
+    const entry = (options.hooks?.PreToolUse ?? []).find((e) =>
+      ((e as { matcher?: string }).matcher ?? '').split('|').includes('Write'),
+    ) as { hooks: Array<(input: unknown) => Promise<{ hookSpecificOutput?: { permissionDecision?: string } }>> };
+    const tmp = options.env?.CLAUDE_CODE_TMPDIR as string;
+    const decision = await entry.hooks[0]({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Write',
+      tool_input: { file_path: path.join(tmp, 'notes.txt'), content: 'x' },
+    } as never);
+    expect(decision.hookSpecificOutput?.permissionDecision).not.toBe('deny');
   });
 
   it('a non-admin keeps the narrow profile', async () => {
@@ -1449,7 +1464,7 @@ describe('sandbox: deploy-workflow grant (config.json#deploySandbox)', () => {
         '/srv/qa/lock',
         '/srv/qa/runs',
       ]);
-      expect(sandbox?.network).toEqual({ allowedDomains: [...DEV_DOMAIN_ALLOWLIST] });
+      expect(sandbox?.network).toEqual({ allowedDomains: ['*'] });
       expect(grantLogs(deps)).toEqual([['Deploy sandbox grant applied', { paths: 2, domains: 0 }]]);
     } finally {
       spy.mockRestore();
