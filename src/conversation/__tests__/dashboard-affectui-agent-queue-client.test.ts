@@ -545,7 +545,6 @@ describe('laneData — the CRON plan as the element’s lane', () => {
     expect(day.cutFrom).toBe(NOWC - 45 * M);
   });
 
-  // #554 review P3: the host must not window runs24h again — the element does, and its ≥ needs every record.
   it('the strip and the 24-hour counts read a recorded run the same way (a DM or a thread reply too)', () => {
     const f = laneFns();
     const paths = ['new_thread', 'idle_inject', 'dm', 'thread_reply'];
@@ -560,6 +559,7 @@ describe('laneData — the CRON plan as the element’s lane', () => {
     expect(strip.every(([, st]: [number, string]) => st !== 'unknown')).toBe(true);
   });
 
+  // #554 review P3: the host must not window runs24h again — the element does, and its ≥ needs every record.
   it('cronDayRuns passes every record, older than 24 hours too: the element applies the window', () => {
     const f = laneFns();
     const old = [job('job-old', 'weekly-report', 30 * M, [run(10 * M), run(3 * 24 * HR), run(30 * 24 * HR)])];
