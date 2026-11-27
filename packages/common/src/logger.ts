@@ -83,11 +83,12 @@ const ERROR_IDENTIFIER_RE = /^[A-Z][A-Z0-9_]*$/;
  * A PEM private key — RSA, EC, OpenSSH, PKCS#8 — from its header to its footer, whether the line breaks are real or
  * escaped (`\\n` in a JSON dump of an environment, where the GitHub App's key was found logged whole). A header
  * followed by key material but no footer is redacted to the end of the string: the key was cut, not ended. A header
- * quoted alone (an error naming the format it expected) is left as it is. Written with `-{5}` so this file holds no
- * header the bundle's credential scan would flag.
+ * quoted alone (an error naming the format it expected) is left as it is. The search for a footer stops at the next
+ * header and after 20 000 characters (a key is a few thousand), so a string of many headers is scanned in linear
+ * time on the logging path. Written with `-{5}` so this file holds no header the bundle's credential scan would flag.
  */
 const PEM_PRIVATE_KEY_RE =
-  /-{5}BEGIN ((?:[A-Z0-9]+ )*)PRIVATE KEY-{5}(?:[\s\S]*?-{5}END \1PRIVATE KEY-{5}|(?:\s|\\n)*[A-Za-z0-9+/=]{16,}[\s\S]*$)/g;
+  /-{5}BEGIN ((?:[A-Z0-9]+ )*)PRIVATE KEY-{5}(?:(?:(?!-{5}BEGIN )[\s\S]){0,20000}?-{5}END \1PRIVATE KEY-{5}|(?:\s|\\n)*[A-Za-z0-9+/=]{16,}[\s\S]*$)/g;
 
 /** Options for {@link redactSecrets}. */
 export interface RedactOptions {

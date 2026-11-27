@@ -222,8 +222,16 @@ describe('redactSecrets — PEM private keys', () => {
 
   it('redacts a key whose line breaks are escaped, as in an environment dump in JSON', () => {
     const escaped = KEY.replace(/\n/g, '\\n');
-    const out = S(redactSecrets({ env: { GITHUB_PRIVATE_KEY: escaped } }) as never);
-    expect(JSON.stringify(out)).not.toContain('fixturefixture');
+    const out = redactSecrets({ env: { GITHUB_PRIVATE_KEY: escaped, OTHER: 'kept' } });
+    // The whole value, every line of it — not a fragment.
+    expect(out).toEqual({ env: { GITHUB_PRIVATE_KEY: '[REDACTED private key]', OTHER: 'kept' } });
+  });
+
+  it('scans a string of many headers without a footer in linear time', () => {
+    const headers = `${dashes}BEGIN PRIVATE KEY${dashes}\\n`.repeat(20000);
+    const started = performance.now();
+    expect(S(redactSecrets(headers))).toBe(headers);
+    expect(performance.now() - started).toBeLessThan(2000);
   });
 
   it('redacts a header whose footer was cut off', () => {
