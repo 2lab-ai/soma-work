@@ -1021,6 +1021,7 @@
   "이 에이전트의 작업 로그 없음": "No work log for this agent",
   "이 에이전트의 지시와 결과를 찾지 못했습니다": "Couldn't find this agent's instructions and results",
   "이 요청의 요청자만 응답할 수 있습니다": "Only the requester of this request can respond",
+  "이 요청의 요청자만 응답할 수 있습니다 — 관리자 모드를 켜면 응답할 수 있어요": "Only the requester of this request can respond — turn on admin mode to respond",
   "이 인스턴스": "This instance",
   "이 인스턴스(": "This instance (",
   "이 인스턴스에 없는 잡 — 삭제됐거나 다른 인스턴스의 잡이라 스케줄 정보가 없습니다": "Job not on this instance — it was deleted or belongs to another instance, so there is no schedule info",

@@ -41,6 +41,8 @@ export interface InstructionApprovalView {
   dashboardUrl?: string;
   decision?: InstructionApprovalDecision;
   decidedVia?: InstructionApprovalSurface;
+  /** Who answered — the owner, or an admin deciding for them (an environment user's admins, 관리자 모드). */
+  decidedBy?: string;
 }
 
 export interface SlackMessage {
@@ -184,7 +186,7 @@ export function instructionHeldNotice(view: Pick<InstructionApprovalView, 'reque
 
 /** The thread's line once the owner answered. */
 export function instructionDecidedNotice(view: InstructionApprovalView): string {
-  const by = userMention(view.ownerId);
+  const by = userMention(view.decidedBy ?? view.ownerId);
   const who = `<@${view.requesterId}>`;
   switch (view.decision) {
     case 'approve':

@@ -58,9 +58,18 @@ const doc = {
 };
 
 function load(viewer: string, details: Record<string, unknown>) {
-  const names = ['document', '_viewerUserId', 'isSiblingSession', '_permDetails', 'toNum'];
+  const names = [
+    'document',
+    '_viewerUserId',
+    'isSiblingSession',
+    '_permDetails',
+    'toNum',
+    '_viewerIsAdmin',
+    '_isAdminModeOn',
+  ];
   const body = `${[
     'isPermissionRequester',
+    'viewerAdminMode',
     'acPermissionLock',
     'acPermissionAdvice',
     'acPaintAdvice',
@@ -76,6 +85,8 @@ function load(viewer: string, details: Record<string, unknown>) {
     () => false,
     details,
     (v: unknown) => Number(v) || 0,
+    false,
+    () => false,
   ) as {
     acPermissionAdvice(s: unknown, p: unknown): Record<string, string> | null;
     acPaintAdvice(el: FakeEl, a: unknown): void;

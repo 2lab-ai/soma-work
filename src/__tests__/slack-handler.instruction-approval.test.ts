@@ -323,6 +323,38 @@ describe('SlackHandler — someone else’s instruction waits for the owner (#76
       expect(approvals.pendingFor(SESSION_KEY)[0]).toMatchObject({ requesterId: 'U_ADMIN', count: 1 });
     });
 
+    // Z 2026-11-27 — "권한 물어볼필요 없이 다른 사람의 세션에 직접 지시를 내릴 수 있어야함" (관리자 모드, the dashboard).
+    it('an admin’s instruction sent in 관리자 모드 runs at once — as the admin, not held for the owner', async () => {
+      await handler.handleMessage(
+        message({ user: 'U_ADMIN', ts: '304.1', text: '배포해줘', routeContext: { adminModeInstruction: true } }),
+        say,
+      );
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      expect(approvals.pendingFor(SESSION_KEY)).toEqual([]);
+      const initArgs = handlerAny.sessionInitializer.initialize.mock.calls[0][0];
+      expect(initArgs.user ?? initArgs.event?.user).toBe('U_ADMIN');
+    });
+
+    it('queued behind a turn and drained later, the 관리자 모드 instruction still runs (the mode survives the queue)', async () => {
+      const parked = queue().enqueue(
+        SESSION_KEY,
+        message({ user: 'U_ADMIN', ts: '304.2', text: '큐에 있던 지시', routeContext: { adminModeInstruction: true } }),
+      );
+      expect(parked.status).toBe('queued');
+      await handlerAny.processMessage(parked.item.message, say);
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      expect(approvals.pendingFor(SESSION_KEY)).toEqual([]);
+    });
+
+    it('the 관리자 모드 flag on a non-admin’s message releases nothing — still held for the owner', async () => {
+      await handler.handleMessage(
+        message({ user: 'U_OTHER', ts: '304.3', text: '배포해줘', routeContext: { adminModeInstruction: true } }),
+        say,
+      );
+      expect(startWithContinuation).not.toHaveBeenCalled();
+      expect(approvals.pendingFor(SESSION_KEY)[0]).toMatchObject({ requesterId: 'U_OTHER' });
+    });
+
     it('a non-admin’s bare `!` is still held for the owner', async () => {
       const abort = vi.spyOn(handlerAny.requestCoordinator, 'abortSession');
       await handler.handleMessage(message({ user: 'U_OTHER', ts: '303.5', text: '!' }), say);

@@ -73,6 +73,7 @@ const FNS = [
   'escJs',
   'toNum',
   'isPermissionRequester',
+  'viewerAdminMode',
   'permissionSummary',
   'acPermissionLock',
   'acDetailDue',
@@ -113,7 +114,8 @@ interface PermissionClient {
 
 function load(inject: Record<string, unknown>): PermissionClient {
   // The requester is the signed-in viewer (SSOT 2026-11-02), here the board's user unless a test names another.
-  inject = { _viewerUserId: inject.currentUserId ?? '', ...inject };
+  // Z 2026-11-27 — 관리자 모드 off unless a test turns it on.
+  inject = { _viewerUserId: inject.currentUserId ?? '', _viewerIsAdmin: false, _isAdminModeOn: () => false, ...inject };
   const names = Object.keys(inject);
   const body = `${clientVar('AC_SENT')}
 ${clientVar('AC_SIBLING')}

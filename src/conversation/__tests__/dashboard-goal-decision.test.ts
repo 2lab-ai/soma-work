@@ -70,6 +70,7 @@ const FNS = [
   'escAttr',
   'toNum',
   'acSlotHtml',
+  'viewerAdminMode',
   'acGoalDecisionLock',
   'acGoalDecisionData',
   'acGoalDecisionHtml',
@@ -87,6 +88,8 @@ interface GoalClient {
 }
 
 function load(inject: Record<string, unknown>): GoalClient {
+  // Z 2026-11-27 — 관리자 모드 off unless a test turns it on.
+  inject = { _viewerIsAdmin: false, _isAdminModeOn: () => false, ...inject };
   const names = Object.keys(inject);
   const body = `${clientVar('AC_SIBLING')}
 ${clientVar('GOAL_DECISION_CHOICES')}

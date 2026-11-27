@@ -22,6 +22,8 @@ export interface TaskPlanDecisionRequest {
   revision: number;
   /** The signed-in user deciding — the work runs as them (SSOT 2026-11-02, as an answer does). */
   actorUserId: string;
+  /** Z 2026-11-27 — a signed-in admin with 관리자 모드 on (the route checked it): no owner approval. */
+  adminMode?: true;
 }
 
 /** The route's answer: its status and body. */
@@ -45,13 +47,18 @@ export interface SlackPlanDeciderDeps {
    * behind a turn in flight (as its own turn — never pushed into a running one). False when it
    * was not taken (the thread could not be reached, the pipeline refused or halted it).
    */
-  sendPlan(sessionKey: string, text: string, actorUserId: string): Promise<boolean>;
+  sendPlan(sessionKey: string, text: string, actorUserId: string, opts?: { adminMode?: true }): Promise<boolean>;
   /**
    * May this user start or cancel the plan? (#777) Someone else's instruction waits for the owner's
    * approval; a plan decision by someone the owner has not approved would start the work around that
    * gate, so it is refused (403) — the owner decides. Unset: whoever the route lets through.
    */
-  mayDecide?: (sessionKey: string, session: ConversationSession, actorUserId: string) => boolean;
+  mayDecide?: (
+    sessionKey: string,
+    session: ConversationSession,
+    actorUserId: string,
+    opts?: { adminMode?: true },
+  ) => boolean;
   /**
    * 시작 opens the plan's goal (2026-11-03), and the thread's goal loop drives it to the
    * plan's end. Called once the gate is saved `approved`, before the plan is sent (its turn is the goal's
@@ -71,12 +78,19 @@ export interface SlackPlanDeciderDeps {
  */
 export function createSlackPlanDecider(deps: SlackPlanDeciderDeps): TaskPlanDecider {
   const now = deps.now ?? Date.now;
-  return async ({ sessionKey, decision, revision, actorUserId }) => {
+  return async ({ sessionKey, decision, revision, actorUserId, adminMode }) => {
+    // Z 2026-11-27 — an admin in 관리자 모드: the owner gate lets them decide, and their plan runs without asking.
+    const admin = adminMode ? { adminMode } : undefined;
     const session = deps.getSession(sessionKey);
     if (!session) return refuse(409, 'no such session');
     if (!session.taskPlan) return refuse(409, 'this task was not made in plan mode');
     if (!actorUserId) return refuse(403, 'sign in to start or cancel a plan');
-    if (deps.mayDecide && !deps.mayDecide(sessionKey, session, actorUserId)) {
+    if (
+      deps.mayDecide &&
+      !(admin
+        ? deps.mayDecide(sessionKey, session, actorUserId, admin)
+        : deps.mayDecide(sessionKey, session, actorUserId))
+    ) {
       return refuse(403, "the plan is the task owner's to start or cancel — send your changes as an instruction");
     }
     if (session.terminated || session.closing) return refuse(409, 'the task is closed');
@@ -124,7 +138,9 @@ export function createSlackPlanDecider(deps: SlackPlanDeciderDeps): TaskPlanDeci
     };
     let sent: boolean;
     try {
-      sent = await deps.sendPlan(sessionKey, text, actorUserId);
+      sent = admin
+        ? await deps.sendPlan(sessionKey, text, actorUserId, admin)
+        : await deps.sendPlan(sessionKey, text, actorUserId);
     } catch (error) {
       putBack();
       throw error;

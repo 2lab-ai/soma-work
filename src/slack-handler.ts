@@ -53,7 +53,7 @@ import { captureUserMedia, getConversation, recordUserTurn } from './conversatio
 import { readWorkLog } from './conversation/work-log';
 import { FileHandler, type ProcessedFile } from './file-handler';
 import { buildIncidentAttemptOutput } from './incident/attempt-output';
-import type { InstructionApprovals } from './instruction-approval';
+import { type InstructionApprovals, isAdminModeRoute } from './instruction-approval';
 import { getLastCommandChannelStore } from './last-command-channel-store';
 import { Logger } from './logger';
 import { mcpCallTracker } from './mcp-call-tracker';
@@ -3997,7 +3997,16 @@ export class SlackHandler {
     const sessionKey = this.claudeHandler.getSessionKey(event.channel, event.thread_ts);
     const approvalId = (event.routeContext as { instructionApprovalId?: string } | undefined)?.instructionApprovalId;
     if (
-      approvals.allows({ sessionKey, session, senderId: event.user, approvalId, ts: event.ts, text: event.text ?? '' })
+      approvals.allows({
+        sessionKey,
+        session,
+        senderId: event.user,
+        approvalId,
+        ts: event.ts,
+        text: event.text ?? '',
+        // Z 2026-11-27 — an admin's dashboard instruction in 관리자 모드 (host-set; allows re-checks ADMIN_USERS).
+        adminMode: isAdminModeRoute(event),
+      })
     ) {
       return undefined;
     }
@@ -10117,18 +10126,21 @@ export class SlackHandler {
     label: string,
     question: string,
     actorUserId?: string,
+    /** Z 2026-11-27 — a signed-in admin in 관리자 모드 answered (the dashboard route checked it). */
+    opts?: { adminMode?: boolean },
   ): Promise<void> {
     const session = this.claudeHandler.getSessionByKey(sessionKey);
     if (!session) {
       throw new Error('Session not found');
     }
-    await this.actionHandlers.handleDashboardChoiceAnswer(
-      sessionKey,
-      choiceId,
-      label,
-      question,
-      actorUserId || session.ownerId,
-    );
+    const actor = actorUserId || session.ownerId;
+    if (opts?.adminMode) {
+      await this.actionHandlers.handleDashboardChoiceAnswer(sessionKey, choiceId, label, question, actor, {
+        adminMode: true,
+      });
+    } else {
+      await this.actionHandlers.handleDashboardChoiceAnswer(sessionKey, choiceId, label, question, actor);
+    }
   }
 
   /** Handle multi-choice form submission from dashboard */
@@ -10136,21 +10148,36 @@ export class SlackHandler {
     sessionKey: string,
     selections: Record<string, { choiceId: string; label: string }>,
     actorUserId?: string,
+    opts?: { adminMode?: boolean },
   ): Promise<void> {
     const session = this.claudeHandler.getSessionByKey(sessionKey);
     if (!session) {
       throw new Error('Session not found');
     }
-    await this.actionHandlers.handleDashboardMultiChoiceAnswer(sessionKey, selections, actorUserId || session.ownerId);
+    const actor = actorUserId || session.ownerId;
+    if (opts?.adminMode) {
+      await this.actionHandlers.handleDashboardMultiChoiceAnswer(sessionKey, selections, actor, { adminMode: true });
+    } else {
+      await this.actionHandlers.handleDashboardMultiChoiceAnswer(sessionKey, selections, actor);
+    }
   }
 
   /** Handle hero "Submit All Recommended" from dashboard (group-only one-click) */
-  async handleDashboardSubmitRecommended(sessionKey: string, actorUserId?: string): Promise<void> {
+  async handleDashboardSubmitRecommended(
+    sessionKey: string,
+    actorUserId?: string,
+    opts?: { adminMode?: boolean },
+  ): Promise<void> {
     const session = this.claudeHandler.getSessionByKey(sessionKey);
     if (!session) {
       throw new Error('Session not found');
     }
-    await this.actionHandlers.handleDashboardSubmitRecommended(sessionKey, actorUserId || session.ownerId);
+    const actor = actorUserId || session.ownerId;
+    if (opts?.adminMode) {
+      await this.actionHandlers.handleDashboardSubmitRecommended(sessionKey, actor, { adminMode: true });
+    } else {
+      await this.actionHandlers.handleDashboardSubmitRecommended(sessionKey, actor);
+    }
   }
 
   /**

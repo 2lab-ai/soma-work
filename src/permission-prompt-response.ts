@@ -11,7 +11,9 @@
  * - only records the permission MCP server wrote (`kind`) — the pending
  *   directory also holds admin-approved MCP tool grant requests, which their
  *   requester must never answer;
- * - only the user the prompt was raised for (`PendingApproval.user`);
+ * - only the user the prompt was raised for (`PendingApproval.user`) — or an
+ *   admin in 관리자 모드 on the dashboard (Z 2026-11-27, `adminMode`, re-checked
+ *   against ADMIN_USERS here); the answer is recorded as the admin's;
  * - when the caller names a session thread, only a prompt of that thread;
  * - at most once, across surfaces and processes: the store claim is taken
  *   before any side effect, and outlives the MCP server's cleanup;
@@ -34,6 +36,7 @@ import {
   type PermissionResponse,
   sharedStore,
 } from 'somalib/permission/shared-store';
+import { getAdminUsers } from './admin-utils';
 
 /** The answers a permission prompt takes — one list, shared with the work log entry that records them. */
 export type PermissionPromptDecision = (typeof WORK_LOG_PERMISSION_DECISIONS)[number];
@@ -64,6 +67,11 @@ export interface AnswerPermissionPromptArgs {
   sessions?: DangerousRuleSessions;
   /** When set, the prompt must belong to this session thread. */
   thread?: PermissionPromptTarget;
+  /**
+   * Z 2026-11-27 — the dashboard route saw a signed-in admin with 관리자 모드 on: they answer a prompt raised for
+   * someone else. Re-checked: `actor` must be in ADMIN_USERS.
+   */
+  adminMode?: boolean;
 }
 
 export type PermissionPromptAnswer =
@@ -132,7 +140,9 @@ export async function answerPermissionPrompt(args: AnswerPermissionPromptArgs): 
   const pending = await loadPermissionPrompt(approvalId);
   if (!pending) return { ok: false, reason: 'not_found' };
   if (thread && !promptBelongsToThread(pending, thread)) return { ok: false, reason: 'not_found' };
-  if (!actor || !pending.user || actor !== pending.user) {
+  const requester = !!actor && !!pending.user && actor === pending.user;
+  const adminForRequester = args.adminMode === true && !!actor && getAdminUsers().has(actor);
+  if (!actor || (!requester && !adminForRequester)) {
     return { ok: false, reason: 'not_requester', requester: pending.user };
   }
   // Before the claim: the prompt stays open for the confirmed answer.

@@ -150,7 +150,7 @@ import { CONFIG_FILE, DATA_DIR, PLUGINS_DIR } from './env-paths';
 import { envSkillRegistry } from './env-skill-registry';
 import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from './github-auth.js';
 import { createGithubReceiptChecker } from './github-receipt';
-import { InstructionApprovals, setInstructionApprovals } from './instruction-approval';
+import { ADMIN_MODE_ROUTE, InstructionApprovals, setInstructionApprovals } from './instruction-approval';
 import {
   fetchGitHubCheckRuns,
   fetchGitHubPullActivity,
@@ -1066,7 +1066,14 @@ async function start() {
        * `hostTurn` (#854, with `verbatim`): soma-work's words, not the sender's — an epic's wake or its
        * word to a child. It answers no open question, revises no waiting plan, and is recorded as soma-work's.
        */
-      extra: { onAccepted?: () => void; verbatim?: true; hostTurn?: true; echoLabel?: string } = {},
+      extra: {
+        onAccepted?: () => void;
+        verbatim?: true;
+        hostTurn?: true;
+        echoLabel?: string;
+        /** Z 2026-11-27 — an admin in 관리자 모드 sent it: the #767 gate runs it without the owner's approval. */
+        adminMode?: true;
+      } = {},
     ): Promise<{ channel: string; ts: string } | undefined> => {
       const session = claudeHandler.getSessionByKey(sessionKey);
       if (!session) {
@@ -1150,8 +1157,14 @@ async function start() {
             ts,
             ...(files ? { files } : {}),
             ...(clientRef ? { dashboardClientRef: clientRef } : {}),
-            ...(extra.verbatim
-              ? { routeContext: { verbatimPrompt: true, ...(extra.hostTurn ? { hostTurn: true } : {}) } }
+            ...(extra.verbatim || extra.adminMode
+              ? {
+                  routeContext: {
+                    ...(extra.verbatim ? { verbatimPrompt: true } : {}),
+                    ...(extra.verbatim && extra.hostTurn ? { hostTurn: true } : {}),
+                    ...(extra.adminMode ? ADMIN_MODE_ROUTE : {}),
+                  },
+                }
               : {}),
           } as any,
           dashboardSay,
@@ -1166,8 +1179,16 @@ async function start() {
       });
       return { channel: session.channelId, ts };
     };
-    setDashboardCommandHandler(async (sessionKey, message, attachments, actorUserId, clientRef) => {
-      await injectDashboardMessage(sessionKey, message, undefined, attachments, actorUserId, clientRef);
+    setDashboardCommandHandler(async (sessionKey, message, attachments, actorUserId, clientRef, opts) => {
+      await injectDashboardMessage(
+        sessionKey,
+        message,
+        undefined,
+        attachments,
+        actorUserId,
+        clientRef,
+        opts?.adminMode ? { adminMode: true } : {},
+      );
     });
     // A command the panel sends that only answers (`/help`, `/model opus` …): the route tells the panel its answer
     // is in the Slack thread (the composer's `/` menu offers them — 2026-11-04).
@@ -1266,9 +1287,9 @@ async function start() {
     );
 
     // Connect dashboard: choice answer handler (dashboard button click → same path as Slack button)
-    setDashboardChoiceAnswerHandler(async (sessionKey, choiceId, label, question, actorUserId) => {
+    setDashboardChoiceAnswerHandler(async (sessionKey, choiceId, label, question, actorUserId, opts) => {
       try {
-        await slackHandler.handleDashboardChoiceAnswer(sessionKey, choiceId, label, question, actorUserId);
+        await slackHandler.handleDashboardChoiceAnswer(sessionKey, choiceId, label, question, actorUserId, opts);
         logger.info('Dashboard: choice answered', { sessionKey, choiceId, label });
       } catch (error) {
         logger.error('Dashboard: choice answer failed', { sessionKey, choiceId, label, error });
@@ -1284,9 +1305,14 @@ async function start() {
 
     // Connect dashboard: multi-choice form answer handler
     setDashboardMultiChoiceAnswerHandler(
-      async (sessionKey: string, selections: Record<string, { choiceId: string; label: string }>, actorUserId) => {
+      async (
+        sessionKey: string,
+        selections: Record<string, { choiceId: string; label: string }>,
+        actorUserId,
+        opts,
+      ) => {
         try {
-          await slackHandler.handleDashboardMultiChoiceAnswer(sessionKey, selections, actorUserId);
+          await slackHandler.handleDashboardMultiChoiceAnswer(sessionKey, selections, actorUserId, opts);
           logger.info('Dashboard: multi-choice answered', {
             sessionKey,
             selectionCount: Object.keys(selections).length,
@@ -1299,9 +1325,9 @@ async function start() {
     );
 
     // Connect dashboard: hero "Submit All Recommended" (group-only one-click)
-    setDashboardSubmitRecommendedHandler(async (sessionKey: string, actorUserId) => {
+    setDashboardSubmitRecommendedHandler(async (sessionKey: string, actorUserId, opts) => {
       try {
-        await slackHandler.handleDashboardSubmitRecommended(sessionKey, actorUserId);
+        await slackHandler.handleDashboardSubmitRecommended(sessionKey, actorUserId, opts);
         logger.info('Dashboard: submit-recommended completed', { sessionKey });
       } catch (error) {
         logger.error('Dashboard: submit-recommended failed', { sessionKey, error });
@@ -1669,11 +1695,12 @@ async function start() {
       setPlanGate: (key, gate) => claudeHandler.getSessionRegistry().setSessionPlanGate(key, gate),
       // Taken (its turn runs, or it waits in the queue behind a running one) — not the whole run:
       // a turn that fails after it started is the work's failure, not a start that did not happen.
-      sendPlan: (key, text, actorUserId) =>
+      sendPlan: (key, text, actorUserId, opts) =>
         new Promise<boolean>((resolve) => {
           injectDashboardMessage(key, text, undefined, [], actorUserId, undefined, {
             onAccepted: () => resolve(true),
             verbatim: true,
+            ...(opts?.adminMode ? { adminMode: true as const } : {}),
           }).then(
             () => resolve(false),
             (error) => {
@@ -1685,8 +1712,8 @@ async function start() {
             },
           );
         }),
-      mayDecide: (sessionKey, session, actorUserId) =>
-        instructionApprovals.allows({ sessionKey, session, senderId: actorUserId }),
+      mayDecide: (sessionKey, session, actorUserId, opts) =>
+        instructionApprovals.allows({ sessionKey, session, senderId: actorUserId, adminMode: opts?.adminMode }),
       // 2026-11-03 — 시작 opens the plan's goal: the thread's goal loop drives it to the plan's end.
       openGoal: openPlanGoal,
       logger: new Logger('SlackPlanDecider'),
@@ -1696,29 +1723,32 @@ async function start() {
     // turn or queued behind a running one — and counts as delivered only once taken (onAccepted). The Slack card's
     // buttons and the dashboard's use this same notifier, so "taken" means the same on both.
     setUserActionNotifier(
-      notifierFromInjection((key, text, actor, onAccepted) =>
+      notifierFromInjection((key, text, actor, onAccepted, opts) =>
         injectDashboardMessage(key, text, undefined, [], actor || undefined, undefined, {
           onAccepted,
           verbatim: true,
           echoLabel: `🙋 *<@${actor}>* 사용자 작업 응답`,
+          ...(opts?.adminMode ? { adminMode: true as const } : {}),
         }),
       ),
     );
     const userActionSlackApi = slackHandler.getSlackApi();
-    setDashboardUserActionHandler(async ({ sessionKey, id, status, actorUserId }) => {
+    setDashboardUserActionHandler(async ({ sessionKey, id, status, actorUserId, adminMode }) => {
       const r = await answerUserAction({
         sessionKey,
         id,
         status,
         actor: actorUserId,
         at: Date.now(),
+        ...(adminMode ? { adminMode: true } : {}),
         deps: {
           slackApi: userActionSlackApi,
           persistAndBroadcast: (key) => claudeHandler.getSessionRegistry().persistAndBroadcast(key),
           getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
-          mayAnswer: (key, session, actor) =>
-            instructionApprovals.allows({ sessionKey: key, session, senderId: actor }),
-          notify: (key, _session, text, actor) => getUserActionNotifier()?.(key, text, actor) ?? Promise.resolve(false),
+          mayAnswer: (key, session, actor, opts) =>
+            instructionApprovals.allows({ sessionKey: key, session, senderId: actor, adminMode: opts?.adminMode }),
+          notify: (key, _session, text, actor, opts) =>
+            getUserActionNotifier()?.(key, text, actor, opts) ?? Promise.resolve(false),
         },
       });
       if (r.ok) return { status: 200, body: { ok: true, status: r.action.status } };
@@ -2638,7 +2668,7 @@ async function start() {
         points: (sessionKey, actorUserId) => slackHandler.getContextRollbackPoints(sessionKey, actorUserId),
         request: (sessionKey, body, actorUserId) => slackHandler.handleContextRollback(sessionKey, body, actorUserId),
       });
-      setDashboardGoalDecisionHandler((sessionKey, answer, actorUserId) =>
+      setDashboardGoalDecisionHandler((sessionKey, answer, actorUserId, opts) =>
         answerGoalCapDecision({
           session: registry.getSessionByKey(sessionKey),
           sessionKey,
@@ -2648,6 +2678,7 @@ async function start() {
           decision: answer.decision,
           surface: 'dashboard',
           save: () => registry.saveSessionsOrThrow(),
+          ...(opts?.adminMode ? { adminMode: true } : {}),
         }),
       );
       // DM rewrites the previous process could not deliver.

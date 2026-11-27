@@ -34,6 +34,7 @@ import * as path from 'node:path';
 import { atomicWriteJson, readJsonWithBackup } from '@soma/common/atomic-json';
 import { bumpEpoch } from '@soma/slack/goal/machine';
 import { capAskOf } from '@soma/slack/goal/read';
+import { getAdminUsers } from '../admin-utils';
 import { DATA_DIR } from '../env-paths';
 import { Logger } from '../logger';
 import type { ConversationSession, SessionGoal } from '../types';
@@ -149,19 +150,26 @@ export interface AnswerGoalCapDecisionArgs {
   /** Persist the sessions (synchronous). Throws when they did not reach disk — the answer is then refused. */
   save: () => void;
   now?: number;
+  /**
+   * Z 2026-11-27 — the dashboard route saw a signed-in admin with 관리자 모드 on: they answer for the goal's owner.
+   * Re-checked: `actor` must be in ADMIN_USERS.
+   */
+  adminMode?: boolean;
 }
 
 /**
  * The one way a cap decision is answered — the Slack buttons and the
- * dashboard both call it. Only the goal's owner (`createdBy`) answers, only
- * the active goal's pending round, at most once.
+ * dashboard both call it. Only the goal's owner (`createdBy`) — or an admin in
+ * 관리자 모드 on the dashboard — answers, only the active goal's pending round, at
+ * most once.
  */
 export function answerGoalCapDecision(args: AnswerGoalCapDecisionArgs): GoalCapDecisionAnswer {
   const { session, sessionKey, goalId, decisionId, actor, decision, surface } = args;
   if (!actor || (decision !== 'continue' && decision !== 'cancel')) return { ok: false, reason: 'invalid' };
   const goal = session?.goal;
   if (!session || !goal || goal.goalId !== goalId) return { ok: false, reason: 'stale' };
-  if (goal.createdBy !== actor) return { ok: false, reason: 'not_owner' };
+  const adminForOwner = args.adminMode === true && getAdminUsers().has(actor);
+  if (goal.createdBy !== actor && !adminForOwner) return { ok: false, reason: 'not_owner' };
   if (!isGoalCapDecisionPending(goal)) return { ok: false, reason: 'stale' };
   if (decisionId === undefined) {
     // A button from before round ids existed answers only a round that has no id

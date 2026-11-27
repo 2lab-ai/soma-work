@@ -261,6 +261,13 @@ export interface MessageEvent {
      */
     instructionApprovalId?: string;
     /**
+     * Z 2026-11-27 — set only by the host on a message a signed-in admin sent from the dashboard with 관리자 모드 on
+     * (the route checked the verified JWT and the `X-Admin-Mode` header). The #767 gate lets it run without the
+     * owner's approval, after checking again that the sender is in ADMIN_USERS. Internal like `instructionApprovalId`:
+     * it never survives a round-trip through Slack. Survives the follow-up queue, so a queued instruction still runs.
+     */
+    adminModeInstruction?: boolean;
+    /**
      * Set only by the host when the per-user task queue starts an entry that waited (`src/user-task-queue`): the
      * replay of a held request, or the host turn that carries a stopped task on. The ingress takes the admission
      * once (`UserTaskQueue.takeAdmission` — admitted, this thread, not expired), so a made-up id admits nothing and
