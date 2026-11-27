@@ -99,6 +99,7 @@ export function instructionPreview(
     }
     text += s.slice(from, at);
     const inner = s.slice(at + OPEN.length, end);
+    let found = 0;
     let i = 0;
     while (i < inner.length) {
       const m = /<([^\s<>/]+)>/.exec(inner.slice(i));
@@ -110,9 +111,12 @@ export function instructionPreview(
         i = bodyAt;
         continue;
       }
+      found++;
       if (!skills.includes(name)) skills.push(name);
       i = bodyEnd + name.length + 3;
     }
+    // A closed block that held no skill is words too.
+    if (!found) text += s.slice(at, end + CLOSE.length);
     from = end + CLOSE.length;
   }
   const folded = text.replace(/\s+/g, ' ').trim();

@@ -136,9 +136,12 @@ describe('instructionPreview — the words 대화 shows, on one line', () => {
     expect(client.splitInvokedSkills(raw).skills.map((s) => s.name)).toEqual(['local:z', 'local:es']);
   });
 
-  it('a literal mention of the tag stays words; an unclosed block is words', () => {
+  it('a literal mention of the tag stays words; an unclosed block is words; a closed block with no skill is words', () => {
     expect(instructionPreview('the <invoked_skills> tag').text).toBe('the <invoked_skills> tag');
     expect(instructionPreview('a </invoked_skills> stray').text).toBe('a </invoked_skills> stray');
+    const empty = 'see <invoked_skills>no tags here</invoked_skills> please';
+    expect(instructionPreview(empty)).toEqual({ text: empty, skills: [] });
+    expect(client.splitInvokedSkills(empty).text).toBe(empty);
   });
 
   it('decodes Slack entities, folds blanks and line ends, cuts long words with an ellipsis', () => {

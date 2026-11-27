@@ -26,10 +26,12 @@ var IH_TEXT_RETRY = '다시 시도';
 var IH_TEXT_EMPTY = '보낸 지시가 없습니다';
 var IH_TEXT_FILES = '파일 {0}개';
 var IH_TEXT_SKILLS_ONLY = '(스킬만 호출)';
-// cid: the open card's conversation · total: its instructions · rows: the list's rows as loaded · next: the next
+// cid: the open card's conversation · total: its instructions (the button) · rows: the list's rows as loaded ·
+// listTotal: the total the open list has taken in (newer instructions than that are fetched onto it) · next: the next
 // page's offset (null: all loaded) · gen: bumped on a new conversation, an order change and each reopening (an older
-// answer is dropped) · jump: the instruction 대화 is moving to.
-var _ih = { cid: '', total: 0, rows: [], next: 0, order: 'asc', loading: false, why: '', open: false, gen: 0, timer: 0, jump: null };
+// answer is dropped) · countSeq: the latest count asked for (an older count's answer is dropped) · jump: the
+// instruction 대화 is moving to.
+var _ih = { cid: '', total: 0, rows: [], listTotal: 0, next: 0, order: 'asc', loading: false, why: '', open: false, gen: 0, countSeq: 0, timer: 0, jump: null };
 
 // Pure: the number on the button — 999+ past three digits.
 function ihCountText(n) {
@@ -112,20 +114,35 @@ function ihCountSoon(ms) {
   if (_ih.timer) clearTimeout(_ih.timer);
   _ih.timer = setTimeout(ihCount, ms);
 }
+// The count — the only answer that sets the button's number (a list page only ever raises it: one answered against an
+// older total must not take a newer count back).
 function ihCount() {
   _ih.timer = 0;
   var cid = _ih.cid;
   if (!cid) return;
+  var seq = ++_ih.countSeq;
   ihGetJson(ihUrl(cid, 0, 0, 'asc')).then(function(d) {
-    if (cid !== _ih.cid) return;
-    var before = _ih.total;
+    if (cid !== _ih.cid || seq !== _ih.countSeq) return;
     _ih.total = Math.max(0, Number(d && d.total) || 0);
     ihPaint();
-    if (_ih.open && _ih.total > before) ihGrow(_ih.total - before);
+    ihSeen(_ih.total);
   }).catch(function() {}); // a count that could not be had keeps the last one (none: no button)
 }
-// The list is open and new instructions came: 처음부터 — the rows past the last one loaded are a page away again;
-// 최근부터 — they go on top (each later page starts that many rows further down).
+// A total the server reported (the count, or a list page): the open list takes in the instructions newer than the ones
+// it has — whichever answer brings the news first, once.
+function ihSeen(total) {
+  if (total > _ih.total) {
+    _ih.total = total;
+    ihPaint();
+  }
+  if (!_ih.open || !_ih.listTotal || total <= _ih.listTotal) return;
+  var by = total - _ih.listTotal;
+  _ih.listTotal = total;
+  ihGrow(by);
+}
+// New instructions for the open list: 처음부터 — the rows past the last one loaded are a page away again; 최근부터 —
+// the newest rows (a few more than came, so one that lands meanwhile is not skipped) go on top, each once. Later
+// 최근부터 pages start where they would have: a row the shift brings up again is listed once.
 function ihGrow(by) {
   if (_ih.order === 'asc') {
     if (_ih.next === null) _ih.next = _ih.rows.length;
@@ -135,8 +152,7 @@ function ihGrow(by) {
   }
   var cid = _ih.cid;
   var gen = _ih.gen;
-  if (_ih.next !== null) _ih.next += by;
-  ihGetJson(ihUrl(cid, 0, Math.min(by, 100), 'desc')).then(function(d) {
+  ihGetJson(ihUrl(cid, 0, Math.min(by + 5, 100), 'desc')).then(function(d) {
     if (gen !== _ih.gen) return;
     var list = document.getElementById('ih-list');
     var h = list ? list.scrollHeight : 0;
@@ -144,6 +160,7 @@ function ihGrow(by) {
     ihPaintList();
     // The reader keeps the rows they were on (none moves under them unless they were at the very top).
     if (list && list.scrollTop > 0) list.scrollTop += list.scrollHeight - h;
+    if (d && typeof d.total === 'number') ihSeen(d.total);
   }).catch(function() {});
 }
 
@@ -224,6 +241,7 @@ function ihSetOrder(order) {
 function ihReload() {
   _ih.gen++;
   _ih.rows = [];
+  _ih.listTotal = 0;
   _ih.next = 0;
   _ih.why = '';
   _ih.loading = false;
@@ -245,11 +263,17 @@ function ihLoadMore() {
     _ih.loading = false;
     _ih.rows = ihMerge(_ih.rows, (d && d.items) || [], false);
     _ih.next = d && typeof d.nextOffset === 'number' ? d.nextOffset : null;
-    if (d && typeof d.total === 'number' && d.total !== _ih.total) {
-      _ih.total = d.total;
-      ihPaint();
+    var total = d && typeof d.total === 'number' ? d.total : 0;
+    // The first page is what the list starts from; a later one answered against a newer total brings the news.
+    if (offset === 0) {
+      _ih.listTotal = total;
+      if (total > _ih.total) {
+        _ih.total = total;
+        ihPaint();
+      }
     }
     ihPaintList();
+    if (offset !== 0) ihSeen(total);
     ihMaybeMore();
   }).catch(function(err) {
     if (gen !== _ih.gen) return;
@@ -269,7 +293,7 @@ function ihMaybeMore() {
 function ihJump(id) {
   ihClose(false);
   if (!id || !panelSessionKey) return;
-  _ih.jump = { id: String(id), gen: _panelGen, waits: 0, asks: 0 };
+  _ih.jump = { id: String(id), gen: _panelGen, waits: 0, asks: 0, done: false, failed: false };
   if (_panelAgent) selectPanelAgent('');
   if (_psec !== 'conv') selectPanelSection('conv');
   ihReveal();
@@ -279,7 +303,9 @@ function ihHasTurn(id) {
   return false;
 }
 // The turn is in the chat's data: there it goes. Else the turns back to it come first (one answer, the route's
-// through) — after a load already on its way (the first page, an older page) settles.
+// through; a very long way back takes a few — the route says 'capped' while the target is still further) — after a
+// load already on its way (the first page, an older page) settles. The route says when the target is not behind the
+// turns held ('none'): that is the last ask.
 function ihReveal() {
   var j = _ih.jump;
   if (!j || j.gen !== _panelGen) return;
@@ -295,12 +321,17 @@ function ihReveal() {
     return;
   }
   var cid = panelConvId;
-  if (!cid || j.asks >= 3 || (j.asks > 0 && !_panelTurnsHasMore)) return ihMiss(IH_TEXT_NOT_FOUND);
+  if (!cid || j.done || j.asks >= 50) return ihMiss(IH_TEXT_NOT_FOUND);
   j.asks++;
   var oldest = _panelTurnsOldestId;
   var url = '/api/dashboard/session/' + encodeURIComponent(cid) + '?limit=' + PANEL_TURNS_PAGE
     + (oldest ? '&before=' + encodeURIComponent(oldest) : '') + '&through=' + encodeURIComponent(j.id);
   _panelTurnsLoading = true;
+  // No page yet (the first one failed): the chat says it is loading — no 다시 시도 to race this answer.
+  if (!oldest) {
+    _panelTurnsMsg = 'loading';
+    _panelTurnsWhy = '';
+  }
   convPaint(); // 이전 대화 불러오는 중…
   ihGetJson(url).then(function(data) {
     if (j.gen !== _panelGen) return;
@@ -320,14 +351,20 @@ function ihReveal() {
     }
     _panelTurnsHasMore = turns.length > 0 && !!(data && data.hasMore);
     _panelOlderWhy = '';
+    if (!(data && data.through === 'capped' && _panelTurnsHasMore)) j.done = true;
   }).catch(function(err) {
     if (j.gen !== _panelGen) return;
-    _panelOlderWhy = String((err && err.message) || '네트워크 오류');
-    j.asks = 99;
+    var why = String((err && err.message) || '네트워크 오류');
+    if (oldest) _panelOlderWhy = why;
+    else {
+      _panelTurnsMsg = _panelTurnsList.length ? '' : 'failed';
+      _panelTurnsWhy = why;
+    }
+    j.failed = true;
   }).then(function() {
     if (j.gen !== _panelGen) return;
     _panelTurnsLoading = false;
-    if (j.asks >= 99) {
+    if (j.failed) {
       convPaint();
       return ihMiss(IH_TEXT_LOAD_FAILED);
     }

@@ -4959,13 +4959,21 @@ export async function registerDashboardRoutes(
         endIdx = source.length;
         hasMore = startIdx > 0;
       }
+      // `through` says what it did: 'reached' (the target is in the window), 'capped' (it is further back than one
+      // answer holds — ask again before the new oldest), 'none' (unknown, or not behind the cursor: asking again
+      // will not find it).
       const through = request.query.through;
-      if (through && endIdx > startIdx) {
+      let throughState: 'reached' | 'capped' | 'none' | undefined;
+      if (through) {
         const THROUGH_MAX = 1000;
-        const throughIdx = source.findIndex((t) => t.id === through);
-        if (throughIdx >= 0 && throughIdx < startIdx) {
-          startIdx = Math.max(throughIdx, endIdx - THROUGH_MAX);
-          hasMore = startIdx > 0;
+        const throughIdx = endIdx > 0 ? source.findIndex((t) => t.id === through) : -1;
+        if (throughIdx < 0 || throughIdx >= endIdx) throughState = 'none';
+        else {
+          if (throughIdx < startIdx) {
+            startIdx = Math.max(throughIdx, endIdx - THROUGH_MAX);
+            hasMore = startIdx > 0;
+          }
+          throughState = throughIdx >= startIdx ? 'reached' : 'capped';
         }
       }
 
@@ -5009,6 +5017,7 @@ export async function registerDashboardRoutes(
         turnCount: record.turns.length,
         turns,
         hasMore,
+        through: throughState,
       });
     } catch (error) {
       logger.error('Error fetching session detail', error);

@@ -135,6 +135,7 @@ function boot(
 return {
   ihSync: ihSync, ihToggle: ihToggle, ihClose: ihClose, ihSetOrder: ihSetOrder, ihJump: ihJump, ihLoadMore: ihLoadMore,
   set: function(k, v) { eval(k + ' = v'); },
+  msg: function() { return { msg: _panelTurnsMsg, why: _panelTurnsWhy }; },
   state: function() { return { ih: _ih, list: _panelTurnsList, oldest: _panelTurnsOldestId, hasMore: _panelTurnsHasMore,
     loading: _panelTurnsLoading, psec: _psec }; },
 };`;
@@ -336,6 +337,71 @@ describe('the list — every instruction from the first, a page at a time', () =
   });
 });
 
+describe('the open list and new instructions (review on #1512)', () => {
+  // A server whose total can change between answers: desc pages answered against `total`.
+  const server = (st: { total: number }) => (url: string) => {
+    if (url.includes('limit=0')) return { total: st.total };
+    const off = Number(/offset=(\d+)/.exec(url)?.[1]);
+    const lim = Number(/limit=(\d+)/.exec(url)?.[1]);
+    const order = url.includes('desc') ? 'desc' : 'asc';
+    return page(off, Math.max(0, Math.min(lim, st.total - off)), st.total, order);
+  };
+
+  it('최근부터: a later page answered after a new instruction (before the count) still puts it on top', async () => {
+    const st = { total: 40 };
+    const { api, calls } = boot({ fetch: server(st) });
+    store.set('soma-ih-order', 'desc');
+    api.ihSetOrder('desc');
+    api.ihSync('c1');
+    await flush();
+    // Open with only the first page in: the list's end is out of view (happy-dom lays nothing out — say so).
+    const list = $('ih-list');
+    Object.defineProperty(list, 'scrollHeight', { configurable: true, get: () => 2000 });
+    Object.defineProperty(list, 'clientHeight', { configurable: true, get: () => 400 });
+    api.ihToggle();
+    await flush();
+    expect(document.querySelector('#ih-list .ih-n')?.textContent).toBe('#40');
+    st.total = 41; // a person sends one more; the count has not been asked yet
+    api.ihLoadMore(); // the reader scrolls: a page answered against 41
+    await flush();
+    expect(document.querySelector('#ih-list .ih-n')?.textContent).toBe('#41');
+    expect($('ih-dock-n').textContent).toBe('41');
+    const ids = Array.from(document.querySelectorAll('#ih-list .ih-row')).map((r: any) => r.getAttribute('data-id'));
+    expect(new Set(ids).size).toBe(ids.length); // every row once
+    // The count then lands with the same news: nothing is fetched twice for it.
+    const before = calls.length;
+    api.ihSync('c1', true);
+    await new Promise((r) => setTimeout(r, 700));
+    await flush();
+    expect(calls.length).toBe(before + 1); // the count alone
+  });
+
+  it('a slow page answered against an older total does not take the button’s newer count back', async () => {
+    let releasePage: (v: unknown) => void = () => {};
+    let total = 40;
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes('limit=0')) return Promise.resolve({ ok: true, json: async () => ({ total }) });
+      if (url.includes('offset=0&limit=30')) return Promise.resolve({ ok: true, json: async () => page(0, 30, 40) });
+      return new Promise((r) => {
+        releasePage = r;
+      });
+    });
+    const { api } = boot({ fns: { fetch: fetchMock } });
+    api.ihSync('c1');
+    await flush();
+    api.ihToggle();
+    await flush(); // the second page is now on its way, held
+    total = 41;
+    api.ihSync('c1', true);
+    await new Promise((r) => setTimeout(r, 700));
+    await flush();
+    expect($('ih-dock-n').textContent).toBe('41');
+    releasePage({ ok: true, json: async () => page(30, 10, 40) });
+    await flush();
+    expect($('ih-dock-n').textContent).toBe('41');
+  });
+});
+
 describe('a row — 대화 moves to that instruction', () => {
   const loaded = (ids: string[]) => ids.map((id, i) => ({ id, role: i % 2 ? 'assistant' : 'user', timestamp: i }));
 
@@ -383,6 +449,70 @@ describe('a row — 대화 moves to that instruction', () => {
     expect(st.hasMore).toBe(true);
     expect(st.loading).toBe(false);
     expect(fns.dashToast).not.toHaveBeenCalled();
+  });
+
+  it('a long way back: the route says capped — the page asks again until the turns reach it', async () => {
+    const asks: string[] = [];
+    const { api, fns } = boot({
+      state: { _panelTurnsList: loaded(['u90', 'a90']), _panelTurnsOldestId: 'u90', _panelTurnsHasMore: true },
+      fetch: (url) => {
+        if (!url.includes('through=')) return { total: 1 };
+        asks.push(url);
+        return asks.length === 1
+          ? { id: 'c1', turns: loaded(['u50', 'a50']), hasMore: true, through: 'capped' }
+          : { id: 'c1', turns: loaded(['u1', 'a1']), hasMore: false, through: 'reached' };
+      },
+    });
+    api.ihJump('u1');
+    await flush();
+    await flush();
+    expect(asks).toEqual([
+      '/api/dashboard/session/c1?limit=20&before=u90&through=u1',
+      '/api/dashboard/session/c1?limit=20&before=u50&through=u1',
+    ]);
+    expect(api.state().list.map((t: Json) => t.id)).toEqual(['u1', 'a1', 'u50', 'a50', 'u90', 'a90']);
+    expect(fns.dashToast).not.toHaveBeenCalled();
+  });
+
+  it('the route says the target is not behind the turns held (none): one ask, then the warning', async () => {
+    const asks: string[] = [];
+    const { api, fns } = boot({
+      state: { _panelTurnsList: loaded(['u9']), _panelTurnsOldestId: 'u9', _panelTurnsHasMore: true },
+      fetch: (url) => {
+        if (!url.includes('through=')) return { total: 1 };
+        asks.push(url);
+        return { id: 'c1', turns: loaded(['u7', 'a7']), hasMore: true, through: 'none' };
+      },
+    });
+    api.ihJump('u99');
+    await flush();
+    expect(asks).toHaveLength(1);
+    expect(fns.dashToast).toHaveBeenCalledWith({ title: '그 지시를 대화에서 찾지 못했어요', tone: 'warning' });
+  });
+
+  it('no page yet (the first one failed): the chat says loading while the jump loads — no 다시 시도 to race it', async () => {
+    let release: (v: unknown) => void = () => {};
+    const { api } = boot({
+      state: { _panelTurnsMsg: 'failed', _panelTurnsWhy: 'HTTP 500' },
+      fns: {
+        fetch: vi.fn((url: string) =>
+          url.includes('through=')
+            ? new Promise((r) => {
+                release = r;
+              })
+            : Promise.resolve({ ok: true, json: async () => ({ total: 1 }) }),
+        ),
+      },
+    });
+    api.ihJump('u1');
+    await flush();
+    const mid = api.state();
+    expect(mid.loading).toBe(true);
+    expect(api.msg()).toEqual({ msg: 'loading', why: '' });
+    release({ ok: false, status: 500, json: async () => ({}) });
+    await flush();
+    expect(api.msg()).toEqual({ msg: 'failed', why: 'HTTP 500' });
+    expect(api.state().loading).toBe(false);
   });
 
   it('a load on its way (the first page) settles first, then the jump goes on', async () => {

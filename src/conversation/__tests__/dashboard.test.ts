@@ -1121,9 +1121,14 @@ describe('Dashboard API', () => {
     expect(body.turns[0].id).toBe('t3');
     expect(body.turns[267].id).toBe('t270');
     expect(body.hasMore).toBe(true); // t1, t2 remain
+    expect(body.through).toBe('reached');
 
     // A target inside the page changes nothing; one newer than the cursor or unknown is ignored.
-    for (const through of ['t265', 't290', 't999']) {
+    for (const [through, state] of [
+      ['t265', 'reached'],
+      ['t290', 'none'],
+      ['t999', 'none'],
+    ]) {
       (getConversation as any).mockResolvedValueOnce(makePaginatedConv('conv-pg-through', 300));
       const r = await injectWebServer({
         method: 'GET',
@@ -1131,7 +1136,12 @@ describe('Dashboard API', () => {
         headers: AUTH_HEADER,
       });
       const b = JSON.parse(r.body);
-      expect({ through, first: b.turns[0].id, n: b.turns.length }).toEqual({ through, first: 't241', n: 30 });
+      expect({ through, first: b.turns[0].id, n: b.turns.length, state: b.through }).toEqual({
+        through,
+        first: 't241',
+        n: 30,
+        state,
+      });
     }
 
     // Without a cursor: the latest page reaches back to the target.
@@ -1164,6 +1174,7 @@ describe('Dashboard API', () => {
     expect(body.turns).toHaveLength(1000);
     expect(body.turns[0].id).toBe('t401');
     expect(body.hasMore).toBe(true);
+    expect(body.through).toBe('capped'); // the page asks again before t401
   });
 
   it('보낸 지시: GET …/instructions lists the people’s instructions — numbered from the first, a page at a time', async () => {
