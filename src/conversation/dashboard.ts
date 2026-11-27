@@ -13141,10 +13141,77 @@ var MOTION = (function readMotionTokens() {
 })();
 var _reducedMotionMq = window.matchMedia('(prefers-reduced-motion: reduce)');
 function reduceMotion() { return _reducedMotionMq.matches; }
-// The first paint and background tabs never animate.
+// The first paint, background tabs and a page still catching up (viewCatchingUp) never animate.
 function canAnimate() {
-  return _boardRenders > 0 && !document.hidden && typeof Element.prototype.animate === 'function';
+  return _boardRenders > 0 && !document.hidden && !(typeof viewCatchingUp === 'function' && viewCatchingUp()) && typeof Element.prototype.animate === 'function';
 }
+
+// ── Out of view → back: the past lands still ──
+// A page out of view gets that time's pushes late. A tab the browser froze (Chrome's Energy Saver, a collapsed tab
+// group) or suspended (Safari) holds its socket's messages and runs them back to back once it is shown again; a socket
+// that opens again brings the whole board at once. The page is visible by then, so each push played its glides, enter
+// fades, status waves and count-ups: the board replayed the time nobody watched. Those pushes are the past — until the
+// page has caught up, the board lands on where things are now, without motion.
+// The window opens when the page leaves view (hidden, frozen, put in the back/forward cache) or its socket opens, and
+// closes once the page is in view and its socket has been quiet for VIEW_SETTLE_QUIET_MS (held messages run back to
+// back, live ones leave gaps) — or VIEW_SETTLE_MAX_MS after the page came back, on a socket that never goes quiet.
+var VIEW_SETTLE_QUIET_MS = 400;
+var VIEW_SETTLE_MAX_MS = 8000;
+var _viewAway = !!document.hidden; // a page that loads in a background tab starts away
+var _viewBackAt = 0; // when the page came back into view while it catches up (0: still out of view, or settled)
+var _viewSettleTimer = 0;
+function viewCatchingUp() { return _viewAway; }
+function viewLeave() {
+  _viewAway = true;
+  _viewBackAt = 0;
+  clearTimeout(_viewSettleTimer);
+  _viewSettleTimer = 0;
+}
+// Back in view (shown, unfrozen, restored from the back/forward cache): settle once the held messages have run.
+function viewReturn() {
+  if (document.hidden || !_viewAway) return;
+  _viewBackAt = Date.now();
+  viewSettleSoon();
+}
+// The socket opened: the board it brings first is the whole board, not news.
+function viewSync() {
+  viewLeave();
+  viewReturn();
+}
+// A socket message while the page catches up: the socket is not quiet yet.
+function viewHeard() {
+  if (_viewAway && _viewBackAt) viewSettleSoon();
+}
+function viewSettleSoon() {
+  clearTimeout(_viewSettleTimer);
+  var left = _viewBackAt + VIEW_SETTLE_MAX_MS - Date.now();
+  _viewSettleTimer = setTimeout(viewSettle, Math.max(0, Math.min(VIEW_SETTLE_QUIET_MS, left)));
+}
+function viewSettle() {
+  _viewSettleTimer = 0;
+  if (document.hidden) return;
+  _viewAway = false;
+  _viewBackAt = 0;
+}
+// A board element painted while the page catches up is drawn at once, as in a background tab: <ui-agent-inbox> moves
+// nothing while document.hidden is true (no glide, enter fade, status pop or wave, no count-up, no held lane), so
+// document.hidden reads true for this one synchronous render and is the browser's again right after.
+function viewStill(host) {
+  if (!_viewAway || document.hidden || !host || typeof host.renderNow !== 'function') return;
+  var own = Object.getOwnPropertyDescriptor(document, 'hidden');
+  Object.defineProperty(document, 'hidden', { configurable: true, get: function() { return true; } });
+  try {
+    host.renderNow();
+  } finally {
+    if (own) Object.defineProperty(document, 'hidden', own);
+    else delete document.hidden;
+  }
+}
+document.addEventListener('visibilitychange', function() { if (document.hidden) viewLeave(); else viewReturn(); });
+document.addEventListener('freeze', viewLeave);
+document.addEventListener('resume', viewReturn);
+window.addEventListener('pagehide', viewLeave);
+window.addEventListener('pageshow', viewReturn);
 function setTextIfChanged(el, text) {
   if (el && el.textContent !== text) el.textContent = text;
 }
@@ -13644,6 +13711,8 @@ function inboxPaint(host) {
   };
   boardFoldDeck(host);
   if (typeof syncCardFinish === 'function') syncCardFinish();
+  // A page catching up after it was out of view paints the element now, without motion (viewStill).
+  if (typeof viewStill === 'function') viewStill(host);
 }
 
 // ── Task card window controls (.prd/34) ──
@@ -22420,6 +22489,8 @@ function connectWs() {
 
   // The app bar's status (role=status, polite): a tone dot and a word; the dot pulses while live.
   ws.onopen = function() {
+    // The board this socket brings first is the whole board: the page catches up still (viewSync).
+    if (typeof viewSync === 'function') viewSync();
     _appBarStatus = { tone: 'done', label: STRINGS.wsLive, live: true, description: STRINGS.wsAbout };
     paintAppBar();
     // Reconnect: recover the work-log entries broadcast while we were offline
@@ -22435,6 +22506,8 @@ function connectWs() {
   };
   ws.onerror = function() { ws.close(); };
   ws.onmessage = function(ev) {
+    // A message while the page catches up keeps it catching up: held messages run back to back (viewHeard).
+    if (typeof viewHeard === 'function') viewHeard();
     try {
       const msg = JSON.parse(ev.data);
       // A card's changed fields: the card they make goes down the sessionUpdated path below, like a whole push.
