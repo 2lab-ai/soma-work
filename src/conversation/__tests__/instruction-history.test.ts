@@ -14,6 +14,7 @@ import type { SessionGoal } from '../../types';
 import {
   INSTRUCTION_PAGE_MAX,
   INSTRUCTION_PREVIEW_MAX,
+  INSTRUCTION_PREVIEW_TAG_MAX,
   instructionPage,
   instructionPreview,
   isHostTurn,
@@ -144,6 +145,19 @@ describe('instructionPreview — the words 대화 shows, on one line', () => {
     expect(client.splitInvokedSkills(empty).text).toBe(empty);
   });
 
+  it('a block of thousands of unclosed tags is read in bounded time (the route runs on the shared event loop)', () => {
+    const spam = `<invoked_skills>${Array.from({ length: 20_000 }, (_, k) => `<t${k}>`).join('')}</invoked_skills> 끝`;
+    const t0 = Date.now();
+    const p = instructionPreview(spam);
+    expect(Date.now() - t0).toBeLessThan(500);
+    expect(p.skills).toEqual([]);
+    expect(p.text.endsWith('…')).toBe(true); // no skill: the block is words, cut to the preview
+    // A real block still names its skills.
+    const real = `<invoked_skills>${'<x>'.repeat(10)}<local:z>body</local:z></invoked_skills> 일`;
+    expect(instructionPreview(real)).toEqual({ text: '일', skills: ['local:z'] });
+    expect(INSTRUCTION_PREVIEW_TAG_MAX).toBeGreaterThan(10);
+  });
+
   it('decodes Slack entities, folds blanks and line ends, cuts long words with an ellipsis', () => {
     expect(instructionPreview('  a &lt;b&gt;\n\n  c &amp; d  ').text).toBe('a <b> c & d');
     const long = '가'.repeat(INSTRUCTION_PREVIEW_MAX + 50);
@@ -194,8 +208,10 @@ describe('instructionPage — numbered from the first instruction, a page at a t
       offset: 0,
       nextOffset: 0,
       order: 'asc',
+      lastId: turns[turns.length - 2].id, // the newest instruction (the last turn is its answer)
       items: [],
     });
+    expect(instructionPage([], { offset: 0, limit: 0, order: 'asc' }).lastId).toBeNull();
     expect(instructionPage(turns, { offset: 99, limit: 5, order: 'asc' })).toMatchObject({
       offset: 7,
       nextOffset: null,

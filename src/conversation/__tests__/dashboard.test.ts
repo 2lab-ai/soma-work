@@ -1203,6 +1203,7 @@ describe('Dashboard API', () => {
       offset: 0,
       nextOffset: null,
       order: 'asc',
+      lastId: 'u4',
       items: [
         { id: 'u1', n: 1, at: 1, userName: 'Z', text: '첫 지시' },
         { id: 'u2', n: 2, at: 4, userName: 'Kim', text: '두 번째' },

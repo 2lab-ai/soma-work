@@ -29,6 +29,11 @@ export const INSTRUCTION_PAGE_DEFAULT = 30;
 export const INSTRUCTION_PAGE_MAX = 100;
 /** The longest preview a row carries (characters, after the skill blocks and runs of blanks are folded away). */
 export const INSTRUCTION_PREVIEW_MAX = 240;
+/**
+ * The most tags one skill block is read for. The page reads every tag; here the route runs on the shared event loop,
+ * and a block of thousands of unclosed tags would make each one a scan to the block's end. Real blocks hold a few.
+ */
+export const INSTRUCTION_PREVIEW_TAG_MAX = 64;
 
 /** The page's SYS_RESTART_HEADS: how a restart resume or an error retry begins. */
 const RESTART_HEADS = [
@@ -99,15 +104,22 @@ export function instructionPreview(
     }
     text += s.slice(from, at);
     const inner = s.slice(at + OPEN.length, end);
+    // One sticky scan (no slices); a name found unclosed once is never searched for again; at most TAG_MAX tags.
+    const tag = /<([^\s<>/]+)>/g;
+    const unclosed = new Set<string>();
     let found = 0;
+    let tags = 0;
     let i = 0;
-    while (i < inner.length) {
-      const m = /<([^\s<>/]+)>/.exec(inner.slice(i));
+    while (i < inner.length && tags < INSTRUCTION_PREVIEW_TAG_MAX) {
+      tag.lastIndex = i;
+      const m = tag.exec(inner);
       if (!m) break;
+      tags++;
       const name = m[1];
-      const bodyAt = i + m.index + m[0].length;
-      const bodyEnd = inner.indexOf(`</${name}>`, bodyAt);
+      const bodyAt = m.index + m[0].length;
+      const bodyEnd = unclosed.has(name) ? -1 : inner.indexOf(`</${name}>`, bodyAt);
       if (bodyEnd < 0) {
+        unclosed.add(name);
         i = bodyAt;
         continue;
       }
@@ -147,6 +159,8 @@ export interface InstructionPage {
   /** The offset of the next page, or null when this one is the last. */
   nextOffset: number | null;
   order: InstructionOrder;
+  /** The newest instruction's id — the page tells a rollback that put a new one in its place (same total) by it. */
+  lastId: string | null;
   items: InstructionRow[];
 }
 
@@ -185,7 +199,8 @@ export function instructionPage(turns: readonly ConversationTurn[], q: Instructi
     if (files) row.files = files;
     items.push(row);
   }
-  return { total, offset, nextOffset: end < total ? end : null, order: q.order, items };
+  const lastId = total ? String(list[total - 1].id) : null;
+  return { total, offset, nextOffset: end < total ? end : null, order: q.order, lastId, items };
 }
 
 export function registerInstructionHistoryRoute(

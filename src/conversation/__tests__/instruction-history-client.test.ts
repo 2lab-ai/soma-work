@@ -71,10 +71,18 @@ const PAGE_FNS = [
 type Json = Record<string, unknown>;
 type Reply = Json | Error | ((url: string) => Json | Error);
 
+// Every boot runs the client's wiring, which adds document listeners: they are taken off after each test, so no
+// earlier test's client answers a later test's presses.
+const docListeners: Array<[string, any, any]> = [];
 function boot(
   opts: { state?: Json; fetch?: Record<string, Reply> | ((url: string) => Json | Error); fns?: Json } = {},
 ) {
   document.body.innerHTML = `<div class="panel-command">${MARKUP}</div><div id="outside"></div>`;
+  const realAdd = document.addEventListener.bind(document);
+  document.addEventListener = (type: string, fn: any, o?: any) => {
+    docListeners.push([type, fn, o]);
+    realAdd(type, fn, o);
+  };
   const calls: string[] = [];
   const reply = (url: string): Json | Error => {
     if (typeof opts.fetch === 'function') return opts.fetch(url);
@@ -84,12 +92,7 @@ function boot(
     const r = table[key];
     return typeof r === 'function' ? r(url) : r;
   };
-  let override: ((url: string) => Promise<unknown>) | null = null;
   const fetchMock = vi.fn((url: string) => {
-    if (override) {
-      calls.push(url);
-      return override(url);
-    }
     calls.push(url);
     const r = reply(url);
     if (r instanceof Error) return Promise.resolve({ ok: false, status: 500, json: async () => ({}) });
@@ -135,23 +138,18 @@ function boot(
     ...opts.fns,
   };
   const adminFmt = new Function(`${pageFn('adminFmt')}\nreturn adminFmt;`)();
-  const names = [...PAGE_STATE, ...PAGE_FNS, 'adminFmt', '__setFetch'];
+  const names = [...PAGE_STATE, ...PAGE_FNS, 'adminFmt'];
   const body = `${INSTRUCTION_HISTORY_CLIENT_JS}
 return {
   ihSync: ihSync, ihToggle: ihToggle, ihClose: ihClose, ihSetOrder: ihSetOrder, ihJump: ihJump, ihLoadMore: ihLoadMore,
-  setFetch: function(f) { __setFetch(f); },
   set: function(k, v) { eval(k + ' = v'); },
   msg: function() { return { msg: _panelTurnsMsg, why: _panelTurnsWhy }; },
   state: function() { return { ih: _ih, list: _panelTurnsList, oldest: _panelTurnsOldestId, hasMore: _panelTurnsHasMore,
     loading: _panelTurnsLoading, psec: _psec }; },
 };`;
-  const setFetch = (f: (url: string) => Promise<unknown>) => {
-    override = f;
-  };
-  const values = names.map((n) =>
-    n in state ? state[n] : n === 'adminFmt' ? adminFmt : n === '__setFetch' ? setFetch : fns[n],
-  );
+  const values = names.map((n) => (n in state ? state[n] : n === 'adminFmt' ? adminFmt : fns[n]));
   const api = new Function(...names, body)(...values) as any;
+  document.addEventListener = realAdd;
   return { api, calls, fns: fns as any, vp, turnNode, conv };
 }
 // Settles the client's promise chains and timers: real timers step in small waits; fake timers (vi.useFakeTimers)
@@ -191,6 +189,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   document.body.innerHTML = '';
+  for (const [type, fn, o] of docListeners.splice(0)) document.removeEventListener(type, fn, o);
 });
 
 describe('the round button — how many instructions, beside the queue’s button', () => {
@@ -232,7 +231,7 @@ describe('the round button — how many instructions, beside the queue’s butto
     vi.useFakeTimers();
     try {
       let total = 3;
-      const { api, calls } = boot({ fetch: (url) => (url.includes('/c2/') ? { total: 99 } : { total }) });
+      const { api, calls, fns } = boot({ fetch: (url) => (url.includes('/c2/') ? { total: 99 } : { total }) });
       api.ihSync('c1');
       await vi.advanceTimersByTimeAsync(10);
       expect($('ih-dock-n').textContent).toBe('3');
@@ -248,7 +247,7 @@ describe('the round button — how many instructions, beside the queue’s butto
       expect($('ih-dock').hidden).toBe(true);
       // A switch while a count is on its way: the old card's answer, landing late, does not paint the new card's button.
       let releaseC2: (v: unknown) => void = () => {};
-      (api as any).setFetch((url: string) =>
+      fns.fetch.mockImplementation((url: string) =>
         url.includes('/c2/')
           ? new Promise((r) => {
               releaseC2 = r;
@@ -627,6 +626,88 @@ describe('the open list and new instructions (review on #1512)', () => {
     expect(document.querySelector('#ih-list .ih-n')?.textContent).toBe('#41');
   });
 
+  it('an old first page cannot undo a newer count that dropped (a rollback while it loaded)', async () => {
+    let releaseFirst: (v: unknown) => void = () => {};
+    let total = 12;
+    const asked: string[] = [];
+    const fetchMock = vi.fn((url: string) => {
+      asked.push(url);
+      if (url.includes('limit=0')) return Promise.resolve({ ok: true, json: async () => ({ total }) });
+      if (url.includes('offset=0&limit=30') && asked.filter((u) => u.includes('offset=0&limit=30')).length === 1)
+        return new Promise((r) => {
+          releaseFirst = r;
+        });
+      return Promise.resolve({ ok: true, json: async () => page(0, total, total) });
+    });
+    const { api } = boot({ fns: { fetch: fetchMock } });
+    api.ihSync('c1');
+    await flush();
+    api.ihToggle();
+    await flush(); // the first page (asked against 12) is held
+    total = 11; // a rollback takes one back; the count says so first
+    api.ihSync('c1', true);
+    await wait(700);
+    await flush();
+    expect($('ih-dock-n').textContent).toBe('11');
+    releaseFirst({ ok: true, json: async () => page(0, 12, 12) });
+    await flush();
+    expect($('ih-dock-n').textContent).toBe('11'); // the old page does not raise it back
+  });
+
+  it('a rollback that puts a new instruction in place of the newest (same total) re-reads the list', async () => {
+    let lastId = 'u12';
+    const st = { total: 12 };
+    const base = server(st);
+    const { api, calls } = boot({
+      fetch: (url) => {
+        const r = base(url) as Json;
+        return { ...r, lastId };
+      },
+    });
+    api.ihSync('c1');
+    await flush();
+    api.ihToggle();
+    await flush();
+    const firsts = () => calls.filter((u) => u.includes('offset=0&limit=30')).length;
+    expect(firsts()).toBe(1);
+    lastId = 'u12b'; // u12 rolled back, a new one sent: still 12
+    api.ihSync('c1', true);
+    await wait(700);
+    await flush();
+    expect(firsts()).toBe(2);
+  });
+
+  it('최근부터: more than the margin landing while the new rows load re-reads the list (no gap, the order kept)', async () => {
+    const st = { total: 40 };
+    let bumpOnGrow = true;
+    const base = server(st);
+    const { api, calls } = boot({
+      fetch: (url) => {
+        if (bumpOnGrow && url.includes('offset=0&limit=6&order=desc')) {
+          bumpOnGrow = false;
+          st.total = 60; // twenty more land while the top rows are on their way
+        }
+        return base(url);
+      },
+    });
+    api.ihSetOrder('desc');
+    api.ihSync('c1');
+    await flush();
+    const list = $('ih-list');
+    Object.defineProperty(list, 'scrollHeight', { configurable: true, get: () => 2000 });
+    Object.defineProperty(list, 'clientHeight', { configurable: true, get: () => 400 });
+    api.ihToggle();
+    await flush();
+    st.total = 41;
+    api.ihSync('c1', true);
+    await wait(700);
+    await flush();
+    const ns = Array.from(document.querySelectorAll('#ih-list .ih-n')).map((n: any) => Number(n.textContent.slice(1)));
+    expect(ns[0]).toBe(60);
+    expect(ns.slice(0, 30)).toEqual(Array.from({ length: 30 }, (_, i) => 60 - i)); // no gap, newest first
+    expect(calls.filter((u) => u.includes('offset=0&limit=30&order=desc')).length).toBe(2);
+  });
+
   it('a count ahead of a rollback does not make 처음부터 ask for pages forever', async () => {
     const serverTotal = 40;
     const { api, calls } = boot({
@@ -897,6 +978,80 @@ describe('a row — 대화 moves to that instruction', () => {
     await new Promise((r) => setTimeout(r, 250));
     await flush();
     expect(fns.dashToast).not.toHaveBeenCalled();
+  });
+
+  it('a jump load that never answers is given up after its deadline: a warning, the chat not left loading', async () => {
+    vi.useFakeTimers();
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    const aborted: string[] = [];
+    const { api, fns } = boot({
+      state: { _panelTurnsList: loaded(['u9']), _panelTurnsOldestId: 'u9', _panelTurnsHasMore: true },
+      fns: {
+        fetch: vi.fn((url: string, init?: { signal?: AbortSignal }) => {
+          if (!url.includes('through=')) return Promise.resolve({ ok: true, json: async () => ({ total: 1 }) });
+          return new Promise((_r, reject) => {
+            init?.signal?.addEventListener('abort', () => {
+              aborted.push(url);
+              reject(new Error('aborted'));
+            });
+          });
+        }),
+      },
+    });
+    api.ihJump('u1');
+    await flush();
+    expect(api.state().loading).toBe(true);
+    await vi.advanceTimersByTimeAsync(20_100);
+    await flush();
+    expect(aborted).toHaveLength(1);
+    expect(api.state().loading).toBe(false);
+    expect(fns.dashToast).toHaveBeenCalledWith({ title: '대화를 불러오지 못했어요', tone: 'warning' });
+  });
+
+  it('a card switch while the jump’s turn is being drawn stops the scroll and says nothing', async () => {
+    const { api, fns, vp, conv } = boot({
+      state: { _panelTurnsList: loaded(['u7', 'a7']) },
+      fetch: () => ({ total: 1 }),
+    });
+    conv.turnElement.mockImplementation(() => null); // not drawn yet
+    vp.scrollTop = 300;
+    api.ihJump('u7');
+    api.set('_panelGen', 2); // another card opens
+    await new Promise((r) => setTimeout(r, 300));
+    expect(vp.scrollTop).toBe(300);
+    expect(fns.dashToast).not.toHaveBeenCalled();
+  });
+
+  it('a newer jump took over: the older one’s fresh window does not replace the chat', async () => {
+    let releaseFresh: (v: unknown) => void = () => {};
+    const { api } = boot({
+      state: { _panelTurnsList: loaded(['u5', 'a5']), _panelTurnsOldestId: 'u5', _panelTurnsHasMore: true },
+      fns: {
+        fetch: vi.fn((url: string) => {
+          if (!url.includes('through=')) return Promise.resolve({ ok: true, json: async () => ({ total: 1 }) });
+          if (url.includes('before='))
+            return Promise.resolve({
+              ok: true,
+              json: async () => ({ id: 'c1', turns: [], hasMore: true, through: 'none' }),
+            });
+          return new Promise((r) => {
+            releaseFresh = r;
+          });
+        }),
+      },
+    });
+    api.ihJump('u7');
+    await flush(); // the fresh ask is on its way
+    api.ihJump('u5'); // a newer jump, to a turn the chat has (it waits for the load)
+    releaseFresh({
+      ok: true,
+      json: async () => ({ id: 'c1', turns: loaded(['u6', 'a6', 'u7']), hasMore: true, through: 'reached' }),
+    });
+    await new Promise((r) => setTimeout(r, 250));
+    await flush();
+    expect(api.state().list.map((t: Json) => t.id)).toEqual(['u5', 'a5']);
   });
 
   it('a load on its way (the first page) settles first, then the jump goes on', async () => {
