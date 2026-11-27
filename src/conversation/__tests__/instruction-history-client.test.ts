@@ -291,7 +291,8 @@ describe('the list — every instruction from the first, a page at a time', () =
     expect(rows()[0].querySelector('.ih-n')?.textContent).toBe('#1');
     expect(rows()[0].querySelector('.ih-text')?.textContent).toBe('지시 1');
     expect(rows()[0].querySelector('.ih-meta')?.textContent).toContain('Z');
-    expect(calls).toContain('/api/dashboard/session/c1/instructions?offset=30&limit=30&order=asc');
+    // A later page starts one row back (the boundary row seen again).
+    expect(calls).toContain('/api/dashboard/session/c1/instructions?offset=29&limit=31&order=asc');
     expect($('ih-foot').textContent).toBe('');
   });
 
@@ -300,7 +301,8 @@ describe('the list — every instruction from the first, a page at a time', () =
       fetch: (url) => {
         if (url.includes('limit=0')) return { total: 75 };
         const off = Number(/offset=(\d+)/.exec(url)?.[1]);
-        return page(off, Math.min(30, 75 - off), 75);
+        const lim = Number(/limit=(\d+)/.exec(url)?.[1]);
+        return page(off, Math.min(lim, 75 - off), 75);
       },
     });
     api.ihSync('c1');
@@ -323,12 +325,12 @@ describe('the list — every instruction from the first, a page at a time', () =
     list.scrollTop = 1100; // within 80px of the end
     list.dispatchEvent(new dom.Event('scroll'));
     await flush();
-    expect(pages()[1]).toBe('/api/dashboard/session/c1/instructions?offset=30&limit=30&order=asc');
+    expect(pages()[1]).toBe('/api/dashboard/session/c1/instructions?offset=29&limit=31&order=asc');
     expect(document.querySelectorAll('#ih-list .ih-row')).toHaveLength(60);
     list.scrollTop = 0;
     ($('ih-foot').querySelector('[data-ih="more"]') as HTMLElement).click();
     await flush();
-    expect(pages()[2]).toBe('/api/dashboard/session/c1/instructions?offset=60&limit=30&order=asc');
+    expect(pages()[2]).toBe('/api/dashboard/session/c1/instructions?offset=59&limit=31&order=asc');
     expect(document.querySelectorAll('#ih-list .ih-row')).toHaveLength(75);
     expect($('ih-foot').querySelector('[data-ih="more"]')).toBeNull();
   });
@@ -350,6 +352,54 @@ describe('the list — every instruction from the first, a page at a time', () =
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('a page from the previous order that lands after the switch is dropped', async () => {
+    let releaseAsc: (v: unknown) => void = () => {};
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes('limit=0')) return Promise.resolve({ ok: true, json: async () => ({ total: 5 }) });
+      if (url.includes('order=asc'))
+        return new Promise((r) => {
+          releaseAsc = r;
+        });
+      return Promise.resolve({ ok: true, json: async () => page(0, 5, 5, 'desc') });
+    });
+    const { api } = boot({ fns: { fetch: fetchMock } });
+    api.ihSync('c1');
+    await flush();
+    api.ihToggle();
+    await flush(); // the 처음부터 first page is held
+    api.ihSetOrder('desc');
+    await flush();
+    releaseAsc({ ok: true, json: async () => page(0, 5, 5, 'asc') });
+    await flush();
+    const ns = Array.from(document.querySelectorAll('#ih-list .ih-n')).map((n: any) => n.textContent);
+    expect(ns).toEqual(['#5', '#4', '#3', '#2', '#1']);
+  });
+
+  it('처음부터: a row replaced at a page boundary is caught by the next page’s one-row overlap', async () => {
+    let replaced = false;
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes('limit=0')) return Promise.resolve({ ok: true, json: async () => ({ total: 45 }) });
+      const off = Number(/offset=(\d+)/.exec(url)?.[1]);
+      const lim = Number(/limit=(\d+)/.exec(url)?.[1]);
+      const r = page(off, Math.min(lim, 45 - off), 45) as Json;
+      const items = ((r.items as Json[]) || []).map((it) => (replaced && it.n === 30 ? { ...it, id: 'u30b' } : it));
+      return Promise.resolve({ ok: true, json: async () => ({ ...r, items }) });
+    });
+    const { api } = boot({ fns: { fetch: fetchMock } });
+    api.ihSync('c1');
+    await flush();
+    const list = $('ih-list');
+    Object.defineProperty(list, 'scrollHeight', { configurable: true, get: () => 2000 });
+    Object.defineProperty(list, 'clientHeight', { configurable: true, get: () => 400 });
+    api.ihToggle();
+    await flush(); // #1..#30 listed
+    replaced = true; // #30 changed under the list
+    api.ihLoadMore();
+    await flush();
+    expect(document.querySelector('#ih-list .ih-row[data-id="u30"]')).toBeNull();
+    expect(document.querySelector('#ih-list .ih-row[data-id="u30b"]')).not.toBeNull();
   });
 
   it('최근부터: the newest first, kept for the next time', async () => {

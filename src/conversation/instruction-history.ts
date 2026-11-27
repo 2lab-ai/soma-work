@@ -34,6 +34,8 @@ export const INSTRUCTION_PREVIEW_MAX = 240;
  * and a block of thousands of unclosed tags would make each one a scan to the block's end. Real blocks hold a few.
  */
 export const INSTRUCTION_PREVIEW_TAG_MAX = 64;
+/** The most skill names a row carries (the list shows three). */
+export const INSTRUCTION_PREVIEW_SKILL_MAX = 16;
 
 /** The page's SYS_RESTART_HEADS: how a restart resume or an error retry begins. */
 const RESTART_HEADS = [
@@ -89,6 +91,7 @@ export function instructionPreview(
   const CLOSE = '</invoked_skills>';
   let text = '';
   const skills: string[] = [];
+  const named = new Set<string>(); // every name seen, for a constant-time check across all blocks
   let from = 0;
   // Forward only: the next opening tag at or after `from` is kept and looked up again only once `from` passes it, so
   // a run of stray closing tags never rescans what is behind it (no backward search to the start per tag).
@@ -138,7 +141,10 @@ export function instructionPreview(
         continue;
       }
       found++;
-      if (!skills.includes(name)) skills.push(name);
+      if (!named.has(name)) {
+        named.add(name);
+        if (skills.length < INSTRUCTION_PREVIEW_SKILL_MAX) skills.push(name);
+      }
       i = bodyEnd + name.length + 3;
     }
     // A closed block that held no skill is words too.

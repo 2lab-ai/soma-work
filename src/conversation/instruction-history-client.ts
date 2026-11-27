@@ -314,6 +314,7 @@ function ihOpen() {
   pop.setAttribute('data-open', '');
   ihPaint();
   ihReload();
+  ihCountSoon(0); // the count read afresh too: the list reconciles with it
   pop.focus({ preventScroll: true });
 }
 function ihClose(focusDock) {
@@ -357,7 +358,9 @@ function ihLoadMore() {
   _ih.loading = true;
   _ih.why = '';
   ihPaintList();
-  ihGetJson(ihUrl(cid, offset, IH_PAGE, _ih.order), IH_DEADLINE_MS).then(function(d) {
+  // A later page starts one row back: the row at the boundary is seen again, so one replaced under the list is caught.
+  var from = offset > 0 ? offset - 1 : 0;
+  ihGetJson(ihUrl(cid, from, offset > 0 ? IH_PAGE + 1 : IH_PAGE, _ih.order), IH_DEADLINE_MS).then(function(d) {
     if (gen !== _ih.gen) return;
     _ih.loading = false;
     if (ihConflict(_ih.rows, d && d.items)) {
@@ -469,7 +472,7 @@ function ihReveal() {
       // page, reaching back to it. From the old copy stay this browser's pending instructions and every turn newer
       // than the answer's last one (pushed while it was on its way); the older ones come back on scroll-up.
       var lastAt = turns.length ? ihTurnAt(turns[turns.length - 1]) : 0;
-      _panelTurnsList = ptMergeFetched(turns, fresh ? _panelTurnsList.filter(function(t) { return t && (t._optimistic || ihTurnAt(t) > lastAt); }) : _panelTurnsList);
+      _panelTurnsList = ptMergeFetched(turns, fresh ? _panelTurnsList.filter(function(t) { return t && (t._optimistic || ihTurnAt(t) >= lastAt); }) : _panelTurnsList);
       _panelTurnsCid = (data && data.id) || cid;
       _panelTurnsOldestId = turns.length ? turns[0].id : null;
       _panelTurnsMsg = _panelTurnsList.length ? '' : 'none';

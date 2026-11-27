@@ -14,6 +14,7 @@ import type { SessionGoal } from '../../types';
 import {
   INSTRUCTION_PAGE_MAX,
   INSTRUCTION_PREVIEW_MAX,
+  INSTRUCTION_PREVIEW_SKILL_MAX,
   INSTRUCTION_PREVIEW_TAG_MAX,
   instructionPage,
   instructionPreview,
@@ -151,6 +152,18 @@ describe('instructionPreview — the words 대화 shows, on one line', () => {
     const empty = 'see <invoked_skills>no tags here</invoked_skills> please';
     expect(instructionPreview(empty)).toEqual({ text: empty, skills: [] });
     expect(client.splitInvokedSkills(empty).text).toBe(empty);
+  });
+
+  it('many closed one-skill blocks with distinct names are read in bounded time; a row names at most a few', () => {
+    const blocks = Array.from({ length: 60_000 }, (_, k) => `<invoked_skills><s${k}>x</s${k}></invoked_skills>`).join(
+      '',
+    );
+    const t0 = Date.now();
+    const p = instructionPreview(`${blocks} 끝`);
+    expect(Date.now() - t0).toBeLessThan(1500);
+    expect(p.text).toBe('끝');
+    expect(p.skills).toHaveLength(INSTRUCTION_PREVIEW_SKILL_MAX);
+    expect(p.skills[0]).toBe('s0');
   });
 
   it('a run of stray closing tags is read in bounded time — no backward search to the start per tag', () => {
